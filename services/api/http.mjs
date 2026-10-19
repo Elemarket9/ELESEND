@@ -5,7 +5,7 @@ import {network} from './network.mjs';
 import {vehicleService} from './vehicle.mjs';
 import {clientIp} from './client-ip.mjs';
 import {marketService} from './markets.mjs';
-export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null}={}){const net=network(db),vehicles=vehicleService(db),markets=marketService(db);return createServer(async(req,res)=>{
+export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null}={}){const net=network(db),vehicles=vehicleService(db),markets=marketService(db);return createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192},async(req,res)=>{
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
  res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
  const send=(code,body)=>{res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(body));};
@@ -22,8 +22,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   await limit(db,'http:'+clientIp(req),300,60);
   let body={},rawBody=Buffer.alloc(0);if(method==='POST'){
    check((req.headers['content-type']??'').split(';')[0]==='application/json',415,'JSON required');let size=0;const parts=[];
-   for await(const part of req){size+=part.length;check(size<=32768,413,'Request too large');parts.push(part);}
-   rawBody=Buffer.concat(parts);try{body=JSON.parse(rawBody.toString()||'{}');}catch{check(false,400,'Invalid JSON');}
+   for await(const part of req.iterator({destroyOnReturn:false})){size+=part.length;if(size>32768){res.setHeader('Connection','close');req.resume();check(false,413,'Request too large');}parts.push(part);}
+   rawBody=Buffer.concat(parts);try{body=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(rawBody)||'{}');}catch{check(false,400,'Invalid JSON');}
   }
   if(method==='POST'&&path==='/api/v1/payments/checkout-webhook'){
    check(checkout,503,'Checkout unavailable');send(200,await checkout.webhook(rawBody,req.headers));return;
@@ -58,6 +58,10 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    result=await ghanaPostGps(body.address);
   }
   else if(method==='POST'&&path==='/api/v1/quotes')result=await app.quote(actor,body);
+  else if(method==='POST'&&path==='/api/v1/calculate-fare')result=await app.quote(actor,body);
+  else if(method==='GET'&&path==='/api/v1/pricing/vehicles')result=await app.vehicleTariffs(actor);
+  else if(method==='POST'&&path==='/api/v1/admin/pricing/vehicles')result=await app.configureVehicleTariff(actor,body);
+  else if(method==='POST'&&path==='/api/v1/admin/pricing/surge-zones')result=await app.configureSurgeZone(actor,body);
   else if(method==='POST'&&path==='/api/v1/shipments')result=await app.book(actor,body,req.headers['idempotency-key']);
   else if(method==='GET'&&path==='/api/v1/shipments')result=await app.list(actor);
   else if(method==='GET'&&path==='/api/v1/rider/offers')result=await app.offers(actor);

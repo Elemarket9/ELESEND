@@ -7,6 +7,8 @@ import {removeStop,removeShipment} from './multi-parcel.mjs';
 import {postCashCommission} from './finance.mjs';
 import {digitalDeliveryCompleted} from './checkout-accounting.mjs';
 import {calculateQuote} from './pricing.mjs';
+import {getSurgeMultiplier,validateGhanaBoundary} from '../../deliveryEngine.mjs';
+import {measuredSurge} from './pricing-surge.mjs';
 import {featureService} from './algorithms/features.mjs';
 import {detectFraudSignals} from './algorithms/fraud.mjs';
 import {marketService} from './markets.mjs';
@@ -14,7 +16,7 @@ const id=()=>randomUUID();
 const uuid=z.string().uuid();
 const registration=z.object({phone:z.string().max(30),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional()}).strict();
 const address=z.object({address:z.string().min(5).max(400),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict();
-const quoteSchema=z.object({pickup:address,destination:address,recipientPhone:z.string().max(30),weightG:z.number().int().min(1).max(10000000),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
+const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(['motorcycle','car','van']).optional(),recipientPhone:z.string().max(30),weightG:z.number().int().min(1).max(10000000),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
 const audit=(c,actor,action,entity)=>c.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[actor,action,entity]);
 export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env.ADMIN_MFA_ENCRYPTION_KEY}={}){
  check(/^[a-f0-9]{64}$/i.test(otpKey??''),500,'OTP_KEY must be 32 random bytes encoded as hex');
@@ -118,7 +120,24 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async authenticate(token){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const u=(await db.query("SELECT u.id,u.kind FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR s.admin_mfa_verified=true)",[hash(token)])).rows[0];check(u,401,'Session expired or administrator MFA required');return u;},
  async logout(token){await db.query('DELETE FROM sessions WHERE token_hash=$1',[hash(token)]);return {ok:true};},
  async setPricing(actor,input){const v=z.object({baseMinor:z.number().int().min(1).max(1000000),perKmMinor:z.number().int().min(1).max(100000),commissionBps:z.number().int().min(0).max(10000).default(300),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null),perMinuteMinor:z.number().int().min(0).max(100000).default(0),waitPerMinuteMinor:z.number().int().min(0).max(100000).default(0),perExtraStopMinor:z.number().int().min(0).max(1000000).default(0)}).strict().parse(input);
-  return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');await c.query('UPDATE pricing_policies SET active=false WHERE active');const pid=id();await c.query('INSERT INTO pricing_policies(id,base_minor,per_km_minor,commission_bps,commission_mode,commission_fixed_minor,commission_cap_minor,per_minute_minor,wait_per_minute_minor,per_extra_stop_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[pid,v.baseMinor,v.perKmMinor,v.commissionBps,v.commissionMode,v.commissionFixedMinor,v.commissionCapMinor,v.perMinuteMinor,v.waitPerMinuteMinor,v.perExtraStopMinor]);await audit(c,actor.id,'pricing.created',pid);return {id:pid};});
+  return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');await c.query('UPDATE pricing_policies SET active=false WHERE active AND vehicle IS NULL');const pid=id();await c.query('INSERT INTO pricing_policies(id,base_minor,per_km_minor,commission_bps,commission_mode,commission_fixed_minor,commission_cap_minor,per_minute_minor,wait_per_minute_minor,per_extra_stop_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[pid,v.baseMinor,v.perKmMinor,v.commissionBps,v.commissionMode,v.commissionFixedMinor,v.commissionCapMinor,v.perMinuteMinor,v.waitPerMinuteMinor,v.perExtraStopMinor]);await audit(c,actor.id,'pricing.created',pid);return {id:pid};});
+ },
+ async configureVehicleTariff(actor,input){
+  const v=z.object({vehicle:z.enum(['motorcycle','car','van']),baseMinor:z.number().int().min(1).max(1000000),perKmMinor:z.number().int().min(0).max(100000),perMinuteMinor:z.number().int().min(0).max(100000).default(0),minimumMinor:z.number().int().min(0).max(100000000).default(0),rushHourEnabled:z.boolean().default(false),supplyDemandEnabled:z.boolean().default(false),commissionBps:z.number().int().min(0).max(10000).default(2000)}).strict().parse(input);
+  return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');
+   await c.query('UPDATE pricing_policies SET active=false WHERE active AND vehicle=$1',[v.vehicle]);const pid=id();
+   await c.query('INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled,supply_demand_enabled,commission_bps) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[pid,v.vehicle,v.baseMinor,v.perKmMinor,v.perMinuteMinor,v.minimumMinor,v.rushHourEnabled,v.supplyDemandEnabled,v.commissionBps]);
+   await audit(c,actor.id,'pricing.vehicle_version_created',pid);return {id:pid,...v};
+  });
+ },
+ async vehicleTariffs(actor){check(['customer','business','admin'].includes(actor.kind),403);return (await db.query('SELECT id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled FROM pricing_policies WHERE active AND vehicle IS NOT NULL ORDER BY vehicle')).rows;},
+ async configureSurgeZone(actor,input){
+  const v=z.object({name:z.string().trim().min(2).max(80),latitude:z.number().finite(),longitude:z.number().finite(),radiusM:z.number().int().min(500).max(50000),enabled:z.boolean().default(false),replaceId:uuid.optional()}).strict().parse(input);validateGhanaBoundary(v.latitude,v.longitude);
+  return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');
+   if(v.replaceId){check((await c.query('UPDATE pricing_surge_zones SET enabled=false WHERE id=$1 RETURNING id',[v.replaceId])).rowCount,404,'Zone not found');await audit(c,actor.id,'pricing.surge_zone_retired',v.replaceId);}
+   const zoneId=id();await c.query('INSERT INTO pricing_surge_zones(id,name,center,radius_m,enabled) VALUES($1,$2,ST_SetSRID(ST_MakePoint($3,$4),4326)::geography,$5,$6)',[zoneId,v.name,v.longitude,v.latitude,v.radiusM,v.enabled]);
+   await audit(c,actor.id,'pricing.surge_zone_created',zoneId);return {id:zoneId,...v};
+  });
  },
  async approve(actor,type,target,status){check(['riders','companies'].includes(type),400);uuid.parse(target);check(['approved','suspended','rejected'].includes(status),400);
   return db.tx(async c=>{await permission(c,actor,'verification:write');const result=await c.query(`UPDATE ${type} SET status=$2 WHERE id=$1 RETURNING id`,[target,status]);check(result.rowCount,404);await audit(c,actor.id,type+'.'+status,target);return {ok:true};});
@@ -134,21 +153,29 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await requireVerifiedPhone(db,actor);
   }
   await marketService(db).assertGhanaOperating();const v=quoteSchema.parse(input);v.recipientPhone=phone(v.recipientPhone);
+  if(process.env.NODE_ENV==='production')check(v.vehicle,400,'Select a vehicle before requesting a fare');
   // Preserve prior API clients' implicit DIGITAL method in existing tests/migrations.
   // Native clients explicitly choose CASH/MOMO/CARD/QR. Legacy DIGITAL cannot
   // initiate public checkout or self-report payment success.
   if(v.paymentMethod!=='DIGITAL'){const allowed=(await db.query('SELECT enabled FROM checkout_method_policies WHERE method=$1',[v.paymentMethod])).rows[0];check(allowed?.enabled,503,'Payment method is not active');}
-  const p=(await db.query('SELECT * FROM pricing_policies WHERE active')).rows[0];check(p,503,'Pricing not configured');
+  for(const location of [v.pickup,v.destination])validateGhanaBoundary(location.latitude,location.longitude);
+  const p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NOT DISTINCT FROM $1',[v.vehicle??null])).rows[0];check(p,503,'Pricing not configured for selected vehicle');
   check(routing,503,'Road routing not configured; prices cannot be estimated safely');
-  const route=await routing.route(v.pickup,v.destination,{vehicle:'car'});
+  const route=await routing.route(v.pickup,v.destination,{vehicle:v.vehicle??'car'});
   check(route.source==='routing-provider'||(process.env.NODE_ENV!=='production'&&route.source==='fixture'),503,'Unsupported road estimate');
   const meters=route.distanceMeters;
   check(Number.isSafeInteger(meters)&&meters>=0,503,'Invalid road distance');
   check(Number.isSafeInteger(route.durationSeconds)&&route.durationSeconds>=0,503,'Invalid road duration');
-  const {amountMinor,commissionMinor}=calculateQuote(p,meters,{durationSeconds:route.durationSeconds});const qid=id();
-  const r=await db.query("INSERT INTO quotes(id,customer_id,policy_id,request,amount_minor,commission_minor,expires_at,payment_method) VALUES($1,$2,$3,$4,$5,$6,now()+interval '15 minutes',$7) RETURNING id,amount_minor,commission_minor,expires_at,payment_method",[qid,actor.id,p.id,JSON.stringify(v),amountMinor,commissionMinor,v.paymentMethod]);
-  const capacity=dispatch?await dispatch.availability({pickup:v.pickup,weightG:v.weightG,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize}):{status:'unknown',guaranteed:false};
-  return {...r.rows[0],currency:'GHS',distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
+  const hour=Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Africa/Accra',hour:'2-digit',hourCycle:'h23'}).format(new Date()));
+  const scheduledMultiplier=p.rush_hour_enabled?getSurgeMultiplier(v.pickup.latitude,v.pickup.longitude,hour):1;
+  const surgeObservation=p.supply_demand_enabled&&v.vehicle?await measuredSurge(db,v.pickup,v.vehicle):{multiplierBps:10000,reason:'disabled'};
+  const surgeBps=Math.max(scheduledMultiplier===1.4?14000:10000,surgeObservation.multiplierBps);
+  const surgeMultiplier=surgeBps/10000;
+  const {amountMinor,commissionMinor,riderEarningsMinor}=calculateQuote(p,meters,{durationSeconds:route.durationSeconds,surgeBps});const qid=id();
+  const evidence={policyId:p.id,vehicle:v.vehicle??'legacy_unspecified',routeVehicle:v.vehicle??'car',distanceMeters:meters,durationSeconds:route.durationSeconds,source:route.source,surgeBps,scheduledMultiplier,surgeObservation,quotedAt:new Date().toISOString(),commissionBps:p.commission_bps,minimumMinor:p.minimum_minor};
+  const r=await db.query("INSERT INTO quotes(id,customer_id,policy_id,request,amount_minor,commission_minor,expires_at,payment_method,pricing_evidence) VALUES($1,$2,$3,$4,$5,$6,now()+interval '15 minutes',$7,$8) RETURNING id,amount_minor,commission_minor,expires_at,payment_method",[qid,actor.id,p.id,JSON.stringify(v),amountMinor,commissionMinor,v.paymentMethod,JSON.stringify(evidence)]);
+  const capacity=dispatch?await dispatch.availability({pickup:v.pickup,weightG:v.weightG,vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize}):{status:'unknown',guaranteed:false};
+  return {...r.rows[0],currency:'GHS',vehicle:v.vehicle??null,pricingEvidence:evidence,surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
  },
  async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business'].includes(actor.kind),403);
   return db.tx(async c=>{if(process.env.NODE_ENV==='production')await requireVerifiedPhone(c,actor);await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[actor.id+key]);

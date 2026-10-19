@@ -14,9 +14,13 @@ if(process.env.NODE_ENV==='production'){
  if(process.env.ADMIN_MFA_ENCRYPTION_KEY.toLowerCase()===(process.env.OTP_KEY??'').toLowerCase())throw Error('OTP and admin MFA master keys must be independent');
 }
 const db=database();await db.query('SELECT 1');
+if(!(await db.query('SELECT 1 FROM schema_migrations WHERE name=$1',['022_vehicle_pricing_integration.sql'])).rowCount)throw Error('Apply migration 022 before starting the pricing API');
 // Only self-hosted OSRM is registered; paid routing keys cannot become a fallback.
 privateRoutingPriority();
-const routing=process.env.ROUTING_OSRM_URL?osrmRouting({endpoint:process.env.ROUTING_OSRM_URL,profiles:JSON.parse(process.env.ROUTING_OSRM_PROFILES_JSON??'{"car":"driving"}') }):null;
+const graphMap=process.env.ROUTING_OSRM_VEHICLES_JSON?JSON.parse(process.env.ROUTING_OSRM_VEHICLES_JSON):null;
+const legacyProfiles=JSON.parse(process.env.ROUTING_OSRM_PROFILES_JSON??'{"car":"driving"}');
+if(!graphMap&&Object.keys(legacyProfiles).some(vehicle=>vehicle!=='car'))throw Error('Use independent OSRM graph endpoints for non-car vehicles');
+const routing=graphMap||process.env.ROUTING_OSRM_URL?osrmRouting({endpoint:process.env.ROUTING_OSRM_URL,profiles:legacyProfiles,vehicleRoutes:graphMap}):null;
 // Routing absence disables quote and dispatch, not authentication/history.
 const dispatch=routing?dispatchEngine(db,{routing}):null;
 const sms=process.env.SMS_GATEWAY_ENDPOINT?httpsSmsGateway({endpoint:process.env.SMS_GATEWAY_ENDPOINT,allowedHost:process.env.SMS_GATEWAY_ALLOWED_HOST,token:process.env.SMS_GATEWAY_TOKEN}):null;

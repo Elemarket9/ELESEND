@@ -37,7 +37,7 @@ test('OSRM adapter makes correct road-route and matrix URLs and rejects unsuppor
 });
 test('OSRM unreachable routes never silently fall back to straight-line distance',async()=>{
  const routing=osrmRouting({endpoint:'https://router.example.org',profiles:{car:'driving'},fetchImpl:async()=>({ok:true,async json(){return {code:'NoRoute',routes:[]};}})});
- await assert.rejects(()=>routing.route(a,pickup),e=>e.status===503);
+ await assert.rejects(()=>routing.route(a,pickup),e=>e.status===422);
 });
 test('measured deterministic fixture ranking baseline (not an infrastructure benchmark)',()=>{
  const start=performance.now();const candidates=Array.from({length:3000},(_,i)=>({id:String(i),eta:i*3%700,direction:i%3?'unknown':'approaching'}));

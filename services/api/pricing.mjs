@@ -15,7 +15,11 @@ export function calculateQuote(policy,distanceMeters,extras={}){
  const subtotal=base+(meters*perKm+999n)/1000n+(duration*timePerMin+59n)/60n+
    (waiting*waitPerMin+59n)/60n+stops*stopPrice+surcharge;
  if(discount>=subtotal)throw Error('Discount would remove the entire delivery fare');
- const charge=subtotal-discount;
+ const surgeBps=positive(extras.surgeBps??10000,'surge basis points');
+ if(surgeBps<10000n||surgeBps>20000n)throw Error('Surge multiplier outside policy bounds');
+ const minimum=positive(policy.minimum_minor??0,'minimum fare');
+ const surged=((subtotal-discount)*surgeBps+5000n)/10000n;
+ const charge=surged<minimum?minimum:surged;
  if(charge<=0n||charge>2147483647n)throw Error('Charge exceeds invoice bounds');
  const rate=(charge*bps+5000n)/10000n;
  const mode=policy.commission_mode||'percentage';

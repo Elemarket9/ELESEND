@@ -124,6 +124,6 @@ test('fraud algorithm detects impossible coordinate jumps but does not auto-susp
 test('time-based quote API and optional policy fields are wired into backend source',async()=>{
  const {readFile}=await import('node:fs/promises');
  const source=await readFile(new URL('../services/api/platform.mjs',import.meta.url),'utf8');
- assert.match(source,/calculateQuote\(p,meters,\{durationSeconds:route.durationSeconds\}\)/);
+ assert.match(source,/calculateQuote\(p,meters,\{durationSeconds:route.durationSeconds,surgeBps\}\)/);
  assert.match(source,/perMinuteMinor/);
 });

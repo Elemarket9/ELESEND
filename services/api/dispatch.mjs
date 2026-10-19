@@ -135,7 +135,7 @@ export function dispatchEngine(db,{routing}={}){
   if(!result)return null;
   return {...result,revision:Number(plan?.revision??0),expectedActive:active.length,anchor:{latitude:start.latitude,longitude:start.longitude}};
  }
- async function nearby(pickup,weightG,{shipmentId=null,parcelCategory='general',parcelSize='small'}={}){
+ async function nearby(pickup,weightG,{shipmentId=null,parcelCategory='general',parcelSize='small',vehicle=null}={}){
   const p=await policy(db);
   const discovery=await discoverByRadii({radiiMeters:p.search_radii_m,limit:p.candidate_limit,queryRadius:async radius=>{
    const result=await db.query(`SELECT r.id,r.company_id,r.vehicle,r.max_weight_g,r.position_at,r.multi_stop_opt_in,
@@ -146,7 +146,7 @@ export function dispatchEngine(db,{routing}={}){
        AND (r.vehicle<>'car' OR EXISTS(SELECT 1 FROM rider_vehicle_registrations vr WHERE vr.rider_id=r.id AND vr.vehicle='car' AND vr.verification_status='approved'))
        AND r.position_at>now()-($3::int * interval '1 second')
        AND r.position_accuracy_m<=$4
-       AND r.max_weight_g>=$5 AND vc.enabled AND $9=ANY(vc.allowed_categories)
+       AND r.max_weight_g>=$5 AND vc.enabled AND $9=ANY(vc.allowed_categories) AND ($13::text IS NULL OR r.vehicle=$13)
        AND CASE vc.max_parcel_size WHEN 'large' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END >= CASE $10::text WHEN 'large' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END
        AND ST_DWithin(r.current_position,ST_SetSRID(ST_MakePoint($1,$2),4326)::geography,r.service_radius_m)
        AND NOT EXISTS (SELECT 1 FROM shipments failed WHERE failed.rider_id=r.id AND failed.state IN ('FAILED','RETURN_REQUESTED'))
@@ -161,7 +161,7 @@ export function dispatchEngine(db,{routing}={}){
        AND ($6::uuid IS NULL OR NOT EXISTS(SELECT 1 FROM dispatch_offers o WHERE o.rider_id=r.id AND o.shipment_id=$6 AND o.status IN ('declined','invalidated','expired')))
        AND ST_DWithin(r.current_position,ST_SetSRID(ST_MakePoint($1,$2),4326)::geography,$7)
      ORDER BY r.current_position <-> ST_SetSRID(ST_MakePoint($1,$2),4326)::geography LIMIT $8`,
-     [pickup.longitude,pickup.latitude,p.fresh_seconds,p.max_accuracy_m,weightG,shipmentId,radius,p.candidate_limit,parcelCategory,parcelSize,p.multi_stop_enabled&&await features.enabled('multi_parcel_vrp')&&await features.enabled('dynamic_pickup_insertion'),p.max_active_parcels]);
+     [pickup.longitude,pickup.latitude,p.fresh_seconds,p.max_accuracy_m,weightG,shipmentId,radius,p.candidate_limit,parcelCategory,parcelSize,p.multi_stop_enabled&&await features.enabled('multi_parcel_vrp')&&await features.enabled('dynamic_pickup_insertion'),p.max_active_parcels,vehicle]);
    return result.rows;
   }});
   let candidates=discovery.candidates;
@@ -178,7 +178,7 @@ export function dispatchEngine(db,{routing}={}){
     WHERE rc.valid_until>now() AND r.online AND r.status='approved' AND r.multi_stop_opt_in
      AND (r.company_id IS NULL OR co.status='approved')
      AND r.position_at>now()-($3::int*interval '1 second') AND r.position_accuracy_m<=$4
-     AND r.max_weight_g>=$5 AND vc.enabled AND $9=ANY(vc.allowed_categories)
+     AND r.max_weight_g>=$5 AND vc.enabled AND $9=ANY(vc.allowed_categories) AND ($13::text IS NULL OR r.vehicle=$13)
      AND (r.vehicle<>'car' OR EXISTS(SELECT 1 FROM rider_vehicle_registrations vr WHERE vr.rider_id=r.id AND vr.vehicle='car' AND vr.verification_status='approved'))
      AND CASE vc.max_parcel_size WHEN 'large' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END>=CASE $10::text WHEN 'large' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END
      AND (SELECT count(*) FROM shipments ac WHERE ac.rider_id=r.id AND ac.state=ANY($11::text[]))<$12
@@ -189,13 +189,13 @@ export function dispatchEngine(db,{routing}={}){
        ST_LineLocatePoint(rc.road_path::geometry,r.current_position::geometry),1)::geography,
        ST_SetSRID(ST_MakePoint($1,$2),4326)::geography,$7)
     ORDER BY ST_Distance(rc.road_path,ST_SetSRID(ST_MakePoint($1,$2),4326)::geography)
-    LIMIT $8`,[pickup.longitude,pickup.latitude,p.fresh_seconds,p.max_accuracy_m,weightG,shipmentId,corridorRadius,p.candidate_limit,parcelCategory,parcelSize,activeStates,p.max_active_parcels]);
+    LIMIT $8`,[pickup.longitude,pickup.latitude,p.fresh_seconds,p.max_accuracy_m,weightG,shipmentId,corridorRadius,p.candidate_limit,parcelCategory,parcelSize,activeStates,p.max_active_parcels,vehicle]);
    const seen=new Set(candidates.map(x=>x.id));for(const row of extra.rows)if(!seen.has(row.id)){candidates.push(row);seen.add(row.id);}
   }
-  return candidates;
+  return vehicle?candidates.filter(r=>r.vehicle===vehicle):candidates;
  }
- async function availability(input){const v=z.object({pickup:z.object({latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).passthrough(),weightG:z.number().int().positive(),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small')}).parse(input);
-  const riders=await nearby(v.pickup,v.weightG,{parcelCategory:v.parcelCategory,parcelSize:v.parcelSize});return {status:riders.length?'potential':'none_identified',eligibleNearbyCount:riders.length,guaranteed:false,note:'A nearby rider has not necessarily accepted. Road feasibility and rider acceptance remain unconfirmed.'};
+ async function availability(input){const v=z.object({pickup:z.object({latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).passthrough(),vehicle:z.enum(['motorcycle','car','van']).optional(),weightG:z.number().int().positive(),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small')}).parse(input);
+  const riders=await nearby(v.pickup,v.weightG,{vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize});return {status:riders.length?'potential':'none_identified',eligibleNearbyCount:riders.length,guaranteed:false,note:'A nearby rider has not necessarily accepted. Road feasibility and rider acceptance remain unconfirmed.'};
  }
  async function evaluate(candidates,pickup,{request=null,shipmentId=null,dispatchPolicy=null}={}){
   const byVehicle=new Map();for(const c of candidates){if(!byVehicle.has(c.vehicle))byVehicle.set(c.vehicle,[]);byVehicle.get(c.vehicle).push(c);}
@@ -242,7 +242,7 @@ export function dispatchEngine(db,{routing}={}){
   const sh=(await db.query(`SELECT s.*,q.request FROM shipments s JOIN quotes q ON q.id=s.quote_id WHERE s.id=$1`,[sid])).rows[0];check(sh,404,'Shipment unavailable');
   if(sh.state!=='AWAITING_ASSIGNMENT'||!(sh.paid||sh.payment_method==='CASH'))return {status:'not_dispatchable'};
   const p=await policy(db);if(sh.dispatch_attempts>=p.max_attempts)return {status:'manual_review_required'};
-  const nearbyRiders=await nearby(sh.request.pickup,sh.request.weightG,{shipmentId:sid,parcelCategory:sh.request.parcelCategory??'general',parcelSize:sh.request.parcelSize??'small'});
+  const nearbyRiders=await nearby(sh.request.pickup,sh.request.weightG,{vehicle:sh.request.vehicle??null,shipmentId:sid,parcelCategory:sh.request.parcelCategory??'general',parcelSize:sh.request.parcelSize??'small'});
   // Avoid buying route-matrix calls for riders already blocked by commission policy.
   // Acceptance STILL independently revalidates under a locked rider transaction.
   const eligible=[];
@@ -322,6 +322,7 @@ export function dispatchEngine(db,{routing}={}){
    const location=(await c.query('SELECT ST_Y(current_position::geometry) AS latitude,ST_X(current_position::geometry) AS longitude FROM riders WHERE id=$1',[actor.id])).rows[0];
    check(location?.latitude!==null&&haversine(point(location),{latitude:o.anchor_lat,longitude:o.anchor_lon})<=p.max_offer_movement_m,409,'Rider moved: fresh road offer required');
    const q=(await c.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];check(q.request.weightG<=r.max_weight_g,409,'Vehicle capacity exceeded');
+   check(!q.request.vehicle||q.request.vehicle===r.vehicle,409,'Vehicle does not match accepted quote');
    const vc=(await c.query('SELECT * FROM vehicle_capabilities WHERE vehicle=$1 AND enabled',[r.vehicle])).rows[0];
    check(vc&&vc.allowed_categories.includes(q.request.parcelCategory??'general')&&({small:1,medium:2,large:3})[vc.max_parcel_size]>=({small:1,medium:2,large:3})[q.request.parcelSize??'small'],409,'Vehicle restriction changed');
    if(r.vehicle==='car')check((await c.query("SELECT 1 FROM rider_vehicle_registrations WHERE rider_id=$1 AND vehicle='car' AND verification_status='approved'",[actor.id])).rowCount,403,'Car not verified');

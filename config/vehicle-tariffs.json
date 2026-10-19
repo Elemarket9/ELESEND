@@ -1,0 +1,5 @@
+{
+  "motorcycle": {"baseMinor":1200,"perKmMinor":320,"perMinuteMinor":25,"minimumMinor":2000},
+  "car": {"baseMinor":2200,"perKmMinor":500,"perMinuteMinor":60,"minimumMinor":3500},
+  "van": {"baseMinor":5500,"perKmMinor":850,"perMinuteMinor":110,"minimumMinor":7500}
+}

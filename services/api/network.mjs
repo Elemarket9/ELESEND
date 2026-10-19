@@ -22,7 +22,7 @@ export function network(db){return {
  async revokeKey(actor,kid){uuid.parse(kid);await db.tx(async c=>{check((await c.query('UPDATE api_clients SET revoked_at=now() WHERE id=$1 AND owner_id=$2 RETURNING id',[kid,actor.id])).rowCount,404);await audit(c,actor,'api_key.revoked',kid);});return {ok:true};},
  async authenticateKey(token){check(typeof token==='string'&&/^es_live_[a-f0-9]{64}$/.test(token),401,'Invalid API credential');const r=(await db.query("SELECT u.id,u.kind,a.scopes,a.id AS api_client_id FROM api_clients a JOIN users u ON u.id=a.owner_id WHERE a.token_hash=$1 AND a.revoked_at IS NULL AND a.expires_at>now() AND u.kind='business'",[hash(token)])).rows[0];check(r,401,'API credential unavailable');return r;},
  authorizeKey(actor,method,path){if(!actor.api_client_id)return;let scope;
-  if(method==='POST'&&path==='/api/v1/quotes')scope='quotes:write';
+  if(method==='POST'&&['/api/v1/quotes','/api/v1/calculate-fare'].includes(path))scope='quotes:write';
   else if(method==='POST'&&path==='/api/v1/shipments')scope='shipments:write';
   else if(method==='GET'&&/^\/api\/v1\/shipments(?:\/[0-9a-f-]+(?:\/tracking)?)?$/.test(path))scope='shipments:read';
   check(scope&&actor.scopes.includes(scope),403,'API credential scope denied');
