@@ -1,0 +1,165 @@
+
+> elesend@0.1.0 test:unit
+> node --test tests/dispatch-unit.test.mjs tests/multi-parcel-unit.test.mjs tests/google-routing.test.mjs tests/pricing.test.mjs tests/client-ip.test.mjs
+
+TAP version 13
+# Subtest: direct internet requests ignore forged forwarding headers
+ok 1 - direct internet requests ignore forged forwarding headers
+  ---
+  duration_ms: 2.333959
+  type: 'test'
+  ...
+# Subtest: trusted private ingress recovers true client for fair rider rate limits
+ok 2 - trusted private ingress recovers true client for fair rider rate limits
+  ---
+  duration_ms: 2.066706
+  type: 'test'
+  ...
+# Subtest: forged left-most forwarding is ignored even when using a trusted ingress
+ok 3 - forged left-most forwarding is ignored even when using a trusted ingress
+  ---
+  duration_ms: 0.186889
+  type: 'test'
+  ...
+# Subtest: malformed and overlong forwarding never overrides the peer
+ok 4 - malformed and overlong forwarding never overrides the peer
+  ---
+  duration_ms: 4.551506
+  type: 'test'
+  ...
+# LOCAL SYNTHETIC SORT ONLY: 40 passes × 3000 candidate records in 22.980 ms; excludes DB/routing/networks
+# Subtest: A is geographically closer than B, but simulated road-network ETA ranks B
+ok 5 - A is geographically closer than B, but simulated road-network ETA ranks B
+  ---
+  duration_ms: 1.941788
+  type: 'test'
+  ...
+# Subtest: map heading alone never proves direction; road ETA improvement required
+ok 6 - map heading alone never proves direction; road ETA improvement required
+  ---
+  duration_ms: 0.472933
+  type: 'test'
+  ...
+# Subtest: future corridor reuse does not authorize overweight or late route detours
+ok 7 - future corridor reuse does not authorize overweight or late route detours
+  ---
+  duration_ms: 1.563601
+  type: 'test'
+  ...
+# Subtest: OSRM adapter makes correct road-route and matrix URLs and rejects unsupported vehicle
+ok 8 - OSRM adapter makes correct road-route and matrix URLs and rejects unsupported vehicle
+  ---
+  duration_ms: 2.547664
+  type: 'test'
+  ...
+# Subtest: OSRM unreachable routes never silently fall back to straight-line distance
+ok 9 - OSRM unreachable routes never silently fall back to straight-line distance
+  ---
+  duration_ms: 0.669116
+  type: 'test'
+  ...
+# Subtest: measured deterministic fixture ranking baseline (not an infrastructure benchmark)
+ok 10 - measured deterministic fixture ranking baseline (not an infrastructure benchmark)
+  ---
+  duration_ms: 25.980485
+  type: 'test'
+  ...
+# Subtest: Google Routes adapter sends server-only credential with a constrained response fieldmask
+ok 11 - Google Routes adapter sends server-only credential with a constrained response fieldmask
+  ---
+  duration_ms: 2.532984
+  type: 'test'
+  ...
+# Subtest: motorcycle uses two wheeler mode in Ghana and rejects unsupported truck profile
+ok 12 - motorcycle uses two wheeler mode in Ghana and rejects unsupported truck profile
+  ---
+  duration_ms: 1.790125
+  type: 'test'
+  ...
+# Subtest: matrix results preserve origin ordering and disconnected roads
+ok 13 - matrix results preserve origin ordering and disconnected roads
+  ---
+  duration_ms: 0.806818
+  type: 'test'
+  ...
+# Subtest: provider errors or missing matrix elements fail closed
+ok 14 - provider errors or missing matrix elements fail closed
+  ---
+  duration_ms: 0.507706
+  type: 'test'
+  ...
+# Subtest: invalid coordinates and malformed provider duration cannot become ETA
+ok 15 - invalid coordinates and malformed provider duration cannot become ETA
+  ---
+  duration_ms: 0.659036
+  type: 'test'
+  ...
+# Subtest: two pickups and two drop-offs obey pickup before drop-off and bound cart load
+ok 16 - two pickups and two drop-offs obey pickup before drop-off and bound cart load
+  ---
+  duration_ms: 1.070922
+  type: 'test'
+  ...
+# Subtest: reject impossible detour and already-accepted delivery deadline
+ok 17 - reject impossible detour and already-accepted delivery deadline
+  ---
+  duration_ms: 1.498065
+  type: 'test'
+  ...
+# Subtest: partially collected parcel remains loaded and cannot be silently double-picked
+ok 18 - partially collected parcel remains loaded and cannot be silently double-picked
+  ---
+  duration_ms: 0.484659
+  type: 'test'
+  ...
+# Subtest: each parcel removal preserves the other parcel stop and custody route
+ok 19 - each parcel removal preserves the other parcel stop and custody route
+  ---
+  duration_ms: 0.252362
+  type: 'test'
+  ...
+# Subtest: route provider outage or disconnected road rejects instead of Haversine fallback
+ok 20 - route provider outage or disconnected road rejects instead of Haversine fallback
+  ---
+  duration_ms: 0.318597
+  type: 'test'
+  ...
+# Subtest: GH₵30 cash job splits exactly into GH₵27 rider earnings and GH₵3 commission
+ok 21 - GH₵30 cash job splits exactly into GH₵27 rider earnings and GH₵3 commission
+  ---
+  duration_ms: 1.668371
+  type: 'test'
+  ...
+# Subtest: ten completed GH₵30 priced jobs imply GH₵30 commission accrued, NOT received
+ok 22 - ten completed GH₵30 priced jobs imply GH₵30 commission accrued, NOT received
+  ---
+  duration_ms: 0.587343
+  type: 'test'
+  ...
+# Subtest: fixed, hybrid and configurable caps do not exceed customer price
+ok 23 - fixed, hybrid and configurable caps do not exceed customer price
+  ---
+  duration_ms: 1.036655
+  type: 'test'
+  ...
+# Subtest: fractional kilometre rounds charge once in integer minor units
+ok 24 - fractional kilometre rounds charge once in integer minor units
+  ---
+  duration_ms: 0.148703
+  type: 'test'
+  ...
+# Subtest: invalid money, modes and commission bps fail closed
+ok 25 - invalid money, modes and commission bps fail closed
+  ---
+  duration_ms: 0.355544
+  type: 'test'
+  ...
+1..25
+# tests 25
+# suites 0
+# pass 25
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 223.506435

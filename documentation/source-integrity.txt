@@ -1,0 +1,8 @@
+Input archive (unchanged): ELESEND_STANDALONE_LOGISTICS_PLATFORM.zip
+SHA-256: 2c1505189b1817a0a373bf34607c1318a401e10a33ef5b6524e3442d8de46b73
+Imported to isolated /mnt/data/e_work/ELESEND working tree before changes.
+All reference/ files are archival and not imported into the dispatch engine.
+Implementation sources are services/api/dispatch*.mjs, services/api/{http,platform,server}.mjs,
+database/migrations/003..007, tests/dispatch-*.test.mjs, apps/portal/*,
+config/build/CI/docs.
+Operational certification: RELEASE HOLD.

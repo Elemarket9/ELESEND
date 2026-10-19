@@ -1,0 +1,25 @@
+name: ELESEND regression
+on: [push, pull_request]
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:18-3.6
+        env:
+          POSTGRES_DB: elesend_test
+          POSTGRES_USER: elesend_test
+          POSTGRES_PASSWORD: test-only
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U elesend_test" --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22', cache: npm}
+      - run: npm ci --ignore-scripts
+      - run: npm run test:security
+      - run: npm run test:unit
+      - run: npm run test:payments:unit
+      - run: npm test
+        env:
+          TEST_DATABASE_URL: postgres://elesend_test:test-only@localhost:5432/elesend_test

@@ -1,0 +1,459 @@
+
+> elesend@0.1.0 test:unit
+> node --test tests/release-security.test.mjs tests/twelve-algorithms-implementation.test.mjs tests/advanced-algorithms.test.mjs tests/dispatch-unit.test.mjs tests/multi-parcel-unit.test.mjs tests/pricing.test.mjs tests/google-routing.test.mjs tests/client-ip.test.mjs tests/architecture-static.test.mjs tests/checkout-policy.test.mjs tests/payment-provider-unit.test.mjs tests/checkout-ui-contract.test.mjs
+
+TAP version 13
+# Subtest: 12 mandatory algorithms defined, corridor and fan-out individually switchable
+ok 1 - 12 mandatory algorithms defined, corridor and fan-out individually switchable
+  ---
+  duration_ms: 1.019049
+  type: 'test'
+  ...
+# Subtest: Google polyline decoding returns geodetic coordinates in lon,lat order
+ok 2 - Google polyline decoding returns geodetic coordinates in lon,lat order
+  ---
+  duration_ms: 1.028042
+  type: 'test'
+  ...
+# Subtest: OSRM geometry normalization rejects aerial estimates lacking geometry
+ok 3 - OSRM geometry normalization rejects aerial estimates lacking geometry
+  ---
+  duration_ms: 0.340581
+  type: 'test'
+  ...
+# Subtest: remaining route follows provider road geometry and joins legs without duplicated vertices
+ok 4 - remaining route follows provider road geometry and joins legs without duplicated vertices
+  ---
+  duration_ms: 0.245919
+  type: 'test'
+  ...
+# Subtest: no fabricated road corridor when provider returns no real geometry
+ok 5 - no fabricated road corridor when provider returns no real geometry
+  ---
+  duration_ms: 0.137647
+  type: 'test'
+  ...
+# Subtest: road corridor ahead check rejects passed pickup and off-corridor locations
+ok 6 - road corridor ahead check rejects passed pickup and off-corridor locations
+  ---
+  duration_ms: 0.492379
+  type: 'test'
+  ...
+# Subtest: GPS adaptive filter rejects replay and impossible jumps; does not replace raw evidence
+ok 7 - GPS adaptive filter rejects replay and impossible jumps; does not replace raw evidence
+  ---
+  duration_ms: 0.39958
+  type: 'test'
+  ...
+# Subtest: ETA calibration requires verified observations and fails closed on sparse data
+ok 8 - ETA calibration requires verified observations and fails closed on sparse data
+  ---
+  duration_ms: 1.233911
+  type: 'test'
+  ...
+# Subtest: fraud model yields explainable flags, never automatic punishments
+ok 9 - fraud model yields explainable flags, never automatic punishments
+  ---
+  duration_ms: 0.483656
+  type: 'test'
+  ...
+# Subtest: ranking first excludes unsuitable vehicle even when ETA shortest
+ok 10 - ranking first excludes unsuitable vehicle even when ETA shortest
+  ---
+  duration_ms: 0.420621
+  type: 'test'
+  ...
+# Subtest: batch matching finds cost-minimizing distinct riders, rejects capacity violations
+ok 11 - batch matching finds cost-minimizing distinct riders, rejects capacity violations
+  ---
+  duration_ms: 0.498447
+  type: 'test'
+  ...
+# Subtest: 3 percent is calculated independently for ten successful orders in integer pesewas
+ok 12 - 3 percent is calculated independently for ten successful orders in integer pesewas
+  ---
+  duration_ms: 0.403445
+  type: 'test'
+  ...
+# Subtest: database retains one accepted offer per shipment, but supports multi-rider offered states
+ok 13 - database retains one accepted offer per shipment, but supports multi-rider offered states
+  ---
+  duration_ms: 9.236097
+  type: 'test'
+  ...
+# Subtest: 3 percent commission policy uses new policy version, never rewrites old quote records
+ok 14 - 3 percent commission policy uses new policy version, never rewrites old quote records
+  ---
+  duration_ms: 1.345659
+  type: 'test'
+  ...
+# Subtest: provider neutral backend: no hoster-specific imports, no paid cash fabricated
+ok 15 - provider neutral backend: no hoster-specific imports, no paid cash fabricated
+  ---
+  duration_ms: 3.423477
+  type: 'test'
+  ...
+# Subtest: native mobile admin feature switches use permissioned API, not a web portal
+ok 16 - native mobile admin feature switches use permissioned API, not a web portal
+  ---
+  duration_ms: 2.197106
+  type: 'test'
+  ...
+# Subtest: cash, MoMo, card, QR are distinct methods; QR is scannable hosted checkout
+ok 17 - cash, MoMo, card, QR are distinct methods; QR is scannable hosted checkout
+  ---
+  duration_ms: 1.82627
+  type: 'test'
+  ...
+# Subtest: backend refuses forged payment evidence, mismatched amount, status, currency and ref
+ok 18 - backend refuses forged payment evidence, mismatched amount, status, currency and ref
+  ---
+  duration_ms: 0.261553
+  type: 'test'
+  ...
+# Subtest: hosted checkout requires trusted TLS origin not malicious URLs
+ok 19 - hosted checkout requires trusted TLS origin not malicious URLs
+  ---
+  duration_ms: 1.284367
+  type: 'test'
+  ...
+# Subtest: native UI selects activated cash, momo, card and QR; renders QR without passing card details
+ok 20 - native UI selects activated cash, momo, card and QR; renders QR without passing card details
+  ---
+  duration_ms: 1.724437
+  type: 'test'
+  ...
+# Subtest: backend wires provider into finance and checkout; hosting is a configurable Linux VPS
+ok 21 - backend wires provider into finance and checkout; hosting is a configurable Linux VPS
+  ---
+  duration_ms: 0.197827
+  type: 'test'
+  ...
+# Subtest: direct internet requests ignore forged forwarding headers
+ok 22 - direct internet requests ignore forged forwarding headers
+  ---
+  duration_ms: 1.580341
+  type: 'test'
+  ...
+# Subtest: trusted private ingress recovers true client for fair rider rate limits
+ok 23 - trusted private ingress recovers true client for fair rider rate limits
+  ---
+  duration_ms: 1.358448
+  type: 'test'
+  ...
+# Subtest: forged left-most forwarding is ignored even when using a trusted ingress
+ok 24 - forged left-most forwarding is ignored even when using a trusted ingress
+  ---
+  duration_ms: 0.22676
+  type: 'test'
+  ...
+# Subtest: malformed and overlong forwarding never overrides the peer
+ok 25 - malformed and overlong forwarding never overrides the peer
+  ---
+  duration_ms: 4.102665
+  type: 'test'
+  ...
+# LOCAL SYNTHETIC SORT ONLY: 40 passes × 3000 candidate records in 16.440 ms; excludes DB/routing/networks
+# Subtest: A is geographically closer than B, but simulated road-network ETA ranks B
+ok 26 - A is geographically closer than B, but simulated road-network ETA ranks B
+  ---
+  duration_ms: 1.311288
+  type: 'test'
+  ...
+# Subtest: map heading alone never proves direction; road ETA improvement required
+ok 27 - map heading alone never proves direction; road ETA improvement required
+  ---
+  duration_ms: 0.3603
+  type: 'test'
+  ...
+# Subtest: future corridor reuse does not authorize overweight or late route detours
+ok 28 - future corridor reuse does not authorize overweight or late route detours
+  ---
+  duration_ms: 3.790006
+  type: 'test'
+  ...
+# Subtest: OSRM adapter makes correct road-route and matrix URLs and rejects unsupported vehicle
+ok 29 - OSRM adapter makes correct road-route and matrix URLs and rejects unsupported vehicle
+  ---
+  duration_ms: 2.025319
+  type: 'test'
+  ...
+# Subtest: OSRM unreachable routes never silently fall back to straight-line distance
+ok 30 - OSRM unreachable routes never silently fall back to straight-line distance
+  ---
+  duration_ms: 1.435334
+  type: 'test'
+  ...
+# Subtest: measured deterministic fixture ranking baseline (not an infrastructure benchmark)
+ok 31 - measured deterministic fixture ranking baseline (not an infrastructure benchmark)
+  ---
+  duration_ms: 18.458449
+  type: 'test'
+  ...
+# Subtest: Google Routes adapter sends server-only credential with a constrained response fieldmask
+ok 32 - Google Routes adapter sends server-only credential with a constrained response fieldmask
+  ---
+  duration_ms: 1.680932
+  type: 'test'
+  ...
+# Subtest: motorcycle uses two wheeler mode in Ghana and rejects unsupported truck profile
+ok 33 - motorcycle uses two wheeler mode in Ghana and rejects unsupported truck profile
+  ---
+  duration_ms: 1.207311
+  type: 'test'
+  ...
+# Subtest: matrix results preserve origin ordering and disconnected roads
+ok 34 - matrix results preserve origin ordering and disconnected roads
+  ---
+  duration_ms: 0.604277
+  type: 'test'
+  ...
+# Subtest: provider errors or missing matrix elements fail closed
+ok 35 - provider errors or missing matrix elements fail closed
+  ---
+  duration_ms: 0.374742
+  type: 'test'
+  ...
+# Subtest: invalid coordinates and malformed provider duration cannot become ETA
+ok 36 - invalid coordinates and malformed provider duration cannot become ETA
+  ---
+  duration_ms: 0.538087
+  type: 'test'
+  ...
+# Subtest: two pickups and two drop-offs obey pickup before drop-off and bound cart load
+ok 37 - two pickups and two drop-offs obey pickup before drop-off and bound cart load
+  ---
+  duration_ms: 0.981703
+  type: 'test'
+  ...
+# Subtest: reject impossible detour and already-accepted delivery deadline
+ok 38 - reject impossible detour and already-accepted delivery deadline
+  ---
+  duration_ms: 1.383836
+  type: 'test'
+  ...
+# Subtest: partially collected parcel remains loaded and cannot be silently double-picked
+ok 39 - partially collected parcel remains loaded and cannot be silently double-picked
+  ---
+  duration_ms: 1.277427
+  type: 'test'
+  ...
+# Subtest: each parcel removal preserves the other parcel stop and custody route
+ok 40 - each parcel removal preserves the other parcel stop and custody route
+  ---
+  duration_ms: 0.205067
+  type: 'test'
+  ...
+# Subtest: route provider outage or disconnected road rejects instead of Haversine fallback
+ok 41 - route provider outage or disconnected road rejects instead of Haversine fallback
+  ---
+  duration_ms: 0.43315
+  type: 'test'
+  ...
+# Subtest: MOMO uses authorized hosted mobile_money; QR link uses PSP-backed channels, card uses hosted checkout
+ok 42 - MOMO uses authorized hosted mobile_money; QR link uses PSP-backed channels, card uses hosted checkout
+  ---
+  duration_ms: 2.375504
+  type: 'test'
+  ...
+# Subtest: webhook must be signed AND independently verified, not trust injected amount
+ok 43 - webhook must be signed AND independently verified, not trust injected amount
+  ---
+  duration_ms: 1.462945
+  type: 'test'
+  ...
+# Subtest: production rejects test keys
+ok 44 - production rejects test keys
+  ---
+  duration_ms: 0.163776
+  type: 'test'
+  ...
+# Subtest: commission settlement uses separate reference prefix and verified MoMo channel
+ok 45 - commission settlement uses separate reference prefix and verified MoMo channel
+  ---
+  duration_ms: 0.656395
+  type: 'test'
+  ...
+# Subtest: GH₵30 cash job splits exactly into GH₵27 rider earnings and GH₵3 commission
+ok 46 - GH₵30 cash job splits exactly into GH₵27 rider earnings and GH₵3 commission
+  ---
+  duration_ms: 1.650486
+  type: 'test'
+  ...
+# Subtest: ten completed GH₵30 priced jobs imply GH₵30 commission accrued, NOT received
+ok 47 - ten completed GH₵30 priced jobs imply GH₵30 commission accrued, NOT received
+  ---
+  duration_ms: 0.2601
+  type: 'test'
+  ...
+# Subtest: fixed, hybrid and configurable caps do not exceed customer price
+ok 48 - fixed, hybrid and configurable caps do not exceed customer price
+  ---
+  duration_ms: 1.023646
+  type: 'test'
+  ...
+# Subtest: fractional kilometre rounds charge once in integer minor units
+ok 49 - fractional kilometre rounds charge once in integer minor units
+  ---
+  duration_ms: 0.14668
+  type: 'test'
+  ...
+# Subtest: invalid money, modes and commission bps fail closed
+ok 50 - invalid money, modes and commission bps fail closed
+  ---
+  duration_ms: 0.384557
+  type: 'test'
+  ...
+# Subtest: TOTP uses RFC6238 compatible six-digit codes and accepts controlled clock skew
+ok 51 - TOTP uses RFC6238 compatible six-digit codes and accepts controlled clock skew
+  ---
+  duration_ms: 2.73989
+  type: 'test'
+  ...
+# Subtest: encrypted factors are identity-bound and reject tampering, master key mismatch and malformed configuration
+ok 52 - encrypted factors are identity-bound and reject tampering, master key mismatch and malformed configuration
+  ---
+  duration_ms: 1.585139
+  type: 'test'
+  ...
+# Subtest: concurrent step reuse is denied by comparing to locked last-used counter
+ok 53 - concurrent step reuse is denied by comparing to locked last-used counter
+  ---
+  duration_ms: 0.407371
+  type: 'test'
+  ...
+# Subtest: SMS gateway rejects unapproved URLs, private destinations, missing configuration and non-HTTPS
+ok 54 - SMS gateway rejects unapproved URLs, private destinations, missing configuration and non-HTTPS
+  ---
+  duration_ms: 5.368786
+  type: 'test'
+  ...
+# Subtest: SMS gateway sends 6-digit challenge with authenticated gateway and requires durable gateway acceptance
+ok 55 - SMS gateway sends 6-digit challenge with authenticated gateway and requires durable gateway acceptance
+  ---
+  duration_ms: 0.726109
+  type: 'test'
+  ...
+# Subtest: SMS gateway never reports unacknowledged or failed provider message as sent
+ok 56 - SMS gateway never reports unacknowledged or failed provider message as sent
+  ---
+  duration_ms: 1.130235
+  type: 'test'
+  ...
+# Subtest: privileged authentication fails closed on unprovisioned MFA and legacy sessions by source contracts
+ok 57 - privileged authentication fails closed on unprovisioned MFA and legacy sessions by source contracts
+  ---
+  duration_ms: 10.175647
+  type: 'test'
+  ...
+# Subtest: account verification SMS is sent only to a bound registered Ghana phone
+ok 58 - account verification SMS is sent only to a bound registered Ghana phone
+  ---
+  duration_ms: 0.378448
+  type: 'test'
+  ...
+# Subtest: registered phone ownership verification requires signed expiring challenge and protects rollout
+ok 59 - registered phone ownership verification requires signed expiring challenge and protects rollout
+  ---
+  duration_ms: 1.704256
+  type: 'test'
+  ...
+# Subtest: 1 geospatial discovery expands configurable ranges once, deduplicates, and stops at limit
+ok 60 - 1 geospatial discovery expands configurable ranges once, deduplicates, and stops at limit
+  ---
+  duration_ms: 1.51268
+  type: 'test'
+  ...
+# Subtest: 2 road matrix respects directed connectivity, provider outages and batching
+ok 61 - 2 road matrix respects directed connectivity, provider outages and batching
+  ---
+  duration_ms: 0.836816
+  type: 'test'
+  ...
+# Subtest: 3 movement direction is based on improving road ETA, not heading alone
+ok 62 - 3 movement direction is based on improving road ETA, not heading alone
+  ---
+  duration_ms: 0.248343
+  type: 'test'
+  ...
+# Subtest: 4 ETA dispatch rejects ineligible rider regardless of proximity and sorts verified road ETA
+ok 63 - 4 ETA dispatch rejects ineligible rider regardless of proximity and sorts verified road ETA
+  ---
+  duration_ms: 0.229404
+  type: 'test'
+  ...
+# Subtest: 5 multi-parcel VRP produces feasible ordered manifest without exceeding capacity
+ok 64 - 5 multi-parcel VRP produces feasible ordered manifest without exceeding capacity
+  ---
+  duration_ms: 1.035504
+  type: 'test'
+  ...
+# Subtest: 6 road-corridor insertion rejects wrong-way roads and excessive detour
+ok 65 - 6 road-corridor insertion rejects wrong-way roads and excessive detour
+  ---
+  duration_ms: 0.885499
+  type: 'test'
+  ...
+# Subtest: 7 3 percent per-order pricing uses integer pesewas, not one commission for batch
+ok 66 - 7 3 percent per-order pricing uses integer pesewas, not one commission for batch
+  ---
+  duration_ms: 0.543035
+  type: 'test'
+  ...
+# Subtest: 8 commission exposure includes cash jobs already accepted and blocks overspending
+ok 67 - 8 commission exposure includes cash jobs already accepted and blocks overspending
+  ---
+  duration_ms: 0.178128
+  type: 'test'
+  ...
+# Subtest: 9 immutable journal arithmetic & provider reconciliation spot missing/duplicated effects
+ok 68 - 9 immutable journal arithmetic & provider reconciliation spot missing/duplicated effects
+  ---
+  duration_ms: 0.485609
+  type: 'test'
+  ...
+# Subtest: 10 GPS filtering rejects implausible jumps and replay but handles noisy updates
+ok 69 - 10 GPS filtering rejects implausible jumps and replay but handles noisy updates
+  ---
+  duration_ms: 0.459239
+  type: 'test'
+  ...
+# Subtest: 11 ETA calibration uses verified historic trips and has empty-data fallback
+ok 70 - 11 ETA calibration uses verified historic trips and has empty-data fallback
+  ---
+  duration_ms: 0.286861
+  type: 'test'
+  ...
+# Subtest: 12 fraud rules flag OTP attacks and repeated payment events without auto-punishment
+ok 71 - 12 fraud rules flag OTP attacks and repeated payment events without auto-punishment
+  ---
+  duration_ms: 0.172859
+  type: 'test'
+  ...
+# Subtest: cost-based pricing charges time/stops and discounts only when configured
+ok 72 - cost-based pricing charges time/stops and discounts only when configured
+  ---
+  duration_ms: 0.141302
+  type: 'test'
+  ...
+# Subtest: fraud algorithm detects impossible coordinate jumps but does not auto-suspend rider
+ok 73 - fraud algorithm detects impossible coordinate jumps but does not auto-suspend rider
+  ---
+  duration_ms: 1.088849
+  type: 'test'
+  ...
+# Subtest: time-based quote API and optional policy fields are wired into backend source
+ok 74 - time-based quote API and optional policy fields are wired into backend source
+  ---
+  duration_ms: 7.100764
+  type: 'test'
+  ...
+1..74
+# tests 74
+# suites 0
+# pass 74
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 372.468599

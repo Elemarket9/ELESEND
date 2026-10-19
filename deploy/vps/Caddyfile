@@ -1,0 +1,17 @@
+{$ELESEND_API_HOST} {
+  encode gzip
+  @blocked path /api/v1/debug* /admin* /.env*
+  respond @blocked 404
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options nosniff
+    -Server
+  }
+  reverse_proxy api:3090 {
+    health_uri /health
+    transport http {
+      dial_timeout 5s
+      response_header_timeout 15s
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "elesend-native",
+  "version": "0.2.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "android": "expo run:android",
+    "check": "expo-doctor"
+  },
+  "dependencies": {
+    "expo": "~54.0.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "expo-location": "~19.0.7",
+    "expo-task-manager": "~14.0.8",
+    "expo-secure-store": "~15.0.7",
+    "expo-crypto": "~15.0.7",
+    "expo-dev-client": "~6.0.16",
+    "react-native-maps": "1.20.1",
+    "react-native-qrcode-svg": "^6.3.15",
+    "react-native-svg": "15.12.1"
+  },
+  "devDependencies": {}
+}

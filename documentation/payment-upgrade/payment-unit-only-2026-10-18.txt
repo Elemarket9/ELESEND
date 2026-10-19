@@ -1,0 +1,64 @@
+TAP version 13
+# Subtest: cash, MoMo, card, QR are distinct methods; QR is scannable hosted checkout
+ok 1 - cash, MoMo, card, QR are distinct methods; QR is scannable hosted checkout
+  ---
+  duration_ms: 1.568474
+  type: 'test'
+  ...
+# Subtest: backend refuses forged payment evidence, mismatched amount, status, currency and ref
+ok 2 - backend refuses forged payment evidence, mismatched amount, status, currency and ref
+  ---
+  duration_ms: 0.237206
+  type: 'test'
+  ...
+# Subtest: hosted checkout requires trusted TLS origin not malicious URLs
+ok 3 - hosted checkout requires trusted TLS origin not malicious URLs
+  ---
+  duration_ms: 1.119369
+  type: 'test'
+  ...
+# Subtest: native UI selects activated cash, momo, card and QR; renders QR without passing card details
+ok 4 - native UI selects activated cash, momo, card and QR; renders QR without passing card details
+  ---
+  duration_ms: 1.711167
+  type: 'test'
+  ...
+# Subtest: backend wires provider into finance and checkout; hosting is a configurable Linux VPS
+ok 5 - backend wires provider into finance and checkout; hosting is a configurable Linux VPS
+  ---
+  duration_ms: 0.185308
+  type: 'test'
+  ...
+# Subtest: MOMO uses authorized hosted mobile_money; QR link uses PSP-backed channels, card uses hosted checkout
+ok 6 - MOMO uses authorized hosted mobile_money; QR link uses PSP-backed channels, card uses hosted checkout
+  ---
+  duration_ms: 3.400804
+  type: 'test'
+  ...
+# Subtest: webhook must be signed AND independently verified, not trust injected amount
+ok 7 - webhook must be signed AND independently verified, not trust injected amount
+  ---
+  duration_ms: 2.115565
+  type: 'test'
+  ...
+# Subtest: production rejects test keys
+ok 8 - production rejects test keys
+  ---
+  duration_ms: 0.319209
+  type: 'test'
+  ...
+# Subtest: commission settlement uses separate reference prefix and verified MoMo channel
+ok 9 - commission settlement uses separate reference prefix and verified MoMo channel
+  ---
+  duration_ms: 1.326921
+  type: 'test'
+  ...
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 72.919051

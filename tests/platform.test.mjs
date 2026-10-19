@@ -1,0 +1,90 @@
+import {test,before,after} from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID,randomBytes} from 'node:crypto';
+import {database} from '../services/api/db.mjs';
+import {platform} from '../services/api/platform.mjs';
+import {migrate} from '../scripts/migrate.mjs';
+import {httpServer} from '../services/api/http.mjs';
+import {network} from '../services/api/network.mjs';
+import {dispatchEngine} from '../services/api/dispatch.mjs';
+import {fixtureRouting} from '../services/api/dispatch-routing.mjs';
+import {haversine} from '../services/api/dispatch-geometry.mjs';
+const url=process.env.TEST_DATABASE_URL;
+if(!url||!/^elesend_test(?:_|$)/.test(new URL(url).pathname.slice(1)))throw Error('TEST_DATABASE_URL must point to a dedicated elesend_test database');
+const db=database(url),messages=[];
+const routing=fixtureRouting(async(a,b)=>({distanceMeters:Math.ceil(haversine(a,b)*1.35),durationSeconds:Math.ceil(haversine(a,b)*1.35/7)+1,geometry:{type:'LineString',coordinates:[[a.longitude,a.latitude],[b.longitude,b.latitude]]}}));
+const dispatcher=dispatchEngine(db,{routing});
+const app=platform(db,{otpKey:randomBytes(32).toString('hex'),sms:{async send(m){messages.push(m);}},dispatch:dispatcher,routing});
+let admin,customer,other,r1,r2,company,company2,s,server,base;
+const pw='Test-only-long-password!';
+const request={pickup:{address:'Osu main gate',latitude:5.55,longitude:-.19},destination:{address:'Airport landmark',latitude:5.60,longitude:-.17},recipientPhone:'0241234567',weightG:1000,description:'Sealed books'};
+const rejects=(fn,status)=>assert.rejects(fn,e=>e.status===status);
+async function account(phone,kind='customer',extra={}){return app.register({phone,password:pw,kind,...extra});}
+async function shipment(who=customer){const q=await app.quote(who,request);return app.book(who,{quoteId:q.id},randomUUID());}
+async function pay(sh){return app.paymentConfirmed({provider:'unit-test-adapter',eventId:randomUUID(),shipmentId:sh.id,amountMinor:sh.amount_minor,currency:'GHS'});}
+before(async()=>{await migrate(db);await db.query('TRUNCATE users,pricing_policies RESTART IDENTITY CASCADE');
+ admin=await account('0200000001');await db.query("UPDATE users SET kind='admin' WHERE id=$1",[admin.id]);admin.kind='admin';for(const p of ['verification:write','pricing:write','shipments:read','dispatch:configure'])await db.query('INSERT INTO permissions VALUES($1,$2)',[admin.id,p]);
+ customer=await account('0200000002');other=await account('0200000003');r1=await account('0200000004','rider');r2=await account('0200000005','rider');company=await account('0200000006','company',{name:'Company A'});company2=await account('0200000007','company',{name:'Company B'});
+ await app.setPricing(admin,{baseMinor:1000,perKmMinor:100,commissionBps:1234});
+ server=httpServer(db,app,dispatcher);await new Promise(r=>server.listen(0,'127.0.0.1',r));base='http://127.0.0.1:'+server.address().port;
+});
+after(async()=>{await new Promise(r=>server.close(r));await db.close();});
+test('migrations replay safely and run on actual PostgreSQL',async()=>{await migrate(db);assert.match((await db.query('SELECT version() AS v')).rows[0].v,/PostgreSQL/);});
+test('registration prevents role escalation and stores salted password hashes',async()=>{await assert.rejects(()=>account('0200000008','admin'));const u=(await db.query('SELECT password_hash FROM users WHERE id=$1',[customer.id])).rows[0];assert.notEqual(u.password_hash,pw);assert.equal(u.password_hash.length,161);});
+test('login authenticates, invalid login fails, logout revokes session',async()=>{await rejects(()=>app.login({phone:customer.phone,password:'incorrect'}),401);const login=await app.login({phone:customer.phone,password:pw});assert.equal((await app.authenticate(login.token)).id,customer.id);await app.logout(login.token);await rejects(()=>app.authenticate(login.token),401);});
+test('customer cannot set pricing or approve riders',async()=>{await rejects(()=>app.setPricing(customer,{baseMinor:1,perKmMinor:1,commissionBps:0}),403);await rejects(()=>app.approve(customer,'riders',r1.id,'approved'),403);});
+test('quotation persists integer amounts and immutable booking terms',async()=>{const q=await app.quote(customer,request);assert.ok(Number.isInteger(q.amount_minor));s=await app.book(customer,{quoteId:q.id},'booking-test-001');assert.equal(s.state,'AWAITING_PAYMENT');await assert.rejects(()=>db.query('UPDATE shipments SET amount_minor=1 WHERE id=$1',[s.id]));});
+test('new pricing policies cannot change an accepted quote',async()=>{const q=await app.quote(customer,request);await app.setPricing(admin,{baseMinor:1500,perKmMinor:110,commissionBps:1000});const sh=await app.book(customer,{quoteId:q.id},randomUUID());assert.equal(sh.amount_minor,q.amount_minor);assert.equal(sh.commission_minor,q.commission_minor);});
+test('concurrent duplicate bookings return one shipment',async()=>{const q=await app.quote(customer,request);const results=await Promise.all(Array.from({length:8},()=>app.book(customer,{quoteId:q.id},'booking-race-001')));assert.equal(new Set(results.map(s=>s.id)).size,1);});
+test('idempotency key rejects different booking payload',async()=>{const q=await app.quote(customer,request);await rejects(()=>app.book(customer,{quoteId:q.id},'booking-test-001'),409);});
+test('cross customer and cross company shipment access is denied',async()=>{await rejects(()=>app.get(other,s.id),403);await rejects(()=>app.get(company,s.id),403);assert.deepEqual(await app.list(company2),[]);});
+test('unapproved riders cannot accept jobs',async()=>{await rejects(()=>app.accept(r1,s.id,randomUUID()),403);});
+test('wrong payment amounts fail and concurrent repeated event applies once',async()=>{await rejects(()=>app.paymentConfirmed({provider:'test',eventId:'bad',shipmentId:s.id,amountMinor:1,currency:'GHS'}),409);const event={provider:'unit-test-adapter',eventId:randomUUID(),shipmentId:s.id,amountMinor:s.amount_minor,currency:'GHS'};const results=await Promise.all(Array.from({length:6},()=>app.paymentConfirmed(event)));assert.equal(results.filter(r=>r.ok).length,1);assert.equal((await db.query('SELECT count(*)::int AS n FROM payment_events WHERE shipment_id=$1',[s.id])).rows[0].n,1);});
+test('racing riders produce exactly one assignment',async()=>{for(const r of [r1,r2]){await app.approve(admin,'riders',r.id,'approved');await app.availability(r,{online:true});}for(const [n,r] of [r1,r2].entries())await dispatcher.riderPosition(r,{latitude:request.pickup.latitude+.0001*n,longitude:request.pickup.longitude+.0001*n,accuracyMeters:10,observedAt:new Date().toISOString()});
+ const offer=await dispatcher.dispatchShipment(s.id);assert.equal(offer.status,'offered');
+ const results=await Promise.allSettled([app.accept(r1,s.id,offer.offerId),app.accept(r2,s.id,offer.offerId)]);assert.equal(results.filter(r=>r.status==='fulfilled').length,1);const actual=await app.get(customer,s.id);if(actual.rider_id!==r1.id)[r1,r2]=[r2,r1];});
+test('vehicle capacity excludes oversized jobs',async()=>{const q=await app.quote(customer,{...request,weightG:999999});const big=await app.book(customer,{quoteId:q.id},randomUUID());await pay(big);await rejects(()=>app.accept(r2,big.id,randomUUID()),409);assert.ok(!(await app.offers(r2)).some(o=>o.id===big.id));});
+test('cannot complete or skip pickup through direct status updates',async()=>{await assert.rejects(()=>db.query("UPDATE shipments SET state='COMPLETED',completed_at=now() WHERE id=$1",[s.id]));await assert.rejects(()=>db.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[s.id]));await rejects(()=>app.transition(r1,s.id,{action:'start'}),409);});
+test('only assigned rider can request OTP; challenge never returns code',async()=>{await rejects(()=>app.challenge(r2,s.id,'pickup'),403);const c=await app.challenge(r1,s.id,'pickup');assert.equal(c.code,undefined);assert.equal(messages.at(-1).phone,customer.phone);await app.verify(r1,s.id,{challengeId:c.challengeId,code:messages.at(-1).code});});
+test('tracking accepts only active assigned rider and protects customer access',async()=>{await app.transition(r1,s.id,{action:'start'});await rejects(()=>app.location(r2,s.id,{latitude:5.5,longitude:-.1}),403);await app.location(r1,s.id,{latitude:5.5,longitude:-.1});assert.equal((await app.tracking(customer,s.id)).latitude,5.5);await rejects(()=>app.tracking(other,s.id),403);});
+test('expired OTP fails and cannot be used to complete delivery',async()=>{const c=await app.challenge(r1,s.id,'delivery');await db.query("UPDATE challenges SET expires_at=now()-interval '1 second' WHERE id=$1",[c.challengeId]);await rejects(()=>app.verify(r1,s.id,{challengeId:c.challengeId,code:messages.at(-1).code}),409);});
+test('expired delivery challenge can be replaced and retries cannot reset attempts',async()=>{
+ const c=await app.challenge(r1,s.id,'delivery');const code=messages.at(-1).code;const wrong=code==='000000'?'000001':'000000';for(let i=0;i<5;i++)await rejects(()=>app.verify(r1,s.id,{challengeId:c.challengeId,code:wrong}),400);
+ assert.equal((await db.query('SELECT attempts FROM challenges WHERE id=$1',[c.challengeId])).rows[0].attempts,5);await rejects(()=>app.verify(r1,s.id,{challengeId:c.challengeId,code}),409);await rejects(()=>app.challenge(r1,s.id,'delivery'),409);
+ await db.query("UPDATE challenges SET expires_at=now()-interval '1 second' WHERE id=$1",[c.challengeId]);
+});
+test('concurrent delivery verification consumes code once and posts exact earnings once',async()=>{const c=await app.challenge(r1,s.id,'delivery');const code=messages.at(-1).code;const results=await Promise.allSettled(Array.from({length:6},()=>app.verify(r1,s.id,{challengeId:c.challengeId,code})));assert.equal(results.filter(r=>r.status==='fulfilled').length,1);assert.equal((await app.get(customer,s.id)).state,'COMPLETED');const f=(await db.query('SELECT * FROM financial_entries WHERE shipment_id=$1',[s.id])).rows;assert.equal(f.length,1);assert.equal(f[0].customer_charge_minor,f[0].commission_minor+f[0].entitlement_minor);assert.equal(f[0].payout_status,'held');await assert.rejects(()=>db.query('DELETE FROM financial_entries WHERE shipment_id=$1',[s.id]));});
+test('OTP replay and location after completion are rejected',async()=>{const m=messages.at(-1);await rejects(()=>app.verify(r1,s.id,{challengeId:m.challengeId,code:m.code}),409);await rejects(()=>app.location(r1,s.id,{latitude:5,longitude:0}),403);});
+test('suspension blocks new rider assignments',async()=>{const sh=await shipment();await pay(sh);await app.approve(admin,'riders',r2.id,'suspended');await rejects(()=>app.accept(r2,sh.id,randomUUID()),403);});
+test('cancellation and authorized disputes work without exposing unrelated shipments',async()=>{const sh=await shipment();await rejects(()=>app.transition(other,sh.id,{action:'cancel',reason:'Changed plans'}),403);assert.equal((await app.transition(customer,sh.id,{action:'cancel',reason:'Changed plans'})).state,'CANCELLED');assert.ok((await app.dispute(customer,sh.id,{category:'other',detail:'Please review cancellation'})).id);await rejects(()=>app.dispute(other,sh.id,{category:'other',detail:'Unauthorized access'}),403);});
+test('failed delivery and return cannot create completion earnings',async()=>{const sh=await shipment();await pay(sh);await dispatcher.riderPosition(r1,{latitude:request.pickup.latitude,longitude:request.pickup.longitude,accuracyMeters:8,observedAt:new Date().toISOString()});const offer=await dispatcher.dispatchShipment(sh.id);assert.equal(offer.riderId,r1.id);await app.accept(r1,sh.id,offer.offerId);await app.transition(r1,sh.id,{action:'fail',reason:'Parcel refused'});await app.transition(r1,sh.id,{action:'return',reason:'Return authorized'});await app.transition(r1,sh.id,{action:'returned',reason:'Custody returned'});assert.equal((await app.get(customer,sh.id)).state,'RETURNED');assert.equal((await db.query('SELECT 1 FROM financial_entries WHERE shipment_id=$1',[sh.id])).rowCount,0);});
+test('audit evidence is immutable',async()=>{await assert.rejects(()=>db.query('DELETE FROM audit_logs'));});
+test('company rider invitations require exact rider consent, isolate fleets and revoke independent eligibility on removal',async()=>{
+ const net=network(db),r3=await account('0200000020','rider');await app.approve(admin,'riders',r3.id,'approved');
+ const co=(await db.query('SELECT id FROM companies WHERE owner_id=$1',[company.id])).rows[0];await app.approve(admin,'companies',co.id,'approved');
+ const invite=await net.invite(company,{riderId:r3.id});await rejects(()=>net.acceptInvitation(r1,{token:invite.token}),409);
+ await net.acceptInvitation(r3,{token:invite.token});assert.equal((await net.fleet(company)).length,1);assert.equal((await net.fleet(company2)).length,0);await rejects(()=>net.acceptInvitation(r3,{token:invite.token}),409);
+ await app.availability(r3,{online:true});await dispatcher.riderPosition(r3,{latitude:request.pickup.latitude,longitude:request.pickup.longitude,accuracyMeters:8,observedAt:new Date().toISOString()});
+ await app.availability(r1,{online:false});const sh=await shipment();await pay(sh);
+ const offer=await dispatcher.dispatchShipment(sh.id);assert.equal(offer.riderId,r3.id);await app.accept(r3,sh.id,offer.offerId);
+ assert.equal((await app.get(company,sh.id)).company_id,co.id);await rejects(()=>app.get(company2,sh.id),403);await rejects(()=>net.removeRider(company,r3.id),409);
+ await app.approve(admin,'companies',co.id,'suspended');await rejects(()=>app.challenge(r3,sh.id,'pickup'),403);await app.approve(admin,'companies',co.id,'approved');
+ await app.transition(r3,sh.id,{action:'fail',reason:'Custody exception'});await app.transition(r3,sh.id,{action:'return',reason:'Return approved'});await app.transition(r3,sh.id,{action:'returned',reason:'Sender received parcel'});
+ await net.removeRider(company,r3.id);await app.availability(r1,{online:true});await rejects(()=>app.availability(r3,{online:true}),403);assert.equal((await net.fleet(company)).length,0);
+});
+test('external business API credentials are hashed, scoped, tenant bound and revocable',async()=>{
+ const net=network(db),business=await account('0200000030','business'),otherBusiness=await account('0200000031','business');
+ const key=await net.createKey(business,{name:'Booking integration',scopes:['quotes:write','shipments:read']});
+ const stored=(await db.query('SELECT token_hash FROM api_clients WHERE id=$1',[key.id])).rows[0];assert.notEqual(stored.token_hash,key.key);
+ const requestWithKey=(path,body)=>fetch(base+'/api/v1'+path,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+key.key,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+ assert.equal((await requestWithKey('/quotes',request)).status,200);assert.equal((await requestWithKey('/admin/review')).status,403);assert.equal((await requestWithKey('/business/api-keys',{name:'Escalation',scopes:['shipments:write']})).status,403);
+ assert.equal((await requestWithKey('/shipments',{quoteId:randomUUID()})).status,403);assert.equal((await requestWithKey('/shipments/'+s.id)).status,403);
+ await rejects(()=>net.revokeKey(otherBusiness,key.id),404);await net.revokeKey(business,key.id);assert.equal((await requestWithKey('/shipments')).status,401);
+});
+test('database failure rolls back OTP consumption, delivery completion and finance together',async()=>{
+ const sh=await shipment();await pay(sh);await dispatcher.riderPosition(r1,{latitude:request.pickup.latitude,longitude:request.pickup.longitude,accuracyMeters:8,observedAt:new Date().toISOString()});const offer=await dispatcher.dispatchShipment(sh.id);await app.accept(r1,sh.id,offer.offerId);let ch=await app.challenge(r1,sh.id,'pickup');await app.verify(r1,sh.id,{challengeId:ch.challengeId,code:messages.at(-1).code});await app.transition(r1,sh.id,{action:'start'});ch=await app.challenge(r1,sh.id,'delivery');const code=messages.at(-1).code;
+ await db.query("CREATE FUNCTION test_finance_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'simulated storage failure'; END $$; CREATE TRIGGER test_finance_failure BEFORE INSERT ON financial_entries FOR EACH ROW EXECUTE FUNCTION test_finance_failure()");
+ try{await assert.rejects(()=>app.verify(r1,sh.id,{challengeId:ch.challengeId,code}));assert.equal((await db.query('SELECT consumed_at FROM challenges WHERE id=$1',[ch.challengeId])).rows[0].consumed_at,null);assert.equal((await app.get(customer,sh.id)).state,'AWAITING_DELIVERY_OTP');}finally{await db.query('DROP TRIGGER test_finance_failure ON financial_entries; DROP FUNCTION test_finance_failure()');}
+ await app.verify(r1,sh.id,{challengeId:ch.challengeId,code});assert.equal((await app.get(customer,sh.id)).state,'COMPLETED');
+});
+test('Mobile API enforces authentication and does not serve a website',async()=>{assert.equal((await fetch(base+'/api/v1/shipments')).status,401);assert.equal((await fetch(base+'/api/v1/payments/webhook',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,401);const page=await fetch(base);assert.equal(page.status,404);assert.match(await page.text(),/Endpoint not found/);assert.equal((await fetch(base+'/health')).status,200);const r=await fetch(base+'/api/v1/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:'0200000099',password:pw,kind:'admin'})});assert.equal(r.status,400);});

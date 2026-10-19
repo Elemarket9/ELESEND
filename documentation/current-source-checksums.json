@@ -1,0 +1,462 @@
+{
+  "source": "ELESEND_CASH_FIRST_MOBILE_DISPATCH.zip",
+  "source_sha256": "119504e4e451a3152e41b701e39b19abee67ee4d0a549ad341cb4f8cb3ce1833",
+  "created_utc": "2026-10-17",
+  "release_decision": "HOLD - production money, DB, native and provider verification outstanding",
+  "unit_tests": {
+    "passed": 25,
+    "failed": 0
+  },
+  "files": [
+    {
+      "path": ".dockerignore",
+      "bytes": 114,
+      "sha256": "f1512b096ec78be31594372b817c7fe3279088ec96ea8f53bb6eb11abf0110b9"
+    },
+    {
+      "path": ".env.example",
+      "bytes": 1795,
+      "sha256": "113ce949ee5f27b08da069c09edaa90390927ffbb2ba7a953febddc4f2fbe877"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "bytes": 740,
+      "sha256": "cbf7d90eac5d7361d2a2a54fe86d0246284af54631cd0272b8684af2f86f194a"
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 97,
+      "sha256": "2ccd06279ac502f07604881b4a85691f69a4992986ce4cdce5df1eca84e6dc56"
+    },
+    {
+      "path": "DEEP_SECURITY_AUDIT_2026-10-17.md",
+      "bytes": 12121,
+      "sha256": "05594bf143b3b7c05a36f9a04ffeecb1405a558008c04b1b6722d2facfee1832"
+    },
+    {
+      "path": "Dockerfile",
+      "bytes": 513,
+      "sha256": "20a5259df35b0555552f090d578531fa50e2c00851fe0093caff080bd3567494"
+    },
+    {
+      "path": "LICENSE",
+      "bytes": 1211,
+      "sha256": "6b0382b16279f26ff69014300541967a356a666eb0b91b422f6862f6b7dad17e"
+    },
+    {
+      "path": "README.md",
+      "bytes": 7421,
+      "sha256": "77f3ed321e552306b4105c058bcce4df52779cfad84e0373d9fc47505a2052de"
+    },
+    {
+      "path": "apps/mobile/.env.example",
+      "bytes": 407,
+      "sha256": "73f6ca26e20a87e70bf9907650aec37cffe57b6c9164901c6488dbfaf19f02ee"
+    },
+    {
+      "path": "apps/mobile/App.js",
+      "bytes": 32727,
+      "sha256": "8a98f7d7296e66873bcbcfce0780507ea8464368f8d2447023858818c417641b"
+    },
+    {
+      "path": "apps/mobile/README.md",
+      "bytes": 3276,
+      "sha256": "b05e7654d90c96d0e9bd60601f0cbcb8f6fa67e3e6d853c6e4a2942e0490839b"
+    },
+    {
+      "path": "apps/mobile/app.config.js",
+      "bytes": 511,
+      "sha256": "b6e9c8ac0a0c7b360c797b6387bfa8fc5db69939cf46715303b1e305bf959da5"
+    },
+    {
+      "path": "apps/mobile/app.json",
+      "bytes": 1072,
+      "sha256": "10734d1d2eadfce195daca7e5a151ca1e8f99dd9bc537c6f5539123e4cbe5ef3"
+    },
+    {
+      "path": "apps/mobile/eas.json",
+      "bytes": 257,
+      "sha256": "7b1e3a924cd4687ac660d2d3eb9f46341e9f0cd27ba8f9a2c065e4984cde1cef"
+    },
+    {
+      "path": "apps/mobile/index.js",
+      "bytes": 192,
+      "sha256": "b11fb4658c27c4f2e0bd0d83e66bfd338c637e007f4baae58e44a2dee8c40054"
+    },
+    {
+      "path": "apps/mobile/package.json",
+      "bytes": 544,
+      "sha256": "ee9254916b6f0d0bb5c98fca6077cae365522b220dd0d6cf4e7dd16f39dab031"
+    },
+    {
+      "path": "apps/mobile/src/api.js",
+      "bytes": 1441,
+      "sha256": "0904866d8f20e6a0a2ac09f2fdd8c6bc4693e8a8071a3ae9b0fa628715672896"
+    },
+    {
+      "path": "apps/mobile/src/offline.js",
+      "bytes": 2018,
+      "sha256": "d91d0b12f776736177d1537d4aadbae9ce11324ea16006971445bf9b4e64a6ce"
+    },
+    {
+      "path": "apps/mobile/src/tracking.js",
+      "bytes": 2144,
+      "sha256": "96d7e467ac1cde3584ad0741f8c0b8149fad30d9c6cd479d08b6a1b04acf3097"
+    },
+    {
+      "path": "compose.yaml",
+      "bytes": 1624,
+      "sha256": "aadf382b9822d111042404241592ff2e566ac1138cb7ae6b3cb0035f5d084e04"
+    },
+    {
+      "path": "database/migrations/001_core.sql",
+      "bytes": 8215,
+      "sha256": "7c9143312f36fed9beacad5cfe780e113262bbfcff61b4355f9968267247816d"
+    },
+    {
+      "path": "database/migrations/002_company_and_api.sql",
+      "bytes": 798,
+      "sha256": "14c3896ce0056aeb70140c95022b86c582ae6e1ee2347055407bd9b8bbb2394a"
+    },
+    {
+      "path": "database/migrations/003_intelligent_dispatch.sql",
+      "bytes": 3415,
+      "sha256": "d92ed393749ca50389a67607a8e6cdc669dd4cac7cf61b101ab2628bdfba2ceb"
+    },
+    {
+      "path": "database/migrations/004_safe_reassignment.sql",
+      "bytes": 2284,
+      "sha256": "9d0cd33714c2b4813529d7b236e90068f570e47ce7805566d0b9811480ea0fbc"
+    },
+    {
+      "path": "database/migrations/005_vehicle_eligibility.sql",
+      "bytes": 1035,
+      "sha256": "5e878b4a60dd5f2883f496ead273d36855c8fb7f395a159efa111345c60f0f28"
+    },
+    {
+      "path": "database/migrations/006_custody_and_tracking.sql",
+      "bytes": 552,
+      "sha256": "c221f6cb40fe812a8496126dd07e73cc5e2f627e19d6521aed47b1e8889340db"
+    },
+    {
+      "path": "database/migrations/007_dispatch_exceptions.sql",
+      "bytes": 608,
+      "sha256": "4f9d30be352422513ce5b4d27bfd5b8c32a034e9d31d1c1bd0d57da36ff3f7cb"
+    },
+    {
+      "path": "database/migrations/008_mobile_multidrop_car.sql",
+      "bytes": 5501,
+      "sha256": "d0c0e462185e836ffc6cf22031aa67fa77489229a4b19a0a1bd9026bb3c0bc4a"
+    },
+    {
+      "path": "database/migrations/009_cash_finance.sql",
+      "bytes": 9000,
+      "sha256": "ebc17beff502063ee198e68c154f1c29b2b5b0b3468a5fc2c9c67d61b54de98b"
+    },
+    {
+      "path": "database/migrations/010_cash_custody_guards.sql",
+      "bytes": 2752,
+      "sha256": "32abdaa95f27f79969f846301a5eac94b1410fc3d23da87abdf222d3ec3ed22b"
+    },
+    {
+      "path": "deploy/vps/.env.example",
+      "bytes": 718,
+      "sha256": "00c68d15d3af8effb839dddfd2798fc8e5297da541aeba6829ebc794eced8170"
+    },
+    {
+      "path": "deploy/vps/Caddyfile",
+      "bytes": 374,
+      "sha256": "4b7e9bf9f09daab50bdf2f4cb22ed788e1b078fdb837671150bfa91d2aee6c6d"
+    },
+    {
+      "path": "deploy/vps/backup-offsite.sh",
+      "bytes": 1429,
+      "sha256": "05e3e72a56aff56c8bded339862a18c865b22e3639005a5932f7226240d8d323"
+    },
+    {
+      "path": "deploy/vps/compose.yaml",
+      "bytes": 2290,
+      "sha256": "fb7fff2d3b68110ef70310577c33fda0e607d046cc259761e48b229f74f221fc"
+    },
+    {
+      "path": "deploy/vps/storage-check.sh",
+      "bytes": 543,
+      "sha256": "e7b77bbdab9aa175bf9904ac41e41c55050f751b924ac07e3300ca0a2d5a4771"
+    },
+    {
+      "path": "documentation/api.md",
+      "bytes": 7559,
+      "sha256": "307f8b764c7a7df950eb37ee845e4be2799f59262ea07e8437146dcb9005501d"
+    },
+    {
+      "path": "documentation/architecture.md",
+      "bytes": 5347,
+      "sha256": "7b6d1bcb795b79d32bd65c88b6778602def5ab389581f327bb062a651e373c9f"
+    },
+    {
+      "path": "documentation/cash-finance-integration.md",
+      "bytes": 6587,
+      "sha256": "a086932d0e009dc1e19cb8ebff0b7e94b3251f77ef984e195ac058afbf6bb99a"
+    },
+    {
+      "path": "documentation/cash-first-unit-test-output.txt",
+      "bytes": 4919,
+      "sha256": "03323e3f79ed983c8c5670273724658238b6802f2a1bffa329554b15d4f5483a"
+    },
+    {
+      "path": "documentation/deep-audit-unit-tests-2026-10-17.txt",
+      "bytes": 5748,
+      "sha256": "be0a241528f15d9bbdc9eca32b3001c832392bf3c572449ff89c5af36b171178"
+    },
+    {
+      "path": "documentation/deployment.md",
+      "bytes": 2576,
+      "sha256": "009066e9230c9e58353fc79afed8d2690bc8b5162e1afd090f80131b5c688a22"
+    },
+    {
+      "path": "documentation/dispatch-security.md",
+      "bytes": 3094,
+      "sha256": "c73d23e2a9ef0747660c1a7a366c05b1547c3c7f65bdba6094c249d483e868ea"
+    },
+    {
+      "path": "documentation/dispatch-unit-test-output.txt",
+      "bytes": 1567,
+      "sha256": "f19b2ac6fb7276d20f744abe52884499bf0bfdcd7e2571b70480d6994787b271"
+    },
+    {
+      "path": "documentation/engineering-directive.md",
+      "bytes": 54570,
+      "sha256": "cbdb9946bbda2c3fd0215ca7402d38ca8b938274c0f1ae8f5bc7f6cd5773c745"
+    },
+    {
+      "path": "documentation/engineering-evidence.md",
+      "bytes": 5115,
+      "sha256": "61a37476674ed2bc9538513eda10f6f2f991738c428b95d307977a67ccf5c1d1"
+    },
+    {
+      "path": "documentation/intelligent-dispatch-audit.md",
+      "bytes": 7924,
+      "sha256": "cb0301f27aa7cf4c2a87b0bc4a4161e95021f623bf22c96c574329f779072253"
+    },
+    {
+      "path": "documentation/native-multiparcel-audit.md",
+      "bytes": 5274,
+      "sha256": "164c53d0b476586386203da2b7751699beb5746323bbc31f66e16748001da5b3"
+    },
+    {
+      "path": "documentation/native-parse-output.txt",
+      "bytes": 187,
+      "sha256": "f8f6bf7b6f7e246a699de9328ce9238bdd18fe6efcf7ec9c2877a141a9e08d40"
+    },
+    {
+      "path": "documentation/native-source-manifest.json",
+      "bytes": 6957,
+      "sha256": "bca2a7d239cafef12157680e4af0b0405e5abf6aa12ea3e74a92f409bfde0278"
+    },
+    {
+      "path": "documentation/native-unit-test-output.txt",
+      "bytes": 2766,
+      "sha256": "384ba5caaadc6a9c209813f22268c632f82e2316d672f45347a5f39f32064077"
+    },
+    {
+      "path": "documentation/postgres-test-output.txt",
+      "bytes": 2545,
+      "sha256": "bfaa99ae80e3761ac9c367d7e41d20709e5edc0c628124a92db27305a9afa9ba"
+    },
+    {
+      "path": "documentation/source-audit.md",
+      "bytes": 6101,
+      "sha256": "7803c4144a521172af5585ac7f84e40432b0fe50f2556ca313be7c935ead8cd5"
+    },
+    {
+      "path": "documentation/source-baseline.json",
+      "bytes": 99624,
+      "sha256": "57134e9a05659e81d483179fdca28e0d9dd0b573a4849227116479bfab409d6b"
+    },
+    {
+      "path": "documentation/source-integrity.txt",
+      "bytes": 526,
+      "sha256": "e5f745b7f698d71adbd157bbe9d48dd5374665913ab63382ebb4c3d8198cbea5"
+    },
+    {
+      "path": "documentation/vps-deployment.md",
+      "bytes": 5734,
+      "sha256": "153859090bc4c76385dd79f88ac8ac55e56146aca5beb72d2a2e37987c49992f"
+    },
+    {
+      "path": "integrations/elemarket-adapter/README.md",
+      "bytes": 1403,
+      "sha256": "783c1bf9b9eb93dda340da263dffb454d435c5c7fa355e7b1c7311e3302dc659"
+    },
+    {
+      "path": "package-lock.json",
+      "bytes": 6053,
+      "sha256": "c81bc698aeced71cb3355cf0e33a0f13999fad42bf815723053e62ef7e9a4806"
+    },
+    {
+      "path": "package.json",
+      "bytes": 873,
+      "sha256": "7373f30b29ad3a69ef22978bbc95f1048b990252e3936a6fd8f80fb3178ad277"
+    },
+    {
+      "path": "packages/contracts/providers.ts",
+      "bytes": 1768,
+      "sha256": "6628f0d894c2b78c323911b879e255ccac993f34f038ff1eb289e515ff08478c"
+    },
+    {
+      "path": "release-readiness.md",
+      "bytes": 5833,
+      "sha256": "cf118e0774f81a2fa39a0dae134b6878856fc2ed140b9f917ea53f5bc052e838"
+    },
+    {
+      "path": "scripts/admin.mjs",
+      "bytes": 949,
+      "sha256": "4faca3904c0db14b2c25f3e58f86fe38c6e16deec9e18e9a6df22d5ce881385e"
+    },
+    {
+      "path": "scripts/baseline.mjs",
+      "bytes": 1366,
+      "sha256": "47c1e2cd2add951dd66d6004087ecd6efbf901d7211814f8f9cb4d7ac357630d"
+    },
+    {
+      "path": "scripts/migrate.mjs",
+      "bytes": 1150,
+      "sha256": "d6322e6a5ffea0ffdde30ae634ec18744c836af5468e44c4bc3c393e75f71bbe"
+    },
+    {
+      "path": "scripts/package.ps1",
+      "bytes": 1513,
+      "sha256": "a97ceda2ee4c9b5ccb0488d23cb5bc3a378c4440c2a899e8970a3c6d5cb1952a"
+    },
+    {
+      "path": "security-report.md",
+      "bytes": 1359,
+      "sha256": "55fb034cafd2a381bedde3d034ddc0f7592e22da0e733a3de658d99e6c57d783"
+    },
+    {
+      "path": "services/api/client-ip.mjs",
+      "bytes": 1700,
+      "sha256": "52d62ba23a9f7fc66be625d69118936fa921e874f8edb5afd8bb887824ba8af8"
+    },
+    {
+      "path": "services/api/db.mjs",
+      "bytes": 525,
+      "sha256": "09525c11a347bd16dc95a9303a04ad4ccc2ee11bf1bd1a8f326cc911a0293269"
+    },
+    {
+      "path": "services/api/dispatch-geometry.mjs",
+      "bytes": 1926,
+      "sha256": "5d670742c20c8c8f1ec35520290824d9c16fb260f7f2a7f6cf93d25eec3dbffa"
+    },
+    {
+      "path": "services/api/dispatch-routing.mjs",
+      "bytes": 3450,
+      "sha256": "98b3e031af38a274d1ac6f1578c294eba257d084924fbc802b4c8a1a1a7fc164"
+    },
+    {
+      "path": "services/api/dispatch.mjs",
+      "bytes": 33113,
+      "sha256": "622a9400e0f568e8aa49f67859fc88bbb9f10f09c5484c5b44bb885111803221"
+    },
+    {
+      "path": "services/api/finance.mjs",
+      "bytes": 18690,
+      "sha256": "c4899c0e00bf008544478ea8982ebddc0d406acd6cf680cad9553d9db9639728"
+    },
+    {
+      "path": "services/api/google-routing.mjs",
+      "bytes": 3782,
+      "sha256": "78f293db85bf19e9c7447c1a782b71bb08dc19f781bb5495531b73f727e2a949"
+    },
+    {
+      "path": "services/api/http.mjs",
+      "bytes": 9230,
+      "sha256": "374cb4435092d8b1614dab083aa46fb757beab80840ed7fc9b4aa105c10281b6"
+    },
+    {
+      "path": "services/api/multi-parcel.mjs",
+      "bytes": 4365,
+      "sha256": "8ddb661ab040658b4f0fa6ea321c4dd29c73af804b1a0d8b6b0d07de3ce9b10e"
+    },
+    {
+      "path": "services/api/network.mjs",
+      "bytes": 5420,
+      "sha256": "66866cc69bcbb34a77d5fe3c02cc0d39bbcd796d40e647982de5b59553444164"
+    },
+    {
+      "path": "services/api/platform.mjs",
+      "bytes": 21681,
+      "sha256": "d822b5f94dad20db9fa93a8c7ee225fd793542a333cc5eac90d1c066dc99cfb6"
+    },
+    {
+      "path": "services/api/pricing.mjs",
+      "bytes": 1313,
+      "sha256": "1b54b7723a15beff97be28b3a212390f20053d8f0dbbee506dd609188a29784c"
+    },
+    {
+      "path": "services/api/security.mjs",
+      "bytes": 1891,
+      "sha256": "2de062758cbac0f691df41ed806813c8bfc87a6b0aeab87236229e5c3a28bbf5"
+    },
+    {
+      "path": "services/api/server.mjs",
+      "bytes": 2406,
+      "sha256": "b58bb1c2e5229882da2f98a2cb6d84a0fb8b519fb7c4b6782de1c14684ce2dc0"
+    },
+    {
+      "path": "services/api/vehicle.mjs",
+      "bytes": 4036,
+      "sha256": "cfb0f82eec4f261b3d336954b863b8a5677cf70437558f54876125f195f98682"
+    },
+    {
+      "path": "test-results.md",
+      "bytes": 1014,
+      "sha256": "e45f69c59a06ca53e899c052479298e23b040d357fe4a6aad7cb723f65ec1e9c"
+    },
+    {
+      "path": "tests/cash-finance-db.test.mjs",
+      "bytes": 12265,
+      "sha256": "32754048a9ea3e5a42e7ff91817fddeccfc0c213429ebb03d022cf7ff97a7f8d"
+    },
+    {
+      "path": "tests/client-ip.test.mjs",
+      "bytes": 1245,
+      "sha256": "217ecc4117d064dd663c82956e1a815b6d99ea180a62247fec4ed25539acecca"
+    },
+    {
+      "path": "tests/dispatch-db.test.mjs",
+      "bytes": 7321,
+      "sha256": "0d39ee3ac747f53c8134dc852ad47298e445410581bc8139c9547c5140d106c5"
+    },
+    {
+      "path": "tests/dispatch-unit.test.mjs",
+      "bytes": 4572,
+      "sha256": "00abb9946ab57e68d3641f135f43ac39de3d6a109d4f440621ff080278008b68"
+    },
+    {
+      "path": "tests/google-routing.test.mjs",
+      "bytes": 2887,
+      "sha256": "a3839c57291a777e34da03656f81872026cb5519f0f8920c66381be4a074cfe9"
+    },
+    {
+      "path": "tests/multi-parcel-db.test.mjs",
+      "bytes": 5645,
+      "sha256": "1f2482c36d64c79ec6f649c1c680155e431a7690123e557eeb2e363508084e95"
+    },
+    {
+      "path": "tests/multi-parcel-unit.test.mjs",
+      "bytes": 3537,
+      "sha256": "643aa6f4877695365a18c4e038219cf0f101bc4b2b4dd8bad58986299dbeaaf8"
+    },
+    {
+      "path": "tests/platform.test.mjs",
+      "bytes": 17360,
+      "sha256": "127f35384e59b62b1f280461a2d240418de1440dfb5d81eeee649c0f9b4aeaae"
+    },
+    {
+      "path": "tests/pricing.test.mjs",
+      "bytes": 1710,
+      "sha256": "1a087920def55f06f83ca4aedad36f6dfd271dc78d6ad9f6054c0799f7db5a89"
+    }
+  ]
+}

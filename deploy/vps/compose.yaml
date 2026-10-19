@@ -1,0 +1,77 @@
+# ELESEND mobile API ONLY; Caddy provides HTTPS for Android/iOS clients, not a website.
+# Run: docker compose -f deploy/vps/compose.yaml --env-file .env.vps up -d --build
+services:
+  db:
+    image: postgis/postgis:18-3.6
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: elesend
+      POSTGRES_USER: elesend
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Required}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    networks: [private]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U elesend -d elesend']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+  migrate:
+    build: {context: ../..}
+    command: [node, scripts/migrate.mjs]
+    environment:
+      DATABASE_URL: ${DOCKER_DATABASE_URL:?Required}
+    depends_on:
+      db: {condition: service_healthy}
+    networks: [private]
+  api:
+    build: {context: ../..}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    environment:
+      DATABASE_URL: ${DOCKER_DATABASE_URL:?Required}
+      OTP_KEY: ${OTP_KEY:?Required}
+      ADMIN_MFA_ENCRYPTION_KEY: ${ADMIN_MFA_ENCRYPTION_KEY:?Required}
+      NODE_ENV: production
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
+      READINESS_PROBE_TOKEN: ${READINESS_PROBE_TOKEN:-}
+      HOST: 0.0.0.0
+      PORT: '3090'
+      GOOGLE_ROUTES_API_KEY: ${GOOGLE_ROUTES_API_KEY:-}
+      ROUTING_OSRM_URL: ${ROUTING_OSRM_URL:-}
+      ROUTING_OSRM_PROFILES_JSON: '${ROUTING_OSRM_PROFILES_JSON:-{"car":"driving","motorcycle":"driving","pickup":"driving","van":"driving"}}'
+      ENABLE_PREPAID_CREDITS: 'false'
+      SMS_GATEWAY_ENDPOINT: ${SMS_GATEWAY_ENDPOINT:-}
+      SMS_GATEWAY_ALLOWED_HOST: ${SMS_GATEWAY_ALLOWED_HOST:-}
+      SMS_GATEWAY_TOKEN: ${SMS_GATEWAY_TOKEN:-}
+      PAYSTACK_SECRET_KEY: ${PAYSTACK_SECRET_KEY:-}
+      PAYSTACK_ENABLED_METHODS: ${PAYSTACK_ENABLED_METHODS:-MOMO,CARD}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    networks: [private,egress]
+    logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      ELESEND_API_HOST: ${ELESEND_API_HOST:?Required}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    ports:
+      - '80:80'
+      - '443:443'
+    depends_on: [api]
+    networks: [egress]
+    logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+networks:
+  private: {internal: true}
+  egress: {}
+volumes:
+  pgdata: {}
+  caddydata: {}
+  caddyconfig: {}

@@ -1,0 +1,81 @@
+
+> elesend@0.1.0 test:unit
+> node --test tests/dispatch-unit.test.mjs tests/multi-parcel-unit.test.mjs
+
+TAP version 13
+# LOCAL SYNTHETIC SORT ONLY: 40 passes × 3000 candidate records in 16.829 ms; excludes DB/routing/networks
+# Subtest: A is geographically closer than B, but simulated road-network ETA ranks B
+ok 1 - A is geographically closer than B, but simulated road-network ETA ranks B
+  ---
+  duration_ms: 1.260343
+  type: 'test'
+  ...
+# Subtest: map heading alone never proves direction; road ETA improvement required
+ok 2 - map heading alone never proves direction; road ETA improvement required
+  ---
+  duration_ms: 0.290197
+  type: 'test'
+  ...
+# Subtest: future corridor reuse does not authorize overweight or late route detours
+ok 3 - future corridor reuse does not authorize overweight or late route detours
+  ---
+  duration_ms: 0.800411
+  type: 'test'
+  ...
+# Subtest: OSRM adapter makes correct road-route and matrix URLs and rejects unsupported vehicle
+ok 4 - OSRM adapter makes correct road-route and matrix URLs and rejects unsupported vehicle
+  ---
+  duration_ms: 2.022549
+  type: 'test'
+  ...
+# Subtest: OSRM unreachable routes never silently fall back to straight-line distance
+ok 5 - OSRM unreachable routes never silently fall back to straight-line distance
+  ---
+  duration_ms: 0.706219
+  type: 'test'
+  ...
+# Subtest: measured deterministic fixture ranking baseline (not an infrastructure benchmark)
+ok 6 - measured deterministic fixture ranking baseline (not an infrastructure benchmark)
+  ---
+  duration_ms: 17.853089
+  type: 'test'
+  ...
+# Subtest: two pickups and two drop-offs obey pickup before drop-off and bound cart load
+ok 7 - two pickups and two drop-offs obey pickup before drop-off and bound cart load
+  ---
+  duration_ms: 1.358156
+  type: 'test'
+  ...
+# Subtest: reject impossible detour and already-accepted delivery deadline
+ok 8 - reject impossible detour and already-accepted delivery deadline
+  ---
+  duration_ms: 8.727176
+  type: 'test'
+  ...
+# Subtest: partially collected parcel remains loaded and cannot be silently double-picked
+ok 9 - partially collected parcel remains loaded and cannot be silently double-picked
+  ---
+  duration_ms: 0.380999
+  type: 'test'
+  ...
+# Subtest: each parcel removal preserves the other parcel stop and custody route
+ok 10 - each parcel removal preserves the other parcel stop and custody route
+  ---
+  duration_ms: 0.239902
+  type: 'test'
+  ...
+# Subtest: route provider outage or disconnected road rejects instead of Haversine fallback
+ok 11 - route provider outage or disconnected road rejects instead of Haversine fallback
+  ---
+  duration_ms: 0.324129
+  type: 'test'
+  ...
+1..11
+# tests 11
+# suites 0
+# pass 11
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 111.328247

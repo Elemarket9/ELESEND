@@ -1,0 +1,351 @@
+
+> elesend@0.1.0 test:algorithms-full
+> node --test tests/twelve-algorithms-implementation.test.mjs tests/advanced-algorithms.test.mjs tests/dispatch-unit.test.mjs tests/multi-parcel-unit.test.mjs tests/pricing.test.mjs tests/google-routing.test.mjs tests/client-ip.test.mjs tests/architecture-static.test.mjs
+
+TAP version 13
+# Subtest: 12 mandatory algorithms defined, corridor and fan-out individually switchable
+ok 1 - 12 mandatory algorithms defined, corridor and fan-out individually switchable
+  ---
+  duration_ms: 1.416085
+  type: 'test'
+  ...
+# Subtest: Google polyline decoding returns geodetic coordinates in lon,lat order
+ok 2 - Google polyline decoding returns geodetic coordinates in lon,lat order
+  ---
+  duration_ms: 1.28027
+  type: 'test'
+  ...
+# Subtest: OSRM geometry normalization rejects aerial estimates lacking geometry
+ok 3 - OSRM geometry normalization rejects aerial estimates lacking geometry
+  ---
+  duration_ms: 0.316175
+  type: 'test'
+  ...
+# Subtest: remaining route follows provider road geometry and joins legs without duplicated vertices
+ok 4 - remaining route follows provider road geometry and joins legs without duplicated vertices
+  ---
+  duration_ms: 0.416705
+  type: 'test'
+  ...
+# Subtest: no fabricated road corridor when provider returns no real geometry
+ok 5 - no fabricated road corridor when provider returns no real geometry
+  ---
+  duration_ms: 0.254892
+  type: 'test'
+  ...
+# Subtest: road corridor ahead check rejects passed pickup and off-corridor locations
+ok 6 - road corridor ahead check rejects passed pickup and off-corridor locations
+  ---
+  duration_ms: 0.695293
+  type: 'test'
+  ...
+# Subtest: GPS adaptive filter rejects replay and impossible jumps; does not replace raw evidence
+ok 7 - GPS adaptive filter rejects replay and impossible jumps; does not replace raw evidence
+  ---
+  duration_ms: 0.456966
+  type: 'test'
+  ...
+# Subtest: ETA calibration requires verified observations and fails closed on sparse data
+ok 8 - ETA calibration requires verified observations and fails closed on sparse data
+  ---
+  duration_ms: 0.413159
+  type: 'test'
+  ...
+# Subtest: fraud model yields explainable flags, never automatic punishments
+ok 9 - fraud model yields explainable flags, never automatic punishments
+  ---
+  duration_ms: 0.574471
+  type: 'test'
+  ...
+# Subtest: ranking first excludes unsuitable vehicle even when ETA shortest
+ok 10 - ranking first excludes unsuitable vehicle even when ETA shortest
+  ---
+  duration_ms: 0.666921
+  type: 'test'
+  ...
+# Subtest: batch matching finds cost-minimizing distinct riders, rejects capacity violations
+ok 11 - batch matching finds cost-minimizing distinct riders, rejects capacity violations
+  ---
+  duration_ms: 0.690897
+  type: 'test'
+  ...
+# Subtest: 3 percent is calculated independently for ten successful orders in integer pesewas
+ok 12 - 3 percent is calculated independently for ten successful orders in integer pesewas
+  ---
+  duration_ms: 0.494993
+  type: 'test'
+  ...
+# Subtest: database retains one accepted offer per shipment, but supports multi-rider offered states
+ok 13 - database retains one accepted offer per shipment, but supports multi-rider offered states
+  ---
+  duration_ms: 7.405922
+  type: 'test'
+  ...
+# Subtest: 3 percent commission policy uses new policy version, never rewrites old quote records
+ok 14 - 3 percent commission policy uses new policy version, never rewrites old quote records
+  ---
+  duration_ms: 1.522244
+  type: 'test'
+  ...
+# Subtest: provider neutral backend: no hoster-specific imports, no paid cash fabricated
+ok 15 - provider neutral backend: no hoster-specific imports, no paid cash fabricated
+  ---
+  duration_ms: 3.799431
+  type: 'test'
+  ...
+# Subtest: native mobile admin feature switches use permissioned API, not a web portal
+ok 16 - native mobile admin feature switches use permissioned API, not a web portal
+  ---
+  duration_ms: 1.737647
+  type: 'test'
+  ...
+# Subtest: direct internet requests ignore forged forwarding headers
+ok 17 - direct internet requests ignore forged forwarding headers
+  ---
+  duration_ms: 1.372849
+  type: 'test'
+  ...
+# Subtest: trusted private ingress recovers true client for fair rider rate limits
+ok 18 - trusted private ingress recovers true client for fair rider rate limits
+  ---
+  duration_ms: 1.152599
+  type: 'test'
+  ...
+# Subtest: forged left-most forwarding is ignored even when using a trusted ingress
+ok 19 - forged left-most forwarding is ignored even when using a trusted ingress
+  ---
+  duration_ms: 0.157286
+  type: 'test'
+  ...
+# Subtest: malformed and overlong forwarding never overrides the peer
+ok 20 - malformed and overlong forwarding never overrides the peer
+  ---
+  duration_ms: 3.414883
+  type: 'test'
+  ...
+# LOCAL SYNTHETIC SORT ONLY: 40 passes × 3000 candidate records in 11.578 ms; excludes DB/routing/networks
+# Subtest: A is geographically closer than B, but simulated road-network ETA ranks B
+ok 21 - A is geographically closer than B, but simulated road-network ETA ranks B
+  ---
+  duration_ms: 0.888563
+  type: 'test'
+  ...
+# Subtest: map heading alone never proves direction; road ETA improvement required
+ok 22 - map heading alone never proves direction; road ETA improvement required
+  ---
+  duration_ms: 0.231407
+  type: 'test'
+  ...
+# Subtest: future corridor reuse does not authorize overweight or late route detours
+ok 23 - future corridor reuse does not authorize overweight or late route detours
+  ---
+  duration_ms: 0.558568
+  type: 'test'
+  ...
+# Subtest: OSRM adapter makes correct road-route and matrix URLs and rejects unsupported vehicle
+ok 24 - OSRM adapter makes correct road-route and matrix URLs and rejects unsupported vehicle
+  ---
+  duration_ms: 1.307181
+  type: 'test'
+  ...
+# Subtest: OSRM unreachable routes never silently fall back to straight-line distance
+ok 25 - OSRM unreachable routes never silently fall back to straight-line distance
+  ---
+  duration_ms: 0.394232
+  type: 'test'
+  ...
+# Subtest: measured deterministic fixture ranking baseline (not an infrastructure benchmark)
+ok 26 - measured deterministic fixture ranking baseline (not an infrastructure benchmark)
+  ---
+  duration_ms: 12.34241
+  type: 'test'
+  ...
+# Subtest: Google Routes adapter sends server-only credential with a constrained response fieldmask
+ok 27 - Google Routes adapter sends server-only credential with a constrained response fieldmask
+  ---
+  duration_ms: 1.773271
+  type: 'test'
+  ...
+# Subtest: motorcycle uses two wheeler mode in Ghana and rejects unsupported truck profile
+ok 28 - motorcycle uses two wheeler mode in Ghana and rejects unsupported truck profile
+  ---
+  duration_ms: 1.120051
+  type: 'test'
+  ...
+# Subtest: matrix results preserve origin ordering and disconnected roads
+ok 29 - matrix results preserve origin ordering and disconnected roads
+  ---
+  duration_ms: 0.626951
+  type: 'test'
+  ...
+# Subtest: provider errors or missing matrix elements fail closed
+ok 30 - provider errors or missing matrix elements fail closed
+  ---
+  duration_ms: 0.415924
+  type: 'test'
+  ...
+# Subtest: invalid coordinates and malformed provider duration cannot become ETA
+ok 31 - invalid coordinates and malformed provider duration cannot become ETA
+  ---
+  duration_ms: 0.517938
+  type: 'test'
+  ...
+# Subtest: two pickups and two drop-offs obey pickup before drop-off and bound cart load
+ok 32 - two pickups and two drop-offs obey pickup before drop-off and bound cart load
+  ---
+  duration_ms: 3.951098
+  type: 'test'
+  ...
+# Subtest: reject impossible detour and already-accepted delivery deadline
+ok 33 - reject impossible detour and already-accepted delivery deadline
+  ---
+  duration_ms: 2.239029
+  type: 'test'
+  ...
+# Subtest: partially collected parcel remains loaded and cannot be silently double-picked
+ok 34 - partially collected parcel remains loaded and cannot be silently double-picked
+  ---
+  duration_ms: 1.393591
+  type: 'test'
+  ...
+# Subtest: each parcel removal preserves the other parcel stop and custody route
+ok 35 - each parcel removal preserves the other parcel stop and custody route
+  ---
+  duration_ms: 0.243035
+  type: 'test'
+  ...
+# Subtest: route provider outage or disconnected road rejects instead of Haversine fallback
+ok 36 - route provider outage or disconnected road rejects instead of Haversine fallback
+  ---
+  duration_ms: 0.400241
+  type: 'test'
+  ...
+# Subtest: GH₵30 cash job splits exactly into GH₵27 rider earnings and GH₵3 commission
+ok 37 - GH₵30 cash job splits exactly into GH₵27 rider earnings and GH₵3 commission
+  ---
+  duration_ms: 1.6464
+  type: 'test'
+  ...
+# Subtest: ten completed GH₵30 priced jobs imply GH₵30 commission accrued, NOT received
+ok 38 - ten completed GH₵30 priced jobs imply GH₵30 commission accrued, NOT received
+  ---
+  duration_ms: 0.380952
+  type: 'test'
+  ...
+# Subtest: fixed, hybrid and configurable caps do not exceed customer price
+ok 39 - fixed, hybrid and configurable caps do not exceed customer price
+  ---
+  duration_ms: 1.436155
+  type: 'test'
+  ...
+# Subtest: fractional kilometre rounds charge once in integer minor units
+ok 40 - fractional kilometre rounds charge once in integer minor units
+  ---
+  duration_ms: 0.185699
+  type: 'test'
+  ...
+# Subtest: invalid money, modes and commission bps fail closed
+ok 41 - invalid money, modes and commission bps fail closed
+  ---
+  duration_ms: 0.471567
+  type: 'test'
+  ...
+# Subtest: 1 geospatial discovery expands configurable ranges once, deduplicates, and stops at limit
+ok 42 - 1 geospatial discovery expands configurable ranges once, deduplicates, and stops at limit
+  ---
+  duration_ms: 1.590447
+  type: 'test'
+  ...
+# Subtest: 2 road matrix respects directed connectivity, provider outages and batching
+ok 43 - 2 road matrix respects directed connectivity, provider outages and batching
+  ---
+  duration_ms: 0.637106
+  type: 'test'
+  ...
+# Subtest: 3 movement direction is based on improving road ETA, not heading alone
+ok 44 - 3 movement direction is based on improving road ETA, not heading alone
+  ---
+  duration_ms: 0.27953
+  type: 'test'
+  ...
+# Subtest: 4 ETA dispatch rejects ineligible rider regardless of proximity and sorts verified road ETA
+ok 45 - 4 ETA dispatch rejects ineligible rider regardless of proximity and sorts verified road ETA
+  ---
+  duration_ms: 0.190686
+  type: 'test'
+  ...
+# Subtest: 5 multi-parcel VRP produces feasible ordered manifest without exceeding capacity
+ok 46 - 5 multi-parcel VRP produces feasible ordered manifest without exceeding capacity
+  ---
+  duration_ms: 1.040221
+  type: 'test'
+  ...
+# Subtest: 6 road-corridor insertion rejects wrong-way roads and excessive detour
+ok 47 - 6 road-corridor insertion rejects wrong-way roads and excessive detour
+  ---
+  duration_ms: 0.797026
+  type: 'test'
+  ...
+# Subtest: 7 3 percent per-order pricing uses integer pesewas, not one commission for batch
+ok 48 - 7 3 percent per-order pricing uses integer pesewas, not one commission for batch
+  ---
+  duration_ms: 0.461793
+  type: 'test'
+  ...
+# Subtest: 8 commission exposure includes cash jobs already accepted and blocks overspending
+ok 49 - 8 commission exposure includes cash jobs already accepted and blocks overspending
+  ---
+  duration_ms: 0.182524
+  type: 'test'
+  ...
+# Subtest: 9 immutable journal arithmetic & provider reconciliation spot missing/duplicated effects
+ok 50 - 9 immutable journal arithmetic & provider reconciliation spot missing/duplicated effects
+  ---
+  duration_ms: 0.519549
+  type: 'test'
+  ...
+# Subtest: 10 GPS filtering rejects implausible jumps and replay but handles noisy updates
+ok 51 - 10 GPS filtering rejects implausible jumps and replay but handles noisy updates
+  ---
+  duration_ms: 0.491468
+  type: 'test'
+  ...
+# Subtest: 11 ETA calibration uses verified historic trips and has empty-data fallback
+ok 52 - 11 ETA calibration uses verified historic trips and has empty-data fallback
+  ---
+  duration_ms: 0.286951
+  type: 'test'
+  ...
+# Subtest: 12 fraud rules flag OTP attacks and repeated payment events without auto-punishment
+ok 53 - 12 fraud rules flag OTP attacks and repeated payment events without auto-punishment
+  ---
+  duration_ms: 0.418669
+  type: 'test'
+  ...
+# Subtest: cost-based pricing charges time/stops and discounts only when configured
+ok 54 - cost-based pricing charges time/stops and discounts only when configured
+  ---
+  duration_ms: 0.182564
+  type: 'test'
+  ...
+# Subtest: fraud algorithm detects impossible coordinate jumps but does not auto-suspend rider
+ok 55 - fraud algorithm detects impossible coordinate jumps but does not auto-suspend rider
+  ---
+  duration_ms: 0.65949
+  type: 'test'
+  ...
+# Subtest: time-based quote API and optional policy fields are wired into backend source
+ok 56 - time-based quote API and optional policy fields are wired into backend source
+  ---
+  duration_ms: 7.886805
+  type: 'test'
+  ...
+1..56
+# tests 56
+# suites 0
+# pass 56
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 232.997512
