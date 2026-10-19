@@ -35,10 +35,12 @@ services:
       READINESS_PROBE_TOKEN: ${READINESS_PROBE_TOKEN:-}
       HOST: 0.0.0.0
       PORT: '3090'
-      GOOGLE_ROUTES_API_KEY: ${GOOGLE_ROUTES_API_KEY:-}
       ENABLE_PREPAID_CREDITS: ${ENABLE_PREPAID_CREDITS:-false}
       ROUTING_OSRM_URL: ${ROUTING_OSRM_URL:-}
-      ROUTING_OSRM_PROFILES_JSON: '${ROUTING_OSRM_PROFILES_JSON:-{"car":"driving","motorcycle":"driving","pickup":"driving","van":"driving"}}' 
+      ROUTING_PROVIDER_PRIORITY: osrm
+      ROUTING_OSRM_PROFILES_JSON: '${ROUTING_OSRM_PROFILES_JSON:-{"car":"driving"}}'
+      GHANAPOSTGPS_LOOKUP_ENABLED: ${GHANAPOSTGPS_LOOKUP_ENABLED:-false}
+      GHANAPOSTGPS_LOOKUP_URL: ${GHANAPOSTGPS_LOOKUP_URL:-https://ghanapostgps.sperixlabs.org}
     ports: ["127.0.0.1:3090:3090"]
     depends_on:
       migrate: {condition: service_completed_successfully}

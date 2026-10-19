@@ -20,7 +20,7 @@ Commands: `npm run test:unit`, `npm run test:security`, `npm test` (needs runnin
 
 # ELESEND — Cash-first Ghana logistics (Android / iOS)
 
-**Engineering source candidate · 17 October 2026 · RELEASE HOLD — NOT READY FOR REAL-MONEY PUBLIC OPERATIONS**
+**Engineering source candidate · 17 October 2026 · Not production verified**
 
 This archive contains an independent **React Native/Expo Android/iOS app** (`apps/mobile`) and a **Node.js modular-monolith JSON API** (`services/api`) to run on a **provider-neutral VPS**. No ELESEND customer web portal is deployed. The API serves native apps and future authorized business clients; it does not depend on ELEMARKET. All monetary integers represent **GH₵ pesewas**; the platform does not claim to hold cash merely because a rider reports receiving it.
 
@@ -31,7 +31,7 @@ This archive contains an independent **React Native/Expo Android/iOS app** (`app
 - **Settlement interface:** rider views outstanding commission vs prepaid credits, can initiate provider-neutral payment, and provider adapter contract requires independently **verified** provider event before journal posting. **No live PSP adapter is installed; commission payments correctly return HTTP 503 until configured.** Prepaid credits OFF by default and need legal/provider approval. Verified PSP repayment over-collections now remain in a distinct reconciliation liability instead of failing accounting or becoming automatic credits.
 - **Intelligent dispatch:** PostGIS staged eligible-rider searches, actual road ETA based ranking, direction evidence, request capacity, route stop insertion, expiration/acceptance under row locks, controlled multi-parcel delivery with per-shipment OTP. Multi-parcel default OFF until concurrency and custody test pass.
 - **Vehicle onboarding:** motorcycles and cars among typed vehicle categories. Cars need submitted plate/make/model and separate independent manual vehicle approval. Admin controls pilot limits via native operations screen; vehicle proof/document archive remains outstanding.
-- **Google integrations:** a backend **Google Routes REST adapter** and native **Google Maps** implementation with separate platform-specific SDK keys; Android/iOS Expo location tracking with permission checks. Other road-routing providers use an isolated adapter. **No live Google API call, device GPS measurement, or traffic accuracy validation was performed in this execution.** Google two-wheeler may have beta limitations.
+- **Private Ghana mapping:** MapLibre Native draws Ghana OpenStreetMap vector tiles served from the privately generated MBTiles package. The backend registers self-hosted OSRM only; the included road graph uses a car profile. GhanaPostGPS digital-address lookup is optional and disabled by default. See [`documentation/private-ghana-mapping.md`](documentation/private-ghana-mapping.md) for setup, attribution, costs and remaining limits.
 - **Portable VPS:** example isolated PostGIS 18, Node API, TLS reverse proxy, encrypted remote backups script, disk monitor; not deployed/tested here. Redis is optional and not authoritative; no independent service required for pilot.
 
 ## Get started in a NON-PRODUCTION development environment
@@ -41,7 +41,7 @@ Prerequisites: Node.js 22.16+; PostgreSQL with PostGIS for database routes; npm 
 ```bash
 npm ci
 cp .env.example .env
-# Configure DATABASE_URL, 64-hex OTP_KEY, Google Routes API or controlled OSRM endpoint.
+# Configure DATABASE_URL, 64-hex OTP_KEY and the private map environment as described in documentation/private-ghana-mapping.md.
 npm run db:migrate
 npm run admin:create    # with an authorized ADMIN_PHONE / ADMIN_PASSWORD
 npm run test:unit
@@ -55,13 +55,13 @@ Native app:
 ```bash
 cd apps/mobile
 npm install
-cp .env.example .env  # HTTPS backend API and app-restricted native Google Maps SDK keys
+cp .env.example .env  # HTTPS API and your private vector tile URL
 npx expo install --check
 npx expo run:android     # requires actual native Android toolchain
 # iOS requires an eligible Apple/macOS build environment or hosted EAS build.
 ```
 
-The Expo app is source-level ONLY; compilation, install/signing, permissions and performance remain unverified. Use real-device builds to assess Android background location restrictions, phone battery/thermal load and Google API billing. Do not put the server-side Routes API key in an APK.
+The Expo app remains source-level until built and checked on devices. The private map uses no Google map or route API calls. Follow the OpenStreetMap attribution and ODbL requirements; hosting, storage, bandwidth, TLS and server operations still cost money.
 
 ### Source layout
 

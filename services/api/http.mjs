@@ -5,7 +5,7 @@ import {network} from './network.mjs';
 import {vehicleService} from './vehicle.mjs';
 import {clientIp} from './client-ip.mjs';
 import {marketService} from './markets.mjs';
-export function httpServer(db,app,dispatcher,finance,checkout=null){const net=network(db),vehicles=vehicleService(db),markets=marketService(db);return createServer(async(req,res)=>{
+export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null}={}){const net=network(db),vehicles=vehicleService(db),markets=marketService(db);return createServer(async(req,res)=>{
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
  res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
  const send=(code,body)=>{res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(body));};
@@ -18,6 +18,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null){const net=ne
    check(secret&&secret.length>=32&&equal(req.headers['x-elesend-health-token'],secret),404,'Endpoint not found');
    await db.query('SELECT 1');send(200,{status:'ready'});return;
   }
+  if(!path.startsWith('/api/v1/'))check(false,404,'Endpoint not found');
   await limit(db,'http:'+clientIp(req),300,60);
   let body={},rawBody=Buffer.alloc(0);if(method==='POST'){
    check((req.headers['content-type']??'').split(';')[0]==='application/json',415,'JSON required');let size=0;const parts=[];
@@ -48,6 +49,14 @@ export function httpServer(db,app,dispatcher,finance,checkout=null){const net=ne
   else if(method==='POST'&&/^\/api\/v1\/shipments\/[0-9a-f-]+\/checkout$/.test(path)){check(checkout,503);result=await checkout.initiate(actor,path.split('/')[4],body);}
   else if(method==='GET'&&/^\/api\/v1\/shipments\/[0-9a-f-]+\/checkout$/.test(path)){check(checkout,503);result=await checkout.status(actor,path.split('/')[4]);}
   else if(method==='GET'&&path==='/api/v1/me')result=actor;
+  else if(method==='GET'&&path==='/api/v1/maps/config')result={renderer:'private',routing:'osrm',ghanaPostGpsLookup:Boolean(ghanaPostGps)};
+  else if(method==='POST'&&path==='/api/v1/maps/ghana-address'){
+   check(ghanaPostGps,503,'GhanaPostGPS address lookup is disabled');
+   check(['customer','business'].includes(actor.kind)&&!actor.api_client_id,403,'Customer or business account required');
+   check(body&&typeof body==='object'&&!Array.isArray(body)&&Object.keys(body).length===1&&typeof body.address==='string',400,'Provide only a GhanaPostGPS address');
+   await limit(db,'ghana-address:user:'+actor.id,5,60);await limit(db,'ghana-address:global',100,3600);
+   result=await ghanaPostGps(body.address);
+  }
   else if(method==='POST'&&path==='/api/v1/quotes')result=await app.quote(actor,body);
   else if(method==='POST'&&path==='/api/v1/shipments')result=await app.book(actor,body,req.headers['idempotency-key']);
   else if(method==='GET'&&path==='/api/v1/shipments')result=await app.list(actor);

@@ -3,7 +3,8 @@ import {platform} from './platform.mjs';
 import {httpServer} from './http.mjs';
 import {dispatchEngine} from './dispatch.mjs';
 import {osrmRouting} from './dispatch-routing.mjs';
-import {googleRouting} from './google-routing.mjs';
+import {privateRoutingPriority} from './infrastructure/maps/PrivateRoutingPolicy.mjs';
+import {configuredGhanaPostGps} from './providers/ghanapostgps.mjs';
 import {financeService} from './finance.mjs';
 import {checkoutService} from './checkout.mjs';
 import {paystackCheckout} from './paystack-checkout-adapter.mjs';
@@ -13,9 +14,9 @@ if(process.env.NODE_ENV==='production'){
  if(process.env.ADMIN_MFA_ENCRYPTION_KEY.toLowerCase()===(process.env.OTP_KEY??'').toLowerCase())throw Error('OTP and admin MFA master keys must be independent');
 }
 const db=database();await db.query('SELECT 1');
-// Explicit profiles prevent accidentally routing bicycles as cars. Configure a proven
-// matching OSRM network for every enabled vehicle before using it operationally.
-const routing=process.env.GOOGLE_ROUTES_API_KEY?googleRouting({apiKey:process.env.GOOGLE_ROUTES_API_KEY}):process.env.ROUTING_OSRM_URL?osrmRouting({endpoint:process.env.ROUTING_OSRM_URL,profiles:JSON.parse(process.env.ROUTING_OSRM_PROFILES_JSON??'{"car":"driving","motorcycle":"driving","pickup":"driving","van":"driving"}') }):null;
+// Only self-hosted OSRM is registered; paid routing keys cannot become a fallback.
+privateRoutingPriority();
+const routing=process.env.ROUTING_OSRM_URL?osrmRouting({endpoint:process.env.ROUTING_OSRM_URL,profiles:JSON.parse(process.env.ROUTING_OSRM_PROFILES_JSON??'{"car":"driving"}') }):null;
 // Routing absence disables quote and dispatch, not authentication/history.
 const dispatch=routing?dispatchEngine(db,{routing}):null;
 const sms=process.env.SMS_GATEWAY_ENDPOINT?httpsSmsGateway({endpoint:process.env.SMS_GATEWAY_ENDPOINT,allowedHost:process.env.SMS_GATEWAY_ALLOWED_HOST,token:process.env.SMS_GATEWAY_TOKEN}):null;
@@ -23,7 +24,7 @@ const app=platform(db,{otpKey:process.env.OTP_KEY,routing,dispatch,sms});
 const paymentProvider=process.env.PAYSTACK_SECRET_KEY?paystackCheckout({secretKey:process.env.PAYSTACK_SECRET_KEY,allowedMethods:(process.env.PAYSTACK_ENABLED_METHODS??'MOMO,CARD').split(',').map(s=>s.trim())}):null;
 const finance=financeService(db,{provider:paymentProvider});
 const checkout=checkoutService(db,{provider:paymentProvider});
-const server=httpServer(db,app,dispatch,finance,checkout);
+const server=httpServer(db,app,dispatch,finance,checkout,{ghanaPostGps:configuredGhanaPostGps()});
 const port=Number(process.env.PORT??3090);
 server.listen(port,process.env.HOST??'127.0.0.1',()=>console.log(`ELESEND listening port ${port}; dispatch ${dispatch?'enabled':'disabled'}; SMS ${sms?'configured':'disabled'}; digital checkout ${paymentProvider?'configured':'disabled'}`));
 // Polling worker is safe under multiple processes: PostgreSQL unique indexes,

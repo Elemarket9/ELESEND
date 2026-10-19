@@ -1,0 +1,54 @@
+schema_name: ELESEND Ghana
+schema_description: Private OSM roads, inland water, land use, buildings and settlements
+attribution: © OpenStreetMap contributors
+version: 1
+args:
+  osm_local_path: ghana-latest.osm.pbf
+  minzoom: 0
+  maxzoom: 14
+sources:
+  osm:
+    type: osm
+    local_path: '${ args.osm_local_path }'
+layers:
+  - id: roads
+    features:
+      - source: osm
+        geometry: line
+        min_zoom: 6
+        include_when:
+          highway: [motorway, trunk, primary, secondary, tertiary, unclassified, residential, living_street, service, motorway_link, trunk_link, primary_link, secondary_link, tertiary_link, track, path, footway, cycleway]
+        attributes:
+          - {key: class, tag_value: highway}
+          - {key: name, tag_value: name, min_zoom: 12}
+  - id: water
+    features:
+      - source: osm
+        geometry: polygon
+        min_zoom: 6
+        include_when:
+          natural: water
+  - id: landuse
+    features:
+      - source: osm
+        geometry: polygon
+        min_zoom: 9
+        include_when:
+          landuse: [forest, grass, meadow, recreation_ground, village_green, farmland, orchard]
+  - id: building
+    features:
+      - source: osm
+        geometry: polygon
+        min_zoom: 12
+        include_when:
+          building: __any__
+  - id: places
+    features:
+      - source: osm
+        geometry: point
+        min_zoom: 6
+        include_when:
+          place: [city, town, village, suburb, neighbourhood]
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: class, tag_value: place}

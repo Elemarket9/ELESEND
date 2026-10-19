@@ -1,6 +1,6 @@
 import React,{useEffect,useState,useRef} from 'react';
 import {View,Text,TextInput,Pressable,ScrollView,StyleSheet,Alert,ActivityIndicator,AppState,Platform,Linking} from 'react-native';
-import MapView,{Marker,PROVIDER_GOOGLE} from 'react-native-maps';
+import MapView,{Marker,MAP_RENDERER} from './src/maps/map-adapter';
 import QRCode from 'react-native-qrcode-svg';
 import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
@@ -26,13 +26,15 @@ export default function App(){
  const [offlineCopy,setOfflineCopy]=useState(null),[algorithmFeatures,setAlgorithmFeatures]=useState([]),[maxParcelsInput,setMaxParcelsInput]=useState('2'),[markets,setMarkets]=useState([]),[newCountry,setNewCountry]=useState(''),[newCurrency,setNewCurrency]=useState(''),[riskSignals,setRiskSignals]=useState([]),[riskReason,setRiskReason]=useState('');
  const [finance,setFinance]=useState(null),[payAmount,setPayAmount]=useState(''),[cashAmount,setCashAmount]=useState(''),[reportedCash,setReportedCash]=useState({}),[adminFinances,setAdminFinances]=useState(null),[adjustments,setAdjustments]=useState([]),[adminRider,setAdminRider]=useState(''),[adminLimit,setAdminLimit]=useState('40.00'),[adminDueDays,setAdminDueDays]=useState('7'),[adminMaxJobs,setAdminMaxJobs]=useState('20'),[correctionAmount,setCorrectionAmount]=useState(''),[correctionReason,setCorrectionReason]=useState('');
  const [phoneChallenge,setPhoneChallenge]=useState(null),[phoneCode,setPhoneCode]=useState(''),[phoneStatus,setPhoneStatus]=useState(null);
+ const [ghanaAddress,setGhanaAddress]=useState(''),[ghanaAddressLookup,setGhanaAddressLookup]=useState(false);const addressLookupEpoch=useRef(0),mapRef=useRef(null);
  const [paymentMethods,setPaymentMethods]=useState([{method:'CASH',enabled:true}]),[paymentEmail,setPaymentEmail]=useState(''),[checkoutSession,setCheckoutSession]=useState(null),[adminPaymentMethods,setAdminPaymentMethods]=useState([]);
  const [activeParcel,setActiveParcel]=useState(null),[challenge,setChallenge]=useState(null),[otp,setOtp]=useState(''),[reason,setReason]=useState('Unable to complete pickup');const watch=useRef(null);
- const edit=(key,value)=>setCredentials(v=>({...v,[key]:value}));const update=(key,value)=>{setBooking(v=>({...v,[key]:value}));setQuoted(null);};
+ const edit=(key,value)=>setCredentials(v=>({...v,[key]:value}));const update=(key,value)=>{if(key==='pickup'||key==='destination')addressLookupEpoch.current++;setBooking(v=>({...v,[key]:value}));setQuoted(null);};
  const execute=async task=>{if(busy)return;setBusy(true);await safe(task,setError);setBusy(false);};
  useEffect(()=>{(async()=>{const token=await loadToken();if(token){try{setAuth(await call('GET','/api/v1/me'));}catch{await clearToken();}}
   setLoading(false);})().catch(()=>setLoading(false));},[]);
  useEffect(()=>{if(!auth)return;call('GET','/api/v1/payments/methods').then(setPaymentMethods).catch(()=>setPaymentMethods([{method:'CASH',enabled:true}]));},[auth]);
+ useEffect(()=>{let cancelled=false;addressLookupEpoch.current++;setGhanaAddressLookup(false);setGhanaAddress('');if(auth)call('GET','/api/v1/maps/config').then(v=>{if(!cancelled)setGhanaAddressLookup(v.ghanaPostGpsLookup===true);}).catch(()=>{});return()=>{cancelled=true;};},[auth]);
  useEffect(()=>{if(!auth||auth.kind!=='rider')return;let cancelled=false;
   const get=async()=>{if(cancelled)return;try{const [m,o,v]=await Promise.all([call('GET','/api/v1/rider/manifest'),call('GET','/api/v1/rider/offers').catch(()=>[]),call('GET','/api/v1/rider/vehicle')]);if(!cancelled){setManifest(m);setOffers(o);setVehicle(v);setOnline(v.online);setOfflineCopy(null);cacheJobs(auth.id,m).catch(()=>{});}}catch(e){if(!cancelled)setError(e.message);}};
   readCachedJobs(auth.id).then(x=>{if(x&&!cancelled)setOfflineCopy(x);}).catch(()=>{});
@@ -72,6 +74,8 @@ export default function App(){
  async function verifyStop(s,kind){if(!isStationary(speed))throw Error('Stop safely before verification');const c=await call('POST',`/api/v1/shipments/${s.id}/${kind}-challenge`,{});setActiveParcel({...s,kind});setChallenge(c);setOtp('');}
  async function completeOtp(){await call('POST',`/api/v1/shipments/${activeParcel.id}/verify`,{challengeId:challenge.challengeId,code:otp});setChallenge(null);setActiveParcel(null);setOtp('');}
  async function price(){const b=booking;const input={pickup:b.pickup,destination:b.destination,recipientPhone:b.recipientPhone,weightG:Number(b.weightG),description:b.description,parcelCategory:b.parcelCategory,parcelSize:b.parcelSize,paymentMethod:b.paymentMethod,cashPayer:b.cashPayer};setQuoted(await call('POST','/api/v1/quotes',input));}
+ async function findGhanaPostGpsAddress(){const epoch=++addressLookupEpoch.current;const result=await call('POST','/api/v1/maps/ghana-address',{address:ghanaAddress});if(epoch!==addressLookupEpoch.current)return;
+  if(!result.found)throw Error('GhanaPostGPS could not find that address');const target=booking.pickup?'destination':'pickup',pin={latitude:result.latitude,longitude:result.longitude,address:`${result.address}${result.label?` • ${result.label}`:''}`};update(target,pin);mapRef.current?.animateToRegion({latitude:pin.latitude,longitude:pin.longitude,latitudeDelta:.012,longitudeDelta:.012},500);setError('Review and adjust the map pin to the exact entrance before booking.');}
  async function startCheckout(shipment){
   let existing=null;try{existing=await call('GET',`/api/v1/shipments/${shipment.id}/checkout`);}catch{}
   const res=existing&&['pending','confirmed','initiating'].includes(existing.status)?existing:await call('POST',`/api/v1/shipments/${shipment.id}/checkout`,{idempotencyKey:Crypto.randomUUID(),...(paymentEmail?{email:paymentEmail.trim()}: {})});
@@ -162,7 +166,8 @@ export default function App(){
   </Card>}
   {tab==='Home'&&['customer','business'].includes(auth.kind)&&<Card>{heading(['Pickup & destination','Parcel & recipient','Check availability & price'][step])}
    {step===0&&<>{note('Tap the map first for pickup, then tap again for the delivery destination. This is a native map—not a website.')}
-    <MapView provider={PROVIDER_GOOGLE} style={{height:290,borderRadius:15}} initialRegion={{latitude:5.6037,longitude:-0.187,latitudeDelta:.14,longitudeDelta:.14}} onPress={selectOnMap}>
+    {ghanaAddressLookup&&<>{field('GhanaPostGPS address (e.g. AK-484-9321)',ghanaAddress,value=>{addressLookupEpoch.current++;setGhanaAddress(value);},{autoCapitalize:'characters'})}{smallButton(booking.pickup?'Find address and set destination':'Find address and set pickup',()=>execute(findGhanaPostGpsAddress),busy||!ghanaAddress.trim())}{note('The returned address center is approximate. Review the pin and move it to the exact entrance before booking.')}</>}
+    <MapView ref={mapRef} provider={MAP_RENDERER} style={{height:290,borderRadius:15}} initialRegion={{latitude:5.6037,longitude:-0.187,latitudeDelta:.14,longitudeDelta:.14}} onPress={selectOnMap}>
      {booking.pickup&&<Marker coordinate={booking.pickup} title="Pickup" pinColor="green"/>}{booking.destination&&<Marker coordinate={booking.destination} title="Drop-off"/>}
     </MapView>{note(`Pickup: ${booking.pickup?.address||'Tap map'}`)}{note(`Destination: ${booking.destination?.address||'Tap map'}`)}
     {smallButton('Reset map locations',()=>{update('pickup',null);update('destination',null);})}{smallButton('Next: parcel details',()=>setStep(1),!booking.pickup||!booking.destination)}</>}

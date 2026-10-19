@@ -9,6 +9,7 @@ import {network} from '../services/api/network.mjs';
 import {dispatchEngine} from '../services/api/dispatch.mjs';
 import {fixtureRouting} from '../services/api/dispatch-routing.mjs';
 import {haversine} from '../services/api/dispatch-geometry.mjs';
+import {resetDispatchFixtures} from './helpers/reset-dispatch-fixtures.mjs';
 const url=process.env.TEST_DATABASE_URL;
 if(!url||!/^elesend_test(?:_|$)/.test(new URL(url).pathname.slice(1)))throw Error('TEST_DATABASE_URL must point to a dedicated elesend_test database');
 const db=database(url),messages=[];
@@ -22,7 +23,7 @@ const rejects=(fn,status)=>assert.rejects(fn,e=>e.status===status);
 async function account(phone,kind='customer',extra={}){return app.register({phone,password:pw,kind,...extra});}
 async function shipment(who=customer){const q=await app.quote(who,request);return app.book(who,{quoteId:q.id},randomUUID());}
 async function pay(sh){return app.paymentConfirmed({provider:'unit-test-adapter',eventId:randomUUID(),shipmentId:sh.id,amountMinor:sh.amount_minor,currency:'GHS'});}
-before(async()=>{await migrate(db);await db.query('TRUNCATE users,pricing_policies RESTART IDENTITY CASCADE');
+before(async()=>{await migrate(db);await db.query('TRUNCATE users,pricing_policies RESTART IDENTITY CASCADE');await resetDispatchFixtures(db);
  admin=await account('0200000001');await db.query("UPDATE users SET kind='admin' WHERE id=$1",[admin.id]);admin.kind='admin';for(const p of ['verification:write','pricing:write','shipments:read','dispatch:configure'])await db.query('INSERT INTO permissions VALUES($1,$2)',[admin.id,p]);
  customer=await account('0200000002');other=await account('0200000003');r1=await account('0200000004','rider');r2=await account('0200000005','rider');company=await account('0200000006','company',{name:'Company A'});company2=await account('0200000007','company',{name:'Company B'});
  await app.setPricing(admin,{baseMinor:1000,perKmMinor:100,commissionBps:1234});

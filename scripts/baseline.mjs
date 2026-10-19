@@ -2,10 +2,10 @@ import {execFileSync} from 'node:child_process';
 import {readFileSync,writeFileSync,existsSync,mkdirSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {resolve} from 'node:path';
-const root=resolve(import.meta.dirname,'../..');
+const root=resolve(import.meta.dirname,'..');
 const file=resolve(import.meta.dirname,'../documentation/source-baseline.json');
 const hash=b=>createHash('sha256').update(b).digest('hex');
-const paths=execFileSync('git',['ls-files','-z'],{cwd:root}).toString().split('\0').filter(Boolean).filter(p=>!/^Elesend\//i.test(p));
+const paths=execFileSync('git',['ls-files','-z'],{cwd:root}).toString().split('\0').filter(Boolean).filter(p=>!/^Elesend\//i.test(p)).filter(p=>existsSync(resolve(root,p)));
 const files=Object.fromEntries(paths.map(p=>[p,hash(readFileSync(resolve(root,p)))]));
 if(existsSync(file)) {
  const previous=JSON.parse(readFileSync(file));

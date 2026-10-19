@@ -10,13 +10,14 @@ npm install
 npx expo install --check
 cp .env.example .env
 # EXPO_PUBLIC_ELESEND_API_BASE_URL=https://api.your-controlled-domain
-# GOOGLE_ANDROID_MAPS_SDK_KEY and GOOGLE_IOS_MAPS_SDK_KEY are build-time
-# app-restricted keys in app.config.js; NEVER embed the server Routes key.
+# EXPO_PUBLIC_ELESEND_VECTOR_TILE_URL=https://maps.your-controlled-domain/tiles/{z}/{x}/{y}.pbf
 npx expo run:android        # Android Studio and native build tools required
 # iOS: supported macOS/Xcode installation or EAS cloud build and Apple credentials.
 ```
 
-**Native SDK:** Expo SDK 54 / React 19.1 / React Native 0.81.5 and bundled Expo modules. SDK versions are provisional until Expo's `--check` passes in a networked build environment. Phone hardware testing, GPS permissions, store publication and app signing were not performed here.
+**Native SDK:** Expo SDK 54 / React 19.1 / React Native 0.81.5, MapLibre Native 10.4.2 and bundled Expo modules. The map uses only the configured ELESEND vector tile server. Phone hardware testing, GPS permissions, store publication and app signing were not performed here.
+
+The development Android emulator can use `http://10.0.2.2:3145/tiles/{z}/{x}/{y}.pbf`. Real phones require an HTTPS map URL on a server you control. See [`../../documentation/private-ghana-mapping.md`](../../documentation/private-ghana-mapping.md) for data preparation, tile hosting, OSRM routing and OpenStreetMap attribution.
 
 ### Customer
 
@@ -37,7 +38,7 @@ Encrypted limited read-only delivery and manifest snapshot in OS secure storage.
 ### Release gaps
 
 - Delivery OTP SMS adapter, actual PSP MoMo collection, refund/reconciliation and push notification workers missing.
-- Google Maps native keys and backend Routes quota/sandbox credentials not installed; no road ETA in Ghana verified.
+- The OSRM car profile and self-hosted Ghana road graph need a runtime validation; motorcycles and other vehicle profiles are not verified.
 - Production-grade proof-of-person/vehicle, PIN/MFA for finance admins, device GPS anti-spoof evidence, COD merchandise remittances and live cash dispute processing not implemented.
 - Build native APK/IPA and validate on real low-end Ghana Android devices, mobile background tracking and iOS permissions before public launch.
 
@@ -45,4 +46,4 @@ Encrypted limited read-only delivery and manifest snapshot in OS secure storage.
 
 `App.js` now includes native choices for CASH / MOMO / CARD / QR, conditional on authorized administrator activation and configured verified PSP adapter. Digital bookings stay unpaid until provider verification. QR uses `react-native-qrcode-svg` and the Expo 54 compatible `react-native-svg` dependency; `metro.config.js` enables the QR text transformer. It displays a checkout **URL** as a QR, not a Ghana GhQR merchant barcode. The QR can be scanned by a second device, or payer may use Open secure checkout.
 
-Install new React Native dependencies with an internet-connected Android/iOS build environment; an actual APK/IPA is required before considering the payment UX working. Backend never accepts card PIN/PAN/CVV. Checkout uses hosted PSP infrastructure from the mobile app.
+Backend never accepts card PIN/PAN/CVV. Checkout uses hosted PSP infrastructure from the mobile app.

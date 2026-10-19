@@ -6,6 +6,7 @@ import {migrate} from '../scripts/migrate.mjs';
 import {platform} from '../services/api/platform.mjs';
 import {dispatchEngine} from '../services/api/dispatch.mjs';
 import {fixtureRouting} from '../services/api/dispatch-routing.mjs';
+import {resetDispatchFixtures} from './helpers/reset-dispatch-fixtures.mjs';
 const url=process.env.TEST_DATABASE_URL;
 if(!url||!/^elesend_test(?:_|$)/.test(new URL(url).pathname.slice(1)))throw Error('Dedicated elesend_test database required');
 const db=database(url);
@@ -32,7 +33,7 @@ async function paid(sender){const q=await app.quote(sender,req),sh=await app.boo
 const rejects=(f,status)=>assert.rejects(f,e=>e.status===status);
 test('PostGIS discovery -> simulated road ETA -> exclusive offer -> OTP custody -> exact-once earnings',async()=>{
  try{
- await migrate(db);await db.query('TRUNCATE users,pricing_policies RESTART IDENTITY CASCADE');
+ await migrate(db);await db.query('TRUNCATE users,pricing_policies RESTART IDENTITY CASCADE');await resetDispatchFixtures(db);
  const admin=await account(1);await db.query("UPDATE users SET kind='admin' WHERE id=$1",[admin.id]);admin.kind='admin';
  await db.query("INSERT INTO permissions VALUES($1,'pricing:write'),($1,'verification:write'),($1,'dispatch:configure')",[admin.id]);
  await app.setPricing(admin,{baseMinor:1800,perKmMinor:110,commissionBps:300});

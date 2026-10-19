@@ -7,6 +7,7 @@ import {migrate} from '../scripts/migrate.mjs';
 import {platform} from '../services/api/platform.mjs';
 import {checkoutService} from '../services/api/checkout.mjs';
 import {paystackCheckout} from '../services/api/paystack-checkout-adapter.mjs';
+import {resetDispatchFixtures} from './helpers/reset-dispatch-fixtures.mjs';
 const url=process.env.TEST_DATABASE_URL;
 if(!url||!/^elesend_test(?:_|$)/.test(new URL(url).pathname.slice(1)))throw Error('Dedicated elesend_test database required');
 const db=database(url);
@@ -35,7 +36,7 @@ const createJob=async(method,who=customer)=>{
 const signedBody=ref=>{const raw=Buffer.from(JSON.stringify({event:'charge.success',data:{reference:ref,amount:1}}));return [raw,{'x-paystack-signature':createHmac('sha512',key).update(raw).digest('hex')}];};
 before(async()=>{
  await migrate(db);
- await db.query('TRUNCATE users,pricing_policies RESTART IDENTITY CASCADE');
+ await db.query('TRUNCATE users,pricing_policies RESTART IDENTITY CASCADE');await resetDispatchFixtures(db);
  await db.query("UPDATE checkout_method_policies SET enabled=(method='CASH'),updated_by=NULL");
  admin=await app.register({phone:'0241111301',password:'Long-test-password-for-payments',kind:'customer'});
  await db.query("UPDATE users SET kind='admin' WHERE id=$1",[admin.id]);admin.kind='admin';

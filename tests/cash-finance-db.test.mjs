@@ -8,6 +8,7 @@ import {platform} from '../services/api/platform.mjs';
 import {dispatchEngine} from '../services/api/dispatch.mjs';
 import {financeService,cashEligible} from '../services/api/finance.mjs';
 import {fixtureRouting} from '../services/api/dispatch-routing.mjs';
+import {resetDispatchFixtures} from './helpers/reset-dispatch-fixtures.mjs';
 const url=process.env.TEST_DATABASE_URL;
 if(!url||!/^elesend_test(?:_|$)/.test(new URL(url).pathname.slice(1)))throw Error('Dedicated elesend_test PostgreSQL required');
 const db=database(url),messages=[];
@@ -38,7 +39,7 @@ async function passOtp(job,purpose){const code=await app.challenge(rider,job.id,
 async function deliver(job,cash=3000){await assign(job);await passOtp(job,'pickup');await app.transition(rider,job.id,{action:'start'});
  const report=await finance.reportCash(rider,job.id,{reportedMinor:cash,cashPayer:'recipient',idempotencyKey:randomUUID()});
  assert.equal(report.cashVerifiedByPlatform,false);await passOtp(job,'delivery');return report;}
-before(async()=>{await migrate(db);await db.query('TRUNCATE users,pricing_policies RESTART IDENTITY CASCADE');
+before(async()=>{await migrate(db);await db.query('TRUNCATE users,pricing_policies RESTART IDENTITY CASCADE');await resetDispatchFixtures(db);
  admin=await account('0200000880');admin2=await account('0200000881');for(const person of [admin,admin2]){await db.query("UPDATE users SET kind='admin' WHERE id=$1",[person.id]);person.kind='admin';for(const perm of ['verification:write','pricing:write','dispatch:configure','finance:configure','finance:read','finance:adjust','finance:approve'])await db.query('INSERT INTO permissions(user_id,permission) VALUES($1,$2)',[person.id,perm]);}
  customer=await account('0200000882');rider=await account('0200000883','rider');other=await account('0200000884','rider');
  await app.approve(admin,'riders',rider.id,'approved');await app.availability(rider,{online:true});await app.setPricing(admin,{baseMinor:3000,perKmMinor:1,commissionBps:1000});

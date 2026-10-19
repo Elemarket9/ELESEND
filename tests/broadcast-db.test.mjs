@@ -11,6 +11,7 @@ import {platform} from '../services/api/platform.mjs';
 import {dispatchEngine} from '../services/api/dispatch.mjs';
 import {financeService} from '../services/api/finance.mjs';
 import {fixtureRouting} from '../services/api/dispatch-routing.mjs';
+import {resetDispatchFixtures} from './helpers/reset-dispatch-fixtures.mjs';
 const databaseUrl=process.env.TEST_DATABASE_URL;
 if(!databaseUrl||!/^elesend_test(?:_|$)/.test(new URL(databaseUrl).pathname.slice(1)))throw Error('Dedicated elesend_test database required');
 const db=database(databaseUrl),messages=[];
@@ -25,6 +26,7 @@ const newAccount=async(number,kind='customer')=>app.register({phone:number,passw
 test('broadcast to all matching riders: first valid accept wins; 3% posted exactly once on secure handover',async()=>{
  try{
   await migrate(db);await db.query('TRUNCATE users,pricing_policies RESTART IDENTITY CASCADE');
+  await resetDispatchFixtures(db);
   const administrator=await newAccount('0240000911'),customer=await newAccount('0240000912'),A=await newAccount('0240000913','rider'),B=await newAccount('0240000914','rider');
   await db.query("UPDATE users SET kind='admin' WHERE id=$1",[administrator.id]);administrator.kind='admin';
   await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'pricing:write'),($1,'verification:write'),($1,'dispatch:configure')",[administrator.id]);

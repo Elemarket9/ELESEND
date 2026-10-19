@@ -7,6 +7,7 @@ import {platform} from '../services/api/platform.mjs';
 import {dispatchEngine} from '../services/api/dispatch.mjs';
 import {vehicleService} from '../services/api/vehicle.mjs';
 import {fixtureRouting} from '../services/api/dispatch-routing.mjs';
+import {resetDispatchFixtures} from './helpers/reset-dispatch-fixtures.mjs';
 const url=process.env.TEST_DATABASE_URL;
 if(!url||!/^elesend_test(?:_|$)/.test(new URL(url).pathname.slice(1)))throw Error('A disposable dedicated elesend_test database is mandatory');
 const db=database(url);
@@ -21,7 +22,7 @@ async function paid(sender,p,dest,weightG){const q=await app.quote(sender,{picku
 async function handover(rider,shipmentId,kind){const ch=await app.challenge(rider,shipmentId,kind);const one=sms.at(-1);assert.equal(one.challengeId,ch.challengeId);await app.verify(rider,shipmentId,{challengeId:ch.challengeId,code:one.code});}
 test('PostGIS: verified car driver accepts two bound parcels; driver route order, OTP and payouts remain independent',async()=>{
  try{
-  await migrate(db);await db.query('TRUNCATE users,pricing_policies RESTART IDENTITY CASCADE');
+  await migrate(db);await db.query('TRUNCATE users,pricing_policies RESTART IDENTITY CASCADE');await resetDispatchFixtures(db);
   const admin=await user(1);await db.query("UPDATE users SET kind='admin' WHERE id=$1",[admin.id]);admin.kind='admin';
   await db.query("INSERT INTO permissions VALUES($1,'verification:write'),($1,'pricing:write'),($1,'dispatch:configure')",[admin.id]);
   await app.setPricing(admin,{baseMinor:1500,perKmMinor:110,commissionBps:300});
