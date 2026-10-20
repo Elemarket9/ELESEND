@@ -6,7 +6,15 @@ export function fail(status,message){throw Object.assign(Error(message),{status}
 export function check(ok,status=409,message='Operation not permitted'){if(!ok)fail(status,message);}
 export function phone(v){const s=String(v).replace(/[\s()-]/g,'');const p=s.startsWith('0')?'+233'+s.slice(1):s;check(/^\+233[25]\d{8}$/.test(p),400,'Valid Ghana phone required');return p;}
 export async function passwordHash(password){const salt=randomBytes(16).toString('hex');return salt+':'+Buffer.from(await scrypt(password,salt,64)).toString('hex');}
-export async function passwordMatches(password,stored){const [salt,digest]=stored.split(':');return timingSafeEqual(Buffer.from(await scrypt(password,salt,64)),Buffer.from(digest,'hex'));}
+export async function passwordMatches(password,stored){
+ if(!stored||typeof stored!=='string'||!stored.includes(':'))return false;
+ const [salt,digest]=stored.split(':');
+ if(!salt||!digest||digest.length!==128)return false;
+ try{
+  const derived=Buffer.from(await scrypt(password,salt,64));
+  return timingSafeEqual(derived,Buffer.from(digest,'hex'));
+ }catch{return false;}
+}
 export const newToken=()=>randomBytes(32).toString('hex');
 export const newCode=()=>randomInt(0,1000000).toString().padStart(6,'0');
 export function mac(secret,fields){return createHmac('sha256',Buffer.from(secret,'hex')).update(JSON.stringify(fields)).digest('hex');}

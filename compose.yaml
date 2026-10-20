@@ -30,6 +30,7 @@ services:
     environment:
       DATABASE_URL: ${DOCKER_DATABASE_URL:?Set database URL}
       OTP_KEY: ${OTP_KEY:?Set 64 hex characters}
+      ADMIN_MFA_ENCRYPTION_KEY: ${ADMIN_MFA_ENCRYPTION_KEY:?Set 64 hex characters}
       NODE_ENV: production
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
       READINESS_PROBE_TOKEN: ${READINESS_PROBE_TOKEN:-}

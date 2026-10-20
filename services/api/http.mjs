@@ -14,12 +14,19 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
  try{
   const path=new URL(req.url,'http://localhost').pathname,method=req.method;
 
+  if(method==='OPTIONS'){
+   res.setHeader('Access-Control-Allow-Origin','*');
+   res.setHeader('Access-Control-Allow-Methods','GET, POST, OPTIONS');
+   res.setHeader('Access-Control-Allow-Headers','Authorization, Content-Type, Idempotency-Key');
+   res.writeHead(204).end();return;
+  }
   if(path==='/health'&&method==='GET'){send(200,{status:'alive',service:'elesend'});return;}
   if(path==='/ready'&&method==='GET'){
    const secret=process.env.READINESS_PROBE_TOKEN;
    check(secret&&secret.length>=32&&equal(req.headers['x-elesend-health-token'],secret),404,'Endpoint not found');
    await db.query('SELECT 1');send(200,{status:'ready'});return;
   }
+  await limit(db,'http:'+clientIp(req),300,60);
   if(method==='GET'&&/^\/track\/[0-9a-f-]{36}$/i.test(path)){
    const data=await getPublicTracking(db,path.split('/')[2]);
    if(!data){res.writeHead(404,{'Content-Type':'text/html'});res.end('<!DOCTYPE html><html><body style="background:#0c1324;color:#fff;font-family:sans-serif;padding:30px;text-align:center;"><h2>Tracking link not found or expired</h2></body></html>');return;}
@@ -31,7 +38,6 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    send(200,data);return;
   }
   if(!path.startsWith('/api/v1/'))check(false,404,'Endpoint not found');
-  await limit(db,'http:'+clientIp(req),300,60);
   let body={},rawBody=Buffer.alloc(0);if(method==='POST'){
    check((req.headers['content-type']??'').split(';')[0]==='application/json',415,'JSON required');let size=0;const parts=[];
    for await(const part of req.iterator({destroyOnReturn:false})){size+=part.length;if(size>32768){res.setHeader('Connection','close');req.resume();check(false,413,'Request too large');}parts.push(part);}
@@ -145,7 +151,9 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    else if(method==='POST'&&action==='disputes')result=await app.dispute(actor,sid,body);
    else check(false,404,'Endpoint not found');
   }send(200,result);
- }catch(e){const status=e instanceof ZodError?400:e.status??(e.code==='23505'?409:500);send(status,{error:status===500?'Internal server error':e instanceof ZodError?'Invalid input':e.message});
+ }catch(e){const status=e instanceof ZodError?400:e.status??(e.code==='23505'?409:500);
+  const clientError=status===500?'Internal server error':e.code==='23505'?'Unique resource already exists':e instanceof ZodError?'Invalid input':e.message;
+  send(status,{error:clientError});
   if(status===500)process.stderr.write(JSON.stringify({level:'error',code:e.code??'internal',time:new Date().toISOString()})+'\n');
  }
 });}
