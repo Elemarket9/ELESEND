@@ -1,6 +1,6 @@
 import React,{useEffect,useState,useRef} from 'react';
 import {View,Text,TextInput,Pressable,ScrollView,StyleSheet,Alert,ActivityIndicator,AppState,Platform,Linking} from 'react-native';
-import MapView,{Marker,MAP_RENDERER} from './src/maps/map-adapter';
+import MapView,{Marker,RiderMarker,Polyline,MAP_RENDERER,openTurnByTurnNavigation} from './src/maps/map-adapter';
 import QRCode from 'react-native-qrcode-svg';
 import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
@@ -27,6 +27,7 @@ export default function App(){
  const [finance,setFinance]=useState(null),[payAmount,setPayAmount]=useState(''),[cashAmount,setCashAmount]=useState(''),[reportedCash,setReportedCash]=useState({}),[adminFinances,setAdminFinances]=useState(null),[adjustments,setAdjustments]=useState([]),[adminRider,setAdminRider]=useState(''),[adminLimit,setAdminLimit]=useState('40.00'),[adminDueDays,setAdminDueDays]=useState('7'),[adminMaxJobs,setAdminMaxJobs]=useState('20'),[correctionAmount,setCorrectionAmount]=useState(''),[correctionReason,setCorrectionReason]=useState('');
  const [phoneChallenge,setPhoneChallenge]=useState(null),[phoneCode,setPhoneCode]=useState(''),[phoneStatus,setPhoneStatus]=useState(null);
  const [ghanaAddress,setGhanaAddress]=useState(''),[ghanaAddressLookup,setGhanaAddressLookup]=useState(false);const addressLookupEpoch=useRef(0),mapRef=useRef(null);
+ const [placeQuery,setPlaceQuery]=useState(''),[placesList,setPlacesList]=useState([]);
  const [paymentMethods,setPaymentMethods]=useState([{method:'CASH',enabled:true}]),[paymentEmail,setPaymentEmail]=useState(''),[checkoutSession,setCheckoutSession]=useState(null),[adminPaymentMethods,setAdminPaymentMethods]=useState([]);
  const [activeParcel,setActiveParcel]=useState(null),[challenge,setChallenge]=useState(null),[otp,setOtp]=useState(''),[reason,setReason]=useState('Unable to complete pickup');const watch=useRef(null);
  const edit=(key,value)=>setCredentials(v=>({...v,[key]:value}));const update=(key,value)=>{if(key==='pickup'||key==='destination')addressLookupEpoch.current++;setBooking(v=>({...v,[key]:value}));setQuoted(null);};
@@ -89,7 +90,10 @@ export default function App(){
   catch(e){setError(`Booking ${r.id.slice(0,8)} awaits payment. ${e.message}. Re-open this order to retry or check status.`);}
  }
 
- function selectOnMap(position){if(step!==0)return;const center={latitude:position.nativeEvent.coordinate.latitude,longitude:position.nativeEvent.coordinate.longitude};update(booking.pickup?'destination':'pickup',{address:`Map pin ${center.latitude.toFixed(5)}, ${center.longitude.toFixed(5)}`,...center});}
+ async function runPlaceSearch(){if(placeQuery.trim().length<2)return;const res=await call('GET',`/api/v1/maps/search?q=${encodeURIComponent(placeQuery.trim())}`);setPlacesList(res||[]);}
+ function pickPlace(p){const target=booking.pickup?'destination':'pickup';const pin={latitude:p.latitude,longitude:p.longitude,address:`${p.name} • ${p.label}`};update(target,pin);mapRef.current?.animateToRegion({latitude:pin.latitude,longitude:pin.longitude,latitudeDelta:.012,longitudeDelta:.012},500);setPlacesList([]);setPlaceQuery('');}
+ function selectOnMap(position){if(step!==0)return;const center={latitude:position.nativeEvent.coordinate.latitude,longitude:position.nativeEvent.coordinate.longitude};const target=booking.pickup?'destination':'pickup';update(target,{address:`Map pin ${center.latitude.toFixed(5)}, ${center.longitude.toFixed(5)}`,...center});
+  call('GET',`/api/v1/maps/reverse?lat=${center.latitude}&lon=${center.longitude}`).then(res=>{if(res?.address)update(target,{address:res.address,...center});}).catch(()=>{});}
  if(loading)return <View style={styles.screen}><ActivityIndicator color={colors.accent}/></View>;
  return <View style={styles.screen}><ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
   <Text style={styles.brand}>ELESEND</Text>{note('Independent Ghana logistics • native Android/iOS pilot')}
@@ -157,20 +161,29 @@ export default function App(){
       {reportedCash[s.id]&&note(`Rider reported: ${ghc(reportedCash[s.id].reportedMinor)} (${reportedCash[s.id].status}). OTP still required.`)}
      </>}
      {s.state==='IN_TRANSIT'&&smallButton('Send recipient OTP at handover',()=>execute(()=>verifyStop(s,'delivery')),busy||!isStationary(speed)||!!offlineCopy)}
+     {s.state==='RIDER_ASSIGNED'&&s.pickup&&smallButton('🗺️ Turn-by-Turn to Pickup (Google Maps / Waze)',()=>openTurnByTurnNavigation({latitude:s.pickup.latitude,longitude:s.pickup.longitude,label:`Pickup ${s.id.slice(0,8)}`}))}
+     {['IN_TRANSIT','PICKUP_VERIFIED'].includes(s.state)&&s.destination&&smallButton('🗺️ Turn-by-Turn to Delivery (Google Maps / Waze)',()=>openTurnByTurnNavigation({latitude:s.destination.latitude,longitude:s.destination.longitude,label:`Delivery ${s.id.slice(0,8)}`}))}
      {s.state==='RIDER_ASSIGNED'&&smallButton('Release before pickup',()=>execute(async()=>{await call('POST','/api/v1/rider/assignments/release',{shipmentId:s.id,reason});await refreshJobs();}))}
     </>}
     {auth.kind!=='rider'&&note(s.payment_method==='CASH'?'Cash due to the designated payer at handover; not prepaid, not guaranteed assigned.':s.paid?'Provider-verified digital payment':`${s.payment_method} payment pending provider verification`)}
     {['customer','business'].includes(auth.kind)&&s.payment_method!=='CASH'&&!s.paid&&s.state==='AWAITING_PAYMENT'&&smallButton('Open payment / check status',()=>execute(async()=>{const x=await startCheckout(s);if(x.status==='confirmed')await refreshJobs();setError(`Provider payment status: ${x.status}. No delivery will be dispatched until verified.`);}),busy)}
+    {['customer','business'].includes(auth.kind)&&['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state)&&<>
+     {smallButton('📲 Share Live Web Tracking Link with Recipient',()=>Linking.openURL(`https://wa.me/?text=${encodeURIComponent(`Track your delivery live on ELESEND: http://localhost:3090/track/${s.id}`)}`))}
+     {smallButton('🗺️ View Live Web Tracking Map',()=>Linking.openURL(`http://localhost:3090/track/${s.id}`))}
+    </>}
    </View>)}
    {challenge&&<View style={styles.item}>{heading(`Verify ${activeParcel.kind} for ${activeParcel.id.slice(0,8)}`)}{note('Never share the OTP over messages. Customer/recipient reads it to assigned driver in person.')}{field('Six-digit OTP',otp,setOtp,{keyboardType:'numeric',maxLength:6})}{smallButton('Confirm secure handover',()=>execute(async()=>{await completeOtp();await refreshJobs();}),busy||otp.length!==6||!isStationary(speed)||!!offlineCopy)}</View>}
   </Card>}
   {tab==='Home'&&['customer','business'].includes(auth.kind)&&<Card>{heading(['Pickup & destination','Parcel & recipient','Check availability & price'][step])}
-   {step===0&&<>{note('Tap the map first for pickup, then tap again for the delivery destination. This is a native map—not a website.')}
+   {step===0&&<>{note('Search a place in Ghana or tap the map for pickup & destination.')}
+    {field('Search Ghana places (e.g. Accra Mall, East Legon, Kejetia)',placeQuery,v=>{setPlaceQuery(v);if(v.trim().length<2)setPlacesList([]);},{returnKeyType:'search',onSubmitEditing:()=>execute(runPlaceSearch)})}
+    {placesList.length>0&&<View style={styles.row}>{placesList.map((item,i)=><Pressable key={i} onPress={()=>pickPlace(item)} style={[styles.choice,{backgroundColor:'#18353d',borderColor:colors.accent}]}><Text style={styles.text}>📍 {item.name}</Text><Text style={styles.note}>{item.label}</Text></Pressable>)}</View>}
+    {placeQuery.trim().length>=2&&smallButton('Search Ghana places',()=>execute(runPlaceSearch),busy)}
     {ghanaAddressLookup&&<>{field('GhanaPostGPS address (e.g. AK-484-9321)',ghanaAddress,value=>{addressLookupEpoch.current++;setGhanaAddress(value);},{autoCapitalize:'characters'})}{smallButton(booking.pickup?'Find address and set destination':'Find address and set pickup',()=>execute(findGhanaPostGpsAddress),busy||!ghanaAddress.trim())}{note('The returned address center is approximate. Review the pin and move it to the exact entrance before booking.')}</>}
     <MapView ref={mapRef} provider={MAP_RENDERER} style={{height:290,borderRadius:15}} initialRegion={{latitude:5.6037,longitude:-0.187,latitudeDelta:.14,longitudeDelta:.14}} onPress={selectOnMap}>
      {booking.pickup&&<Marker coordinate={booking.pickup} title="Pickup" pinColor="green"/>}{booking.destination&&<Marker coordinate={booking.destination} title="Drop-off"/>}
-    </MapView>{note(`Pickup: ${booking.pickup?.address||'Tap map'}`)}{note(`Destination: ${booking.destination?.address||'Tap map'}`)}
-    {smallButton('Reset map locations',()=>{update('pickup',null);update('destination',null);})}{smallButton('Next: parcel details',()=>setStep(1),!booking.pickup||!booking.destination)}</>}
+    </MapView>{note(`Pickup: ${booking.pickup?.address||'Tap map or search above'}`)}{note(`Destination: ${booking.destination?.address||'Tap map or search above'}`)}
+    {smallButton('Reset map locations',()=>{update('pickup',null);update('destination',null);setPlacesList([]);})}{smallButton('Next: parcel details',()=>setStep(1),!booking.pickup||!booking.destination)}</>}
    {step===1&&<>{heading('Choose your vehicle')}<View style={styles.row}>{[['motorcycle','Motorbike'],['car','Car'],['van','Van']].map(([value,title])=><Pressable key={value} accessibilityRole="radio" accessibilityState={{checked:booking.vehicle===value}} onPress={()=>update('vehicle',value)} style={[styles.choice,booking.vehicle===value&&styles.selected]}><Text style={styles.text}>{title}</Text></Pressable>)}</View>{note('Rates and suitable road routing must be configured for your selected vehicle. Rider acceptance is not guaranteed.')}{field('Recipient Ghana phone',booking.recipientPhone,v=>update('recipientPhone',v),{keyboardType:'phone-pad'})}{field('Weight in grams',booking.weightG,v=>update('weightG',v),{keyboardType:'numeric'})}{field('Parcel description',booking.description,v=>update('description',v))}
     <View style={styles.row}>{['small','medium','large'].map(size=><Pressable key={size} onPress={()=>update('parcelSize',size)} style={[styles.choice,booking.parcelSize===size&&styles.selected]}><Text style={styles.text}>{size}</Text></Pressable>)}</View>
     {smallButton('Next: estimate cost',()=>setStep(2),!booking.recipientPhone||!Number(booking.weightG))}{smallButton('Back',()=>setStep(0))}</>}

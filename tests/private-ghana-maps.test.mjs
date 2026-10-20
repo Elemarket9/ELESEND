@@ -59,6 +59,10 @@ test('address HTTP route requires customer or business auth, strict request body
  const request=(method,path,token,body)=>fetch(base+path,{method,headers:{authorization:`Bearer ${token}`,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
  try{
   const config=await (await request('GET','/api/v1/maps/config','customer')).json();assert.equal(config.renderer,'private');assert.equal(config.routing,'osrm');assert.equal(config.ghanaPostGpsLookup,true);
+  const search=await (await request('GET','/api/v1/maps/search?q=mall','customer')).json();assert.ok(Array.isArray(search)&&search.length>0);assert.match(search[0].name,/Mall/i);
+  const reverse=await (await request('GET','/api/v1/maps/reverse?lat=5.6212&lon=-0.1748','customer')).json();assert.ok(reverse.address);assert.match(reverse.address,/Accra Mall/i);
+  const track404=await fetch(base+'/track/00000000-0000-0000-0000-000000000000');assert.equal(track404.status,404);
+  const publicTrack404=await fetch(base+'/api/v1/public-track/00000000-0000-0000-0000-000000000000');assert.equal(publicTrack404.status,404);
   assert.equal((await request('POST','/api/v1/maps/ghana-address','rider',{address:'AK-484-9321'})).status,403);
   assert.equal((await request('POST','/api/v1/maps/ghana-address','customer',{address:'AK-484-9321',url:'https://attacker.invalid'})).status,400);
   for(let i=0;i<5;i++)assert.equal((await request('POST','/api/v1/maps/ghana-address','customer',{address:'AK-484-9321'})).status,200);
@@ -66,7 +70,7 @@ test('address HTTP route requires customer or business auth, strict request body
  }finally{await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}
 });
 
-test('tile server serves read-only MBTiles with XYZ-to-TMS conversion and bounded URLs',async()=>{
+test('tile server serves read-only MBTiles with XYZ-to-TMS conversion, font glyphs and bounded URLs',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'elesend-map-')),file=join(dir,'test.mbtiles');
  const db=new DatabaseSync(file);db.exec('CREATE TABLE metadata(name TEXT,value TEXT); CREATE TABLE tiles(zoom_level INTEGER,tile_column INTEGER,tile_row INTEGER,tile_data BLOB);');
  db.prepare('INSERT INTO metadata VALUES (?,?)').run('format','pbf');db.prepare('INSERT INTO tiles VALUES (2,1,2,?)').run(gzipSync(Buffer.from('synthetic-vector-tile')));db.close();
@@ -74,7 +78,8 @@ test('tile server serves read-only MBTiles with XYZ-to-TMS conversion and bounde
  try{
   const tile=await fetch(base+'/tiles/2/1/1.pbf');assert.equal(tile.status,200);assert.equal(await tile.text(),'synthetic-vector-tile');
   assert.equal((await fetch(base+'/tiles/2/1/2.pbf')).status,204);
-  for(const path of ['/tiles/2/4/1.pbf','/tiles/15/1/1.pbf'])assert.equal((await fetch(base+path)).status,400);
+  const font=await fetch(base+'/fonts/Noto%20Sans%20Regular/0-255.pbf');assert.equal(font.status,200);assert.equal(font.headers.get('content-type'),'application/x-protobuf');
+  for(const path of ['/tiles/2/4/1.pbf','/tiles/15/1/1.pbf','/fonts/Noto/255-0.pbf'])assert.equal((await fetch(base+path)).status,400);
   assert.equal((await fetch(base+'/ghana.mbtiles')).status,404);assert.equal((await fetch(base+'/health',{method:'POST'})).status,405);
  }finally{await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));await rm(dir,{recursive:true,force:true});}
 });

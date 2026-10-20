@@ -5,9 +5,11 @@ import {network} from './network.mjs';
 import {vehicleService} from './vehicle.mjs';
 import {clientIp} from './client-ip.mjs';
 import {marketService} from './markets.mjs';
+import {ghanaSearch,ghanaReverseGeocode} from './infrastructure/maps/ghana-geocoder.mjs';
+import {getPublicTracking,renderTrackingHtml} from './infrastructure/maps/web-tracker.mjs';
 export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null}={}){const net=network(db),vehicles=vehicleService(db),markets=marketService(db);return createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192},async(req,res)=>{
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
- res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+ res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
  const send=(code,body)=>{res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(body));};
  try{
   const path=new URL(req.url,'http://localhost').pathname,method=req.method;
@@ -17,6 +19,16 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    const secret=process.env.READINESS_PROBE_TOKEN;
    check(secret&&secret.length>=32&&equal(req.headers['x-elesend-health-token'],secret),404,'Endpoint not found');
    await db.query('SELECT 1');send(200,{status:'ready'});return;
+  }
+  if(method==='GET'&&/^\/track\/[0-9a-f-]{36}$/i.test(path)){
+   const data=await getPublicTracking(db,path.split('/')[2]);
+   if(!data){res.writeHead(404,{'Content-Type':'text/html'});res.end('<!DOCTYPE html><html><body style="background:#0c1324;color:#fff;font-family:sans-serif;padding:30px;text-align:center;"><h2>Tracking link not found or expired</h2></body></html>');return;}
+   res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end(renderTrackingHtml(data));return;
+  }
+  if(method==='GET'&&/^\/api\/v1\/public-track\/[0-9a-f-]{36}$/i.test(path)){
+   const data=await getPublicTracking(db,path.split('/')[4]);
+   if(!data){send(404,{error:'Tracking not found'});return;}
+   send(200,data);return;
   }
   if(!path.startsWith('/api/v1/'))check(false,404,'Endpoint not found');
   await limit(db,'http:'+clientIp(req),300,60);
@@ -56,6 +68,19 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    check(body&&typeof body==='object'&&!Array.isArray(body)&&Object.keys(body).length===1&&typeof body.address==='string',400,'Provide only a GhanaPostGPS address');
    await limit(db,'ghana-address:user:'+actor.id,5,60);await limit(db,'ghana-address:global',100,3600);
    result=await ghanaPostGps(body.address);
+  }
+  else if(method==='GET'&&path==='/api/v1/maps/search'){
+   const q=new URL(req.url,'http://localhost').searchParams.get('q')??'';
+   check(q.length>=2,400,'Enter at least 2 characters to search');
+   await limit(db,'maps-search:'+actor.id,60,60);
+   result=ghanaSearch(q);
+  }
+  else if(method==='GET'&&path==='/api/v1/maps/reverse'){
+   const u=new URL(req.url,'http://localhost').searchParams;
+   const lat=Number(u.get('lat')),lon=Number(u.get('lon'));
+   check(Number.isFinite(lat)&&Number.isFinite(lon),400,'Valid lat and lon required');
+   await limit(db,'maps-reverse:'+actor.id,60,60);
+   result=ghanaReverseGeocode(lat,lon);
   }
   else if(method==='POST'&&path==='/api/v1/quotes')result=await app.quote(actor,body);
   else if(method==='POST'&&path==='/api/v1/calculate-fare')result=await app.quote(actor,body);
