@@ -135,6 +135,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&/^\/api\/v1\/company\/riders\/[^/]+\/remove$/.test(path))result=await net.removeRider(actor,path.split('/')[5]);
   else if(method==='POST'&&path==='/api/v1/business/api-keys')result=await net.createKey(actor,body);
   else if(method==='POST'&&/^\/api\/v1\/business\/api-keys\/[^/]+\/revoke$/.test(path))result=await net.revokeKey(actor,path.split('/')[5]);
+  else if(method==='GET'&&path==='/api/v1/admin/pricing')result=await app.getPricing(actor);
+  else if(method==='POST'&&path==='/api/v1/admin/pricing/commission')result=await app.configureCommission(actor,body);
   else if(method==='POST'&&path==='/api/v1/admin/pricing')result=await app.setPricing(actor,body);
   else if(method==='POST'&&/^\/api\/v1\/admin\/(riders|companies)\/[^/]+$/.test(path)){const seg=path.split('/');check(Object.keys(body).length===1,400);result=await app.approve(actor,seg[4],seg[5],body.status);}
   else {

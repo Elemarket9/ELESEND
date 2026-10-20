@@ -29,6 +29,7 @@ export default function App(){
  const [ghanaAddress,setGhanaAddress]=useState(''),[ghanaAddressLookup,setGhanaAddressLookup]=useState(false);const addressLookupEpoch=useRef(0),mapRef=useRef(null);
  const [placeQuery,setPlaceQuery]=useState(''),[placesList,setPlacesList]=useState([]);
  const [paymentMethods,setPaymentMethods]=useState([{method:'CASH',enabled:true}]),[paymentEmail,setPaymentEmail]=useState(''),[checkoutSession,setCheckoutSession]=useState(null),[adminPaymentMethods,setAdminPaymentMethods]=useState([]);
+ const [adminPricing,setAdminPricing]=useState([]),[commVehicle,setCommVehicle]=useState('all'),[commPercent,setCommPercent]=useState('3.0'),[commMode,setCommMode]=useState('percentage'),[commCapGhs,setCommCapGhs]=useState('');
  const [activeParcel,setActiveParcel]=useState(null),[challenge,setChallenge]=useState(null),[otp,setOtp]=useState(''),[reason,setReason]=useState('Unable to complete pickup');const watch=useRef(null);
  const edit=(key,value)=>setCredentials(v=>({...v,[key]:value}));const update=(key,value)=>{if(key==='pickup'||key==='destination')addressLookupEpoch.current++;setBooking(v=>({...v,[key]:value}));setQuoted(null);};
  const execute=async task=>{if(busy)return;setBusy(true);await safe(task,setError);setBusy(false);};
@@ -251,6 +252,28 @@ export default function App(){
     {review?.vehicles.filter(v=>v.verification_status==='pending').map(v=><View key={v.rider_id} style={styles.item}>{label(`${v.vehicle.toUpperCase()} • ${v.registration_plate||'Plate not required'}`)}{label(`${v.make||''} ${v.model||''} ${v.color||''}`)}
      {smallButton('Approve vehicle after physical inspection',()=>Alert.alert('Manual verification needed','Did a trusted reviewer verify vehicle registration, identity and suitability independently?',[{text:'Cancel'}, {text:'Approved',onPress:()=>execute(async()=>{await call('POST',`/api/v1/admin/vehicles/${v.rider_id}/review`,{status:'approved'});await loadReview();})}]))}
      {smallButton('Reject vehicle',()=>execute(async()=>{await call('POST',`/api/v1/admin/vehicles/${v.rider_id}/review`,{status:'rejected'});await loadReview();}))}</View>)}
+    {heading('Platform Commission & Tariff Controls')}
+    {note('Configure take rate per vehicle. ELESEND default is 3% (300 bps) vs Bolt (20%) and Yango (18%). Supports percentage, fixed fee, hybrid and GH₵ commission caps.')}
+    {smallButton('Load current platform tariffs & commission',()=>execute(async()=>setAdminPricing(await call('GET','/api/v1/admin/pricing'))))}
+    {adminPricing.map(p=><View key={p.id} style={styles.item}>{label(`${(p.vehicle||'Legacy/General').toUpperCase()} • Commission: ${(p.commission_bps/100).toFixed(1)}% (${p.commission_mode}) • Base: ${ghc(p.base_minor)} • Per-km: ${ghc(p.per_km_minor)}`)}</View>)}
+    {field('Commission percentage (e.g. 3.0 for 3%)',commPercent,setCommPercent,{keyboardType:'decimal-pad'})}
+    {field('Commission mode (percentage / fixed / hybrid)',commMode,setCommMode)}
+    {field('Commission cap in GH₵ (optional, leave blank for no cap)',commCapGhs,setCommCapGhs,{keyboardType:'decimal-pad'})}
+    <View style={styles.row}>
+     {['all','motorcycle','car','van'].map(v=><Pressable key={v} onPress={()=>setCommVehicle(v)} style={[styles.choice,commVehicle===v&&styles.choiceActive]}><Text style={styles.choiceText}>{v.toUpperCase()}</Text></Pressable>)}
+    </View>
+    {smallButton('Apply commission update',()=>Alert.alert('Update commission policy?',`Set ${commVehicle.toUpperCase()} commission to ${commPercent}% (${commMode})? This creates a new immutable versioned policy.`,[{text:'Cancel'},{text:'Confirm',onPress:()=>execute(async()=>{
+     const bps=Math.round(parseFloat(commPercent)*100);
+     const capMinor=commCapGhs?parseGhs(commCapGhs):null;
+     await call('POST','/api/v1/admin/pricing/commission',{
+      vehicle:commVehicle==='all'?null:commVehicle,
+      commissionBps:bps,
+      commissionMode:commMode||'percentage',
+      commissionCapMinor:capMinor
+     });
+     setAdminPricing(await call('GET','/api/v1/admin/pricing'));
+     Alert.alert('Success',`Commission successfully configured to ${commPercent}%`);
+    })}]}))}
    </Card>}
   </>}
   <Text style={styles.footer}>ELESEND • parcel-by-parcel verification • ride safely</Text>

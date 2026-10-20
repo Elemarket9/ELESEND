@@ -131,6 +131,26 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   });
  },
  async vehicleTariffs(actor){check(['customer','business','admin'].includes(actor.kind),403);return (await db.query('SELECT id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled FROM pricing_policies WHERE active AND vehicle IS NOT NULL ORDER BY vehicle')).rows;},
+ async getPricing(actor){check(['customer','business','admin'].includes(actor.kind),403);return (await db.query('SELECT * FROM pricing_policies WHERE active ORDER BY vehicle NULLS FIRST')).rows;},
+ async configureCommission(actor,input){
+  const v=z.object({vehicle:z.enum(['motorcycle','car','van']).nullable().optional(),commissionBps:z.number().int().min(0).max(10000),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null)}).strict().parse(input);
+  return db.tx(async c=>{
+   await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');
+   let targets;
+   if(v.vehicle){targets=(await c.query('SELECT * FROM pricing_policies WHERE active AND vehicle=$1',[v.vehicle])).rows;}
+   else{targets=(await c.query('SELECT * FROM pricing_policies WHERE active')).rows;}
+   check(targets.length>0,404,'No active policy found');
+   const created=[];
+   for(const cur of targets){
+    await c.query('UPDATE pricing_policies SET active=false WHERE id=$1',[cur.id]);
+    const pid=id();
+    await c.query('INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled,supply_demand_enabled,commission_bps,commission_mode,commission_fixed_minor,commission_cap_minor,wait_per_minute_minor,per_extra_stop_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',[pid,cur.vehicle,cur.base_minor,cur.per_km_minor,cur.per_minute_minor??0,cur.minimum_minor??0,cur.rush_hour_enabled??false,cur.supply_demand_enabled??false,v.commissionBps,v.commissionMode,v.commissionFixedMinor,v.commissionCapMinor,cur.wait_per_minute_minor??0,cur.per_extra_stop_minor??0]);
+    await audit(c,actor.id,'pricing.commission_configured',pid);
+    created.push({id:pid,vehicle:cur.vehicle,commissionBps:v.commissionBps,commissionMode:v.commissionMode,commissionFixedMinor:v.commissionFixedMinor,commissionCapMinor:v.commissionCapMinor});
+   }
+   return {ok:true,policies:created};
+  });
+ },
  async configureSurgeZone(actor,input){
   const v=z.object({name:z.string().trim().min(2).max(80),latitude:z.number().finite(),longitude:z.number().finite(),radiusM:z.number().int().min(500).max(50000),enabled:z.boolean().default(false),replaceId:uuid.optional()}).strict().parse(input);validateGhanaBoundary(v.latitude,v.longitude);
   return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');
