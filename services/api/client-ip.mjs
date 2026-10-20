@@ -34,3 +34,17 @@ export function clientIp(req,trustedCidrs=process.env.TRUSTED_PROXY_CIDRS??''){
  for(const ip of [...forwarded,peer].reverse())if(!trusted(ip,entries))return ip;
  return forwarded[0];
 }
+
+export function resolveVerifiedHost(req, trustedCidrs = process.env.TRUSTED_PROXY_CIDRS ?? (process.env.NODE_ENV === 'production' ? '' : '127.0.0.1,::1')) {
+ const peer = normalizedIp(req.socket?.remoteAddress);
+ const entries = trustedCidrs.split(',').map(s => s.trim()).filter(Boolean);
+ const peerIsTrusted = entries.length > 0 && trusted(peer, entries);
+ let host = req.headers?.host || '';
+ if (peerIsTrusted && req.headers?.['x-forwarded-host']) {
+  const rawForwarded = String(req.headers['x-forwarded-host']).split(',')[0].trim();
+  if (rawForwarded) host = rawForwarded;
+ }
+ return host.split(':')[0].toLowerCase();
+}
+
+

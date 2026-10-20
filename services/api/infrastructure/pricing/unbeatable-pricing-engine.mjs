@@ -57,7 +57,7 @@ export function smoothRushHourMultiplier(date=new Date()){
 }
 
 /** Dynamic pricing engine designed to outperform Bolt and Yango in driver retention & customer price.
- * - Driver commission: 3% (ELESEND) vs 20% (Bolt) / 18% (Yango).
+ * - Driver commission: 13% default (ELESEND) vs 20% (Bolt) / 18% (Yango).
  * - Transparent itemization: base, distance, duration, cargo size, deadhead pickup bonus, surge.
  */
 export function calculateDynamicDeliveryQuote({
@@ -94,7 +94,7 @@ export function calculateDynamicDeliveryQuote({
  const totalGhs=quote.amountMinor/100;
  const elesendDriverGhs=quote.riderEarningsMinor/100;
  const elesendPlatformGhs=quote.commissionMinor/100;
- const configuredRatePercent=Number(policy.commission_bps??300)/100;
+ const configuredRatePercent=Number(policy.commission_bps??1300)/100;
 
  const boltDriverNet=Math.round(totalGhs*0.80*100)/100;
  const yangoDriverNet=Math.round(totalGhs*0.82*100)/100;
@@ -110,8 +110,8 @@ export function calculateDynamicDeliveryQuote({
   commissionRatePercent:configuredRatePercent,
   breakdown:{
    baseGhs:Number(policy.base_minor)/100,
-   distanceGhs:Math.round((distanceMeters*(policy.per_km_minor??0)/1000))/100,
-   durationGhs:Math.round((durationSeconds*(policy.per_minute_minor??0)/60))/100,
+   distanceGhs:Number((BigInt(Math.round(distanceMeters))*BigInt(policy.per_km_minor??0)+999n)/1000n)/100,
+   durationGhs:Number((BigInt(Math.round(durationSeconds))*BigInt(policy.per_minute_minor??0)+59n)/60n)/100,
    cargoSurchargeGhs:cargoSurcharge/100,
    longPickupAllowanceGhs:longPickupAllowance/100,
    rainSurchargeGhs:rainSurcharge/100,

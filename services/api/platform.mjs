@@ -119,11 +119,11 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  },
  async authenticate(token){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const u=(await db.query("SELECT u.id,u.kind FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR s.admin_mfa_verified=true)",[hash(token)])).rows[0];check(u,401,'Session expired or administrator MFA required');return u;},
  async logout(token){await db.query('DELETE FROM sessions WHERE token_hash=$1',[hash(token)]);return {ok:true};},
- async setPricing(actor,input){const v=z.object({baseMinor:z.number().int().min(1).max(1000000),perKmMinor:z.number().int().min(1).max(100000),commissionBps:z.number().int().min(0).max(10000).default(300),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null),perMinuteMinor:z.number().int().min(0).max(100000).default(0),waitPerMinuteMinor:z.number().int().min(0).max(100000).default(0),perExtraStopMinor:z.number().int().min(0).max(1000000).default(0)}).strict().parse(input);
+ async setPricing(actor,input){const v=z.object({baseMinor:z.number().int().min(1).max(1000000),perKmMinor:z.number().int().min(1).max(100000),commissionBps:z.number().int().min(0).max(10000).default(1300),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null),perMinuteMinor:z.number().int().min(0).max(100000).default(0),waitPerMinuteMinor:z.number().int().min(0).max(100000).default(0),perExtraStopMinor:z.number().int().min(0).max(1000000).default(0)}).strict().parse(input);
   return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');await c.query('UPDATE pricing_policies SET active=false WHERE active AND vehicle IS NULL');const pid=id();await c.query('INSERT INTO pricing_policies(id,base_minor,per_km_minor,commission_bps,commission_mode,commission_fixed_minor,commission_cap_minor,per_minute_minor,wait_per_minute_minor,per_extra_stop_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[pid,v.baseMinor,v.perKmMinor,v.commissionBps,v.commissionMode,v.commissionFixedMinor,v.commissionCapMinor,v.perMinuteMinor,v.waitPerMinuteMinor,v.perExtraStopMinor]);await audit(c,actor.id,'pricing.created',pid);return {id:pid};});
  },
  async configureVehicleTariff(actor,input){
-  const v=z.object({vehicle:z.enum(['motorcycle','car','van']),baseMinor:z.number().int().min(1).max(1000000),perKmMinor:z.number().int().min(0).max(100000),perMinuteMinor:z.number().int().min(0).max(100000).default(0),minimumMinor:z.number().int().min(0).max(100000000).default(0),rushHourEnabled:z.boolean().default(false),supplyDemandEnabled:z.boolean().default(false),commissionBps:z.number().int().min(0).max(10000).default(2000)}).strict().parse(input);
+  const v=z.object({vehicle:z.enum(['motorcycle','car','van']),baseMinor:z.number().int().min(1).max(1000000),perKmMinor:z.number().int().min(0).max(100000),perMinuteMinor:z.number().int().min(0).max(100000).default(0),minimumMinor:z.number().int().min(0).max(100000000).default(0),rushHourEnabled:z.boolean().default(false),supplyDemandEnabled:z.boolean().default(false),commissionBps:z.number().int().min(0).max(10000).default(1300)}).strict().parse(input);
   return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');
    await c.query('UPDATE pricing_policies SET active=false WHERE active AND vehicle=$1',[v.vehicle]);const pid=id();
    await c.query('INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled,supply_demand_enabled,commission_bps) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[pid,v.vehicle,v.baseMinor,v.perKmMinor,v.perMinuteMinor,v.minimumMinor,v.rushHourEnabled,v.supplyDemandEnabled,v.commissionBps]);
@@ -131,7 +131,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   });
  },
  async vehicleTariffs(actor){check(['customer','business','admin'].includes(actor.kind),403);return (await db.query('SELECT id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled FROM pricing_policies WHERE active AND vehicle IS NOT NULL ORDER BY vehicle')).rows;},
- async getPricing(actor){check(['customer','business','admin'].includes(actor.kind),403);return (await db.query('SELECT * FROM pricing_policies WHERE active ORDER BY vehicle NULLS FIRST')).rows;},
+ async getPricing(actor){check(actor?.kind==='admin',403);return (await db.query('SELECT * FROM pricing_policies WHERE active ORDER BY vehicle NULLS FIRST')).rows;},
  async configureCommission(actor,input){
   const v=z.object({vehicle:z.enum(['motorcycle','car','van']).nullable().optional(),commissionBps:z.number().int().min(0).max(10000),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null)}).strict().parse(input);
   return db.tx(async c=>{
@@ -270,6 +270,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    if(ch.purpose==='pickup'){
     if(s.payment_method==='CASH'&&s.cash_payer==='sender')check((await c.query("SELECT 1 FROM cash_collections WHERE shipment_id=$1 AND cash_payer='sender' AND reported_status='reported_full' AND reported_minor=$2",[sid,s.amount_minor])).rowCount,409,'Full sender cash collection required before normal pickup; report shortfall and use dispute/exception flow');
     await c.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[sid]);
+    await c.query("UPDATE food_orders SET state='IN_TRANSIT', updated_at=now() WHERE shipment_id=$1 AND state IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')",[sid]);
    }
    else {
     if(s.payment_method==='CASH'){
@@ -277,7 +278,15 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
      check(collection&&collection.reported_status==='reported_full'&&Number(collection.reported_minor)===Number(s.amount_minor),409,'Full cash collection report required for normal handover. Open a payment dispute or exception/return flow for unpaid or partial cash.');
     }else check(s.paid,409,'Digital payment must be verified');
     await c.query("UPDATE shipments SET state='COMPLETED',completed_at=now() WHERE id=$1",[sid]);
-    await c.query('INSERT INTO financial_entries(shipment_id,beneficiary_id,customer_charge_minor,commission_minor,entitlement_minor,payout_status) VALUES($1,$2,$3,$4,$5,$6)',[sid,s.company_id??actor.id,s.amount_minor,s.commission_minor,s.amount_minor-s.commission_minor,s.payment_method==='CASH'?'cash_rider_reported':'held']);
+    const fo=(await c.query('SELECT id, subtotal_minor, food_commission_bps, food_commission_minor, restaurant_id FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[sid])).rows[0];
+    if(fo){
+     await c.query("UPDATE food_orders SET state='DELIVERED', payment_status='PAID', completed_at=now(), updated_at=now() WHERE id=$1",[fo.id]);
+     const grossSales=fo.subtotal_minor, commBps=fo.food_commission_bps, commMinor=fo.food_commission_minor, netPayable=grossSales-commMinor;
+     await c.query(`INSERT INTO restaurant_settlements(order_id,restaurant_id,gross_sales_minor,commission_bps,commission_minor,net_payable_minor,status)
+       VALUES($1,$2,$3,$4,$5,$6,'accrued') ON CONFLICT(order_id) DO NOTHING`,[fo.id,fo.restaurant_id,grossSales,commBps,commMinor,netPayable]);
+    }
+    const entitlementMinor = Number(BigInt(s.amount_minor) - BigInt(s.commission_minor));
+    await c.query('INSERT INTO financial_entries(shipment_id,beneficiary_id,customer_charge_minor,commission_minor,entitlement_minor,payout_status) VALUES($1,$2,$3,$4,$5,$6)',[sid,s.company_id??actor.id,s.amount_minor,s.commission_minor,entitlementMinor,s.payment_method==='CASH'?'cash_rider_reported':'held']);
     if(s.payment_method!=='CASH')await digitalDeliveryCompleted(c,s);
     if(s.payment_method==='CASH')await postCashCommission(c,s);
    }

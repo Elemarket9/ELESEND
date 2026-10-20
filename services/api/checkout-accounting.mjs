@@ -22,7 +22,8 @@ export async function digitalDeliveryCompleted(c,shipment){
  const isNew=(await c.query("SELECT 1 FROM shipment_checkout_intents WHERE shipment_id=$1 AND status='confirmed'",[shipment.id])).rowCount;
  if(!isNew)return {skipped:'legacy digital without new checkout journal'};
  check(shipment.paid&&Number.isSafeInteger(Number(shipment.amount_minor))&&Number.isSafeInteger(Number(shipment.commission_minor)),409,'Invalid verified digital delivery accounting');
- const total=Number(shipment.amount_minor),fee=Number(shipment.commission_minor);
- const entries=[['customer_delivery_liability','debit',total],...(total-fee>0?[['rider_payable','credit',total-fee]]:[]),...(fee>0?[['platform_commission_revenue','credit',fee]]:[])];
+ const total=BigInt(shipment.amount_minor),fee=BigInt(shipment.commission_minor);
+ const net=total-fee;
+ const entries=[['customer_delivery_liability','debit',Number(total)],...(net>0n?[['rider_payable','credit',Number(net)]]:[]),...(fee>0n?[['platform_commission_revenue','credit',Number(fee)]]:[])];
  return checkoutJournal(c,{shipmentId:shipment.id,eventKey:'delivery:'+shipment.id+':digitally-completed',kind:'delivery_completed',entries});
 }

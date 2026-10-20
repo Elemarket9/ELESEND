@@ -3,7 +3,7 @@ export function calculateQuote(policy,distanceMeters,extras={}){
  const positive=(x,name)=>{if(!Number.isSafeInteger(x)||x<0)throw Error('Invalid '+name);return BigInt(x);};
  const meters=positive(distanceMeters,'distance');
  const base=positive(policy.base_minor,'base'), perKm=positive(policy.per_km_minor,'per-km rate');
- const bps=positive(policy.commission_bps,'commission basis points');if(bps>10000n)throw Error('Basis points out of range');
+ const bps=positive(policy.commission_bps,'commission basis points');if(bps>10000n)throw Error('Commission basis points exceed 100% limit');
  const duration=positive(extras.durationSeconds??0,'route time');
  const waiting=positive(extras.waitingSeconds??0,'waiting time');
  const stops=positive(extras.extraStops??0,'extra stops');
@@ -21,7 +21,7 @@ export function calculateQuote(policy,distanceMeters,extras={}){
  const surged=((subtotal-discount)*surgeBps+5000n)/10000n;
  const charge=surged<minimum?minimum:surged;
  if(charge<=0n||charge>2147483647n)throw Error('Charge exceeds invoice bounds');
- const rate=(charge*bps+5000n)/10000n;
+ const rate=bps===0n?0n:(charge*bps+5000n)/10000n;
  const mode=policy.commission_mode||'percentage';
  const fixed=positive(policy.commission_fixed_minor??0,'fixed fee');
  let commission=mode==='percentage'?rate:mode==='fixed'?fixed:mode==='hybrid'?rate+fixed:null;

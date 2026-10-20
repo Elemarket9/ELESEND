@@ -1,7 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 export const BASE=(process.env.EXPO_PUBLIC_ELESEND_API_BASE_URL||'').replace(/\/$/,'');
-// Plain HTTP is forbidden except for loopback Android emulator/simulator development.
-if(BASE&&!/^https:\/\//.test(BASE)&&!/^http:\/\/(localhost|127\.0\.0\.1|10\.0\.2\.2)(:\d+)?$/.test(BASE))throw Error('ELESEND app requires HTTPS for real devices');
+// Plain HTTP is forbidden except for loopback and private LAN development.
+if(BASE&&!/^https:\/\//.test(BASE)&&!/^http:\/\/(localhost|127\.0\.0\.1|10\.0\.2\.2|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?$/.test(BASE))throw Error('ELESEND app requires HTTPS for real devices');
 export const loadToken=()=>SecureStore.getItemAsync('elesend.session');
 export const saveToken=t=>SecureStore.setItemAsync('elesend.session',t);
 export const clearToken=()=>SecureStore.deleteItemAsync('elesend.session');

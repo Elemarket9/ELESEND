@@ -3,13 +3,22 @@ import {ZodError} from 'zod';
 import {check,limit,equal} from './security.mjs';
 import {network} from './network.mjs';
 import {vehicleService} from './vehicle.mjs';
-import {clientIp} from './client-ip.mjs';
+import {clientIp,resolveVerifiedHost} from './client-ip.mjs';
 import {marketService} from './markets.mjs';
 import {ghanaSearch,ghanaReverseGeocode} from './infrastructure/maps/ghana-geocoder.mjs';
 import {getPublicTracking,renderTrackingHtml} from './infrastructure/maps/web-tracker.mjs';
-export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null}={}){const net=network(db),vehicles=vehicleService(db),markets=marketService(db);return createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192},async(req,res)=>{
+import {renderAdminPortalHtml} from './admin-web/admin-portal.mjs';
+import {restaurantService} from './restaurant.mjs';
+import {restaurantOrderService} from './restaurant-orders.mjs';
+import {commissionEngine} from './commission-engine.mjs';
+export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null}={}){
+  const net=network(db),vehicles=vehicleService(db),markets=marketService(db);
+  const restaurants=restaurant||restaurantService(db);
+  const restOrders=restaurantOrders||restaurantOrderService(db,{platform:app,dispatcher,routing:app?.routing});
+  const commissions=commissionEngine(db);
+  return createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192},async(req,res)=>{
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
- res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+ res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
  const send=(code,body)=>{res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(body));};
  try{
   const path=new URL(req.url,'http://localhost').pathname,method=req.method;
@@ -37,6 +46,15 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    if(!data){send(404,{error:'Tracking not found'});return;}
    send(200,data);return;
   }
+  const adminHost=process.env.ADMIN_HOST?process.env.ADMIN_HOST.split(':')[0].toLowerCase():null;
+  const reqHost=resolveVerifiedHost(req);
+  const isAdminPath=path==='/admin'||path==='/admin/'||path==='/admin/index.html'||path.startsWith('/admin/')||path.startsWith('/api/v1/admin/');
+  if(isAdminPath&&adminHost&&reqHost!==adminHost)check(false,404,'Endpoint not found');
+  if(method==='GET'&&(path==='/admin'||path==='/admin/'||path==='/admin/index.html')){
+   res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});
+   res.end(renderAdminPortalHtml());
+   return;
+  }
   if(!path.startsWith('/api/v1/'))check(false,404,'Endpoint not found');
   let body={},rawBody=Buffer.alloc(0);if(method==='POST'){
    check((req.headers['content-type']??'').split(';')[0]==='application/json',415,'JSON required');let size=0;const parts=[];
@@ -55,6 +73,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const token=req.headers.authorization?.replace(/^Bearer /,'');const actor=token?.startsWith('es_live_')?await net.authenticateKey(token):await app.authenticate(token);
   net.authorizeKey(actor,method,path);
   await limit(db,'user:'+actor.id,150,60);
+  if(path.startsWith('/api/v1/admin/'))check(actor?.kind==='admin',403,'Administrator required');
   let result;
   if(method==='POST'&&path==='/api/v1/auth/logout')result=await app.logout(token);
   else if(method==='GET'&&path==='/api/v1/me/phone')result=await app.phoneStatus(actor);
@@ -139,6 +158,59 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/admin/pricing/commission')result=await app.configureCommission(actor,body);
   else if(method==='POST'&&path==='/api/v1/admin/pricing')result=await app.setPricing(actor,body);
   else if(method==='POST'&&/^\/api\/v1\/admin\/(riders|companies)\/[^/]+$/.test(path)){const seg=path.split('/');check(Object.keys(body).length===1,400);result=await app.approve(actor,seg[4],seg[5],body.status);}
+   // Dynamic Commission Rules & Precedence Endpoints
+   else if(method==='GET'&&path==='/api/v1/admin/commission/rules'){
+     const u=new URL(req.url,'http://localhost').searchParams;
+     result=await commissions.listRules(actor,{category:u.get('category'),scopeType:u.get('scopeType'),status:u.get('status')});
+   }
+   else if(method==='POST'&&path==='/api/v1/admin/commission/rules')result=await commissions.createRule(actor,body);
+   else if(method==='POST'&&path==='/api/v1/admin/commission/founding-rider')result=await commissions.enrollFoundingRider(actor,body);
+   else if(method==='POST'&&/^\/api\/v1\/admin\/commission\/rules\/[0-9a-f-]+\/pause$/.test(path))result=await commissions.pauseRule(actor,path.split('/')[6],body.rationale);
+   else if(method==='POST'&&/^\/api\/v1\/admin\/commission\/rules\/[0-9a-f-]+\/resume$/.test(path))result=await commissions.resumeRule(actor,path.split('/')[6],body.rationale);
+   else if(method==='POST'&&/^\/api\/v1\/admin\/commission\/rules\/[0-9a-f-]+\/revoke$/.test(path))result=await commissions.revokeRule(actor,path.split('/')[6],body.rationale);
+   else if(method==='POST'&&/^\/api\/v1\/admin\/commission\/rules\/[0-9a-f-]+\/update$/.test(path))result=await commissions.updateRule(actor,path.split('/')[6],body);
+   else if(method==='GET'&&path==='/api/v1/admin/commission/audit-logs'){
+     const u=new URL(req.url,'http://localhost').searchParams;
+     result=await commissions.getAuditLogs(actor,u.get('ruleId'));
+   }
+  // Restaurant Marketplace Endpoints
+  else if(method==='POST'&&path==='/api/v1/restaurants')result=await restaurants.createRestaurant(actor,body);
+  else if(method==='GET'&&path==='/api/v1/restaurants'){
+    const u=new URL(req.url,'http://localhost').searchParams;
+    result=await restaurants.listRestaurants({
+      latitude:u.get('lat')?Number(u.get('lat')):null,
+      longitude:u.get('lon')?Number(u.get('lon')):null,
+      limit:u.get('limit')?Number(u.get('limit')):50,
+      cuisine:u.get('cuisine'),
+      search:u.get('q')
+    });
+  }
+  else if(method==='GET'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+$/.test(path))result=await restaurants.getRestaurant(path.split('/')[4]);
+  else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+$/.test(path))result=await restaurants.updateRestaurant(actor,path.split('/')[4],body);
+  else if(method==='GET'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/menu$/.test(path))result=await restaurants.getMenu(path.split('/')[4]);
+  else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/categories$/.test(path))result=await restaurants.createCategory(actor,path.split('/')[4],body);
+  else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/categories\/[0-9a-f-]+$/.test(path))result=await restaurants.updateCategory(actor,path.split('/')[6],body);
+  else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/categories\/[0-9a-f-]+\/delete$/.test(path))result=await restaurants.deleteCategory(actor,path.split('/')[6]);
+  else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/items$/.test(path))result=await restaurants.createMenuItem(actor,path.split('/')[4],body);
+  else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/items\/[0-9a-f-]+$/.test(path))result=await restaurants.updateMenuItem(actor,path.split('/')[6],body);
+  else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/items\/[0-9a-f-]+\/delete$/.test(path))result=await restaurants.deleteMenuItem(actor,path.split('/')[6]);
+  else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/items\/[0-9a-f-]+\/modifiers$/.test(path))result=await restaurants.createModifier(actor,path.split('/')[6],body);
+  else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/modifiers\/[0-9a-f-]+\/options$/.test(path))result=await restaurants.createModifierOption(actor,path.split('/')[6],body);
+  else if(method==='GET'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/settlements$/.test(path))result=await restOrders.getRestaurantSettlements(actor,path.split('/')[4]);
+  else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/batch-dispatch$/.test(path))result=await restOrders.evaluateBatchDispatch(actor,path.split('/')[4],body);
+  // Food Ordering Endpoints
+  else if(method==='POST'&&path==='/api/v1/food-orders/quote')result=await restOrders.quoteFoodOrder(actor,body);
+  else if(method==='POST'&&path==='/api/v1/food-orders')result=await restOrders.createFoodOrder(actor,body,{paymentMethod:body.paymentMethod,specialInstructions:body.specialInstructions});
+  else if(method==='GET'&&path==='/api/v1/food-orders'){
+    const u=new URL(req.url,'http://localhost').searchParams;
+    result=await restOrders.listFoodOrders(actor,{restaurantId:u.get('restaurantId'),state:u.get('state'),limit:u.get('limit')});
+  }
+  else if(method==='GET'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+$/.test(path))result=await restOrders.getFoodOrder(actor,path.split('/')[4]);
+  else if(method==='POST'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+\/accept$/.test(path))result=await restOrders.acceptOrder(actor,path.split('/')[4],body);
+  else if(method==='POST'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+\/prepare$/.test(path))result=await restOrders.startPreparing(actor,path.split('/')[4]);
+  else if(method==='POST'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+\/ready$/.test(path))result=await restOrders.markReadyForPickup(actor,path.split('/')[4]);
+  else if(method==='POST'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+\/reject$/.test(path))result=await restOrders.rejectOrder(actor,path.split('/')[4],body);
+  else if(method==='POST'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+\/cancel$/.test(path))result=await restOrders.cancelOrder(actor,path.split('/')[4],body);
   else {
    const m=path.match(/^\/api\/v1\/shipments\/([^/]+)(?:\/(accept|pickup-challenge|delivery-challenge|verify|transition|location|tracking|dispatch|disputes))?$/);check(m,404,'Endpoint not found');const [,sid,action]=m;
    if(method==='GET'&&!action)result=await app.get(actor,sid);

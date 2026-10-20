@@ -6,6 +6,7 @@ import {migrate} from '../scripts/migrate.mjs';
 import {platform} from '../services/api/platform.mjs';
 import {measuredSurge} from '../services/api/pricing-surge.mjs';
 import {httpServer} from '../services/api/http.mjs';
+import {resetDispatchFixtures} from './helpers/reset-dispatch-fixtures.mjs';
 import {once} from 'node:events';
 const url=process.env.TEST_DATABASE_URL;
 if(!url||!/^elesend_test(?:_|$)/.test(new URL(url).pathname.slice(1)))throw Error('Disposable test database required');
@@ -14,7 +15,7 @@ const routing={async route(a,b,{vehicle}){calls.push(vehicle);return {source:'fi
 const app=platform(db,{otpKey:randomBytes(32).toString('hex'),routing});
 let admin,sender,other;
 const request={pickup:{address:'Osu market main entrance',latitude:5.6,longitude:-.2},destination:{address:'Airport main gate entrance',latitude:5.62,longitude:-.18},vehicle:'motorcycle',recipientPhone:'0241234567',weightG:500,description:'Sealed documents',paymentMethod:'CASH'};
-before(async()=>{await migrate(db);admin=await app.register({phone:'0248000001',password:'Long-Fixture-Only-Password!',kind:'customer'});await db.query("UPDATE users SET kind='admin' WHERE id=$1",[admin.id]);admin.kind='admin';await db.query("INSERT INTO permissions VALUES($1,'pricing:write')",[admin.id]);
+before(async()=>{await migrate(db);await db.query('TRUNCATE users,pricing_policies,pricing_surge_zones RESTART IDENTITY CASCADE');await resetDispatchFixtures(db);admin=await app.register({phone:'0248000001',password:'Long-Fixture-Only-Password!',kind:'customer'});await db.query("UPDATE users SET kind='admin' WHERE id=$1",[admin.id]);admin.kind='admin';await db.query("INSERT INTO permissions VALUES($1,'pricing:write')",[admin.id]);
  sender=await app.register({phone:'0248000002',password:'Long-Fixture-Only-Password!',kind:'business'});other=await app.register({phone:'0248000003',password:'Long-Fixture-Only-Password!',kind:'business'});
  await app.setPricing(admin,{baseMinor:500,perKmMinor:100});
  await app.configureVehicleTariff(admin,{vehicle:'motorcycle',baseMinor:1000,perKmMinor:200,perMinuteMinor:60});
@@ -22,10 +23,10 @@ before(async()=>{await migrate(db);admin=await app.register({phone:'0248000001',
 });
 after(()=>db.close());
 test('vehicle routes, persisted prices, commission and quote ownership use one authoritative flow',async()=>{
- const quote=await app.quote(sender,request);assert.equal(calls.at(-1),'motorcycle');assert.equal(quote.amount_minor,2100);assert.equal(quote.commission_minor,420);assert.equal(quote.riderEarningsMinor,1680);
+ const quote=await app.quote(sender,request);assert.equal(calls.at(-1),'motorcycle');assert.equal(quote.amount_minor,2100);assert.equal(quote.commission_minor,273);assert.equal(quote.riderEarningsMinor,1827);
  const saved=(await db.query('SELECT * FROM quotes WHERE id=$1',[quote.id])).rows[0];assert.equal(saved.request.vehicle,'motorcycle');assert.equal(saved.pricing_evidence.distanceMeters,2500);assert.equal(saved.pricing_evidence.policyId,saved.policy_id);
  await app.configureVehicleTariff(admin,{vehicle:'motorcycle',baseMinor:3000,perKmMinor:400});
- const key=randomUUID(),booked=await app.book(sender,{quoteId:quote.id},key);assert.equal(booked.amount_minor,2100);assert.equal(booked.commission_minor,420);
+ const key=randomUUID(),booked=await app.book(sender,{quoteId:quote.id},key);assert.equal(booked.amount_minor,2100);assert.equal(booked.commission_minor,273);
  assert.equal((await app.book(sender,{quoteId:quote.id},key)).id,booked.id);
  await assert.rejects(()=>app.book(other,{quoteId:quote.id},randomUUID()),e=>e.status===409);
  const car=await app.quote(sender,{...request,vehicle:'car'});assert.equal(car.amount_minor,2750);assert.equal(calls.at(-1),'car');

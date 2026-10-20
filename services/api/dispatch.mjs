@@ -288,7 +288,7 @@ export function dispatchEngine(db,{routing}={}){
     const offerId=randomUUID();
     await c.query(`INSERT INTO dispatch_offers(id,shipment_id,rider_id,pickup_eta_seconds,pickup_road_meters,direction,quoted_entitlement_minor,expires_at,plan_revision,proposed_stops,anchor_lat,anchor_lon,expected_active,planned_dropoff_seconds,route_corridor_geojson)
      VALUES($1,$2,$3,$4,$5,$6,$7,now()+($8::int*interval '1 second'),$9,$10,$11,$12,$13,$14,$15)`,
-     [offerId,sid,rider.id,rider.roadEtaSeconds,rider.roadMeters,rider.direction,s.amount_minor-s.commission_minor,p.offer_seconds,rider.plan.revision,JSON.stringify(rider.plan.stops),rider.plan.anchor.latitude,rider.plan.anchor.longitude,rider.plan.expectedActive,rider.plan.dropoffEtaSeconds,rider.plan.corridor?JSON.stringify(rider.plan.corridor):null]);
+     [offerId,sid,rider.id,rider.roadEtaSeconds,rider.roadMeters,rider.direction,Number(BigInt(s.amount_minor)-BigInt(s.commission_minor)),p.offer_seconds,rider.plan.revision,JSON.stringify(rider.plan.stops),rider.plan.anchor.latitude,rider.plan.anchor.longitude,rider.plan.expectedActive,rider.plan.dropoffEtaSeconds,rider.plan.corridor?JSON.stringify(rider.plan.corridor):null]);
     await c.query('INSERT INTO outbox(shipment_id,kind,payload) VALUES($1,$2,$3)',[sid,'dispatch.offer_for_rider',JSON.stringify({shipmentId:sid,offerId,riderId:rider.id,expiresInSeconds:p.offer_seconds})]);
     offered.push({offerId,riderId:rider.id,pickupEtaSeconds:rider.roadEtaSeconds});
    }

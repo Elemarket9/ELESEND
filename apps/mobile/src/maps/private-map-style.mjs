@@ -6,7 +6,7 @@ export function privateTileUrl(value,{development=false}={}){
  const local=['localhost','127.0.0.1','10.0.2.2'].includes(url.hostname);
  if(url.username||url.password||url.search||url.hash||!(url.protocol==='https:'||(development&&local&&url.protocol==='http:')))throw Error('Private map tiles require HTTPS outside emulator development');
  if(!value.includes('{z}')||!value.includes('{x}')||!value.includes('{y}'))throw Error('Private map URL requires z/x/y placeholders');
- if(/(^|\.)(googleapis\.com|google\.com|openstreetmap\.org|mapbox\.com|maptiler\.com|maplibre\.org)$/.test(url.hostname))throw Error('Configure your own tile server, not a third-party public service');
+ if(/(^|\.)(googleapis\.com|google\.com|openstreetmap\.org|mapbox\.com|maptiler\.com|maplibre\.org|geoapify\.com)$/.test(url.hostname))throw Error('Configure your own tile server, not a third-party public service');
  return value;
 }
 export function privateMapStyle(tileUrl,{glyphsUrl=null}={}){
