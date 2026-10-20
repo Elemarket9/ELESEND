@@ -4,7 +4,7 @@ import MapView,{Marker,RiderMarker,Polyline,MAP_RENDERER,openTurnByTurnNavigatio
 import QRCode from 'react-native-qrcode-svg';
 import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
-import {call,loadToken,saveToken,clearToken,ghc} from './src/api';
+import {call,loadToken,saveToken,clearToken,ghc,BASE} from './src/api';
 import {sample,startShiftTracking,stopShiftTracking} from './src/tracking';
 import {cacheJobs,readCachedJobs,clearCachedJobs} from './src/offline';
 const colors={bg:'#0c1324',panel:'#172239',line:'#30415f',light:'#eef5ff',muted:'#a5b6d0',accent:'#3fd6b3',warn:'#ffb356'};
@@ -169,8 +169,8 @@ export default function App(){
     {auth.kind!=='rider'&&note(s.payment_method==='CASH'?'Cash due to the designated payer at handover; not prepaid, not guaranteed assigned.':s.paid?'Provider-verified digital payment':`${s.payment_method} payment pending provider verification`)}
     {['customer','business'].includes(auth.kind)&&s.payment_method!=='CASH'&&!s.paid&&s.state==='AWAITING_PAYMENT'&&smallButton('Open payment / check status',()=>execute(async()=>{const x=await startCheckout(s);if(x.status==='confirmed')await refreshJobs();setError(`Provider payment status: ${x.status}. No delivery will be dispatched until verified.`);}),busy)}
     {['customer','business'].includes(auth.kind)&&['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state)&&<>
-     {smallButton('📲 Share Live Web Tracking Link with Recipient',()=>Linking.openURL(`https://wa.me/?text=${encodeURIComponent(`Track your delivery live on ELESEND: http://localhost:3090/track/${s.id}`)}`))}
-     {smallButton('🗺️ View Live Web Tracking Map',()=>Linking.openURL(`http://localhost:3090/track/${s.id}`))}
+     {smallButton('📲 Share Live Web Tracking Link with Recipient',()=>Linking.openURL(`https://wa.me/?text=${encodeURIComponent(`Track your delivery live on ELESEND: ${BASE||'http://localhost:3090'}/track/${s.id}`)}`))}
+     {smallButton('🗺️ View Live Web Tracking Map',()=>Linking.openURL(`${BASE||'http://localhost:3090'}/track/${s.id}`))}
     </>}
    </View>)}
    {challenge&&<View style={styles.item}>{heading(`Verify ${activeParcel.kind} for ${activeParcel.id.slice(0,8)}`)}{note('Never share the OTP over messages. Customer/recipient reads it to assigned driver in person.')}{field('Six-digit OTP',otp,setOtp,{keyboardType:'numeric',maxLength:6})}{smallButton('Confirm secure handover',()=>execute(async()=>{await completeOtp();await refreshJobs();}),busy||otp.length!==6||!isStationary(speed)||!!offlineCopy)}</View>}
