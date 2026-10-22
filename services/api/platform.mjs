@@ -219,10 +219,11 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async accept(actor,sid,offerId){check(dispatch,503,'Dispatch engine unavailable');return dispatch.accept(actor,sid,offerId);},
  async get(actor,sid){uuid.parse(sid);const s=(await db.query('SELECT * FROM shipments WHERE id=$1',[sid])).rows[0];check(s,404);await access(db,actor,s);const q=(await db.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];return {...s,details:q.request};},
  async list(actor){
-  if(['customer','business'].includes(actor.kind))return (await db.query('SELECT * FROM shipments WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100',[actor.id])).rows;
-  if(actor.kind==='rider')return (await db.query('SELECT * FROM shipments WHERE rider_id=$1 ORDER BY created_at DESC LIMIT 100',[actor.id])).rows;
-  if(actor.kind==='company')return (await db.query('SELECT s.* FROM shipments s JOIN companies c ON c.id=s.company_id WHERE c.owner_id=$1 ORDER BY s.created_at DESC LIMIT 100',[actor.id])).rows;
-  await permission(db,actor,'shipments:read');return (await db.query('SELECT * FROM shipments ORDER BY created_at DESC LIMIT 100')).rows;
+  const baseQuery=`SELECT s.*, q.request AS details, q.request->'pickup' AS pickup, q.request->'destination' AS destination FROM shipments s JOIN quotes q ON q.id=s.quote_id`;
+  if(['customer','business'].includes(actor.kind))return (await db.query(`${baseQuery} WHERE s.customer_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
+  if(actor.kind==='rider')return (await db.query(`${baseQuery} WHERE s.rider_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
+  if(actor.kind==='company')return (await db.query(`${baseQuery} JOIN companies c ON c.id=s.company_id WHERE c.owner_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
+  await permission(db,actor,'shipments:read');return (await db.query(`${baseQuery} ORDER BY s.created_at DESC LIMIT 100`)).rows;
  },
  async challenge(actor,sid,purpose){check(['pickup','delivery'].includes(purpose),400);check(sms,503,'SMS adapter unavailable');
   const code=newCode(),cid=id();

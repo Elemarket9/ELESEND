@@ -177,12 +177,14 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/restaurants')result=await restaurants.createRestaurant(actor,body);
   else if(method==='GET'&&path==='/api/v1/restaurants'){
     const u=new URL(req.url,'http://localhost').searchParams;
+    const isMine = u.get('mine')==='true' && ['business','admin'].includes(actor?.kind);
     result=await restaurants.listRestaurants({
       latitude:u.get('lat')?Number(u.get('lat')):null,
       longitude:u.get('lon')?Number(u.get('lon')):null,
       limit:u.get('limit')?Number(u.get('limit')):50,
       cuisine:u.get('cuisine'),
-      search:u.get('q')
+      search:u.get('q'),
+      ownerId: isMine ? actor.id : null
     });
   }
   else if(method==='GET'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+$/.test(path))result=await restaurants.getRestaurant(path.split('/')[4]);

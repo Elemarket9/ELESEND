@@ -71,19 +71,31 @@ export function restaurantService(db) {
     return r;
   }
 
-  async function listRestaurants({ latitude = null, longitude = null, limit = 50, cuisine = null, search = null } = {}) {
+  async function listRestaurants({ latitude = null, longitude = null, limit = 50, cuisine = null, search = null, ownerId = null } = {}) {
     const lim = Math.max(1, Math.min(100, Number(limit) || 50));
-    let query = `SELECT * FROM restaurants WHERE status = 'approved'`;
+    let query = `SELECT * FROM restaurants`;
+    const conditions = [];
     const params = [];
+
+    if (ownerId) {
+      params.push(ownerId);
+      conditions.push(`owner_id = $${params.length}`);
+    } else {
+      conditions.push(`status = 'approved'`);
+    }
 
     if (cuisine) {
       params.push(`%${cuisine.toLowerCase()}%`);
-      query += ` AND LOWER(cuisine) LIKE $${params.length}`;
+      conditions.push(`LOWER(cuisine) LIKE $${params.length}`);
     }
 
     if (search) {
       params.push(`%${search.toLowerCase()}%`);
-      query += ` AND (LOWER(name) LIKE $${params.length} OR LOWER(address) LIKE $${params.length})`;
+      conditions.push(`(LOWER(name) LIKE $${params.length} OR LOWER(address) LIKE $${params.length})`);
+    }
+
+    if (conditions.length > 0) {
+      query += ` WHERE ${conditions.join(' AND ')}`;
     }
 
     query += ` ORDER BY is_open DESC, is_paused ASC, created_at DESC LIMIT $${params.length + 1}`;

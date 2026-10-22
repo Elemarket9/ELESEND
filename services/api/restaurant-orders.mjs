@@ -22,7 +22,7 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       deliveryAddress: z.string().trim().min(3).max(255),
       deliveryLatitude: z.number().finite().min(4.5).max(11.5),
       deliveryLongitude: z.number().finite().min(-3.5).max(1.5),
-      customerPhone: z.string().trim().regex(/^(\+233|0)[25][0-9]{8}$/),
+      customerPhone: z.string().trim().transform(p => p.replace(/\s+/g, '')).pipe(z.string().regex(/^(\+233|0)[25][0-9]{8}$/, 'Valid Ghana phone number required')),
       specialInstructions: z.string().trim().max(300).optional().default('')
     }).strict();
 

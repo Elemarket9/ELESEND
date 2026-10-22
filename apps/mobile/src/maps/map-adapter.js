@@ -59,6 +59,18 @@ export function RiderMarker({coordinate:point,heading=0,vehicle='motorcycle',tit
  </MarkerView>;
 }
 
+export function CurrentLocationMarker({coordinate:point,accuracy=12,title='My Current Location'}){
+ const id=useId();
+ const haloSize=Math.min(90,Math.max(32,Math.round(accuracy*1.4)));
+ return <MarkerView id={id} coordinate={coordinate(point)} anchor={{x:0.5,y:0.5}}>
+  <View style={{alignItems:'center',justifyContent:'center'}} collapsable={false} accessibilityLabel={title}>
+   <View style={{width:haloSize,height:haloSize,borderRadius:haloSize/2,backgroundColor:'rgba(56,189,248,0.22)',borderWidth:1.5,borderColor:'rgba(56,189,248,0.5)',alignItems:'center',justifyContent:'center'}}>
+    <View style={{width:16,height:16,borderRadius:8,backgroundColor:'#0284C7',borderWidth:3,borderColor:'#FFFFFF',shadowColor:'#000',shadowOffset:{width:0,height:2},shadowOpacity:0.3,shadowRadius:3,elevation:5}}/>
+   </View>
+  </View>
+ </MarkerView>;
+}
+
 export function Polyline({coordinates,strokeColor='#14695b',strokeWidth=5}){
  const id=useId().replace(/:/g,'');
  return <ShapeSource id={'route-'+id} shape={{type:'Feature',properties:{},geometry:{type:'LineString',coordinates:coordinates.map(coordinate)}}}><LineLayer id={'line-'+id} style={{lineColor:strokeColor,lineWidth:strokeWidth,lineCap:'round',lineJoin:'round'}}/></ShapeSource>;

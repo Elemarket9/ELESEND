@@ -9,6 +9,8 @@ import {financeService} from './finance.mjs';
 import {checkoutService} from './checkout.mjs';
 import {paystackCheckout} from './paystack-checkout-adapter.mjs';
 import {httpsSmsGateway} from './sms-gateway.mjs';
+import {hubtelSmsGateway} from './providers/hubtel-sms.mjs';
+import {hubtelCheckout} from './providers/hubtel-payment.mjs';
 if(process.env.NODE_ENV==='production'){
  if(!/^[a-fA-F0-9]{64}$/.test(process.env.ADMIN_MFA_ENCRYPTION_KEY??''))throw Error('Production requires a 32-byte admin MFA encryption key');
  if(process.env.ADMIN_MFA_ENCRYPTION_KEY.toLowerCase()===(process.env.OTP_KEY??'').toLowerCase())throw Error('OTP and admin MFA master keys must be independent');
@@ -23,9 +25,35 @@ if(!graphMap&&Object.keys(legacyProfiles).some(vehicle=>vehicle!=='car'))throw E
 const routing=graphMap||process.env.ROUTING_OSRM_URL?osrmRouting({endpoint:process.env.ROUTING_OSRM_URL,profiles:legacyProfiles,vehicleRoutes:graphMap}):null;
 // Routing absence disables quote and dispatch, not authentication/history.
 const dispatch=routing?dispatchEngine(db,{routing}):null;
-const sms=process.env.SMS_GATEWAY_ENDPOINT?httpsSmsGateway({endpoint:process.env.SMS_GATEWAY_ENDPOINT,allowedHost:process.env.SMS_GATEWAY_ALLOWED_HOST,token:process.env.SMS_GATEWAY_TOKEN}):null;
+const sms = process.env.HUBTEL_CLIENT_ID && process.env.HUBTEL_CLIENT_SECRET
+  ? hubtelSmsGateway({
+      clientId: process.env.HUBTEL_CLIENT_ID,
+      clientSecret: process.env.HUBTEL_CLIENT_SECRET,
+      senderId: process.env.HUBTEL_SENDER_ID || 'ELESEND',
+      endpoint: process.env.HUBTEL_SMS_ENDPOINT || 'https://api.hubtel.com/v1/messages/send'
+    })
+  : process.env.SMS_GATEWAY_ENDPOINT
+  ? httpsSmsGateway({
+      endpoint: process.env.SMS_GATEWAY_ENDPOINT,
+      allowedHost: process.env.SMS_GATEWAY_ALLOWED_HOST,
+      token: process.env.SMS_GATEWAY_TOKEN
+    })
+  : null;
 const app=platform(db,{otpKey:process.env.OTP_KEY,routing,dispatch,sms});
-const paymentProvider=process.env.PAYSTACK_SECRET_KEY?paystackCheckout({secretKey:process.env.PAYSTACK_SECRET_KEY,allowedMethods:(process.env.PAYSTACK_ENABLED_METHODS??'MOMO,CARD').split(',').map(s=>s.trim())}):null;
+const paymentProvider = process.env.HUBTEL_CLIENT_ID && process.env.HUBTEL_CLIENT_SECRET && process.env.HUBTEL_MERCHANT_ACCOUNT_NUMBER
+  ? hubtelCheckout({
+      clientId: process.env.HUBTEL_CLIENT_ID,
+      clientSecret: process.env.HUBTEL_CLIENT_SECRET,
+      merchantAccountNumber: process.env.HUBTEL_MERCHANT_ACCOUNT_NUMBER,
+      endpoint: process.env.HUBTEL_PAYMENT_ENDPOINT || 'https://payproxyapi.hubtel.com',
+      allowedMethods: (process.env.HUBTEL_ENABLED_METHODS ?? 'MOMO,CARD,QR').split(',').map(s => s.trim())
+    })
+  : process.env.PAYSTACK_SECRET_KEY
+  ? paystackCheckout({
+      secretKey: process.env.PAYSTACK_SECRET_KEY,
+      allowedMethods: (process.env.PAYSTACK_ENABLED_METHODS ?? 'MOMO,CARD').split(',').map(s => s.trim())
+    })
+  : null;
 const finance=financeService(db,{provider:paymentProvider});
 const checkout=checkoutService(db,{provider:paymentProvider});
 const server=httpServer(db,app,dispatch,finance,checkout,{ghanaPostGps:configuredGhanaPostGps()});

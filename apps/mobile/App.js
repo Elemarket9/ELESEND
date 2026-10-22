@@ -1,10 +1,11 @@
 import React,{useEffect,useState,useRef} from 'react';
 import {View,Text,TextInput,Pressable,ScrollView,StyleSheet,Alert,ActivityIndicator,AppState,Platform,Linking,StatusBar,TouchableOpacity} from 'react-native';
-import MapView,{Marker,RiderMarker,Polyline,MAP_RENDERER,openTurnByTurnNavigation} from './src/maps/map-adapter';
+import MapView,{Marker,RiderMarker,CurrentLocationMarker,Polyline,MAP_RENDERER,openTurnByTurnNavigation} from './src/maps/map-adapter';
 import QRCode from 'react-native-qrcode-svg';
 import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 import {call,loadToken,saveToken,clearToken,ghc,BASE} from './src/api';
+import {detectCustomerLocation,buildConfirmedLocation} from './src/customer-location';
 import {sample,startShiftTracking,stopShiftTracking} from './src/tracking';
 import {cacheJobs,readCachedJobs,clearCachedJobs} from './src/offline';
 
@@ -42,6 +43,9 @@ export default function App(){
  const [phoneChallenge,setPhoneChallenge]=useState(null),[phoneCode,setPhoneCode]=useState(''),[phoneStatus,setPhoneStatus]=useState(null);
  const [ghanaAddress,setGhanaAddress]=useState(''),[ghanaAddressLookup,setGhanaAddressLookup]=useState(false);const addressLookupEpoch=useRef(0),mapRef=useRef(null);
  const [placeQuery,setPlaceQuery]=useState(''),[placesList,setPlacesList]=useState([]);
+ const [detectedLocation,setDetectedLocation]=useState(null),[detectingGps,setDetectingGps]=useState(false);
+ const [locationTarget,setLocationTarget]=useState('pickup'),[adjustingPin,setAdjustingPin]=useState(false);
+ const [deliveryInstructions,setDeliveryInstructions]=useState(''),[foodDeliveryCoords,setFoodDeliveryCoords]=useState(null);
  const [paymentMethods,setPaymentMethods]=useState([{method:'CASH',enabled:true}]),[paymentEmail,setPaymentEmail]=useState(''),[checkoutSession,setCheckoutSession]=useState(null),[adminPaymentMethods,setAdminPaymentMethods]=useState([]);
  const [adminPricing,setAdminPricing]=useState([]),[commVehicle,setCommVehicle]=useState('all'),[commPercent,setCommPercent]=useState('3.0'),[commMode,setCommMode]=useState('percentage'),[commCapGhs,setCommCapGhs]=useState('');
  const [activeParcel,setActiveParcel]=useState(null),[challenge,setChallenge]=useState(null),[otp,setOtp]=useState(''),[disputeModal,setDisputeModal]=useState(null),[disputeCategory,setDisputeCategory]=useState('damage'),[disputeDetail,setDisputeDetail]=useState('');
@@ -56,6 +60,7 @@ export default function App(){
  const [businessSettlements,setBusinessSettlements]=useState(null),[orderPrepMinutes,setOrderPrepMinutes]=useState('25');
  const [newRestName,setNewRestName]=useState(''),[newRestAddress,setNewRestAddress]=useState(''),[newRestCuisine,setNewRestCuisine]=useState('');
  const [newCatName,setNewCatName]=useState(''),[newItemName,setNewItemName]=useState(''),[newItemPrice,setNewItemPrice]=useState('');
+ const [businessMenu,setBusinessMenu]=useState(null),[targetCatId,setTargetCatId]=useState('');
  const watch=useRef(null);
 
  const edit=(k,v)=>setCredentials(c=>({...c,[k]:v}));
@@ -88,12 +93,14 @@ export default function App(){
   if(auth?.kind==='business'){
    const orders=await call('GET','/api/v1/food-orders').catch(()=>[]);
    setKitchenOrders(orders||[]);
-   const allRest=await call('GET','/api/v1/restaurants').catch(()=>[]);
-   const mine=(allRest||[]).find(r=>r.owner_id===auth.id);
+   const allRest=await call('GET','/api/v1/restaurants?mine=true').catch(()=>[]);
+   const mine=allRest[0]||(allRest||[]).find(r=>r.owner_id===auth.id);
    if(mine){
     setBusinessRestaurant(mine);
     const s=await call('GET',`/api/v1/restaurants/${mine.id}/settlements`).catch(()=>null);
     setBusinessSettlements(s);
+    const m=await call('GET',`/api/v1/restaurants/${mine.id}/menu`).catch(()=>null);
+    setBusinessMenu(m);
    }
   }
  }
@@ -149,8 +156,8 @@ export default function App(){
    restaurantId:selectedRest.id,
    items:cartItems.map(i=>({itemId:i.itemId,quantity:i.quantity,options:i.options})),
    deliveryAddress:foodDeliveryAddress.trim(),
-   deliveryLatitude:5.6021,
-   deliveryLongitude:-0.1834,
+   deliveryLatitude:foodDeliveryCoords?.latitude||5.6021,
+   deliveryLongitude:foodDeliveryCoords?.longitude||-0.1834,
    customerPhone:foodRecipientPhone.trim()||auth.phone,
    specialInstructions:foodInstructions.trim()
   };
@@ -184,6 +191,35 @@ export default function App(){
  async function markKitchenReady(orderId){
   await call('POST',`/api/v1/food-orders/${orderId}/ready`,{});
   await loadBusinessData();
+ }
+ async function addCategory(){
+  if(!businessRestaurant||!newCatName.trim())return;
+  await call('POST',`/api/v1/restaurants/${businessRestaurant.id}/categories`,{name:newCatName.trim()});
+  setNewCatName('');
+  const m=await call('GET',`/api/v1/restaurants/${businessRestaurant.id}/menu`);
+  setBusinessMenu(m);
+  setError('Category added successfully.');
+ }
+ async function addMenuItem(){
+  if(!businessRestaurant||!newItemName.trim()||!newItemPrice.trim())return;
+  const priceMinor=parseGhs(newItemPrice);
+  await call('POST',`/api/v1/restaurants/${businessRestaurant.id}/items`,{
+   name:newItemName.trim(),
+   priceMinor,
+   ...(targetCatId?{categoryId:targetCatId}:{}),
+   prepTimeMinutes:20,
+   isAvailable:true
+  });
+  setNewItemName('');setNewItemPrice('');
+  const m=await call('GET',`/api/v1/restaurants/${businessRestaurant.id}/menu`);
+  setBusinessMenu(m);
+  setError('Dish added to menu.');
+ }
+ async function toggleDishAvailability(itemId,currentAvailable){
+  if(!businessRestaurant)return;
+  await call('POST',`/api/v1/restaurants/${businessRestaurant.id}/items/${itemId}`,{isAvailable:!currentAvailable});
+  const m=await call('GET',`/api/v1/restaurants/${businessRestaurant.id}/menu`);
+  setBusinessMenu(m);
  }
 
  async function signIn(){
@@ -258,8 +294,65 @@ export default function App(){
 
  async function runPlaceSearch(){if(placeQuery.trim().length<2)return;const res=await call('GET',`/api/v1/maps/search?q=${encodeURIComponent(placeQuery.trim())}`);setPlacesList(res||[]);}
  function pickPlace(p){const target=booking.pickup?'destination':'pickup';const pin={latitude:p.latitude,longitude:p.longitude,address:`${p.name} • ${p.label}`};update(target,pin);mapRef.current?.animateToRegion({latitude:pin.latitude,longitude:pin.longitude,latitudeDelta:.012,longitudeDelta:.012},500);setPlacesList([]);setPlaceQuery('');}
- function selectOnMap(position){if(step!==0)return;const center={latitude:position.nativeEvent.coordinate.latitude,longitude:position.nativeEvent.coordinate.longitude};const target=booking.pickup?'destination':'pickup';update(target,{address:`Pin: ${center.latitude.toFixed(4)}, ${center.longitude.toFixed(4)}`,...center});
-  call('GET',`/api/v1/maps/reverse?lat=${center.latitude}&lon=${center.longitude}`).then(res=>{if(res?.address)update(target,{address:res.address,...center});}).catch(()=>{});}
+ async function useCurrentLocation(target='pickup'){
+  setLocationTarget(target);setDetectingGps(true);setError('');
+  const res=await detectCustomerLocation({
+   locationApi:Location,
+   reverseGeocodeApi:async(lat,lon)=>call('GET',`/api/v1/maps/reverse?lat=${lat}&lon=${lon}`),
+   timeoutMs:12000
+  });
+  setDetectingGps(false);
+  if(!res.ok){setError(res.message);return;}
+  setDetectedLocation(res);
+  mapRef.current?.animateToRegion({latitude:res.coordinates.latitude,longitude:res.coordinates.longitude,latitudeDelta:.008,longitudeDelta:.008},600);
+  const pin={latitude:res.coordinates.latitude,longitude:res.coordinates.longitude,address:res.displayAddress,accuracyMeters:res.accuracyMeters,detectedByGps:true};
+  if(target==='food'){setFoodDeliveryAddress(res.displayAddress);setFoodDeliveryCoords(res.coordinates);}
+  else update(target,pin);
+ }
+ function confirmDetectedLocation(){
+  if(!detectedLocation)return;
+  const target=locationTarget;
+  const confirmed=buildConfirmedLocation({
+   coordinates:detectedLocation.coordinates,
+   displayAddress:detectedLocation.displayAddress,
+   reverseGeocode:detectedLocation.reverseGeocode,
+   manualInstructions:deliveryInstructions,
+   isAdjusted:adjustingPin
+  });
+  if(target==='food'){
+   setFoodDeliveryAddress(confirmed.address);
+   setFoodDeliveryCoords({latitude:confirmed.latitude,longitude:confirmed.longitude});
+  }else{
+   update(target,confirmed);
+  }
+  setDetectedLocation(null);setAdjustingPin(false);setDeliveryInstructions('');
+  setError(`Location confirmed: ${confirmed.address.slice(0,50)}...`);
+ }
+ function selectOnMap(position){
+  if(step!==0)return;
+  const center={latitude:position.nativeEvent.coordinate.latitude,longitude:position.nativeEvent.coordinate.longitude};
+  const target=locationTarget||(booking.pickup?'destination':'pickup');
+  if(detectedLocation){
+   setAdjustingPin(true);
+   call('GET',`/api/v1/maps/reverse?lat=${center.latitude}&lon=${center.longitude}`).then(res=>{
+    setDetectedLocation(prev=>prev?{
+     ...prev,
+     coordinates:center,
+     reverseGeocode:res,
+     displayAddress:res?.address||`Pin: ${center.latitude.toFixed(5)}, ${center.longitude.toFixed(5)}`,
+     recognizedNearby:res?.nearestPlace||res?.locality||prev.recognizedNearby
+    }:null);
+   }).catch(()=>{});
+  }
+  if(target==='food'){
+   setFoodDeliveryCoords(center);
+   setFoodDeliveryAddress(`Pin: ${center.latitude.toFixed(4)}, ${center.longitude.toFixed(4)}`);
+   call('GET',`/api/v1/maps/reverse?lat=${center.latitude}&lon=${center.longitude}`).then(res=>{if(res?.address)setFoodDeliveryAddress(res.address);}).catch(()=>{});
+  }else{
+   update(target,{address:`Pin: ${center.latitude.toFixed(4)}, ${center.longitude.toFixed(4)}`,...center});
+   call('GET',`/api/v1/maps/reverse?lat=${center.latitude}&lon=${center.longitude}`).then(res=>{if(res?.address)update(target,{address:res.address,...center});}).catch(()=>{});
+  }
+ }
 
  if(loading)return (
    <View style={[styles.screen,styles.center]}>
@@ -453,6 +546,22 @@ export default function App(){
         <Text style={styles.cardTitle}>Set Delivery Points</Text>
         <Text style={styles.cardSubtitle}>Search places across Ghana or tap directly on the map to place pickup and delivery pins.</Text>
 
+        {/* Automatic GPS Location Detection Button */}
+        <TouchableOpacity
+         onPress={()=>execute(()=>useCurrentLocation(booking.pickup?'destination':'pickup'))}
+         style={styles.useGpsBtn}
+         disabled={detectingGps}
+         accessibilityLabel="Use My Current Location">
+         {detectingGps?(
+          <ActivityIndicator size="small" color="#FFFFFF" style={{marginRight:8}}/>
+         ):(
+          <Text style={styles.useGpsIcon}>📍</Text>
+         )}
+         <Text style={styles.useGpsText}>
+          {detectingGps?'Detecting GPS position...':'Use My Current Location'}
+         </Text>
+        </TouchableOpacity>
+
         {/* Place Search */}
         <View style={styles.searchRow}>
          <TextInput placeholder="Search place (e.g. Accra Mall, Kejetia, Airport)" placeholderTextColor={colors.textMuted} style={[styles.inputField,{flex:1}]} value={placeQuery} onChangeText={v=>{setPlaceQuery(v);if(v.trim().length<2)setPlacesList([]);}} returnKeyType="search" onSubmitEditing={()=>execute(runPlaceSearch)}/>
@@ -496,9 +605,58 @@ export default function App(){
          </View>
         )}
 
+        {/* Detected Location Card */}
+        {detectedLocation&&(
+         <View style={styles.detectedCard}>
+          <View style={styles.detectedHeader}>
+           <Text style={styles.detectedTitle}>📍 Current location detected</Text>
+           <View style={[styles.accuracyBadge,detectedLocation.accuracyTier==='approx'?styles.accuracyBadgeWarn:styles.accuracyBadgeGood]}>
+            <Text style={styles.accuracyText}>{detectedLocation.accuracyLabel}</Text>
+           </View>
+          </View>
+
+          {detectedLocation.recognizedNearby&&(
+           <Text style={styles.detectedNearby}>Nearby: {detectedLocation.recognizedNearby}{detectedLocation.region?`, ${detectedLocation.region}`:''}</Text>
+          )}
+
+          <Text style={styles.detectedAddress}>{detectedLocation.displayAddress}</Text>
+
+          {detectedLocation.advisory&&(
+           <Text style={styles.detectedAdvisory}>{detectedLocation.advisory}</Text>
+          )}
+
+          {adjustingPin&&(
+           <View style={styles.adjustingTipBox}>
+            <Text style={styles.adjustingTipText}>👉 Tap anywhere on the map below to position the delivery pin at your exact gate or door entrance.</Text>
+           </View>
+          )}
+
+          <TextInput
+           placeholder="Delivery instructions (e.g. Green gate, call on arrival)"
+           placeholderTextColor={colors.textMuted}
+           style={[styles.inputField,{marginVertical:8,height:40}]}
+           value={deliveryInstructions}
+           onChangeText={setDeliveryInstructions}
+          />
+
+          <View style={styles.detectedBtnRow}>
+           <TouchableOpacity onPress={confirmDetectedLocation} style={styles.confirmLocationBtn}>
+            <Text style={styles.confirmLocationBtnText}>Confirm Location</Text>
+           </TouchableOpacity>
+           <TouchableOpacity onPress={()=>setAdjustingPin(p=>!p)} style={styles.adjustPinBtn}>
+            <Text style={styles.adjustPinBtnText}>{adjustingPin?'Done Adjusting':'Adjust Pin'}</Text>
+           </TouchableOpacity>
+           <TouchableOpacity onPress={()=>{setDetectedLocation(null);setAdjustingPin(false);}} style={styles.searchManualBtn}>
+            <Text style={styles.searchManualBtnText}>Search Manually</Text>
+           </TouchableOpacity>
+          </View>
+         </View>
+        )}
+
         {/* Interactive Map */}
         <View style={styles.mapContainer}>
          <MapView ref={mapRef} provider={MAP_RENDERER} style={styles.map} initialRegion={{latitude:5.6037,longitude:-0.187,latitudeDelta:.14,longitudeDelta:.14}} onPress={selectOnMap}>
+          {detectedLocation&&<CurrentLocationMarker coordinate={detectedLocation.coordinates} accuracy={detectedLocation.accuracyMeters} title="My Current Location"/>}
           {booking.pickup&&<Marker coordinate={booking.pickup} title="Pickup Point" pinColor="#18C6A5"/>}
           {booking.destination&&<Marker coordinate={booking.destination} title="Drop-off Point" pinColor="#D92D40"/>}
          </MapView>
@@ -834,7 +992,16 @@ export default function App(){
          </ScrollView>
 
          {/* Delivery Address */}
-         <Text style={styles.inputLabel}>Delivery Address (Accra / Kumasi / Tema)</Text>
+         <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+          <Text style={styles.inputLabel}>Delivery Address (Accra / Kumasi / Tema)</Text>
+          <TouchableOpacity
+           onPress={()=>execute(()=>useCurrentLocation('food'))}
+           style={{flexDirection:'row',alignItems:'center',paddingVertical:2,paddingHorizontal:8,borderRadius:6,backgroundColor:colors.card,borderColor:colors.accent,borderWidth:1}}
+           disabled={detectingGps}
+           accessibilityLabel="Use My Current Location">
+           <Text style={{fontSize:11,color:colors.accent,fontWeight:'700'}}>{detectingGps?'Detecting...':'📍 Use Current Location'}</Text>
+          </TouchableOpacity>
+         </View>
          <TextInput placeholder="e.g. Airport Residential, House 12, Accra" placeholderTextColor={colors.textMuted} style={styles.inputField} value={foodDeliveryAddress} onChangeText={setFoodDeliveryAddress}/>
 
          <View style={styles.chipsRow}>
@@ -923,6 +1090,8 @@ export default function App(){
           </View>
          </View>
          <Text style={styles.orderPriceText}>Fare: {ghc(s.amount_minor)} • {s.payment_method}</Text>
+         {s.pickup?.address&&<Text style={styles.orderDetailText}>📍 Pickup: {s.pickup.address}</Text>}
+         {s.destination?.address&&<Text style={styles.orderDetailText}>🏁 Dropoff: {s.destination.address}</Text>}
          
          {/* Rider specific operational action buttons */}
          {isRider&&(
@@ -939,7 +1108,16 @@ export default function App(){
              <Text style={styles.actionBtnText}>Send Recipient Handover OTP</Text>
             </TouchableOpacity>
            )}
-           {s.pickup&&<TouchableOpacity onPress={()=>openTurnByTurnNavigation({latitude:s.pickup.latitude,longitude:s.pickup.longitude,label:`Pickup ${s.id.slice(0,8)}`})} style={styles.navBtn}><Text style={styles.navBtnText}>🗺️ Open Turn-by-Turn Navigation</Text></TouchableOpacity>}
+           {s.state==='RIDER_ASSIGNED'&&s.pickup&&(
+            <TouchableOpacity onPress={()=>openTurnByTurnNavigation({latitude:s.pickup.latitude,longitude:s.pickup.longitude,label:`Pickup #${s.id.slice(0,8)}`})} style={styles.navBtn}>
+             <Text style={styles.navBtnText}>🗺️ Navigate to Pickup (Google Maps)</Text>
+            </TouchableOpacity>
+           )}
+           {['PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state)&&s.destination&&(
+            <TouchableOpacity onPress={()=>openTurnByTurnNavigation({latitude:s.destination.latitude,longitude:s.destination.longitude,label:`Dropoff #${s.id.slice(0,8)}`})} style={[styles.navBtn,{backgroundColor:'#087F69'}]}>
+             <Text style={styles.navBtnText}>🗺️ Navigate to Dropoff (Google Maps)</Text>
+            </TouchableOpacity>
+           )}
           </View>
          )}
 
@@ -1223,6 +1401,62 @@ export default function App(){
          </View>
         ))}
 
+        {/* Menu & Catalog Management */}
+        {businessRestaurant&&(
+         <View style={{marginTop:20}}>
+          <View style={{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+           <Text style={[styles.cardTitle,{fontSize:16}]}>📋 Menu & Dish Catalog</Text>
+           <TouchableOpacity onPress={()=>execute(loadBusinessData)} style={styles.refreshBadge}>
+            <Text style={styles.refreshBadgeText}>🔄 Refresh Menu</Text>
+           </TouchableOpacity>
+          </View>
+          <Text style={styles.cardSubtitle}>Manage kitchen menu, dish pricing and availability for customers.</Text>
+
+          {/* List existing categories and items */}
+          {businessMenu?.categories?.map(cat=>(
+           <View key={cat.id} style={{marginTop:12,padding:10,backgroundColor:colors.bg,borderRadius:10}}>
+            <Text style={[styles.menuCategoryTitle,{marginTop:0}]}>📁 {cat.name}</Text>
+            {cat.items?.map(it=>(
+             <View key={it.id} style={[styles.dishCard,{paddingVertical:8}]}>
+              <View style={{flex:1}}>
+               <Text style={styles.dishTitle}>{it.name}</Text>
+               <Text style={styles.dishPrice}>{ghc(it.price_minor)} • {it.prep_time_minutes}m</Text>
+              </View>
+              <TouchableOpacity onPress={()=>execute(()=>toggleDishAvailability(it.id,it.is_available))} style={[styles.addDishBtn,{backgroundColor:it.is_available?'rgba(24,198,165,0.2)':'rgba(217,45,64,0.2)'}]}>
+               <Text style={[styles.addDishBtnText,{color:it.is_available?colors.primary:colors.danger}]}>
+                {it.is_available?'● In Stock':'○ Sold Out'}
+               </Text>
+              </TouchableOpacity>
+             </View>
+            ))}
+           </View>
+          ))}
+
+          {/* Add Category Form */}
+          <View style={{marginTop:14,padding:12,backgroundColor:colors.bg,borderRadius:10}}>
+           <Text style={styles.inputLabel}>Add New Menu Category</Text>
+           <View style={{flexDirection:'row',gap:8}}>
+            <TextInput placeholder="Category name (e.g. Rice, Drinks, Grills)" placeholderTextColor={colors.textMuted} style={[styles.inputField,{flex:1,marginBottom:0}]} value={newCatName} onChangeText={setNewCatName}/>
+            <TouchableOpacity onPress={()=>execute(addCategory)} style={[styles.primaryBtn,{marginTop:0,paddingHorizontal:16}]} disabled={!newCatName.trim()}>
+             <Text style={styles.primaryBtnText}>+ Add</Text>
+            </TouchableOpacity>
+           </View>
+          </View>
+
+          {/* Add Dish Form */}
+          <View style={{marginTop:14,padding:12,backgroundColor:colors.bg,borderRadius:10}}>
+           <Text style={styles.inputLabel}>Add New Dish to Menu</Text>
+           <TextInput placeholder="Dish Name (e.g. Jollof Rice with Goat Meat)" placeholderTextColor={colors.textMuted} style={styles.inputField} value={newItemName} onChangeText={setNewItemName}/>
+           <View style={{flexDirection:'row',gap:8}}>
+            <TextInput placeholder="Price GH₵ (e.g. 45.00)" placeholderTextColor={colors.textMuted} keyboardType="decimal-pad" style={[styles.inputField,{flex:1,marginBottom:0}]} value={newItemPrice} onChangeText={setNewItemPrice}/>
+            <TouchableOpacity onPress={()=>execute(addMenuItem)} style={[styles.primaryBtn,{marginTop:0,paddingHorizontal:16}]} disabled={!newItemName.trim()||!newItemPrice.trim()}>
+             <Text style={styles.primaryBtnText}>+ Create Dish</Text>
+            </TouchableOpacity>
+           </View>
+          </View>
+         </View>
+        )}
+
         {/* Sales & Financial Settlements Ledger */}
         {businessSettlements&&(
          <View style={{marginTop:20}}>
@@ -1484,6 +1718,28 @@ const styles=StyleSheet.create({
  sectionCard:{backgroundColor:colors.surface,borderColor:colors.cardBorder,borderWidth:1,borderRadius:16,padding:16,marginBottom:16},
  cardTitle:{color:colors.text,fontSize:17,fontWeight:'800',marginBottom:4},
  cardSubtitle:{color:colors.textMuted,fontSize:13,lineHeight:18,marginBottom:16},
+ useGpsBtn:{flexDirection:'row',alignItems:'center',justifyContent:'center',backgroundColor:colors.card,borderColor:colors.accent,borderWidth:1.5,borderRadius:12,paddingVertical:12,paddingHorizontal:16,marginBottom:12},
+ useGpsIcon:{fontSize:16,marginRight:8},
+ useGpsText:{color:colors.text,fontWeight:'800',fontSize:13},
+ detectedCard:{backgroundColor:colors.bg,borderColor:colors.accent,borderWidth:1.5,borderRadius:14,padding:14,marginBottom:14},
+ detectedHeader:{flexDirection:'row',justifyContent:'space-between',alignItems:'center',marginBottom:6},
+ detectedTitle:{color:colors.primary,fontSize:14,fontWeight:'800'},
+ accuracyBadge:{paddingHorizontal:8,paddingVertical:3,borderRadius:6},
+ accuracyBadgeGood:{backgroundColor:'rgba(24,198,165,0.15)',borderColor:colors.primary,borderWidth:1},
+ accuracyBadgeWarn:{backgroundColor:'rgba(255,181,71,0.15)',borderColor:colors.warn,borderWidth:1},
+ accuracyText:{fontSize:10,fontWeight:'700',color:colors.text},
+ detectedNearby:{color:colors.warn,fontSize:13,fontWeight:'700',marginBottom:4},
+ detectedAddress:{color:colors.text,fontSize:12,fontWeight:'600',lineHeight:17},
+ detectedAdvisory:{color:colors.textMuted,fontSize:11,fontStyle:'italic',marginTop:4},
+ adjustingTipBox:{backgroundColor:'rgba(56,189,248,0.1)',borderColor:colors.info,borderWidth:1,borderRadius:8,padding:8,marginTop:8},
+ adjustingTipText:{color:colors.info,fontSize:11,fontWeight:'600'},
+ detectedBtnRow:{flexDirection:'row',gap:8,marginTop:10},
+ confirmLocationBtn:{flex:1.2,backgroundColor:colors.primary,paddingVertical:10,borderRadius:8,alignItems:'center',justifyContent:'center'},
+ confirmLocationBtnText:{color:'#071B28',fontSize:12,fontWeight:'800'},
+ adjustPinBtn:{flex:1,backgroundColor:colors.card,borderColor:colors.cardBorder,borderWidth:1,paddingVertical:10,borderRadius:8,alignItems:'center',justifyContent:'center'},
+ adjustPinBtnText:{color:colors.text,fontSize:12,fontWeight:'700'},
+ searchManualBtn:{flex:1,backgroundColor:colors.card,borderColor:colors.cardBorder,borderWidth:1,paddingVertical:10,borderRadius:8,alignItems:'center',justifyContent:'center'},
+ searchManualBtnText:{color:colors.textMuted,fontSize:11,fontWeight:'700'},
  searchRow:{flexDirection:'row',gap:8,marginBottom:10},
  searchBtn:{backgroundColor:colors.primary,paddingHorizontal:14,justifyContent:'center',borderRadius:10,height:48},
  searchBtnText:{color:'#071B28',fontWeight:'800',fontSize:13},

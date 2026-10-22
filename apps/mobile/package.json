@@ -2,6 +2,7 @@
   "name": "elesend-native",
   "version": "0.2.0",
   "private": true,
+  "type": "module",
   "main": "index.js",
   "scripts": {
     "start": "expo start --dev-client",
