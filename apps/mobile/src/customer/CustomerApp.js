@@ -281,7 +281,7 @@ export default function CustomerApp() {
   }
 
   function pickPlace(p) {
-    const target = booking.pickup ? 'destination' : 'pickup';
+    const target = locationTarget || (booking.pickup ? 'destination' : 'pickup');
     const pin = { latitude: p.latitude, longitude: p.longitude, address: `${p.name} • ${p.label}` };
     updateBooking(target, pin);
     mapRef.current?.animateToRegion({
@@ -292,6 +292,9 @@ export default function CustomerApp() {
     }, 500);
     setPlacesList([]);
     setPlaceQuery('');
+    if (target === 'pickup' && !booking.destination) {
+      setLocationTarget('destination');
+    }
   }
 
   async function useCurrentLocation(target = 'pickup') {
@@ -370,13 +373,17 @@ export default function CustomerApp() {
     const recipient = normalizeGhanaPhone(nextBooking.recipientPhone);
     if (!isValidGhanaPhone(recipient)) throw Error('Enter a valid Ghana recipient phone');
 
+    const desc = deliveryInstructions.trim()
+      ? `${nextBooking.description || 'Package'} (Notes: ${deliveryInstructions.trim()})`
+      : (nextBooking.description || 'Package');
+
     const input = {
       pickup: sanitizeAddressPayload(nextBooking.pickup),
       destination: sanitizeAddressPayload(nextBooking.destination),
       vehicle: nextBooking.vehicle,
       recipientPhone: recipient,
       weightG: Number(nextBooking.weightG) || 1500,
-      description: nextBooking.description || 'Package',
+      description: desc,
       parcelCategory: nextBooking.parcelCategory,
       parcelSize: nextBooking.parcelSize,
       paymentMethod: nextBooking.paymentMethod,
@@ -504,6 +511,18 @@ export default function CustomerApp() {
 
   function addDishToCart() {
     if (!selectedDish || !selectedRest) return;
+    if (selectedDish.modifiers) {
+      for (const m of selectedDish.modifiers) {
+        if (m.is_required) {
+          const modOptIds = (m.options || []).map(o => o.id);
+          const hasSelected = selectedOptions.some(id => modOptIds.includes(id));
+          if (!hasSelected) {
+            Alert.alert('Required Selection Missing', `Please choose an option for "${m.name}".`);
+            return;
+          }
+        }
+      }
+    }
     const item = {
       restaurantId: selectedRest.id,
       restaurantName: selectedRest.name,
@@ -876,9 +895,31 @@ export default function CustomerApp() {
                 <Text style={styles.cardHeading}>Pickup & Delivery Points</Text>
                 <Text style={styles.cardSubheading}>Search Ghanaian landmarks or drop pins directly on the map.</Text>
 
+                {/* Active Selection Target (Pickup vs Destination) */}
+                <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel="Select Pickup Point"
+                    onPress={() => setLocationTarget('pickup')}
+                    style={[styles.pillBtn, locationTarget === 'pickup' && styles.pillBtnActive, { flex: 1, alignItems: 'center' }]}>
+                    <Text style={[styles.pillBtnText, locationTarget === 'pickup' && { color: colors.primary, fontWeight: '700' }]}>
+                      🟢 Set Pickup
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel="Select Destination Point"
+                    onPress={() => setLocationTarget('destination')}
+                    style={[styles.pillBtn, locationTarget === 'destination' && styles.pillBtnActive, { flex: 1, alignItems: 'center' }]}>
+                    <Text style={[styles.pillBtnText, locationTarget === 'destination' && { color: '#F87171', fontWeight: '700' }]}>
+                      🔴 Set Destination
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
                 {/* GPS Auto-detect Button */}
                 <TouchableOpacity
-                  onPress={() => execute(() => useCurrentLocation(booking.pickup ? 'destination' : 'pickup'))}
+                  onPress={() => execute(() => useCurrentLocation(locationTarget || (booking.pickup ? 'destination' : 'pickup')))}
                   style={styles.gpsDetectBtn}
                   disabled={detectingGps}>
                   {detectingGps ? <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} /> : <Text style={{ fontSize: 18, marginRight: 8 }}>📍</Text>}
@@ -998,6 +1039,17 @@ export default function CustomerApp() {
                     style={styles.input}
                     value={booking.description}
                     onChangeText={v => updateBooking('description', v)}
+                  />
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Handover & Landmark Instructions (Optional)</Text>
+                  <TextInput
+                    placeholder="e.g. Behind the SDA School, blue gate, call on arrival"
+                    placeholderTextColor={colors.textMuted}
+                    style={styles.input}
+                    value={deliveryInstructions}
+                    onChangeText={setDeliveryInstructions}
                   />
                 </View>
 
@@ -1157,20 +1209,36 @@ export default function CustomerApp() {
                   <Text style={styles.dishModalTitle}>{selectedDish?.name}</Text>
                   <Text style={styles.dishModalPrice}>{ghc(selectedDish?.price_minor)}</Text>
 
-                  {selectedDish?.modifiers?.map(mod => (
-                    <View key={mod.id} style={{ marginTop: 12 }}>
-                      <Text style={styles.modifierTitle}>{mod.name} {mod.is_required ? '(Required)' : '(Optional)'}</Text>
-                      {mod.options?.map(opt => (
-                        <TouchableOpacity
-                          key={opt.id}
-                          onPress={() => toggleModifierOption(opt.id, mod)}
-                          style={[styles.modifierOptionRow, selectedOptions.includes(opt.id) && styles.modifierOptionRowActive]}>
-                          <Text style={styles.optionName}>{opt.name}</Text>
-                          <Text style={styles.optionPrice}>+{ghc(opt.price_minor)}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  ))}
+                  {selectedDish?.modifiers?.map(mod => {
+                    const isSingle = mod.max_selections === 1;
+                    return (
+                      <View key={mod.id} style={{ marginTop: 12 }}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                          <Text style={styles.modifierTitle}>{mod.name} {mod.is_required ? '(Required)' : '(Optional)'}</Text>
+                          <Text style={{ fontSize: 11, color: colors.textMuted }}>{isSingle ? 'Choose 1' : 'Multi-select'}</Text>
+                        </View>
+                        {mod.options?.map(opt => {
+                          const isSelected = selectedOptions.includes(opt.id);
+                          return (
+                            <TouchableOpacity
+                              key={opt.id}
+                              accessibilityRole={isSingle ? 'radio' : 'checkbox'}
+                              accessibilityState={{ selected: isSelected }}
+                              onPress={() => toggleModifierOption(opt.id, mod)}
+                              style={[styles.modifierOptionRow, isSelected && styles.modifierOptionRowActive]}>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                                <Text style={{ fontSize: 16, color: isSelected ? colors.primary : colors.textMuted }}>
+                                  {isSingle ? (isSelected ? '◉' : '○') : (isSelected ? '☑' : '☐')}
+                                </Text>
+                                <Text style={styles.optionName}>{opt.name}</Text>
+                              </View>
+                              <Text style={styles.optionPrice}>+{ghc(opt.price_minor)}</Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    );
+                  })}
 
                   <View style={{ flexDirection: 'row', gap: 12, marginTop: 20 }}>
                     <TouchableOpacity onPress={() => setDishModal(false)} style={[styles.secondaryBtn, { flex: 1 }]}>
@@ -1222,6 +1290,15 @@ export default function CustomerApp() {
                     style={[styles.gpsDetectBtn, { marginTop: 8 }]}>
                     <Text style={styles.gpsDetectText}>📍 Use Current Location for Food</Text>
                   </TouchableOpacity>
+
+                  <Text style={[styles.inputLabel, { marginTop: 12 }]}>Handover & Landmark Instructions (Optional)</Text>
+                  <TextInput
+                    placeholder="e.g. Behind the SDA School, blue gate, call on arrival"
+                    placeholderTextColor={colors.textMuted}
+                    style={styles.input}
+                    value={foodInstructions}
+                    onChangeText={setFoodInstructions}
+                  />
 
                   {foodQuote ? (
                     <View style={styles.foodQuoteBox}>

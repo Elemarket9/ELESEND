@@ -100,6 +100,11 @@
     .order-notes { background: rgba(255, 181, 71, 0.1); border: 1px solid rgba(255, 181, 71, 0.3); padding: 6px 10px; border-radius: 6px; font-size: 12px; color: var(--accent); }
     
     .prep-timer-pill { display: inline-flex; align-items: center; gap: 6px; background: rgba(24, 198, 165, 0.15); color: var(--primary); padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 700; font-family: var(--mono); }
+    .timer-normal { color: var(--primary); background: rgba(24, 198, 165, 0.15); }
+    .timer-warning { color: var(--warning, #F59E0B); background: rgba(245, 158, 11, 0.18); border: 1px solid rgba(245, 158, 11, 0.4); }
+    .timer-overdue { color: #FFF; background: var(--danger, #D92D40); animation: pulse 1s infinite; }
+    .prep-progress-bg { width: 100%; height: 6px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden; margin-top: 6px; }
+    .prep-progress-bar { height: 100%; border-radius: 4px; transition: width 1s linear, background-color 0.3s; }
     
     .dispatch-pill { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 700; background: var(--surface); border: 1px solid var(--card-border); margin-top: 4px; }
 
@@ -150,6 +155,7 @@
         <div class="status-dot online" id="storeStatusDot"></div>
         <span id="storeStatusText">Accepting Orders</span>
       </button>
+      <button class="btn-icon" id="fullscreenBtn" onclick="toggleFullscreen()" title="Toggle Fullscreen Mode">&#x26F6; Fullscreen</button>
       <button class="btn-icon" onclick="toggleTheme()" title="Contrast Mode">&#9788;</button>
       <button class="btn-icon" onclick="logout()" title="Logout">&#x2715;</button>
     </div>
@@ -239,7 +245,7 @@
             <div class="stat-value primary" id="statGrossSales">GH₵ 0.00</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">Platform Fee (15%)</div>
+            <div class="stat-label" id="statCommissionLabel">Platform Fee (10%)</div>
             <div class="stat-value" id="statCommission">GH₵ 0.00</div>
           </div>
           <div class="stat-card">
@@ -401,6 +407,7 @@
         activeToken = '';
         currentRestaurant = null;
         if (pollInterval) clearInterval(pollInterval);
+        if (prepTimerInterval) clearInterval(prepTimerInterval);
         showAuthView();
       }
     }
@@ -577,11 +584,17 @@
         el.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 30px 10px; font-size: 13px;">No orders currently being prepared.</div>';
         return;
       }
-      el.innerHTML = list.map(o => `
-        <div class="order-card">
+      el.innerHTML = list.map(o => {
+        const prepMins = Number(o.estimated_prep_minutes || o.prep_time_minutes || 20);
+        const acceptedAt = o.accepted_at || o.confirmed_at || o.created_at || new Date().toISOString();
+        return `
+        <div class="order-card" data-order-id="${o.id}" data-accepted-at="${acceptedAt}" data-prep-minutes="${prepMins}">
           <div class="order-header">
             <span class="order-num">#${o.id.slice(0, 8).toUpperCase()}</span>
-            <span class="prep-timer-pill">⏱ Prep: ${o.estimated_prep_minutes || o.prep_time_minutes || 20}m</span>
+            <span class="prep-timer-pill" id="timer-pill-${o.id}">⏱ Prep: ${prepMins}m</span>
+          </div>
+          <div class="prep-progress-bg">
+            <div class="prep-progress-bar" id="timer-bar-${o.id}" style="width: 100%; background: var(--primary);"></div>
           </div>
           <div class="order-items-list">
             ${(o.items || []).map(i => {
@@ -604,7 +617,8 @@
             </div>
           ` : ''}
         </div>
-      `).join('');
+      `;}).join('');
+      updatePrepTimers();
     }
 
     function renderReadyList(list) {
@@ -791,6 +805,9 @@
         const totals = data.totals || {};
 
         document.getElementById('statGrossSales').textContent = 'GH₵ ' + (Number(totals.grossSalesMinor ?? totals.gross_sales_minor ?? 0) / 100).toFixed(2);
+        const commRate = currentRestaurant?.food_commission_bps ? (currentRestaurant.food_commission_bps / 100) : 10;
+        const commLabel = document.getElementById('statCommissionLabel');
+        if (commLabel) commLabel.textContent = 'Platform Fee (' + commRate + '%)';
         document.getElementById('statCommission').textContent = 'GH₵ ' + (Number(totals.commissionMinor ?? totals.commission_minor ?? 0) / 100).toFixed(2);
         document.getElementById('statNetPayable').textContent = 'GH₵ ' + (Number(totals.netPayableMinor ?? totals.net_payable_minor ?? 0) / 100).toFixed(2);
         document.getElementById('statOrderCount').textContent = totals.totalOrders ?? totals.count ?? 0;
@@ -817,7 +834,8 @@
 
     function downloadSettlementsCsv() {
       if (rawSettlementsData.length === 0) return alert('No settlement data to export.');
-      let csv = 'Order Date,Order ID,Payment Method,Gross Sales (GHS),Commission 15% (GHS),Net Payable (GHS)\\n';
+      const commRate = currentRestaurant?.food_commission_bps ? (currentRestaurant.food_commission_bps / 100) : 10;
+      let csv = 'Order Date,Order ID,Payment Method,Gross Sales (GHS),Commission ' + commRate + '% (GHS),Net Payable (GHS)\\n';
       rawSettlementsData.forEach(s => {
         csv += `"${new Date(s.order_date || s.created_at).toISOString()}","${s.order_id}","${s.payment_method || 'DIGITAL'}",${(Number(s.gross_sales_minor)/100).toFixed(2)},${(Number(s.commission_minor)/100).toFixed(2)},${(Number(s.net_payable_minor)/100).toFixed(2)}\\n`;
       });
@@ -831,10 +849,73 @@
       document.body.removeChild(link);
     }
 
+    function toggleFullscreen() {
+      if (!document.fullscreenElement) {
+        if (document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        }
+      } else {
+        if (document.exitFullscreen) {
+          document.exitFullscreen().catch(() => {});
+        }
+      }
+    }
+    document.addEventListener('fullscreenchange', () => {
+      const btn = document.getElementById('fullscreenBtn');
+      if (btn) btn.innerHTML = document.fullscreenElement ? '&#x1F5D7; Exit' : '&#x26F6; Fullscreen';
+    });
+
+    function updatePrepTimers() {
+      const cards = document.querySelectorAll('.order-card[data-accepted-at]');
+      const now = Date.now();
+      cards.forEach(card => {
+        const id = card.getAttribute('data-order-id');
+        const acceptedAt = new Date(card.getAttribute('data-accepted-at')).getTime();
+        const prepMins = Number(card.getAttribute('data-prep-minutes')) || 20;
+        const totalDurationMs = prepMins * 60 * 1000;
+        const deadline = acceptedAt + totalDurationMs;
+        const diffMs = deadline - now;
+
+        const pill = document.getElementById('timer-pill-' + id);
+        const bar = document.getElementById('timer-bar-' + id);
+        if (!pill || !bar) return;
+
+        if (diffMs > 0) {
+          const remainingSecs = Math.floor(diffMs / 1000);
+          const mins = Math.floor(remainingSecs / 60);
+          const secs = remainingSecs % 60;
+          const timeStr = `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
+          const pct = Math.max(0, Math.min(100, (diffMs / totalDurationMs) * 100));
+          bar.style.width = pct + '%';
+
+          if (mins < 5) {
+            pill.className = 'prep-timer-pill timer-warning';
+            pill.textContent = '⏳ ' + timeStr + ' left';
+            bar.style.backgroundColor = 'var(--warning, #F59E0B)';
+          } else {
+            pill.className = 'prep-timer-pill timer-normal';
+            pill.textContent = '⏱ ' + timeStr + ' left';
+            bar.style.backgroundColor = 'var(--primary)';
+          }
+        } else {
+          const overdueSecs = Math.floor(Math.abs(diffMs) / 1000);
+          const mins = Math.floor(overdueSecs / 60);
+          const secs = overdueSecs % 60;
+          const timeStr = `+${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
+          pill.className = 'prep-timer-pill timer-overdue';
+          pill.textContent = '🚨 OVERDUE ' + timeStr;
+          bar.style.width = '100%';
+          bar.style.backgroundColor = 'var(--danger, #D92D40)';
+        }
+      });
+    }
+
     function escapeHtml(str) {
       if (!str) return '';
       return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
     }
+
+    let prepTimerInterval = null;
 
     async function init() {
       if (!activeToken) {
@@ -846,6 +927,8 @@
       await pollOrders();
       if (pollInterval) clearInterval(pollInterval);
       pollInterval = setInterval(pollOrders, 4000);
+      if (prepTimerInterval) clearInterval(prepTimerInterval);
+      prepTimerInterval = setInterval(updatePrepTimers, 1000);
     }
 
     function refreshAll() {

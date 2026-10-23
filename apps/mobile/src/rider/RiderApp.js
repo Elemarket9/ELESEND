@@ -18,7 +18,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, TextInput, Pressable, ScrollView, StyleSheet,
   Alert, ActivityIndicator, AppState, Linking, StatusBar,
-  TouchableOpacity, Modal
+  TouchableOpacity, Modal, Vibration
 } from 'react-native';
 import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
@@ -82,6 +82,7 @@ export default function RiderApp() {
   const [reportedCash, setReportedCash] = useState({});
 
   const watch = useRef(null);
+  const prevOffersRef = useRef(new Set());
 
   const edit = (k, v) => setCredentials(c => ({ ...c, [k]: v }));
 
@@ -141,7 +142,16 @@ export default function RiderApp() {
         ]);
         if (!cancelled) {
           if (m) setManifest(m);
-          setOffers(o || []);
+          const currentOffers = o || [];
+          const currentIds = currentOffers.map(x => x.offerId || x.id);
+          const hasNewOffer = currentIds.some(id => !prevOffersRef.current.has(id));
+          if (hasNewOffer && currentOffers.length > 0) {
+            try { Vibration.vibrate([0, 400, 200, 400]); } catch {}
+          } else if (currentOffers.length === 0) {
+            try { Vibration.cancel(); } catch {}
+          }
+          prevOffersRef.current = new Set(currentIds);
+          setOffers(currentOffers);
           if (v) {
             setVehicle(v);
             setOnline(v.online);
@@ -159,6 +169,7 @@ export default function RiderApp() {
     return () => {
       cancelled = true;
       clearInterval(interval);
+      try { Vibration.cancel(); } catch {}
     };
   }, [auth, online, phoneState?.verified]);
 
@@ -354,6 +365,7 @@ export default function RiderApp() {
 
   async function acceptOffer(offer) {
     if (!isStationary(speed)) throw Error('Please stop moving safely before accepting this job');
+    try { Vibration.cancel(); } catch {}
     await call('POST', `/api/v1/shipments/${offer.id}/accept`, { offerId: offer.offerId });
     setOffers(prev => prev.filter(x => x.offerId !== offer.offerId));
     setTab('Manifest');
@@ -362,6 +374,7 @@ export default function RiderApp() {
   }
 
   async function declineOffer(offer) {
+    try { Vibration.cancel(); } catch {}
     await call('POST', '/api/v1/rider/offers/decline', { shipmentId: offer.id, offerId: offer.offerId });
     setOffers(prev => prev.filter(x => x.offerId !== offer.offerId));
   }
@@ -829,13 +842,17 @@ export default function RiderApp() {
 
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
                   <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel={`Decline offer for ${o.description || 'Package'}`}
                     onPress={() => execute(() => declineOffer(o))}
-                    style={[styles.secondaryBtn, { flex: 1 }]}>
+                    style={[styles.secondaryBtn, { flex: 1, minHeight: 56 }]}>
                     <Text style={styles.secondaryBtnText}>Decline</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel={`Accept job for ${o.description || 'Package'} earning ${ghc(o.amount_minor)}`}
                     onPress={() => execute(() => acceptOffer(o))}
-                    style={[styles.primaryBtn, { flex: 2 }]}>
+                    style={[styles.primaryBtn, { flex: 2, minHeight: 56 }]}>
                     <Text style={styles.primaryBtnText}>Accept Job ⚡</Text>
                   </TouchableOpacity>
                 </View>
@@ -880,8 +897,10 @@ export default function RiderApp() {
                     {s.state === 'RIDER_ASSIGNED' && (
                       <View>
                         <TouchableOpacity
+                          accessibilityRole="button"
+                          accessibilityLabel="Confirm Package Pickup"
                           onPress={() => execute(() => initiatePickupVerification(s))}
-                          style={[styles.primaryBtn, { marginTop: 10 }]}>
+                          style={[styles.primaryBtn, { marginTop: 10, minHeight: 56 }]}>
                           <Text style={styles.primaryBtnText}>Confirm Package Pickup</Text>
                         </TouchableOpacity>
                         <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
@@ -901,16 +920,27 @@ export default function RiderApp() {
 
                     {['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(s.state) && (
                       <View>
+                        {s.payment_method === 'CASH' && !reportedCash[s.id] && (
+                          <View style={styles.codWarningBanner}>
+                            <Text style={styles.codWarningTitle}>⚠️ CASH ON DELIVERY REQUIRED</Text>
+                            <Text style={styles.codWarningSub}>
+                              Collect {ghc(s.amount_minor)} in cash from the recipient BEFORE requesting the OTP. Do not release package without full cash.
+                            </Text>
+                          </View>
+                        )}
                         {s.state === 'PICKUP_VERIFIED' && (
                           <TouchableOpacity
+                            accessibilityRole="button"
                             onPress={() => execute(() => transitionShipment(s.id, 'start'))}
-                            style={[styles.secondaryBtn, { marginTop: 10 }]}>
+                            style={[styles.secondaryBtn, { marginTop: 10, minHeight: 56 }]}>
                             <Text style={styles.secondaryBtnText}>Start Delivery Transit</Text>
                           </TouchableOpacity>
                         )}
                         <TouchableOpacity
+                          accessibilityRole="button"
+                          accessibilityLabel="Verify Handover OTP and Collect Payment"
                           onPress={() => execute(() => initiateDeliveryVerification(s))}
-                          style={[styles.primaryBtn, { marginTop: 10 }]}>
+                          style={[styles.primaryBtn, { marginTop: 10, minHeight: 56 }]}>
                           <Text style={styles.primaryBtnText}>
                             {s.payment_method === 'CASH' && !reportedCash[s.id]
                               ? `Collect Cash (${ghc(s.amount_minor)}) & Verify OTP`
@@ -963,7 +993,20 @@ export default function RiderApp() {
               <View style={styles.modalOverlay}>
                 <View style={styles.otpCard}>
                   <Text style={styles.otpCardTitle}>🔑 Verify Delivery Handover</Text>
-                  <Text style={styles.otpCardSub}>Ask the recipient for their 6-digit confirmation code.</Text>
+                  <Text style={styles.otpCardSub}>
+                    {activeParcel?.kind === 'pickup'
+                      ? 'Ask the sender or restaurant merchant for their 6-digit pickup handover OTP.'
+                      : 'Ask the recipient for their 6-digit delivery confirmation code.'}
+                  </Text>
+
+                  {activeParcel?.payment_method === 'CASH' && activeParcel?.kind !== 'pickup' && (
+                    <View style={styles.modalCodAlert}>
+                      <Text style={styles.modalCodAlertTitle}>💵 CASH PAYMENT CONFIRMATION</Text>
+                      <Text style={styles.modalCodAlertText}>
+                        Ensure you have received the full amount of {ghc(activeParcel.amount_minor)} in cash before finalizing this verification.
+                      </Text>
+                    </View>
+                  )}
 
                   <TextInput
                     placeholder="000 000"
@@ -977,13 +1020,16 @@ export default function RiderApp() {
 
                   <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
                     <TouchableOpacity
+                      accessibilityRole="button"
                       onPress={() => { setActiveParcel(null); setChallenge(null); setOtp(''); }}
-                      style={[styles.secondaryBtn, { flex: 1 }]}>
+                      style={[styles.secondaryBtn, { flex: 1, minHeight: 56 }]}>
                       <Text style={styles.secondaryBtnText}>Cancel</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
+                      accessibilityRole="button"
+                      accessibilityLabel="Verify and Complete Order"
                       onPress={() => execute(submitOtpVerification)}
-                      style={[styles.primaryBtn, { flex: 2 }]}
+                      style={[styles.primaryBtn, { flex: 2, minHeight: 56 }]}
                       disabled={otp.length !== 6}>
                       <Text style={styles.primaryBtnText}>Verify & Complete</Text>
                     </TouchableOpacity>
@@ -1175,10 +1221,16 @@ const styles = StyleSheet.create({
   vehicleChoiceActive: { borderColor: colors.primary, backgroundColor: colors.cardBorder },
   vehicleChoiceTitle: { fontSize: 13, fontWeight: '700', color: colors.text },
   vehicleChoiceSub: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
-  primaryBtn: { backgroundColor: colors.primary, borderRadius: radii.md, padding: 14, alignItems: 'center', justifyContent: 'center' },
+  primaryBtn: { backgroundColor: colors.primary, borderRadius: radii.md, minHeight: 56, paddingVertical: 14, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
   primaryBtnText: { color: colors.bg, fontSize: 15, fontWeight: '700' },
-  secondaryBtn: { backgroundColor: colors.card, borderRadius: radii.md, padding: 14, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.cardBorder },
+  secondaryBtn: { backgroundColor: colors.card, borderRadius: radii.md, minHeight: 56, paddingVertical: 14, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.cardBorder },
   secondaryBtnText: { color: colors.text, fontSize: 14, fontWeight: '600' },
+  codWarningBanner: { backgroundColor: '#78350F', borderRadius: radii.md, padding: 12, marginTop: 10, borderWidth: 1, borderColor: '#F59E0B' },
+  codWarningTitle: { color: '#FDE68A', fontSize: 12, fontWeight: '800', letterSpacing: 0.5 },
+  codWarningSub: { color: '#FEF3C7', fontSize: 12, marginTop: 2, lineHeight: 16 },
+  modalCodAlert: { backgroundColor: '#451A03', borderRadius: radii.md, padding: 12, marginBottom: 14, borderWidth: 1, borderColor: '#D97706' },
+  modalCodAlertTitle: { color: '#FCD34D', fontSize: 12, fontWeight: '800' },
+  modalCodAlertText: { color: '#FEF3C7', fontSize: 12, marginTop: 2 },
   switchAuthBtn: { marginTop: 16, alignItems: 'center', padding: 8 },
   switchAuthText: { color: colors.primary, fontSize: 13, fontWeight: '600' },
   errorBox: { backgroundColor: '#450A0A', padding: 12, borderRadius: radii.md, marginHorizontal: 16, marginTop: 8, borderWidth: 1, borderColor: colors.danger },

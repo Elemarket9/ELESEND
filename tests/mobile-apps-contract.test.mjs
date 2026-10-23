@@ -163,4 +163,31 @@ test('Mobile onboarding, customer booking, restaurant portal and admin portal co
   assert.ok(adminHtml.includes('signalId: Number(id), decision, reason:'), 'Admin portal sends { signalId: Number(id), decision, reason } for risk signal review');
 });
 
+test('Frontend UI/UX refinements, ergonomics, live countdown timers, and financial consistency', () => {
+  const customerAppSrc = readFileSync('apps/mobile/src/customer/CustomerApp.js', 'utf8');
+  const riderAppSrc = readFileSync('apps/mobile/src/rider/RiderApp.js', 'utf8');
+  const restaurantHtml = renderRestaurantPortalHtml();
+
+  // 1. Customer App: Radio vs Checkbox indicators, required modifier validation, active target selector, and delivery instructions
+  assert.ok(customerAppSrc.includes("isSingle ? (isSelected ? '◉' : '○') : (isSelected ? '☑' : '☐')"), 'CustomerApp differentiates single-select radio vs multi-select checkbox');
+  assert.ok(customerAppSrc.includes("Alert.alert('Required Selection Missing'"), 'CustomerApp validates required modifier selections before add to cart');
+  assert.ok(customerAppSrc.includes('Set Pickup') && customerAppSrc.includes('Set Destination'), 'CustomerApp provides active target selection pills');
+  assert.ok(customerAppSrc.includes('Handover & Landmark Instructions (Optional)'), 'CustomerApp provides landmark handover instructions input');
+
+  // 2. Rider App: 56dp ergonomic touch targets, vibration alerts for offers, COD warning banner and OTP cash verification alert
+  assert.ok(riderAppSrc.includes('minHeight: 56'), 'RiderApp primary buttons enforce >= 56dp minHeight for gloved courier ergonomics');
+  assert.ok(riderAppSrc.includes('Vibration.vibrate([0, 400, 200, 400])'), 'RiderApp triggers haptic vibration on new incoming job offers');
+  assert.ok(riderAppSrc.includes('Vibration.cancel()'), 'RiderApp cancels vibration when offer is accepted, declined, or cleared');
+  assert.ok(riderAppSrc.includes('CASH ON DELIVERY REQUIRED'), 'RiderApp highlights prominent cash on delivery warning banner in route manifest');
+  assert.ok(riderAppSrc.includes('CASH PAYMENT CONFIRMATION'), 'RiderApp displays cash collection reminder in OTP verification modal');
+
+  // 3. Restaurant Kitchen Portal: Live visual countdown progress bar, fullscreen kiosk mode, and non-negotiable 10% commission rate
+  assert.ok(restaurantHtml.includes('updatePrepTimers'), 'Restaurant portal includes live countdown update function');
+  assert.ok(restaurantHtml.includes('prep-progress-bar'), 'Restaurant portal renders visual countdown progress bar');
+  assert.ok(restaurantHtml.includes('timer-warning') && restaurantHtml.includes('timer-overdue'), 'Restaurant portal handles warning (<= 5m) and overdue countdown states');
+  assert.ok(restaurantHtml.includes('toggleFullscreen'), 'Restaurant portal includes kiosk fullscreen toggle');
+  assert.ok(restaurantHtml.includes('Platform Fee (10%)'), 'Restaurant portal displays strictly 10% platform fee, preserving non-negotiable financial policy');
+  assert.ok(!restaurantHtml.includes('Platform Fee (15%)'), 'Restaurant portal does not contain stale 15% platform fee label');
+});
+
 
