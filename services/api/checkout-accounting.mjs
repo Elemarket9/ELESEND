@@ -17,6 +17,26 @@ export async function checkoutJournal(c,{shipmentId,eventKey,kind,entries}){
 }
 export const customerMoneyReceived=(c,{shipmentId,eventKey,amountMinor})=>checkoutJournal(c,{shipmentId,eventKey,kind:'psp_verified',entries:[['provider_receivable','debit',amountMinor],['customer_delivery_liability','credit',amountMinor]]});
 export const customerMoneyUnapplied=(c,{shipmentId,eventKey,amountMinor})=>checkoutJournal(c,{shipmentId,eventKey,kind:'verified_unapplied',entries:[['provider_receivable','debit',amountMinor],['customer_refund_liability','credit',amountMinor]]});
+export async function requestCheckoutRefund(c,shipment,reason){
+ await c.query(
+  `UPDATE shipment_checkout_intents
+      SET status='expired',
+          failure_reason=coalesce(failure_reason,$2),
+          submission_token=NULL,
+          submission_lease_until=NULL,
+          updated_at=now()
+    WHERE shipment_id=$1
+      AND status IN ('initiating','pending')`,
+  [shipment.id,'Order cancelled before verified payment ('+String(reason||'cancelled').slice(0,200)+')']
+ );
+ if(!shipment.paid)return {required:false};
+ const intent=(await c.query("SELECT * FROM shipment_checkout_intents WHERE shipment_id=$1 AND status='confirmed' ORDER BY confirmed_at LIMIT 1",[shipment.id])).rows[0];
+ check(intent,409,'Verified payment evidence required for refund review');
+ const amountMinor=Number(intent.amount_minor);
+ await checkoutJournal(c,{shipmentId:shipment.id,eventKey:'cancellation:'+shipment.id,kind:'refund_requested',entries:[['customer_delivery_liability','debit',amountMinor],['customer_refund_liability','credit',amountMinor]]});
+ await c.query(`INSERT INTO checkout_refund_requests(shipment_id,intent_id,amount_minor,reason) VALUES($1,$2,$3,$4) ON CONFLICT(shipment_id) DO NOTHING`,[shipment.id,intent.id,amountMinor,reason]);
+ return {required:true,amountMinor};
+}
 export async function digitalDeliveryCompleted(c,shipment){
  if(shipment.payment_method==='CASH')return {skipped:'cash'};
  const isNew=(await c.query("SELECT 1 FROM shipment_checkout_intents WHERE shipment_id=$1 AND status='confirmed'",[shipment.id])).rowCount;
@@ -25,5 +45,13 @@ export async function digitalDeliveryCompleted(c,shipment){
  const total=BigInt(shipment.amount_minor),fee=BigInt(shipment.commission_minor);
  const net=total-fee;
  const entries=[['customer_delivery_liability','debit',Number(total)],...(net>0n?[['rider_payable','credit',Number(net)]]:[]),...(fee>0n?[['platform_commission_revenue','credit',Number(fee)]]:[])];
+ const food=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1',[shipment.id])).rows[0];
+ if(food&&Number(food.subtotal_minor)>0){
+  const subtotal=Number(food.subtotal_minor),commission=Number(food.food_commission_minor);
+  check(Number.isSafeInteger(subtotal)&&Number.isSafeInteger(commission)&&commission>=0&&commission<=subtotal,409,'Invalid food settlement amounts');
+  entries[0][2]+=subtotal;
+  if(subtotal>commission)entries.push(['restaurant_payable','credit',subtotal-commission]);
+  if(commission>0)entries.push(['platform_food_commission_revenue','credit',commission]);
+ }
  return checkoutJournal(c,{shipmentId:shipment.id,eventKey:'delivery:'+shipment.id+':digitally-completed',kind:'delivery_completed',entries});
 }

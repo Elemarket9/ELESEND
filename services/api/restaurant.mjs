@@ -42,17 +42,15 @@ export function restaurantService(db) {
     const data = schema.parse(input);
     const id = randomUUID();
     const phone = normalizePhone(data.phone);
-    const ownerId = actor.kind === 'admin' && input.ownerId ? uuid.parse(input.ownerId) : actor.id;
-    const foodCommissionBps = actor.kind === 'admin' && Number.isInteger(input.foodCommissionBps)
-      ? Math.min(10000, Math.max(0, input.foodCommissionBps))
-      : 1000; // Default 10%
+    const ownerId = actor.id;
+    const foodCommissionBps = 1000; // Changed only through the permissioned update endpoint.
 
     const row = (await db.query(
       `INSERT INTO restaurants (
         id, owner_id, name, phone, address, latitude, longitude,
         operating_hours, prep_time_minutes, delivery_radius_m, food_commission_bps,
         status, image_url, cuisine
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'approved', $12, $13)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13)
       RETURNING *`,
       [
         id, ownerId, data.name, phone, data.address, data.latitude, data.longitude,
@@ -71,7 +69,7 @@ export function restaurantService(db) {
     return r;
   }
 
-  async function listRestaurants({ latitude = null, longitude = null, limit = 50, cuisine = null, search = null, ownerId = null } = {}) {
+  async function listRestaurants({ latitude = null, longitude = null, limit = 50, cuisine = null, search = null, ownerId = null, includePending = false } = {}) {
     const lim = Math.max(1, Math.min(100, Number(limit) || 50));
     let query = `SELECT * FROM restaurants`;
     const conditions = [];
@@ -80,7 +78,7 @@ export function restaurantService(db) {
     if (ownerId) {
       params.push(ownerId);
       conditions.push(`owner_id = $${params.length}`);
-    } else {
+    } else if(!includePending) {
       conditions.push(`status = 'approved'`);
     }
 
@@ -136,13 +134,14 @@ export function restaurantService(db) {
       cuisine: z.string().trim().max(100).optional(),
       imageUrl: z.string().trim().url().optional(),
       status: z.enum(['pending', 'approved', 'suspended', 'rejected']).optional(),
-      foodCommissionBps: z.number().int().min(0).max(10000).optional()
+      foodCommissionBps: z.number().int().min(0).max(3000).optional()
     }).strict();
 
     const data = schema.parse(updates);
 
     if (data.status || data.foodCommissionBps !== undefined) {
       check(actor.kind === 'admin', 403, 'Only administrator can change status or food commission');
+      check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission='verification:write'",[actor.id])).rowCount,403,'Merchant verification permission required');
     }
 
     const setClauses = [];

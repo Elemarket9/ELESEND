@@ -9,7 +9,9 @@ def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
  * By default you don't need to apply any configuration, just uncomment the lines you need.
  */
 react {
-    entryFile = file(["node", "-e", "require('expo/scripts/resolveAppEntry')", projectRoot, "android", "absolute"].execute(null, rootDir).text.trim())
+    def isRiderBuild = gradle.startParameter.taskNames.any { it.toLowerCase().contains('rider') } || System.getenv('ELESEND_APP_VARIANT') == 'rider'
+    def chosenEntry = isRiderBuild ? new File(projectRoot, "index.rider.js") : new File(projectRoot, "index.customer.js")
+    entryFile = chosenEntry.exists() ? chosenEntry : file(["node", "-e", "require('expo/scripts/resolveAppEntry')", projectRoot, "android", "absolute"].execute(null, rootDir).text.trim())
     reactNativeDir = new File(["node", "--print", "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim()).getParentFile().getAbsoluteFile()
     hermesCommand = new File(["node", "--print", "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim()).getParentFile().getAbsolutePath() + "/sdks/hermesc/%OS-BIN%/hermesc"
     codegenDir = new File(["node", "--print", "require.resolve('@react-native/codegen/package.json', { paths: [require.resolve('react-native/package.json')] })"].execute(null, rootDir).text.trim()).getParentFile().getAbsoluteFile()
@@ -97,6 +99,20 @@ android {
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
+
+    flavorDimensions = ["app"]
+    productFlavors {
+        customer {
+            dimension "app"
+            applicationId "com.elesend.customer"
+            versionName "0.2.0"
+        }
+        rider {
+            dimension "app"
+            applicationId "com.elesend.rider"
+            versionName "0.2.0"
+        }
+    }
     signingConfigs {
         debug {
             storeFile file('debug.keystore')
@@ -104,13 +120,26 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            def storeFilePath = findProperty('ELESEND_RELEASE_STORE_FILE') ?: System.getenv('ELESEND_RELEASE_STORE_FILE')
+            if (storeFilePath) {
+                storeFile file(storeFilePath)
+                storePassword(findProperty('ELESEND_RELEASE_STORE_PASSWORD') ?: System.getenv('ELESEND_RELEASE_STORE_PASSWORD') ?: "")
+                keyAlias(findProperty('ELESEND_RELEASE_KEY_ALIAS') ?: System.getenv('ELESEND_RELEASE_KEY_ALIAS') ?: "")
+                keyPassword(findProperty('ELESEND_RELEASE_KEY_PASSWORD') ?: System.getenv('ELESEND_RELEASE_KEY_PASSWORD') ?: "")
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            signingConfig signingConfigs.debug
+            def hasReleaseKey = findProperty('ELESEND_RELEASE_STORE_FILE') ?: System.getenv('ELESEND_RELEASE_STORE_FILE')
+            if (!hasReleaseKey && gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }) {
+                throw new GradleException('Production release signing is required. Configure ELESEND_RELEASE_STORE_FILE and release key credentials.')
+            }
+            signingConfig(hasReleaseKey ? signingConfigs.release : null)
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled false

@@ -14,7 +14,7 @@ export function httpsSmsGateway({endpoint,allowedHost,token,fetchImpl=fetch,time
   check(/^\+233[25]\d{8}$/.test(phone)&&/^\d{6}$/.test(code)&&['pickup','delivery','account'].includes(purpose)&&/^[0-9a-f-]{36}$/i.test(challengeId),400,'Invalid OTP delivery request');
   const msg=purpose==='account'?`ELESEND account phone verification: ${code}. Do not share this code with anyone.`:purpose==='pickup'?`ELESEND parcel pickup verification: ${code}. Never share with anyone except your assigned rider at handover.`:`ELESEND parcel delivery verification: ${code}. Give this to your assigned rider only when receiving the parcel.`;
   let response;
-  try{response=await fetchImpl(url.toString(),{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({to:phone,message:msg,clientReference:challengeId}),redirect:'error',signal:AbortSignal.timeout(timeoutMs)});}
+  try{response=await fetchImpl(url.toString(),{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json','Accept-Encoding':'gzip, deflate'},body:JSON.stringify({to:phone,message:msg,clientReference:challengeId}),redirect:'error',signal:AbortSignal.timeout(timeoutMs)});}
   catch{check(false,503,'SMS gateway unavailable');}
   check(response.ok,503,'SMS gateway refused request');
   let result;try{result=await response.json();}catch{check(false,503,'SMS gateway receipt invalid');}

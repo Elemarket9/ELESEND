@@ -2,14 +2,15 @@ import React,{forwardRef,useId,useImperativeHandle,useMemo,useRef} from 'react';
 import {View,Text,Platform,Linking} from 'react-native';
 import {MapView as NativeMap,Camera,MarkerView,ShapeSource,LineLayer} from '@maplibre/maplibre-react-native';
 import {privateTileUrl,privateMapStyle,OSM_ATTRIBUTION} from './private-map-style.mjs';
+import {VECTOR_TILE_URL, GLYPHS_URL, isDevelopmentEnvironment} from '../config.js';
 
 let tileUrl=null;
 try{
- tileUrl=privateTileUrl(process.env.EXPO_PUBLIC_ELESEND_VECTOR_TILE_URL||'',{development:(typeof __DEV__!=='undefined'&&__DEV__)||/localhost|127\.0\.0\.1|10\.0\.2\.2/.test(process.env.EXPO_PUBLIC_ELESEND_VECTOR_TILE_URL||'')});
+ tileUrl=VECTOR_TILE_URL ? privateTileUrl(VECTOR_TILE_URL,{development:isDevelopmentEnvironment()}):null;
 }catch(e){
  tileUrl=null;
 }
-const glyphsUrl=process.env.EXPO_PUBLIC_ELESEND_GLYPHS_URL||(tileUrl?tileUrl.replace(/\/tiles\/.+$/,'/fonts/{fontstack}/{range}.pbf'):null);
+const glyphsUrl=GLYPHS_URL||(tileUrl?tileUrl.replace(/\/tiles\/.+$/,'/fonts/{fontstack}/{range}.pbf'):null);
 const mapStyle=privateMapStyle(tileUrl,{glyphsUrl});
 const coordinate=p=>[p.longitude,p.latitude];
 

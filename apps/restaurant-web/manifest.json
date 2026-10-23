@@ -1,0 +1,18 @@
+{
+  "name": "ELESEND Merchant & Kitchen Portal",
+  "short_name": "ELESEND Kitchen",
+  "description": "Real-time kitchen order management, dispatch status, menu control, and settlement portal for ELESEND restaurant partners.",
+  "start_url": "/restaurant",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#101827",
+  "theme_color": "#18C6A5",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23101827'/><circle cx='50' cy='50' r='35' fill='%2318C6A5'/><path d='M35 50 L46 62 L65 38' stroke='%23101827' stroke-width='8' stroke-linecap='round' stroke-linejoin='round' fill='none'/></svg>",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

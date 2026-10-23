@@ -22,7 +22,7 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,f
  }
  async function request(path,vehicle){const configured=vehicleRoutes?base(vehicleRoutes[vehicle].endpoint):origin;const url=new URL(configured.toString());const split=path.indexOf('?');url.pathname=configured.pathname.replace(/\/$/,'')+(split===-1?path:path.slice(0,split));if(split!==-1)url.search=path.slice(split+1);
   check(inFlight<8,503,'Routing service admission limit reached');inFlight++;
-  try{const response=await fetchImpl(url,{redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{Accept:'application/json'}});
+  try{const response=await fetchImpl(url,{redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{Accept:'application/json','Accept-Encoding':'gzip, deflate'}});
    check(response.status!==429,429,'Routing service rate limited');check(response.ok,503,'Routing service unavailable');const body=await decode(response);check(body&&typeof body==='object'&&!Array.isArray(body),503,'Invalid routing response');
    check(!['NoRoute','NoTable'].includes(body.code),422,'No connected road path');check(body.code==='Ok',503,'Routing service could not resolve road path');return body;
   }finally{inFlight--;}

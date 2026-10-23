@@ -1,5 +1,8 @@
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
+import {lockFoodOrder,requireFoodPayment,restaurantOpenNow} from './food-payment.mjs';
+import {requestCheckoutRefund} from './checkout-accounting.mjs';
 import {z} from 'zod';
+import {marketService} from './markets.mjs';
 import {check} from './security.mjs';
 import {haversine} from './dispatch-geometry.mjs';
 import {calculateQuote} from './pricing.mjs';
@@ -7,10 +10,12 @@ import {evaluateRestaurantBatch} from './algorithms/restaurant-batch.mjs';
 
 const uuid = z.string().uuid();
 
-export function restaurantOrderService(db, {platform = null, dispatcher = null, routing = null} = {}) {
+export function restaurantOrderService(db, {platform = null, dispatcher = null, routing = null,acceptanceTimeoutSeconds=300,courierTimeoutSeconds=1200,unpaidTimeoutSeconds=1800} = {}) {
   check(db && typeof db.query === 'function', 500, 'Database instance required');
+  for(const value of [acceptanceTimeoutSeconds,courierTimeoutSeconds,unpaidTimeoutSeconds])check(Number.isInteger(value)&&value>=60&&value<=86400,500,'Invalid food order timeout');
 
   async function quoteFoodOrder(actor, input) {
+    await marketService(db).assertGhanaOperating();
     check(actor && ['customer', 'business', 'admin'].includes(actor.kind), 403, 'Customer credentials required');
     const schema = z.object({
       restaurantId: z.string().uuid(),
@@ -32,6 +37,7 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
     check(restaurant, 404, 'Restaurant not found');
     check(restaurant.status === 'approved', 400, 'Restaurant is not currently approved');
     check(restaurant.is_open && !restaurant.is_paused, 400, 'Restaurant is currently closed or paused');
+    check(restaurantOpenNow(restaurant),400,'Restaurant is outside its operating hours');
 
     // Check delivery distance against restaurant delivery radius
     const distM = Math.round(haversine(
@@ -91,6 +97,8 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       for (const optId of requested.options) {
         const opt = optMap.get(optId);
         check(opt, 400, `Invalid modifier option ID: ${optId}`);
+        check(itemMods.some(m=>m.id===opt.modifier_id),400,'Option does not belong to this menu item');
+        check(!selectedOpts.some(o=>o.id===optId),400,'Duplicate modifier option');
         check(opt.is_available, 400, `Option "${opt.name}" is currently unavailable`);
         selectedOpts.push({id: opt.id, name: opt.name, price_minor: opt.price_minor});
         modifierExtraMinor += BigInt(opt.price_minor);
@@ -133,23 +141,21 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       "SELECT * FROM pricing_policies WHERE active AND (vehicle = 'motorcycle' OR vehicle IS NULL) ORDER BY vehicle = 'motorcycle' DESC LIMIT 1"
     )).rows[0];
 
-    let roadDistanceMeters = distM;
-    let roadDurationSeconds = Math.round(distM / 6.5); // ~23 km/h urban motorcycle speed in Accra
-    if (routing && typeof routing.route === 'function') {
-      try {
-        const routeResult = await routing.route(
-          {latitude: restaurant.latitude, longitude: restaurant.longitude},
-          {latitude: data.deliveryLatitude, longitude: data.deliveryLongitude},
-          {vehicle: 'motorcycle'}
-        );
-        if (routeResult?.distanceMeters) {
-          roadDistanceMeters = routeResult.distanceMeters;
-          roadDurationSeconds = routeResult.durationSeconds;
-        }
-      } catch {
-        // Fall back to road-distance estimate
-      }
+    check(routing && typeof routing.route === 'function', 503, 'Road routing service required for delivery quotation');
+    let routeResult;
+    try {
+      routeResult = await routing.route(
+        {latitude: restaurant.latitude, longitude: restaurant.longitude},
+        {latitude: data.deliveryLatitude, longitude: data.deliveryLongitude},
+        {vehicle: 'motorcycle'}
+      );
+    } catch (err) {
+      check(false, 503, 'Routing service could not resolve road path: ' + (err.message || 'unreachable'));
     }
+    check(Number.isSafeInteger(routeResult?.distanceMeters) && routeResult.distanceMeters >= 0, 503, 'Invalid road distance from routing service');
+    check(Number.isSafeInteger(routeResult?.durationSeconds) && routeResult.durationSeconds >= 0, 503, 'Invalid road duration from routing service');
+    const roadDistanceMeters = routeResult.distanceMeters;
+    const roadDurationSeconds = routeResult.durationSeconds;
 
     const deliveryQuote = calculateQuote(policy, roadDistanceMeters, {durationSeconds: roadDurationSeconds});
     const deliveryFeeMinor = deliveryQuote.amountMinor;
@@ -178,9 +184,14 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
     };
   }
 
-  async function createFoodOrder(actor, quoteInput, {paymentMethod = 'CASH', specialInstructions = ''} = {}) {
-    check(actor && ['customer', 'business', 'admin'].includes(actor.kind), 403, 'Customer credentials required');
-    check(['CASH', 'MOMO', 'CARD', 'QR'].includes(paymentMethod), 400, 'Invalid payment method');
+  async function createFoodOrder(actor, quoteInput, {paymentMethod = 'MOMO', specialInstructions = '', idempotencyKey} = {}) {
+    check(actor && ['customer', 'business'].includes(actor.kind), 403, 'Customer credentials required');
+    check(['MOMO', 'CARD', 'QR'].includes(paymentMethod), 400, 'Food orders require upfront payment for food and delivery; cash is not accepted');
+    check(typeof idempotencyKey==='string'&&/^[a-zA-Z0-9_-]{8,128}$/.test(idempotencyKey),400,'Food order idempotency key required');
+    check((await db.query('SELECT phone_verified_at FROM users WHERE id=$1',[actor.id])).rows[0]?.phone_verified_at,403,'Verify your phone before placing a food order');
+    const requestHash=createHash('sha256').update(JSON.stringify({quoteInput,paymentMethod,specialInstructions})).digest('hex');
+    const existing=(await db.query('SELECT * FROM food_orders WHERE customer_id=$1 AND request_key=$2',[actor.id,idempotencyKey])).rows[0];
+    if(existing){check(existing.request_hash===requestHash,409,'Idempotency key reused with different food order');return existing;}
 
     // Re-verify quote freshly
     const quote = await quoteFoodOrder(actor, {
@@ -198,8 +209,13 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
     });
 
     return db.tx(async c => {
+      const market=(await c.query("SELECT service_enabled FROM service_markets WHERE country_code='GH' FOR SHARE")).rows[0];
+      check(market?.service_enabled===true,503,'Ghana bookings administratively paused');
+      await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[actor.id+':food:'+idempotencyKey]);
+      const previous=(await c.query('SELECT * FROM food_orders WHERE customer_id=$1 AND request_key=$2',[actor.id,idempotencyKey])).rows[0];
+      if(previous){check(previous.request_hash===requestHash,409,'Idempotency key reused with different food order');return previous;}
       const orderId = randomUUID();
-      const idempotencyKey = `food-${orderId}`;
+      const shipmentKey = `food-${orderId}`;
 
       // 1. Create a platform quote for the delivery leg
       const policy = (await c.query(
@@ -235,41 +251,42 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         ]
       );
 
-      // 2. Book delivery shipment
+      // 2. Book delivery shipment awaiting upfront payment and kitchen acceptance
+      const shipmentState = 'AWAITING_PAYMENT';
+      const initialDispatchHold = 'infinity'; // Only paid kitchen acceptance releases dispatch
       const shipmentId = randomUUID();
       await c.query(
         `INSERT INTO shipments (
           id, customer_id, quote_id, idempotency_key, state, recipient_phone,
-          amount_minor, commission_minor, payment_method, cash_payer, paid, created_at
+          amount_minor, commission_minor, payment_method, cash_payer, paid, next_dispatch_at, created_at
         ) VALUES (
-          $1, $2, $3, $4, 'AWAITING_ASSIGNMENT', $5, $6, $7, $8, $9, $10, now()
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false, $11, now()
         )`,
         [
-          shipmentId, actor.id, deliveryQuoteId, idempotencyKey, quote.customerPhone,
+          shipmentId, actor.id, deliveryQuoteId, shipmentKey, shipmentState, quote.customerPhone,
           quote.deliveryFeeMinor, quote.deliveryCommissionMinor, paymentMethod,
-          paymentMethod === 'CASH' ? 'recipient' : null,
-          paymentMethod !== 'CASH'
+          null,
+          initialDispatchHold
         ]
       );
 
-      // 3. Create food order
+      // 3. Create food order (Always starts PENDING payment until PSP confirms)
       const order = (await c.query(
         `INSERT INTO food_orders (
           id, customer_id, restaurant_id, shipment_id, state,
           subtotal_minor, food_commission_bps, food_commission_minor,
           delivery_fee_minor, total_minor, payment_method, payment_status,
           estimated_prep_minutes, delivery_address, delivery_latitude, delivery_longitude,
-          customer_phone, special_instructions
+          customer_phone, special_instructions, request_key, request_hash
         ) VALUES (
-          $1, $2, $3, $4, 'SUBMITTED', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+          $1, $2, $3, $4, 'SUBMITTED', $5, $6, $7, $8, $9, $10, 'PENDING', $11, $12, $13, $14, $15, $16, $17, $18
         ) RETURNING *`,
         [
           orderId, actor.id, quote.restaurantId, shipmentId,
           quote.subtotalMinor, quote.foodCommissionBps, quote.foodCommissionMinor,
           quote.deliveryFeeMinor, quote.totalMinor, paymentMethod,
-          paymentMethod === 'CASH' ? 'PENDING' : 'PAID',
           quote.estimatedPrepMinutes, quote.deliveryAddress, quote.deliveryLatitude,
-          quote.deliveryLongitude, quote.customerPhone, quote.specialInstructions
+          quote.deliveryLongitude, quote.customerPhone, quote.specialInstructions, idempotencyKey, requestHash
         ]
       )).rows[0];
 
@@ -305,10 +322,10 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
     const isCustomer = actor && actor.id === order.customer_id;
 
     // Check if actor is assigned rider on the delivery shipment
-    let isRider = false;
+    let isRider = false, sh = null;
     if (order.shipment_id) {
-      const sh = (await db.query('SELECT rider_id FROM shipments WHERE id = $1', [order.shipment_id])).rows[0];
-      if (sh && sh.rider_id === actor.id) isRider = true;
+      sh = (await db.query('SELECT state, rider_id FROM shipments WHERE id = $1', [order.shipment_id])).rows[0];
+      if (sh && sh.rider_id === actor?.id) isRider = true;
     }
 
     check(isOwner || isCustomer || isRider, 403, 'Permission denied to view this food order');
@@ -320,6 +337,8 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
 
     return {
       ...order,
+      shipment_state: sh?.state ?? null,
+      rider_id: sh?.rider_id ?? null,
       restaurant: {
         id: restaurant.id,
         name: restaurant.name,
@@ -340,43 +359,69 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
 
     if (actor.kind === 'customer') {
       params.push(actor.id);
-      conditions.push(`customer_id = $${params.length}`);
+      conditions.push(`f.customer_id = $${params.length}`);
     } else if (actor.kind === 'business') {
       if (restaurantId) {
         uuid.parse(restaurantId);
         const r = (await db.query('SELECT owner_id FROM restaurants WHERE id = $1', [restaurantId])).rows[0];
         check(r && r.owner_id === actor.id, 403, 'Permission denied');
         params.push(restaurantId);
-        conditions.push(`restaurant_id = $${params.length}`);
+        conditions.push(`f.restaurant_id = $${params.length}`);
       } else {
         const myRestaurants = (await db.query('SELECT id FROM restaurants WHERE owner_id = $1', [actor.id])).rows;
         const myIds = myRestaurants.map(r => r.id);
-        params.push(myIds);
-        conditions.push(`restaurant_id = ANY($${params.length}::uuid[])`);
+        params.push(myIds,actor.id);
+        conditions.push(`(f.restaurant_id = ANY($${params.length-1}::uuid[]) OR f.customer_id=$${params.length})`);
       }
+    } else if (actor.kind === 'rider') {
+      params.push(actor.id);
+      conditions.push(`s.rider_id = $${params.length}`);
     } else if (actor.kind !== 'admin') {
       check(false, 403, 'Unauthorized account kind');
     }
 
     if (state) {
       params.push(state);
-      conditions.push(`state = $${params.length}`);
+      conditions.push(`f.state = $${params.length}`);
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     params.push(lim);
-    const query = `SELECT * FROM food_orders ${whereClause} ORDER BY created_at DESC LIMIT $${params.length}`;
+    const query = `SELECT f.*, s.state AS shipment_state, s.rider_id, s.paid AS shipment_paid
+      FROM food_orders f
+      LEFT JOIN shipments s ON s.id = f.shipment_id
+      ${whereClause} ORDER BY f.created_at DESC LIMIT $${params.length}`;
 
-    return (await db.query(query, params)).rows;
+    const rows = (await db.query(query, params)).rows;
+    if (rows.length === 0) return [];
+    const orderIds = rows.map(r => r.id);
+    const itemsRes = await db.query(
+      'SELECT * FROM food_order_items WHERE order_id = ANY($1::uuid[]) ORDER BY id ASC',
+      [orderIds]
+    );
+    const itemsByOrder = new Map();
+    for (const item of itemsRes.rows) {
+      const list = itemsByOrder.get(item.order_id) || [];
+      list.push({
+        ...item,
+        options: Array.isArray(item.options_json) ? item.options_json : []
+      });
+      itemsByOrder.set(item.order_id, list);
+    }
+    return rows.map(r => ({
+      ...r,
+      items: itemsByOrder.get(r.id) || []
+    }));
   }
 
   // --- Restaurant Operations: Accept & Preparation-Aware Dispatch Sync ---
   async function acceptOrder(actor, orderId, {estimatedPrepMinutes = null} = {}) {
     uuid.parse(orderId);
     return db.tx(async c => {
-      const order = (await c.query('SELECT * FROM food_orders WHERE id = $1 FOR UPDATE', [orderId])).rows[0];
+      const order = await lockFoodOrder(c,orderId);
       check(order, 404, 'Food order not found');
       check(order.state === 'SUBMITTED', 409, `Order cannot be accepted in state ${order.state}`);
+      await requireFoodPayment(c,order);
 
       const restaurant = (await c.query('SELECT * FROM restaurants WHERE id = $1', [order.restaurant_id])).rows[0];
       check(actor && (actor.kind === 'admin' || restaurant.owner_id === actor.id), 403, 'Permission denied');
@@ -398,17 +443,21 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
           state = 'ACCEPTED',
           accepted_at = now(),
           ready_at = $2,
+          dispatch_started_at = $4,
           estimated_prep_minutes = $3,
           updated_at = now()
          WHERE id = $1 RETURNING *`,
-        [orderId, readyAt, prepMin]
+        [orderId, readyAt, prepMin, nextDispatchAt]
       )).rows[0];
 
       if (order.shipment_id) {
-        await c.query(
-          `UPDATE shipments SET next_dispatch_at = $2 WHERE id = $1`,
-          [order.shipment_id, nextDispatchAt]
-        );
+        const sh = (await c.query('SELECT paid, payment_method FROM shipments WHERE id = $1', [order.shipment_id])).rows[0];
+        if (sh && sh.paid) {
+          await c.query(
+            `UPDATE shipments SET next_dispatch_at = $2 WHERE id = $1`,
+            [order.shipment_id, nextDispatchAt]
+          );
+        }
       }
 
       await c.query(
@@ -423,9 +472,10 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
   async function startPreparing(actor, orderId) {
     uuid.parse(orderId);
     return db.tx(async c => {
-      const order = (await c.query('SELECT * FROM food_orders WHERE id = $1 FOR UPDATE', [orderId])).rows[0];
+      const order = await lockFoodOrder(c,orderId);
       check(order, 404, 'Food order not found');
       check(order.state === 'ACCEPTED', 409, `Cannot start preparing from state ${order.state}`);
+      await requireFoodPayment(c,order);
 
       const restaurant = (await c.query('SELECT * FROM restaurants WHERE id = $1', [order.restaurant_id])).rows[0];
       check(actor && (actor.kind === 'admin' || restaurant.owner_id === actor.id), 403, 'Permission denied');
@@ -440,15 +490,21 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
   async function markReadyForPickup(actor, orderId) {
     uuid.parse(orderId);
     return db.tx(async c => {
-      const order = (await c.query('SELECT * FROM food_orders WHERE id = $1 FOR UPDATE', [orderId])).rows[0];
+      const order = await lockFoodOrder(c,orderId);
       check(order, 404, 'Food order not found');
       check(['ACCEPTED', 'PREPARING'].includes(order.state), 409, `Cannot mark ready from state ${order.state}`);
+      await requireFoodPayment(c,order);
 
       const restaurant = (await c.query('SELECT * FROM restaurants WHERE id = $1', [order.restaurant_id])).rows[0];
       check(actor && (actor.kind === 'admin' || restaurant.owner_id === actor.id), 403, 'Permission denied');
 
       const updated = (await c.query(
-        `UPDATE food_orders SET state = 'READY_FOR_PICKUP', ready_at = now(), updated_at = now() WHERE id = $1 RETURNING *`,
+        `UPDATE food_orders SET
+          state = 'READY_FOR_PICKUP',
+          ready_at = now(),
+          dispatch_started_at = LEAST(COALESCE(dispatch_started_at, now()), now()),
+          updated_at = now()
+         WHERE id = $1 RETURNING *`,
         [orderId]
       )).rows[0];
 
@@ -469,51 +525,10 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
     });
   }
 
-  async function completeFoodOrder(orderId) {
-    uuid.parse(orderId);
-    return db.tx(async c => {
-      const order = (await c.query('SELECT * FROM food_orders WHERE id = $1 FOR UPDATE', [orderId])).rows[0];
-      check(order, 404, 'Food order not found');
-      if (order.state === 'DELIVERED') return order;
-
-      const updated = (await c.query(
-        `UPDATE food_orders SET
-          state = 'DELIVERED',
-          payment_status = 'PAID',
-          completed_at = now(),
-          updated_at = now()
-         WHERE id = $1 RETURNING *`,
-        [orderId]
-      )).rows[0];
-
-      // Record independent restaurant settlement ledger entry
-      const grossSales = order.subtotal_minor;
-      const commBps = order.food_commission_bps;
-      const commMinor = order.food_commission_minor;
-      const netPayable = grossSales - commMinor;
-
-      await c.query(
-        `INSERT INTO restaurant_settlements (
-          order_id, restaurant_id, gross_sales_minor, commission_bps,
-          commission_minor, net_payable_minor, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, 'accrued')
-        ON CONFLICT (order_id) DO NOTHING`,
-        [orderId, order.restaurant_id, grossSales, commBps, commMinor, netPayable]
-      );
-
-      await c.query(
-        'INSERT INTO audit_logs (actor_id, action, entity_id) VALUES ($1, $2, $3)',
-        [order.customer_id, 'food_order.delivered', orderId]
-      );
-
-      return updated;
-    });
-  }
-
   async function rejectOrder(actor, orderId, {reason = 'Kitchen busy'} = {}) {
     uuid.parse(orderId);
     return db.tx(async c => {
-      const order = (await c.query('SELECT * FROM food_orders WHERE id = $1 FOR UPDATE', [orderId])).rows[0];
+      const order = await lockFoodOrder(c,orderId);
       check(order, 404, 'Food order not found');
       check(['SUBMITTED', 'ACCEPTED'].includes(order.state), 409, `Cannot reject order in state ${order.state}`);
 
@@ -526,7 +541,11 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       )).rows[0];
 
       if (order.shipment_id) {
-        await c.query(`UPDATE shipments SET state = 'CANCELLED' WHERE id = $1 AND state = 'AWAITING_ASSIGNMENT'`, [order.shipment_id]);
+        const shipment=(await c.query('SELECT * FROM shipments WHERE id=$1',[order.shipment_id])).rows[0];
+        check(shipment&&['AWAITING_PAYMENT','AWAITING_ASSIGNMENT'].includes(shipment.state),409,'Courier already assigned; operational cancellation required');
+        await requestCheckoutRefund(c,shipment,reason);
+        await c.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[order.shipment_id]);
+        await c.query("UPDATE dispatch_offers SET status='expired' WHERE shipment_id=$1 AND status='offered'",[order.shipment_id]);
       }
 
       await c.query(
@@ -541,7 +560,7 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
   async function cancelOrder(actor, orderId, {reason = 'Customer cancelled'} = {}) {
     uuid.parse(orderId);
     return db.tx(async c => {
-      const order = (await c.query('SELECT * FROM food_orders WHERE id = $1 FOR UPDATE', [orderId])).rows[0];
+      const order = await lockFoodOrder(c,orderId);
       check(order, 404, 'Food order not found');
       check(order.state === 'SUBMITTED', 409, 'Orders can only be cancelled before kitchen acceptance');
       check(actor && (actor.kind === 'admin' || actor.id === order.customer_id), 403, 'Permission denied');
@@ -552,7 +571,11 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       )).rows[0];
 
       if (order.shipment_id) {
-        await c.query(`UPDATE shipments SET state = 'CANCELLED' WHERE id = $1 AND state = 'AWAITING_ASSIGNMENT'`, [order.shipment_id]);
+        const shipment=(await c.query('SELECT * FROM shipments WHERE id=$1',[order.shipment_id])).rows[0];
+        check(shipment&&['AWAITING_PAYMENT','AWAITING_ASSIGNMENT'].includes(shipment.state),409,'Courier already assigned; operational cancellation required');
+        await requestCheckoutRefund(c,shipment,reason);
+        await c.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[order.shipment_id]);
+        await c.query("UPDATE dispatch_offers SET status='expired' WHERE shipment_id=$1 AND status='offered'",[order.shipment_id]);
       }
 
       await c.query(
@@ -561,6 +584,112 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       );
 
       return updated;
+    });
+  }
+
+  async function clearRiderAssignmentArtifacts(c, shipment) {
+    if (shipment.rider_id) {
+      const plan = (await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id = $1 FOR UPDATE', [shipment.rider_id])).rows[0];
+      if (plan && Array.isArray(plan.stops)) {
+        const nextStops = plan.stops.filter(x => x.shipmentId !== shipment.id);
+        await c.query('UPDATE rider_dispatch_plans SET stops = $2, revision = revision + 1, updated_at = now() WHERE rider_id = $1', [shipment.rider_id, JSON.stringify(nextStops)]);
+      }
+      await c.query('UPDATE locations SET shipment_id = NULL, updated_at = now() WHERE rider_id = $1 AND shipment_id = $2', [shipment.rider_id, shipment.id]);
+    }
+    await c.query('DELETE FROM dispatch_commitments WHERE shipment_id = $1', [shipment.id]);
+    await c.query("UPDATE dispatch_offers SET status = 'expired' WHERE shipment_id = $1 AND status = 'offered'", [shipment.id]);
+  }
+
+  async function resolveOrder(actor, orderId, input = {}) {
+    uuid.parse(orderId);
+    const v = z.object({
+      action: z.enum(['reassign', 'cancel_refund', 'return', 'returned']),
+      reason: z.string().trim().min(3).max(1000)
+    }).strict().parse(input);
+    return db.tx(async c => {
+      const order = await lockFoodOrder(c, orderId);
+      check(order, 404, 'Food order not found');
+      check(!['DELIVERED', 'CANCELLED', 'REJECTED'].includes(order.state), 409, `Food order is already terminal (${order.state})`);
+      check(order.shipment_id, 409, 'Food order has no delivery shipment');
+      const shipment = (await c.query('SELECT * FROM shipments WHERE id = $1 FOR UPDATE', [order.shipment_id])).rows[0];
+      check(shipment, 404, 'Delivery shipment not found');
+      const restaurant = (await c.query('SELECT * FROM restaurants WHERE id = $1', [order.restaurant_id])).rows[0];
+      const isAdmin = actor?.kind === 'admin';
+      const isOwner = Boolean(actor && restaurant && restaurant.owner_id === actor.id);
+      const isRider = Boolean(actor && shipment.rider_id && shipment.rider_id === actor.id);
+      const isCustomer = Boolean(actor && order.customer_id === actor.id);
+      const pickedUp = Boolean((await c.query("SELECT 1 FROM challenges WHERE shipment_id = $1 AND purpose = 'pickup' AND consumed_at IS NOT NULL", [shipment.id])).rowCount) ||
+        ['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP', 'RETURN_REQUESTED', 'RETURNED'].includes(shipment.state) ||
+        order.state === 'IN_TRANSIT';
+
+      if (v.action === 'reassign') {
+        check(isAdmin || isOwner || isRider, 403, 'Only restaurant owner, assigned rider, or administrator may reassign pre-pickup');
+        check(!pickedUp && ['RIDER_ASSIGNED', 'FAILED'].includes(shipment.state) && ['ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP'].includes(order.state), 409, 'Order can only be reassigned when rider assignment failed before pickup');
+        await clearRiderAssignmentArtifacts(c, shipment);
+        await c.query("UPDATE shipments SET state = 'AWAITING_ASSIGNMENT', rider_id = NULL, company_id = NULL, next_dispatch_at = now(), dispatch_attempts = 0 WHERE id = $1", [shipment.id]);
+        await c.query('UPDATE food_orders SET dispatch_started_at = now(), updated_at = now() WHERE id = $1', [orderId]);
+        await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'AWAITING_ASSIGNMENT', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'AWAITING_ASSIGNMENT'})]);
+        await c.query('INSERT INTO audit_logs(actor_id, action, entity_id) VALUES($1, $2, $3)', [actor.id, `food_order.reassigned:${v.reason}`, orderId]);
+        return {orderId, state: order.state, shipmentState: 'AWAITING_ASSIGNMENT', riderId: null, refundReviewRequired: false};
+      }
+
+      if (v.action === 'return') {
+        check(isAdmin || isOwner || isRider || isCustomer, 403, 'Permission denied to request return');
+        check(pickedUp && ['FAILED', 'RETURN_REQUESTED'].includes(shipment.state), 409, 'Return request requires a post-pickup failed shipment');
+        if (shipment.state === 'FAILED') {
+          await c.query("UPDATE shipments SET state = 'RETURN_REQUESTED' WHERE id = $1", [shipment.id]);
+          await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'RETURN_REQUESTED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'RETURN_REQUESTED'})]);
+        }
+        await c.query('INSERT INTO audit_logs(actor_id, action, entity_id) VALUES($1, $2, $3)', [actor.id, `food_order.return_requested:${v.reason}`, orderId]);
+        return {orderId, state: order.state, shipmentState: 'RETURN_REQUESTED', riderId: shipment.rider_id, refundReviewRequired: false};
+      }
+
+      if (v.action === 'returned') {
+        check(isAdmin || isOwner, 403, 'Only restaurant owner or administrator may confirm physical return');
+        check(pickedUp && ['FAILED', 'RETURN_REQUESTED', 'RETURNED'].includes(shipment.state), 409, 'Return confirmation requires a post-pickup failed or return-requested shipment');
+        await clearRiderAssignmentArtifacts(c, shipment);
+        if (shipment.state === 'FAILED') {
+          await c.query("UPDATE shipments SET state = 'RETURN_REQUESTED' WHERE id = $1", [shipment.id]);
+          await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'RETURN_REQUESTED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'RETURN_REQUESTED'})]);
+        }
+        if (shipment.state !== 'RETURNED') {
+          await c.query("UPDATE shipments SET state = 'RETURNED' WHERE id = $1", [shipment.id]);
+          await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'RETURNED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'RETURNED'})]);
+        }
+        await requestCheckoutRefund(c, shipment, v.reason);
+        const updated = (await c.query("UPDATE food_orders SET state = 'CANCELLED', updated_at = now() WHERE id = $1 RETURNING *", [orderId])).rows[0];
+        await c.query('INSERT INTO audit_logs(actor_id, action, entity_id) VALUES($1, $2, $3)', [actor.id, `food_order.returned_cancelled:${v.reason}`, orderId]);
+        return {orderId, state: updated.state, shipmentState: 'RETURNED', riderId: shipment.rider_id, refundReviewRequired: Boolean(shipment.paid)};
+      }
+
+      // action === 'cancel_refund'
+      if (!pickedUp) {
+        check(isAdmin || isOwner || (isCustomer && (shipment.state === 'FAILED' || order.state === 'SUBMITTED')), 403, 'Permission denied to cancel and refund this order');
+        check(['AWAITING_PAYMENT', 'AWAITING_ASSIGNMENT', 'RIDER_ASSIGNED', 'FAILED'].includes(shipment.state), 409, `Cannot cancel pre-pickup shipment in state ${shipment.state}`);
+        await clearRiderAssignmentArtifacts(c, shipment);
+        await requestCheckoutRefund(c, shipment, v.reason);
+        await c.query("UPDATE shipments SET state = 'CANCELLED', rider_id = NULL, company_id = NULL WHERE id = $1", [shipment.id]);
+        await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'CANCELLED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'CANCELLED'})]);
+        const updated = (await c.query("UPDATE food_orders SET state = 'CANCELLED', updated_at = now() WHERE id = $1 RETURNING *", [orderId])).rows[0];
+        await c.query('INSERT INTO audit_logs(actor_id, action, entity_id) VALUES($1, $2, $3)', [actor.id, `food_order.resolved_cancelled:${v.reason}`, orderId]);
+        return {orderId, state: updated.state, shipmentState: 'CANCELLED', riderId: null, refundReviewRequired: Boolean(shipment.paid)};
+      } else {
+        check(isAdmin || isOwner || (isCustomer && shipment.state === 'RETURNED'), 403, 'Post-pickup refund requires restaurant return confirmation or operator decision');
+        check(['FAILED', 'RETURN_REQUESTED', 'RETURNED'].includes(shipment.state), 409, 'Post-pickup order can only be cancelled after delivery failure or return');
+        await clearRiderAssignmentArtifacts(c, shipment);
+        if (shipment.state === 'FAILED') {
+          await c.query("UPDATE shipments SET state = 'RETURN_REQUESTED' WHERE id = $1", [shipment.id]);
+          await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'RETURN_REQUESTED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'RETURN_REQUESTED'})]);
+        }
+        if (shipment.state !== 'RETURNED') {
+          await c.query("UPDATE shipments SET state = 'RETURNED' WHERE id = $1", [shipment.id]);
+          await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'RETURNED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'RETURNED'})]);
+        }
+        await requestCheckoutRefund(c, shipment, v.reason);
+        const updated = (await c.query("UPDATE food_orders SET state = 'CANCELLED', updated_at = now() WHERE id = $1 RETURNING *", [orderId])).rows[0];
+        await c.query('INSERT INTO audit_logs(actor_id, action, entity_id) VALUES($1, $2, $3)', [actor.id, `food_order.post_pickup_cancelled:${v.reason}`, orderId]);
+        return {orderId, state: updated.state, shipmentState: 'RETURNED', riderId: shipment.rider_id, refundReviewRequired: Boolean(shipment.paid)};
+      }
     });
   }
 
@@ -602,6 +731,38 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       },
       settlements
     };
+  }
+
+  async function expireUnfulfilledOrders({limit=25}={}){
+    check(Number.isInteger(limit)&&limit>=1&&limit<=100,400,'Invalid expiry batch size');
+    const ids=(await db.query(`SELECT f.id FROM food_orders f JOIN shipments s ON s.id=f.shipment_id
+      WHERE (f.state='SUBMITTED' AND f.payment_status='PENDING' AND f.created_at<now()-$1::int*interval '1 second')
+      OR (f.state='SUBMITTED' AND f.payment_status='PAID' AND EXISTS(SELECT 1 FROM shipment_checkout_intents i WHERE i.shipment_id=s.id AND i.status='confirmed' AND i.confirmed_at<now()-$2::int*interval '1 second'))
+      OR (f.state IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP') AND s.state='AWAITING_ASSIGNMENT' AND s.rider_id IS NULL AND LEAST(COALESCE(f.dispatch_started_at,f.ready_at,s.next_dispatch_at),COALESCE(f.ready_at,s.next_dispatch_at),s.next_dispatch_at)<now()-$3::int*interval '1 second')
+      ORDER BY f.created_at LIMIT $4`,[unpaidTimeoutSeconds,acceptanceTimeoutSeconds,courierTimeoutSeconds,limit])).rows;
+    const results=[];
+    for(const {id} of ids){
+      try{results.push(await db.tx(async c=>{
+        const f=await lockFoodOrder(c,id);
+        const s=(await c.query('SELECT * FROM shipments WHERE id=$1',[f.shipment_id])).rows[0];
+        if(!s||!['AWAITING_PAYMENT','AWAITING_ASSIGNMENT'].includes(s.state)||s.rider_id)return {id,status:'changed'};
+        const receipt=(await c.query("SELECT confirmed_at FROM shipment_checkout_intents WHERE shipment_id=$1 AND status='confirmed' ORDER BY confirmed_at LIMIT 1",[s.id])).rows[0];
+        const now=Date.now();
+        const dispatchOriginMs=Math.min(...[f.dispatch_started_at,f.ready_at,s.next_dispatch_at].filter(Boolean).map(v=>new Date(v).getTime()));
+        const reason=f.state==='SUBMITTED'&&f.payment_status==='PENDING'&&new Date(f.created_at).getTime()<now-unpaidTimeoutSeconds*1000?'payment_deadline':
+          f.state==='SUBMITTED'&&f.payment_status==='PAID'&&receipt&&new Date(receipt.confirmed_at).getTime()<now-acceptanceTimeoutSeconds*1000?'kitchen_acceptance_deadline':
+          ['ACCEPTED','PREPARING','READY_FOR_PICKUP'].includes(f.state)&&dispatchOriginMs<now-courierTimeoutSeconds*1000?'courier_unavailable':null;
+        if(!reason)return {id,status:'changed'};
+        await requestCheckoutRefund(c,s,reason);
+        await c.query("UPDATE food_orders SET state='CANCELLED',updated_at=now() WHERE id=$1",[id]);
+        await c.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[s.id]);
+        await c.query("UPDATE dispatch_offers SET status='expired' WHERE shipment_id=$1 AND status='offered'",[s.id]);
+        await c.query("INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,'food_order_cancelled',$3) ON CONFLICT(id) DO NOTHING",['food-expired:'+id,f.customer_id,JSON.stringify({orderId:id,reason,message:s.paid?'Your food order could not be fulfilled. It was cancelled and a full refund is due.':'Your unpaid food order expired.'})]);
+        await c.query("INSERT INTO audit_logs(action,entity_id) VALUES($1,$2)",['food_order.auto_cancelled:'+reason,id]);
+        return {id,status:'cancelled',reason};
+      }));}catch(e){results.push({id,status:'error',code:e.code||e.status||'internal'});}
+    }
+    return results;
   }
 
   async function evaluateBatchDispatch(actor, restaurantId, {riderId = null, maxPlannedMinutes = 30, targetPlannedMinutes = 25} = {}) {
@@ -719,10 +880,11 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
     acceptOrder,
     startPreparing,
     markReadyForPickup,
-    completeFoodOrder,
     rejectOrder,
     cancelOrder,
+    resolveOrder,
     getRestaurantSettlements,
-    evaluateBatchDispatch
+    evaluateBatchDispatch,
+    expireUnfulfilledOrders
   };
 }

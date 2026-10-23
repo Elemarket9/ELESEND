@@ -1,8 +1,0 @@
-apps/mobile/App.js PASS 0
-apps/mobile/app.config.js PASS 0
-apps/mobile/index.js PASS 0
-apps/mobile/metro.config.js PASS 0
-apps/mobile/src/api.js PASS 0
-apps/mobile/src/offline.js PASS 0
-apps/mobile/src/tracking.js PASS 0
-MOBILE_JSX_PARSE 7 FILES 0 PARSE_ERRORS

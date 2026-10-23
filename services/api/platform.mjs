@@ -4,10 +4,11 @@ import {z} from 'zod';
 import {check,phone,hash,passwordHash,passwordMatches,newToken,newCode,mac,equal,limit} from './security.mjs';
 import {carRegistration,registerVehicleInTx} from './vehicle.mjs';
 import {removeStop,removeShipment} from './multi-parcel.mjs';
-import {postCashCommission} from './finance.mjs';
-import {digitalDeliveryCompleted} from './checkout-accounting.mjs';
+import {settleCompletedDelivery} from './rider-wallet.mjs';
+import {requestCheckoutRefund} from './checkout-accounting.mjs';
+import {requireFoodPayment} from './food-payment.mjs';
 import {calculateQuote} from './pricing.mjs';
-import {getSurgeMultiplier,validateGhanaBoundary} from '../../deliveryEngine.mjs';
+import {getSurgeMultiplier,validateGhanaBoundary} from './pricing-surge.mjs';
 import {measuredSurge} from './pricing-surge.mjs';
 import {featureService} from './algorithms/features.mjs';
 import {detectFraudSignals} from './algorithms/fraud.mjs';
@@ -74,7 +75,8 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    const ch=(await c.query('SELECT *,expires_at>now() AS live FROM account_phone_challenges WHERE id=$1 AND user_id=$2 FOR UPDATE',[v.challengeId,actor.id])).rows[0];
    check(ch&&ch.sent&&ch.live&&!ch.consumed_at&&ch.attempts<5&&ch.phone===u.phone,409,'Phone verification challenge unavailable');
    if(!equal(ch.digest,mac(otpKey,['account-phone-v1',ch.id,actor.id,u.phone,v.code]))){
-    await c.query('UPDATE account_phone_challenges SET attempts=attempts+1 WHERE id=$1',[ch.id]);
+    const nextAttempts=ch.attempts+1;
+    await c.query('UPDATE account_phone_challenges SET attempts=$2,expires_at=CASE WHEN $2>=5 THEN now() ELSE expires_at END WHERE id=$1',[ch.id,nextAttempts]);
     await audit(c,actor.id,'auth.phone_verification_rejected',actor.id);return {invalid:true};
    }
    await c.query('UPDATE account_phone_challenges SET consumed_at=now() WHERE id=$1',[ch.id]);
@@ -131,7 +133,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   });
  },
  async vehicleTariffs(actor){check(['customer','business','admin'].includes(actor.kind),403);return (await db.query('SELECT id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled FROM pricing_policies WHERE active AND vehicle IS NOT NULL ORDER BY vehicle')).rows;},
- async getPricing(actor){check(actor?.kind==='admin',403);return (await db.query('SELECT * FROM pricing_policies WHERE active ORDER BY vehicle NULLS FIRST')).rows;},
+ async getPricing(actor){check(actor?.kind==='admin',403);check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])",[actor.id,['pricing:write','finance:read','finance:approve','finance:configure']])).rowCount,403,'Pricing permission required');return (await db.query('SELECT * FROM pricing_policies WHERE active ORDER BY vehicle NULLS FIRST')).rows;},
  async configureCommission(actor,input){
   const v=z.object({vehicle:z.enum(['motorcycle','car','van']).nullable().optional(),commissionBps:z.number().int().min(0).max(10000),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null)}).strict().parse(input);
   return db.tx(async c=>{
@@ -219,7 +221,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async accept(actor,sid,offerId){check(dispatch,503,'Dispatch engine unavailable');return dispatch.accept(actor,sid,offerId);},
  async get(actor,sid){uuid.parse(sid);const s=(await db.query('SELECT * FROM shipments WHERE id=$1',[sid])).rows[0];check(s,404);await access(db,actor,s);const q=(await db.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];return {...s,details:q.request};},
  async list(actor){
-  const baseQuery=`SELECT s.*, q.request AS details, q.request->'pickup' AS pickup, q.request->'destination' AS destination FROM shipments s JOIN quotes q ON q.id=s.quote_id`;
+  const baseQuery=`SELECT s.*, (SELECT id FROM food_orders WHERE shipment_id=s.id) AS food_order_id, q.request AS details, q.request->'pickup' AS pickup, q.request->'destination' AS destination FROM shipments s JOIN quotes q ON q.id=s.quote_id`;
   if(['customer','business'].includes(actor.kind))return (await db.query(`${baseQuery} WHERE s.customer_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
   if(actor.kind==='rider')return (await db.query(`${baseQuery} WHERE s.rider_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
   if(actor.kind==='company')return (await db.query(`${baseQuery} JOIN companies c ON c.id=s.company_id WHERE c.owner_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
@@ -227,13 +229,25 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  },
  async challenge(actor,sid,purpose){check(['pickup','delivery'].includes(purpose),400);check(sms,503,'SMS adapter unavailable');
   const code=newCode(),cid=id();
-  const target=await db.tx(async c=>{await rider(c,actor);const s=await locked(c,sid);check(s.rider_id===actor.id,403,'Assigned rider required');check(s.verification_authority==='elesend',409,'External verification not enabled');
+  const resolveChallengeRecipient=async c=>{
+   const s=await locked(c,sid);
+   if(purpose==='delivery')return {s,destination:s.recipient_phone};
+   const fo=(await c.query(`SELECT f.id,r.phone AS restaurant_phone,u.phone AS owner_phone FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id LEFT JOIN users u ON u.id=r.owner_id WHERE f.shipment_id=$1`,[sid])).rows[0];
+   if(fo){
+    const restPhone=fo.restaurant_phone||fo.owner_phone;
+    check(restPhone,409,'Restaurant handover contact phone unavailable');
+    return {s,destination:restPhone};
+   }
+   const cust=(await c.query('SELECT phone FROM users WHERE id=$1',[s.customer_id])).rows[0];
+   check(cust?.phone,409,'Sender handover contact phone unavailable');
+   return {s,destination:cust.phone};
+  };
+  const target=await db.tx(async c=>{await rider(c,actor);const {s,destination}=await resolveChallengeRecipient(c);check(s.rider_id===actor.id,403,'Assigned rider required');check(s.verification_authority==='elesend',409,'External verification not enabled');
    check((purpose==='pickup'?['RIDER_ASSIGNED']:['IN_TRANSIT','AWAITING_DELIVERY_OTP']).includes(s.state),409,'Shipment not eligible for challenge');
    const manifest=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
    if(manifest?.stops.length)check(manifest.stops[0].shipmentId===sid&&manifest.stops[0].kind===(purpose==='pickup'?'pickup':'dropoff'),409,'Complete the next verified route stop first');
    await limit(c,'otp:'+sid+':'+purpose,3,900);
    check(!(await c.query('SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose=$2 AND expires_at>now() AND consumed_at IS NULL',[sid,purpose])).rowCount,409,'Challenge still active');
-   const destination=purpose==='delivery'?s.recipient_phone:(await c.query('SELECT phone FROM users WHERE id=$1',[s.customer_id])).rows[0].phone;
    const digest=mac(otpKey,[purpose,cid,sid,actor.id,destination,code]);
    await c.query("INSERT INTO challenges(id,shipment_id,rider_id,purpose,phone,digest,expires_at) VALUES($1,$2,$3,$4,$5,$6,now()+interval '5 minutes')",[cid,sid,actor.id,purpose,destination,digest]);
    if(purpose==='delivery')await c.query("UPDATE shipments SET state='AWAITING_DELIVERY_OTP' WHERE id=$1",[sid]);await audit(c,actor.id,purpose+'.challenge_requested',sid);return destination;
@@ -256,7 +270,13 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    check(s.state===(ch.purpose==='pickup'?'RIDER_ASSIGNED':'AWAITING_DELIVERY_OTP'),409,'Wrong delivery state');
    const pending=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
    if(pending?.stops.length)check(pending.stops[0].shipmentId===sid&&pending.stops[0].kind===(ch.purpose==='pickup'?'pickup':'dropoff'),409,'Stop order changed; verification blocked');
-   if(!equal(ch.digest,mac(otpKey,[ch.purpose,ch.id,sid,actor.id,ch.phone,v.code]))){await c.query('UPDATE challenges SET attempts=attempts+1 WHERE id=$1',[ch.id]);await audit(c,actor.id,'otp.rejected',sid);
+   let expectedPhone=s.recipient_phone;
+   if(ch.purpose==='pickup'){
+    const fo=(await c.query(`SELECT r.phone AS restaurant_phone,u.phone AS owner_phone FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id LEFT JOIN users u ON u.id=r.owner_id WHERE f.shipment_id=$1`,[sid])).rows[0];
+    expectedPhone=fo?(fo.restaurant_phone||fo.owner_phone):(await c.query('SELECT phone FROM users WHERE id=$1',[s.customer_id])).rows[0]?.phone;
+   }
+   check(Boolean(expectedPhone)&&ch.phone===expectedPhone,409,'Challenge recipient mismatch');
+   if(!equal(ch.digest,mac(otpKey,[ch.purpose,ch.id,sid,actor.id,expectedPhone,v.code]))){await c.query('UPDATE challenges SET attempts=attempts+1 WHERE id=$1',[ch.id]);await audit(c,actor.id,'otp.rejected',sid);
     if(ch.attempts+1>=5&&await featureService(c).enabled('fraud_signals')){
      const signals=detectFraudSignals({otpFailures:ch.attempts+1});
      for(const risk of signals.signals)await c.query('INSERT INTO operational_risk_signals(rider_id,shipment_id,signal_code,severity,evidence) VALUES($1,$2,$3,$4,$5)',[actor.id,sid,risk.code,risk.severity,JSON.stringify({challengeId:ch.id,attempts:ch.attempts+1})]);
@@ -281,6 +301,8 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     await c.query("UPDATE shipments SET state='COMPLETED',completed_at=now() WHERE id=$1",[sid]);
     const fo=(await c.query('SELECT id, subtotal_minor, food_commission_bps, food_commission_minor, restaurant_id FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[sid])).rows[0];
     if(fo){
+     const food=(await c.query('SELECT * FROM food_orders WHERE id=$1',[fo.id])).rows[0];
+     await requireFoodPayment(c,food);
      await c.query("UPDATE food_orders SET state='DELIVERED', payment_status='PAID', completed_at=now(), updated_at=now() WHERE id=$1",[fo.id]);
      const grossSales=fo.subtotal_minor, commBps=fo.food_commission_bps, commMinor=fo.food_commission_minor, netPayable=grossSales-commMinor;
      await c.query(`INSERT INTO restaurant_settlements(order_id,restaurant_id,gross_sales_minor,commission_bps,commission_minor,net_payable_minor,status)
@@ -288,8 +310,9 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     }
     const entitlementMinor = Number(BigInt(s.amount_minor) - BigInt(s.commission_minor));
     await c.query('INSERT INTO financial_entries(shipment_id,beneficiary_id,customer_charge_minor,commission_minor,entitlement_minor,payout_status) VALUES($1,$2,$3,$4,$5,$6)',[sid,s.company_id??actor.id,s.amount_minor,s.commission_minor,entitlementMinor,s.payment_method==='CASH'?'cash_rider_reported':'held']);
-    if(s.payment_method!=='CASH')await digitalDeliveryCompleted(c,s);
-    if(s.payment_method==='CASH')await postCashCommission(c,s);
+    // One settlement path: exactly-once commission/earnings posting plus automatic debt recovery,
+    // inside this same OTP-verified completion transaction.
+    await settleCompletedDelivery(c,s);
    }
    await audit(c,actor.id,ch.purpose+'.verified',sid);await event(c,sid,ch.purpose==='delivery'?'completed':'pickup_verified');return {ok:true};
   });check(!result.invalid,400,'Incorrect code');return result;
@@ -298,20 +321,38 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   return db.tx(async c=>{if(actor.kind==='rider')await rider(c,actor);const s=await locked(c,sid);
    const transitions={start:['PICKUP_VERIFIED','IN_TRANSIT'],fail:[['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'],'FAILED'],return:['FAILED','RETURN_REQUESTED'],returned:['RETURN_REQUESTED','RETURNED'],cancel:[['AWAITING_PAYMENT','AWAITING_ASSIGNMENT'],'CANCELLED']};
    const [from,to]=transitions[v.action];check([from].flat().includes(s.state),409,'Invalid transition');
-   if(v.action==='cancel')check(s.customer_id===actor.id,403);else check(s.rider_id===actor.id,403,'Assigned rider required');
+   if(v.action==='cancel'){
+    check(s.customer_id===actor.id,403);
+    check(!(await c.query('SELECT 1 FROM food_orders WHERE shipment_id=$1',[sid])).rowCount,409,'Cancel food orders through the food order cancellation endpoint');
+    await requestCheckoutRefund(c,s,v.reason||'Customer cancelled');
+   }else if(v.action==='returned'){
+    const foOwner=(await c.query('SELECT r.owner_id FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id WHERE f.shipment_id=$1',[sid])).rows[0];
+    if(foOwner)check(actor?.kind==='admin'||foOwner.owner_id===actor?.id,403,'Only restaurant owner or administrator may confirm physical return');
+    else check(s.rider_id===actor.id,403,'Assigned rider required');
+   }else check(s.rider_id===actor.id,403,'Assigned rider required');
    if(v.action!=='start')check(v.reason,400,'Reason required');
    await c.query('UPDATE shipments SET state=$2 WHERE id=$1',[sid,to]);
    if(v.action==='returned'){
-    const plan=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
-    if(plan)await c.query('UPDATE rider_dispatch_plans SET stops=$2,revision=revision+1,updated_at=now() WHERE rider_id=$1',[actor.id,JSON.stringify(removeShipment(plan.stops,sid))]);
+    const plan=s.rider_id?(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[s.rider_id])).rows[0]:null;
+    if(plan)await c.query('UPDATE rider_dispatch_plans SET stops=$2,revision=revision+1,updated_at=now() WHERE rider_id=$1',[s.rider_id,JSON.stringify(removeShipment(plan.stops,sid))]);
+    await c.query('DELETE FROM dispatch_commitments WHERE shipment_id=$1',[sid]);
+    if(s.rider_id)await c.query('UPDATE locations SET shipment_id=NULL,updated_at=now() WHERE rider_id=$1 AND shipment_id=$2',[s.rider_id,sid]);
+    const fo=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[sid])).rows[0];
+    if(fo&&!['DELIVERED','CANCELLED','REJECTED'].includes(fo.state)){
+     await requestCheckoutRefund(c,s,v.reason||'Returned after delivery failure');
+     await c.query("UPDATE food_orders SET state='CANCELLED',updated_at=now() WHERE id=$1",[fo.id]);
+     await c.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[actor.id,'food_order.returned_cancelled:'+v.reason,fo.id]);
+    }
    }
-   await audit(c,actor.id,'shipment.'+v.action,sid);await event(c,sid,to);return {state:to,refundReviewRequired:v.action==='cancel'&&s.paid};
+   await audit(c,actor.id,'shipment.'+v.action,sid);await event(c,sid,to);return {state:to,refundReviewRequired:(v.action==='cancel'||v.action==='returned')&&s.paid};
   });
  },
  async location(actor,sid,input){const v=z.object({latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict().parse(input);return db.tx(async c=>{await rider(c,actor);const s=await locked(c,sid);check(s.rider_id===actor.id&&['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state),403);await c.query('INSERT INTO locations(shipment_id,rider_id,latitude,longitude) VALUES($1,$2,$3,$4) ON CONFLICT(shipment_id) DO UPDATE SET latitude=$3,longitude=$4,updated_at=now()',[sid,actor.id,v.latitude,v.longitude]);return {ok:true};});},
  async tracking(actor,sid){await this.get(actor,sid);return (await db.query("SELECT latitude,longitude,updated_at FROM locations WHERE shipment_id=$1 AND updated_at>now()-interval '24 hours'",[sid])).rows[0]??null;},
  async dispute(actor,sid,input){const v=z.object({category:z.enum(['lost','damaged','payment','misconduct','address','other']),detail:z.string().min(5).max(2000)}).strict().parse(input);await this.get(actor,sid);return db.tx(async c=>{await locked(c,sid);const did=id();await c.query('INSERT INTO disputes(id,shipment_id,reporter_id,category,detail) VALUES($1,$2,$3,$4,$5)',[did,sid,actor.id,v.category,v.detail]);await audit(c,actor.id,'dispute.opened',sid);return {id:did};});},
  async earnings(actor){return (await db.query('SELECT f.* FROM financial_entries f WHERE f.beneficiary_id=$1 OR f.beneficiary_id IN (SELECT id FROM companies WHERE owner_id=$1) ORDER BY f.created_at DESC LIMIT 100',[actor.id])).rows;},
- async reviewQueue(actor){await permission(db,actor,'verification:write');return {riders:(await db.query('SELECT id,company_id,status,vehicle,max_weight_g FROM riders ORDER BY id LIMIT 100')).rows,companies:(await db.query('SELECT id,name,status FROM companies ORDER BY name LIMIT 100')).rows,vehicles:(await db.query('SELECT * FROM rider_vehicle_registrations ORDER BY submitted_at DESC LIMIT 100')).rows};}
+ async reviewQueue(actor){await permission(db,actor,'verification:write');return {riders:(await db.query('SELECT r.id,u.phone,r.company_id,r.status,r.vehicle,r.max_weight_g FROM riders r LEFT JOIN users u ON u.id=r.id ORDER BY r.id LIMIT 100')).rows,companies:(await db.query('SELECT id,name,status FROM companies ORDER BY name LIMIT 100')).rows,vehicles:(await db.query('SELECT * FROM rider_vehicle_registrations ORDER BY submitted_at DESC LIMIT 100')).rows};}
+ ,
+  routing
  };
 }

@@ -1,5 +1,15 @@
 import {haversine} from '../../dispatch-geometry.mjs';
 
+export function escapeHtml(str) {
+ if (str == null) return '';
+ return String(str)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+}
+
 export function statusToLabel(state){
  switch(state){
   case 'AWAITING_PAYMENT': return 'Awaiting payment confirmation';
@@ -37,9 +47,21 @@ export async function getPublicTracking(db, token){
  const res=await db.query(query,[clean]);
  if(!res.rows.length)return null;
  const row=res.rows[0];
+
+ // Expiration check: public tracking links expire 2 hours after completion or 48 hours after creation
+ const now = Date.now();
+ if (row.completed_at && (now - new Date(row.completed_at).getTime()) > 2 * 60 * 60 * 1000) {
+  return null;
+ }
+ if (row.created_at && (now - new Date(row.created_at).getTime()) > 48 * 60 * 60 * 1000) {
+  return null;
+ }
+
  const req=row.request||{};
 
- const courier=Number.isFinite(row.courier_lat)&&Number.isFinite(row.courier_lon)?{
+ // Courier coordinates should only be revealed while courier is actively en route
+ const isCourierActive = ['RIDER_ASSIGNED', 'PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(row.state);
+ const courier=isCourierActive && Number.isFinite(row.courier_lat)&&Number.isFinite(row.courier_lon)?{
   latitude:row.courier_lat,
   longitude:row.courier_lon,
   updatedAt:row.courier_time,
@@ -76,12 +98,19 @@ export function renderTrackingHtml(data){
  const stateIndex=steps.indexOf(data.state);
  const activeStep=stateIndex===-1?(data.state==='PICKUP_VERIFIED'?1:data.state==='AWAITING_DELIVERY_OTP'?2:0):stateIndex;
 
+ const safeShipmentId = escapeHtml(data.shipmentId || '');
+ const shortId = escapeHtml((data.shipmentId || '').slice(0, 8));
+ const safeStateLabel = escapeHtml((data.state || '').replace(/_/g, ' '));
+ const safeStatusLabel = escapeHtml(data.statusLabel || '');
+ const safePickupAddress = escapeHtml(data.pickup?.address || 'Pickup Location');
+ const safeDestAddress = escapeHtml(data.destination?.address || 'Delivery Destination');
+
  return `<!DOCTYPE html>
 <html lang="en">
 <head>
  <meta charset="UTF-8">
  <meta name="viewport" content="width=device-width, initial-scale=1.0">
- <title>ELESEND Live Tracking • ${data.shipmentId.slice(0,8)}</title>
+ <title>ELESEND Live Tracking • ${shortId}</title>
  <style>
   :root {
    --bg: #0c1324;
@@ -137,12 +166,12 @@ export function renderTrackingHtml(data){
  <div class="container">
   <div class="header">
    <div class="brand">ELESEND</div>
-   <div class="badge" id="state-badge">${data.state.replace(/_/g, ' ')}</div>
+   <div class="badge" id="state-badge">${safeStateLabel}</div>
   </div>
 
   <div class="card">
-   <div class="status-title" id="status-label">${data.statusLabel}</div>
-   <div class="status-subtitle" id="status-desc">Order #${data.shipmentId.slice(0, 8)} • Verified road delivery</div>
+   <div class="status-title" id="status-label">${safeStatusLabel}</div>
+   <div class="status-subtitle" id="status-desc">Order #${shortId} • Verified road delivery</div>
 
    <div class="stepper">
     <div class="step-node ${activeStep>=0?'done':''} ${activeStep===0?'active':''}">
@@ -167,9 +196,9 @@ export function renderTrackingHtml(data){
    <div class="eta-card" id="eta-box">
     <div>
      <div class="eta-label">ESTIMATED ARRIVAL</div>
-     <div class="status-subtitle">${data.eta.remainingDistanceKm} km remaining</div>
+     <div class="status-subtitle">${escapeHtml(data.eta.remainingDistanceKm)} km remaining</div>
     </div>
-    <div class="eta-time">${data.eta.estimatedMinutes} mins</div>
+    <div class="eta-time">${escapeHtml(data.eta.estimatedMinutes)} mins</div>
    </div>`:''}
   </div>
 
@@ -196,12 +225,12 @@ export function renderTrackingHtml(data){
       <circle r="7" fill="#e74c3c"/>
       <text y="-12" font-size="11" fill="#e74c3c" text-anchor="middle" font-weight="bold">Dropoff</text>
      </g>
-     <!-- Courier Marker -->
+     ${data.courier ? `<!-- Courier Marker -->
      <g id="courier-marker" transform="translate(190, 115)">
       <circle class="pulse" r="18" fill="#3fd6b3" opacity="0.4"/>
       <circle r="10" fill="#172239" stroke="#3fd6b3" stroke-width="2"/>
       <text y="4" font-size="11" fill="#3fd6b3" text-anchor="middle">${data.vehicle==='car'?'🚗':'🛵'}</text>
-     </g>
+     </g>` : ''}
     </svg>
    </div>
   </div>
@@ -211,7 +240,7 @@ export function renderTrackingHtml(data){
     <div class="icon-pin pin-p">P</div>
     <div>
      <div class="address-role">Pickup Address</div>
-     <div class="address-text">${data.pickup?.address||'Specified pickup location'}</div>
+     <div class="address-text">${safePickupAddress}</div>
     </div>
    </div>
    <div style="border-top: 1px solid var(--line); margin: 8px 0 8px 32px;"></div>
@@ -219,7 +248,7 @@ export function renderTrackingHtml(data){
     <div class="icon-pin pin-d">D</div>
     <div>
      <div class="address-role">Destination</div>
-     <div class="address-text">${data.destination?.address||'Specified dropoff location'}</div>
+     <div class="address-text">${safeDestAddress}</div>
     </div>
    </div>
   </div>
@@ -234,13 +263,13 @@ export function renderTrackingHtml(data){
   // Auto-refresh every 6 seconds to update courier position and status
   async function pollStatus() {
    try {
-    const res = await fetch('/api/v1/public-track/' + token);
+    const res = await fetch('/api/v1/public-track/' + encodeURIComponent(token));
     if (!res.ok) return;
     const fresh = await res.json();
-    document.getElementById('state-badge').innerText = fresh.state.replace(/_/g, ' ');
-    document.getElementById('status-label').innerText = fresh.statusLabel;
+    document.getElementById('state-badge').innerText = (fresh.state || '').replace(/_/g, ' ');
+    document.getElementById('status-label').innerText = fresh.statusLabel || '';
     if (fresh.eta && document.getElementById('eta-box')) {
-     document.getElementById('eta-box').innerHTML = '<div><div class="eta-label">ESTIMATED ARRIVAL</div><div class="status-subtitle">' + fresh.eta.remainingDistanceKm + ' km remaining</div></div><div class="eta-time">' + fresh.eta.estimatedMinutes + ' mins</div>';
+     document.getElementById('eta-box').innerHTML = '<div><div class="eta-label">ESTIMATED ARRIVAL</div><div class="status-subtitle">' + Number(fresh.eta.remainingDistanceKm) + ' km remaining</div></div><div class="eta-time">' + Number(fresh.eta.estimatedMinutes) + ' mins</div>';
     }
    } catch(e) {}
   }

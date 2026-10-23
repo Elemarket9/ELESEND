@@ -15,17 +15,26 @@ export function hubtelCheckout({
  clientSecret,
  merchantAccountNumber,
  fetchImpl = fetch,
- endpoint = 'https://payproxyapi.hubtel.com',
+ endpoint = process.env.HUBTEL_PAYMENT_ENDPOINT || 'https://payproxyapi.hubtel.com',
+ allowedHost = 'payproxyapi.hubtel.com',
  allowedMethods = ['MOMO', 'CARD', 'QR'],
- callbackBaseUrl = 'https://api.elesend.com',
+ callbackBaseUrl = process.env.HUBTEL_CALLBACK_BASE_URL,
+ returnBaseUrl = process.env.HUBTEL_RETURN_BASE_URL,
+ cancellationBaseUrl = process.env.HUBTEL_CANCELLATION_BASE_URL || returnBaseUrl,
  production = process.env.NODE_ENV === 'production'
 } = {}) {
  check(typeof clientId === 'string' && clientId.trim().length > 0, 503, 'Hubtel ClientId required');
  check(typeof clientSecret === 'string' && clientSecret.trim().length > 0, 503, 'Hubtel ClientSecret required');
  check(merchantAccountNumber != null && String(merchantAccountNumber).trim().length > 0, 503, 'Hubtel Merchant Account Number required');
+ const base=new URL(endpoint);
+ check(base.protocol==='https:'&&base.hostname===allowedHost&&!base.username&&!base.password&&!base.search&&!base.hash&&!base.port,500,'Unapproved payment API endpoint');
+ endpoint=base.toString().replace(/\/$/,'');
 
  const basicAuth = Buffer.from(`${clientId.trim()}:${clientSecret.trim()}`).toString('base64');
  const methods = allowedMethods.filter(v => ['MOMO', 'CARD', 'QR'].includes(v));
+ const safeCallbackBase = (callbackBaseUrl || '').trim().replace(/\/$/, '');
+ const safeReturnBase = (returnBaseUrl || '').trim().replace(/\/$/, '');
+ const safeCancelBase = (cancellationBaseUrl || returnBaseUrl || '').trim().replace(/\/$/, '');
 
  async function remote(path, options = {}) {
   const controller = new AbortController();
@@ -36,7 +45,7 @@ export function hubtelCheckout({
     headers: {
      Authorization: `Basic ${basicAuth}`,
      'Content-Type': 'application/json',
-     Accept: 'application/json',
+     Accept: 'application/json', 'Accept-Encoding': 'gzip, deflate',
      ...options.headers
     },
     signal: controller.signal,
@@ -66,7 +75,7 @@ export function hubtelCheckout({
   });
 
   const rawStatus = (data?.Status || data?.status || '').toLowerCase();
-  const isPaid = rawStatus === 'success' || data?.ResponseCode === '0000';
+  const isPaid = rawStatus === 'success';
 
   // Normalize channel: mtn-gh, telecel-gh, tigo-gh, mobilemoney -> mobile_money
   const rawChannel = (data?.PaymentDetails?.Channel || data?.PaymentType || data?.channel || 'mobile_money').toLowerCase();
@@ -93,6 +102,8 @@ export function hubtelCheckout({
 
  return {
   name: 'hubtel',
+  payerFields: [],
+  commissionIntentId(record){const ref=typeof record==='string'?record:record?.reference||'';const m=/^escomm_([0-9a-f]{32})$/.exec(ref);if(!m)return null;const h=m[1];return [h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');},
   methods,
   allowedCheckoutHosts: ['checkout.hubtel.com', 'payproxyapi.hubtel.com'],
 
@@ -102,9 +113,10 @@ export function hubtelCheckout({
    check(/^[A-Za-z0-9._=-]{8,90}$/.test(reference), 400, 'Invalid checkout reference');
 
    const amountGhs = Number((amountMinor / 100).toFixed(2));
-   const callbackUrl = `${callbackBaseUrl.replace(/\/$/, '')}/api/v1/payments/checkout-webhook`;
-   const returnUrl = `https://elesend.com/checkout/complete?ref=${encodeURIComponent(reference)}`;
-   const cancellationUrl = `https://elesend.com/checkout/cancelled?ref=${encodeURIComponent(reference)}`;
+   check(safeCallbackBase && safeReturnBase, 500, 'Hubtel checkout requires callback and return URLs');
+   const callbackUrl = `${safeCallbackBase}/api/v1/payments/webhook`;
+   const returnUrl = `${safeReturnBase}/checkout/complete?ref=${encodeURIComponent(reference)}`;
+   const cancellationUrl = `${safeCancelBase || safeReturnBase}/checkout/cancelled?ref=${encodeURIComponent(reference)}`;
 
    const payload = {
     totalAmount: amountGhs,
@@ -138,15 +150,16 @@ export function hubtelCheckout({
 
    const reference = 'escomm_' + intentId.replaceAll('-', '');
    const amountGhs = Number((amountMinor / 100).toFixed(2));
-   const callbackUrl = `${callbackBaseUrl.replace(/\/$/, '')}/api/v1/payments/commission-webhook`;
+   check(safeCallbackBase && safeReturnBase, 500, 'Hubtel settlement requires callback and return URLs');
+   const callbackUrl = `${safeCallbackBase}/api/v1/payments/webhook`;
 
    const payload = {
     totalAmount: amountGhs,
     description: `ELESEND Commission Settlement ${reference}`,
     callbackUrl,
-    returnUrl: `https://elesend.com/settlement/complete?ref=${encodeURIComponent(reference)}`,
+    returnUrl: `${safeReturnBase}/settlement/complete?ref=${encodeURIComponent(reference)}`,
     merchantAccountNumber: String(merchantAccountNumber),
-    cancellationUrl: `https://elesend.com/settlement/cancelled?ref=${encodeURIComponent(reference)}`,
+    cancellationUrl: `${safeCancelBase || safeReturnBase}/settlement/cancelled?ref=${encodeURIComponent(reference)}`,
     clientReference: reference
    };
 
@@ -166,7 +179,8 @@ export function hubtelCheckout({
 
   async verifyEvent({rawBody, headers}) {
    const v = await this.parseVerifiedWebhook(rawBody, headers);
-   check(v?.status === 'success' && v.channel === 'mobile_money', 409, 'Commission settlement not verified');
+   // Channel admissibility is a business policy enforced by the finance service, not the adapter.
+   check(v?.status === 'success' && ['mobile_money', 'card'].includes(v.channel), 409, 'Commission settlement not verified');
    const m = /^escomm_([0-9a-f]{32})$/.exec(v.reference);
    check(m, 403, 'Not a commission repayment event');
    const h = m[1];
@@ -177,11 +191,13 @@ export function hubtelCheckout({
     eventId: v.eventId,
     intentId,
     amountMinor: v.amountMinor,
-    currency: v.currency
+    currency: v.currency,
+    channel: v.channel
    };
   },
 
   async parseVerifiedWebhook(rawBody, headers) {
+   if(rawBody&&typeof rawBody==='object'&&!Buffer.isBuffer(rawBody)&&!(rawBody instanceof Uint8Array)&&('rawBody' in rawBody||'headers' in rawBody)){headers=rawBody.headers;rawBody=rawBody.rawBody;}
    let incoming;
    try {
     incoming = JSON.parse(rawBody.toString('utf8'));

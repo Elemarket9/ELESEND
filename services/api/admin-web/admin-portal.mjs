@@ -372,18 +372,100 @@ export function renderAdminPortalHtml() {
         </div>
       </div>
 
-      <!-- PANEL 5: Financial Aging -->
+      <!-- PANEL 5: Financial Aging, Payouts, Refunds & Exceptions -->
       <div id="financeTab" class="panel">
         <div class="card">
           <div class="card-title">
+            <span>Rider Wallet & Debt Recovery Governance</span>
+            <button class="action-btn" onclick="loadFinance()">Refresh Overview</button>
+          </div>
+          <div class="card-subtitle">Real-time ledger projection of rider commission debt, automatic earnings recovery, and dispatch gating.</div>
+          <div class="stat-row">
+            <div class="stat-box"><div class="stat-label">Active Debt Owed</div><div class="stat-value" id="walletTotalDebt" style="color:var(--danger);">GH₵0.00</div></div>
+            <div class="stat-box"><div class="stat-label">Restricted Riders</div><div class="stat-value" id="walletRestrictedRiders" style="color:var(--accent);">0</div></div>
+            <div class="stat-box"><div class="stat-label">Auto-Recovered Total</div><div class="stat-value" id="walletTotalRecovered" style="color:var(--success);">GH₵0.00</div></div>
+            <div class="stat-box"><div class="stat-label">Policy Debt Limit</div><div class="stat-value" id="walletPolicyLimit">GH₵150.00</div></div>
+          </div>
+          <div style="display: flex; gap: 12px; align-items: center; margin-top: 12px;">
+            <button class="action-btn" onclick="runWalletReconciliation()">Run Ledger Reconciliation</button>
+            <span id="reconciliationNotice" style="font-size: 12px; color: var(--text-muted);"></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
             <span>Rider Commission Receivables Aging</span>
-            <button class="action-btn" onclick="loadFinance()">Refresh Aging</button>
+            <button class="action-btn" onclick="loadFinance()">Refresh Finance</button>
           </div>
           <div class="card-subtitle">Tracks accrued delivery platform commission from completed cash trips awaiting MoMo settlement.</div>
           <div id="agingStats" class="stat-row">
             <div class="stat-box"><div class="stat-label">Current Due (0-7 Days)</div><div class="stat-value" id="agingCurrent">GH₵0.00</div></div>
             <div class="stat-box"><div class="stat-label">Overdue (8-14 Days)</div><div class="stat-value" id="agingOverdue" style="color:var(--accent);">GH₵0.00</div></div>
             <div class="stat-box"><div class="stat-label">Critical (>14 Days)</div><div class="stat-value" id="agingCritical" style="color:var(--danger);">GH₵0.00</div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Payout Operations (Two-Person Approval)</span>
+            <button class="action-btn" onclick="loadFinance()">Refresh Payouts</button>
+          </div>
+          <div class="card-subtitle">Propose, approve (requires second finance admin), reconcile, and safely retry failed rider/company/restaurant payouts.</div>
+          <form onsubmit="handleProposePayout(event)" style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 16px;">
+            <div style="flex: 2; min-width: 220px;">
+              <label class="form-label">Shipment ID</label>
+              <input type="text" id="proposeShipmentId" class="form-input" placeholder="Completed Shipment UUID" required>
+            </div>
+            <div style="flex: 1; min-width: 150px;">
+              <label class="form-label">Beneficiary Kind</label>
+              <select id="proposePayoutKind" class="form-input">
+                <option value="rider">Rider / Fleet Company</option>
+                <option value="restaurant">Restaurant Merchant</option>
+              </select>
+            </div>
+            <button type="submit" class="btn-primary" style="width: auto; padding: 12px 20px;">Propose Payout</button>
+          </form>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Payout ID</th>
+                  <th>Shipment / Kind</th>
+                  <th>Beneficiary / Destination</th>
+                  <th>Amount</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="payoutsTable">
+                <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Loading payout operations...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Refund Operations & Exceptions</span>
+            <button class="action-btn" onclick="loadFinance()">Refresh Refunds</button>
+          </div>
+          <div class="card-subtitle">Submit pending customer refunds, reconcile uncertain provider calls, and retry verified failed refunds.</div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Refund ID</th>
+                  <th>Shipment</th>
+                  <th>Reference</th>
+                  <th>Amount</th>
+                  <th>Status / Reason</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="refundsTable">
+                <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Loading refund operations...</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -463,7 +545,10 @@ export function renderAdminPortalHtml() {
       document.getElementById('userProfile').style.display = 'none';
     }
 
+    let currentAdmin = null;
+
     function showDashboard(user) {
+      currentAdmin = user;
       document.getElementById('loginView').style.display = 'none';
       document.getElementById('dashboardView').style.display = 'block';
       document.getElementById('userProfile').style.display = 'block';
@@ -728,7 +813,7 @@ export function renderAdminPortalHtml() {
         }
         tb.innerHTML = (queue.riders || []).map(r => \`
           <tr>
-            <td>\${r.phone}</td>
+            <td>\${r.phone || r.id.slice(0, 8)}</td>
             <td>COURIER</td>
             <td>\${r.vehicle || 'motorcycle'}</td>
             <td><span class="badge badge-warn">\${r.status.toUpperCase()}</span></td>
@@ -763,28 +848,40 @@ export function renderAdminPortalHtml() {
           tb.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 24px;">No risk signals currently flagged.</td></tr>';
           return;
         }
-        tb.innerHTML = signals.map(s => \`
+        tb.innerHTML = signals.map(s => {
+          const isPending = (s.review_status || 'pending') === 'pending' && !s.reviewed;
+          const flagCode = s.signal_code || s.signal_type || 'RISK_SIGNAL';
+          const sev = (s.severity || 'warn').toUpperCase();
+          return \`
           <tr>
-            <td><code>\${s.id.slice(0,8)}</code></td>
-            <td>\${s.rider_id ? s.rider_id.slice(0,8) : 'N/A'}</td>
-            <td><span class="badge badge-danger">\${s.signal_type}</span></td>
-            <td>\${s.description || 'Automated rule match'}</td>
-            <td>\${s.reviewed ? 'REVIEWED' : 'PENDING'}</td>
+            <td><code>#\${String(s.id)}</code></td>
+            <td>\${s.rider_id ? String(s.rider_id).slice(0,8) : 'N/A'}</td>
+            <td><span class="badge badge-danger">\${flagCode}</span></td>
+            <td>Severity: <strong>\${sev}</strong>\${s.shipment_id ? ' • Shipment ' + String(s.shipment_id).slice(0,8) : ''}</td>
+            <td>\${(s.review_status || (s.reviewed ? 'reviewed' : 'pending')).toUpperCase()}</td>
             <td>
-              \${!s.reviewed ? \`<button class="action-btn" onclick="reviewRisk('\${s.id}')">Dismiss / Resolve</button>\` : 'Done'}
+              \${isPending ? \`
+                <button class="action-btn" onclick="reviewRisk(\${Number(s.id)}, 'reviewed')">Mark Reviewed</button>
+                <button class="action-btn" onclick="reviewRisk(\${Number(s.id)}, 'dismissed')">Dismiss</button>
+              \` : 'Done'}
             </td>
           </tr>
-        \`).join('');
+        \`;}).join('');
       } catch (e) {
         console.error(e);
       }
     }
 
-    async function reviewRisk(id) {
+    async function reviewRisk(id, decision = 'reviewed') {
+      const reasonInput = prompt('Enter operator review rationale (minimum 12 characters):', 'Operator manual inspection verified signal evidence.');
+      if (!reasonInput || reasonInput.trim().length < 12) {
+        if (reasonInput !== null) alert('Review reason must be at least 12 characters.');
+        return;
+      }
       try {
         await api('/api/v1/admin/risk-signals/review', {
           method: 'POST',
-          body: JSON.stringify({ signalId: id, decision: 'reviewed', notes: 'Operator manual inspection verified.' })
+          body: JSON.stringify({ signalId: Number(id), decision, reason: reasonInput.trim() })
         });
         loadRisk();
       } catch (e) {
@@ -794,13 +891,142 @@ export function renderAdminPortalHtml() {
 
     async function loadFinance() {
       try {
-        const aging = await api('/api/v1/admin/finance/aging');
-        document.getElementById('agingCurrent').textContent = ghc(aging?.currentMinor || 0);
+        const walletOverview = await api('/api/v1/admin/finance/wallet-overview').catch(() => null);
+        if (walletOverview) {
+          document.getElementById('walletTotalDebt').textContent = ghc(walletOverview.summary?.totalDebtMinor || 0);
+          document.getElementById('walletRestrictedRiders').textContent = String(walletOverview.summary?.restrictedRidersCount || 0);
+          document.getElementById('walletTotalRecovered').textContent = ghc(walletOverview.summary?.totalRecoveredMinor || 0);
+          if (walletOverview.policy?.debt_limit_minor) {
+            document.getElementById('walletPolicyLimit').textContent = ghc(walletOverview.policy.debt_limit_minor);
+          }
+        }
+      } catch (e) {
+        console.error('Wallet overview load failed', e);
+      }
+      try {
+        const aging = await api('/api/v1/admin/finance/aging').catch(() => []);
+        const totalOutstanding = Array.isArray(aging)
+          ? aging.reduce((s, r) => s + Number(r.outstanding_minor || 0), 0)
+          : Number(aging?.currentMinor || 0);
+        document.getElementById('agingCurrent').textContent = ghc(totalOutstanding);
         document.getElementById('agingOverdue').textContent = ghc(aging?.overdueMinor || 0);
         document.getElementById('agingCritical').textContent = ghc(aging?.criticalMinor || 0);
       } catch (e) {
         console.error(e);
       }
+      try {
+        const payouts = await api('/api/v1/admin/payments/payouts').catch(() => []);
+        const ptb = document.getElementById('payoutsTable');
+        if (!payouts.length) {
+          ptb.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 16px;">No payout operations queued.</td></tr>';
+        } else {
+          ptb.innerHTML = payouts.map(p => {
+            const selfProposed = currentAdmin && p.proposed_by === currentAdmin.id;
+            const badgeClass = p.status === 'paid' ? 'badge-active' : ['failed', 'needs_review'].includes(p.status) ? 'badge-danger' : 'badge-warn';
+            return \`
+              <tr>
+                <td><code>\${p.id.slice(0,8)}</code></td>
+                <td><code>\${p.shipment_id.slice(0,8)}</code> • <strong>\${p.kind.toUpperCase()}</strong></td>
+                <td>\${p.recipient_reference}<br><small style="color:var(--text-muted);">Beneficiary: \${p.beneficiary_id.slice(0,8)}\${p.company_id ? ' (Co: ' + p.company_id.slice(0,8) + ')' : ''}</small></td>
+                <td><strong>\${ghc(p.amount_minor)}</strong></td>
+                <td><span class="badge \${badgeClass}">\${p.status.toUpperCase()}</span>\${p.failure_reason ? '<br><small style="color:var(--danger);">' + p.failure_reason + '</small>' : ''}</td>
+                <td>
+                  \${p.status === 'proposed' ? (selfProposed
+                    ? '<span style="font-size:11px;color:var(--text-muted);">Awaiting 2nd Approver</span>'
+                    : \`<button class="action-btn" onclick="approvePayoutOp('\${p.id}')">Approve (2nd Admin)</button>\`) : ''}
+                  \${['approved', 'initiating', 'pending', 'needs_review'].includes(p.status) ? \`<button class="action-btn" onclick="reconcilePayoutOp('\${p.id}')">Reconcile</button>\` : ''}
+                  \${p.status === 'failed' ? \`<button class="action-btn" onclick="retryPayoutOp('\${p.id}')">Safe Retry</button>\` : ''}
+                </td>
+              </tr>
+            \`;
+          }).join('');
+        }
+      } catch (e) {
+        console.error(e);
+      }
+      try {
+        const refunds = await api('/api/v1/admin/payments/refunds').catch(() => []);
+        const rtb = document.getElementById('refundsTable');
+        if (!refunds.length) {
+          rtb.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 16px;">No refund operations queued.</td></tr>';
+        } else {
+          rtb.innerHTML = refunds.map(r => {
+            const badgeClass = r.status === 'refunded' ? 'badge-active' : ['failed', 'needs_review'].includes(r.status) ? 'badge-danger' : 'badge-warn';
+            return \`
+              <tr>
+                <td><code>\${r.id.slice(0,8)}</code></td>
+                <td><code>\${r.shipment_id.slice(0,8)}</code></td>
+                <td><code>\${r.reference || r.provider_reference || r.provider_id || ''}</code></td>
+                <td><strong>\${ghc(r.amount_minor)}</strong></td>
+                <td><span class="badge \${badgeClass}">\${r.status.toUpperCase()}</span><br><small style="color:var(--text-muted);">\${r.failure_reason || r.reason || ''}</small></td>
+                <td>
+                  \${r.status === 'queued' ? \`<button class="action-btn" onclick="submitRefundOp('\${r.id}')">Submit Refund</button>\` : ''}
+                  \${['pending', 'initiating', 'needs_review'].includes(r.status) ? \`<button class="action-btn" onclick="reconcileRefundOp('\${r.id}')">Reconcile</button>\` : ''}
+                  \${r.status === 'failed' ? \`<button class="action-btn" onclick="retryRefundOp('\${r.id}')">Safe Retry</button>\` : ''}
+                </td>
+              </tr>
+            \`;
+          }).join('');
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function runWalletReconciliation() {
+      const notice = document.getElementById('reconciliationNotice');
+      if (notice) notice.textContent = 'Running reconciliation...';
+      try {
+        const res = await api('/api/v1/admin/finance/reconciliation');
+        if (notice) {
+          const recCount = res.repairRecoveries?.length || 0;
+          notice.textContent = 'Completed: ' + recCount + ' auto-recoveries executed.';
+        }
+        loadFinance();
+      } catch (err) {
+        if (notice) notice.textContent = 'Reconciliation failed: ' + err.message;
+      }
+    }
+
+    async function handleProposePayout(e) {
+      e.preventDefault();
+      const shipmentId = document.getElementById('proposeShipmentId').value.trim();
+      const kind = document.getElementById('proposePayoutKind').value;
+      try {
+        await api('/api/v1/admin/payments/payouts', {
+          method: 'POST',
+          body: JSON.stringify({ shipmentId, kind })
+        });
+        document.getElementById('proposeShipmentId').value = '';
+        loadFinance();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function approvePayoutOp(id) {
+      try { await api(\`/api/v1/admin/payments/payouts/\${id}/approve\`, { method: 'POST', body: '{}' }); loadFinance(); }
+      catch (err) { alert(err.message); }
+    }
+    async function reconcilePayoutOp(id) {
+      try { await api(\`/api/v1/admin/payments/payouts/\${id}/reconcile\`, { method: 'POST', body: '{}' }); loadFinance(); }
+      catch (err) { alert(err.message); }
+    }
+    async function retryPayoutOp(id) {
+      try { await api(\`/api/v1/admin/payments/payouts/\${id}/retry\`, { method: 'POST', body: '{}' }); loadFinance(); }
+      catch (err) { alert(err.message); }
+    }
+    async function submitRefundOp(id) {
+      try { await api(\`/api/v1/admin/payments/refunds/\${id}/submit\`, { method: 'POST', body: '{}' }); loadFinance(); }
+      catch (err) { alert(err.message); }
+    }
+    async function reconcileRefundOp(id) {
+      try { await api(\`/api/v1/admin/payments/refunds/\${id}/reconcile\`, { method: 'POST', body: '{}' }); loadFinance(); }
+      catch (err) { alert(err.message); }
+    }
+    async function retryRefundOp(id) {
+      try { await api(\`/api/v1/admin/payments/refunds/\${id}/retry\`, { method: 'POST', body: '{}' }); loadFinance(); }
+      catch (err) { alert(err.message); }
     }
 
     async function loadPaymentMethods() {

@@ -90,15 +90,18 @@ export function calculateDynamicDeliveryQuote({
   surgeBps
  });
 
- // Unbeatable economics: calculate what this exact trip yields on Bolt (20% fee) and Yango (18% fee)
+ // Unbeatable economics: calculate what this exact trip yields on Uber (25% fee), Bolt (20% fee) and Yango (18% fee)
  const totalGhs=quote.amountMinor/100;
  const elesendDriverGhs=quote.riderEarningsMinor/100;
  const elesendPlatformGhs=quote.commissionMinor/100;
  const configuredRatePercent=Number(policy.commission_bps??1300)/100;
 
+ const uberDriverNet=Math.round(totalGhs*0.75*100)/100;
  const boltDriverNet=Math.round(totalGhs*0.80*100)/100;
  const yangoDriverNet=Math.round(totalGhs*0.82*100)/100;
  const driverAdvantageGhs=Math.round((elesendDriverGhs-boltDriverNet)*100)/100;
+ const uberAdvantageGhs=Math.round((elesendDriverGhs-uberDriverNet)*100)/100;
+ const yangoAdvantageGhs=Math.round((elesendDriverGhs-yangoDriverNet)*100)/100;
 
  return {
   amountMinor:quote.amountMinor,
@@ -120,10 +123,16 @@ export function calculateDynamicDeliveryQuote({
   },
   competitiveComparison:{
    competitorTakeRatePercent:20.0,
+   uberTakeRatePercent:25.0,
+   boltTakeRatePercent:20.0,
+   yangoTakeRatePercent:18.0,
+   uberEstimatedDriverEarningsGhs:uberDriverNet,
    boltEstimatedDriverEarningsGhs:boltDriverNet,
    yangoEstimatedDriverEarningsGhs:yangoDriverNet,
    elesendDriverAdvantageGhs:driverAdvantageGhs,
-   narrative:`On ELESEND (${configuredRatePercent.toFixed(1)}% fee), driver earns GH₵${elesendDriverGhs.toFixed(2)} vs GH₵${boltDriverNet.toFixed(2)} on Bolt (20% fee) — keeping +GH₵${driverAdvantageGhs.toFixed(2)} more cash in pocket.`
+   elesendDriverAdvantageVsUberGhs:uberAdvantageGhs,
+   elesendDriverAdvantageVsYangoGhs:yangoAdvantageGhs,
+   narrative:`On ELESEND (${configuredRatePercent.toFixed(1)}% fee), driver earns GH₵${elesendDriverGhs.toFixed(2)} vs GH₵${uberDriverNet.toFixed(2)} on Uber (25% fee), GH₵${boltDriverNet.toFixed(2)} on Bolt (20% fee) and GH₵${yangoDriverNet.toFixed(2)} on Yango (18% fee) — keeping +GH₵${uberAdvantageGhs.toFixed(2)} more than Uber and +GH₵${driverAdvantageGhs.toFixed(2)} more than Bolt.`
   }
  };
 }

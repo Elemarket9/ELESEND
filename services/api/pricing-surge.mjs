@@ -39,3 +39,37 @@ export async function measuredSurge(db,pickup,vehicle){
   return {multiplierBps,zoneId:zone.id,...observation,reason:'observed_local_supply_demand'};
  });
 }
+
+const CITIES = [{ lat: 5.6037, lng: -0.1870, radiusM: 45000 }, { lat: 6.6885, lng: -1.6244, radiusM: 35000 }];
+
+export class FareError extends Error {
+ constructor(status, message) {
+  super(message);
+  this.status = status;
+ }
+}
+
+export function validateGhanaBoundary(lat, lng) {
+ if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < 4.7 || lat > 11.2 || lng < -3.3 || lng > 1.2) {
+  throw new FareError(422, 'Location is outside the configured Ghana envelope');
+ }
+ return true;
+}
+
+function distanceMeters(a, b) {
+ const radians = x => x * Math.PI / 180;
+ const dlat = radians(b.lat - a.lat);
+ const dlng = radians(b.lng - a.lng);
+ const h = Math.sin(dlat / 2) ** 2 + Math.cos(radians(a.lat)) * Math.cos(radians(b.lat)) * Math.sin(dlng / 2) ** 2;
+ return 6371008.8 * 2 * Math.atan2(Math.sqrt(Math.min(1, h)), Math.sqrt(Math.max(0, 1 - h)));
+}
+
+export function getSurgeMultiplier(pickupLat, pickupLng, currentHour) {
+ validateGhanaBoundary(pickupLat, pickupLng);
+ if (!Number.isInteger(currentHour) || currentHour < 0 || currentHour > 23) {
+  throw new FareError(400, 'Invalid local hour');
+ }
+ const rush = (currentHour >= 7 && currentHour < 9) || (currentHour >= 16 && currentHour < 19);
+ const inCity = CITIES.some(c => distanceMeters({ lat: pickupLat, lng: pickupLng }, c) <= c.radiusM);
+ return rush && inCity ? 1.4 : 1;
+}

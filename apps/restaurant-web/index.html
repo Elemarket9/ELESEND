@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
+  <meta name="theme-color" content="#18C6A5">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>ELESEND Kitchen — Restaurant Merchant Portal</title>
+  <link rel="manifest" href="/restaurant/manifest.json">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #101827;
+      --surface: #1A2438;
+      --card: #1F2C44;
+      --card-border: #2C3E5E;
+      --primary: #18C6A5;
+      --primary-dark: #087F69;
+      --accent: #FFB547;
+      --danger: #D92D40;
+      --warning: #F59E0B;
+      --info: #3B82F6;
+      --text: #FFFFFF;
+      --text-muted: #94A3B8;
+      --line: #26354D;
+      --font: 'Plus Jakarta Sans', -apple-system, sans-serif;
+      --mono: 'JetBrains Mono', monospace;
+    }
+    .kitchen-light {
+      --bg: #F8FAFC;
+      --surface: #FFFFFF;
+      --card: #F1F5F9;
+      --card-border: #CBD5E1;
+      --primary: #0D9488;
+      --text: #0F172A;
+      --text-muted: #64748B;
+      --line: #E2E8F0;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: var(--font); }
+    body { background-color: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; transition: background-color 0.2s, color 0.2s; }
+    
+    #offlineBanner { display: none; background: var(--danger); color: #fff; padding: 10px 16px; text-align: center; font-weight: 700; font-size: 14px; position: sticky; top: 0; z-index: 1000; }
+
+    header { background-color: var(--surface); border-bottom: 1px solid var(--card-border); padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; }
+    .brand-wrap { display: flex; align-items: center; gap: 12px; }
+    .brand-icon { width: 36px; height: 36px; border-radius: 10px; background: linear-gradient(135deg, var(--primary), var(--primary-dark)); display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 18px; color: #071B28; }
+    .brand-name { font-size: 17px; font-weight: 800; letter-spacing: -0.3px; }
+    .brand-subtitle { font-size: 11px; color: var(--primary); font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; }
+    
+    .header-actions { display: flex; align-items: center; gap: 12px; }
+    .status-toggle { display: flex; align-items: center; gap: 8px; background: var(--card); border: 1px solid var(--card-border); padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #64748B; }
+    .status-dot.online { background: #10B981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.6); }
+    .status-dot.paused { background: var(--accent); }
+    .btn-icon { background: var(--card); border: 1px solid var(--card-border); color: var(--text); padding: 8px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+
+    .container { max-width: 1400px; margin: 0 auto; padding: 20px 16px; width: 100%; flex: 1; display: flex; flex-direction: column; }
+    
+    .nav-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--card-border); margin-bottom: 20px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .nav-tab { background: none; border: none; color: var(--text-muted); padding: 12px 18px; font-size: 14px; font-weight: 700; cursor: pointer; border-radius: 8px 8px 0 0; border-bottom: 3px solid transparent; white-space: nowrap; transition: all 0.15s; display: flex; align-items: center; gap: 8px; }
+    .nav-tab.active { color: var(--primary); border-bottom-color: var(--primary); background: rgba(24, 198, 165, 0.08); }
+    .tab-badge { background: var(--danger); color: #fff; font-size: 11px; padding: 2px 7px; border-radius: 10px; font-weight: 800; }
+    .tab-badge.green { background: var(--primary); color: #071B28; }
+
+    .login-box { max-width: 440px; margin: 40px auto; background: var(--surface); border: 1px solid var(--card-border); border-radius: 16px; padding: 32px 28px; box-shadow: 0 12px 36px rgba(0,0,0,0.4); }
+    .login-box h2 { font-size: 22px; font-weight: 800; margin-bottom: 8px; }
+    .login-box p { font-size: 14px; color: var(--text-muted); margin-bottom: 24px; line-height: 1.5; }
+    .field { margin-bottom: 18px; }
+    .field label { display: block; font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .input { width: 100%; background: var(--bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 12px 14px; color: var(--text); font-size: 15px; outline: none; }
+    .input:focus { border-color: var(--primary); }
+    .btn { background: var(--primary); color: #071B28; font-weight: 800; border: none; border-radius: 8px; padding: 14px; font-size: 15px; cursor: pointer; width: 100%; text-align: center; transition: opacity 0.2s; }
+    .btn:hover { opacity: 0.9; }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-secondary { background: var(--card); color: var(--text); border: 1px solid var(--card-border); }
+
+    .incoming-alert-banner { display: none; background: linear-gradient(90deg, #D92D40, #FF5E7E); color: #fff; padding: 14px 20px; border-radius: 12px; margin-bottom: 20px; font-weight: 800; font-size: 16px; animation: pulse 1.5s infinite; align-items: center; justify-content: space-between; }
+    @keyframes pulse { 0% { opacity: 0.9; transform: scale(1); } 50% { opacity: 1; transform: scale(1.01); } 100% { opacity: 0.9; transform: scale(1); } }
+
+    .kitchen-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; flex: 1; }
+    .kitchen-col { background: var(--surface); border: 1px solid var(--card-border); border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; }
+    .col-header { padding: 14px 18px; border-bottom: 1px solid var(--card-border); display: flex; justify-content: space-between; align-items: center; font-weight: 800; font-size: 15px; background: rgba(0,0,0,0.1); }
+    .col-count { background: var(--card); border: 1px solid var(--card-border); padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+    .col-orders { padding: 14px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; max-height: calc(100vh - 230px); }
+
+    .order-card { background: var(--card); border: 1px solid var(--card-border); border-radius: 12px; padding: 16px; transition: border-color 0.2s; display: flex; flex-direction: column; gap: 10px; }
+    .order-card.new-pulse { border: 2px solid var(--danger); box-shadow: 0 0 16px rgba(217, 45, 64, 0.4); }
+    .order-header { display: flex; justify-content: space-between; align-items: center; }
+    .order-num { font-size: 16px; font-weight: 800; font-family: var(--mono); color: var(--primary); }
+    .order-time { font-size: 12px; color: var(--text-muted); font-weight: 600; }
+    .order-customer { font-size: 14px; font-weight: 700; }
+    .order-items-list { border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); padding: 8px 0; margin: 4px 0; display: flex; flex-direction: column; gap: 6px; }
+    .order-item-row { display: flex; justify-content: space-between; font-size: 13px; }
+    .item-qty-name { font-weight: 600; }
+    .item-mods { font-size: 11px; color: var(--text-muted); margin-left: 18px; }
+    .order-notes { background: rgba(255, 181, 71, 0.1); border: 1px solid rgba(255, 181, 71, 0.3); padding: 6px 10px; border-radius: 6px; font-size: 12px; color: var(--accent); }
+    
+    .prep-timer-pill { display: inline-flex; align-items: center; gap: 6px; background: rgba(24, 198, 165, 0.15); color: var(--primary); padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 700; font-family: var(--mono); }
+    
+    .dispatch-pill { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 700; background: var(--surface); border: 1px solid var(--card-border); margin-top: 4px; }
+
+    .prep-selector-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 6px; }
+    .prep-btn { background: var(--surface); border: 1px solid var(--card-border); color: var(--text); padding: 8px 4px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; text-align: center; }
+    .prep-btn.selected { background: var(--primary); color: #071B28; border-color: var(--primary); }
+
+    .menu-cat-card { background: var(--surface); border: 1px solid var(--card-border); border-radius: 14px; padding: 20px; margin-bottom: 20px; }
+    .menu-cat-title { font-size: 18px; font-weight: 800; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+    .menu-items-table { width: 100%; border-collapse: collapse; }
+    .menu-items-table th { text-align: left; padding: 10px; font-size: 12px; text-transform: uppercase; color: var(--text-muted); border-bottom: 1px solid var(--card-border); }
+    .menu-items-table td { padding: 12px 10px; border-bottom: 1px solid var(--line); font-size: 14px; vertical-align: middle; }
+    
+    .switch { position: relative; display: inline-block; width: 48px; height: 26px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #64748B; transition: .2s; border-radius: 34px; }
+    .slider:before { position: absolute; content: ""; height: 20px; width: 20px; left: 3px; bottom: 3px; background-color: white; transition: .2s; border-radius: 50%; }
+    input:checked + .slider { background-color: var(--primary); }
+    input:checked + .slider:before { transform: translateX(22px); }
+
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .stat-card { background: var(--surface); border: 1px solid var(--card-border); border-radius: 14px; padding: 20px; }
+    .stat-label { font-size: 12px; color: var(--text-muted); font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
+    .stat-value { font-size: 26px; font-weight: 900; font-family: var(--mono); color: var(--text); }
+    .stat-value.primary { color: var(--primary); }
+
+    .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 999; align-items: center; justify-content: center; padding: 20px; }
+    .modal-card { background: var(--surface); border: 1px solid var(--card-border); border-radius: 16px; width: 100%; max-width: 440px; padding: 24px; }
+    .modal-title { font-size: 18px; font-weight: 800; margin-bottom: 12px; }
+    
+    @media (max-width: 768px) {
+      .kitchen-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div id="offlineBanner">KITCHEN OFFLINE: Internet connection lost. Reconnecting...</div>
+  <header>
+    <div class="brand-wrap">
+      <div class="brand-icon">K</div>
+      <div>
+        <div class="brand-name" id="restaurantHeaderName">ELESEND Kitchen</div>
+        <div class="brand-subtitle" id="restaurantHeaderStatus">Live Kitchen Terminal</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="status-toggle" id="storeStatusToggle" onclick="toggleStoreOpen()">
+        <div class="status-dot online" id="storeStatusDot"></div>
+        <span id="storeStatusText">Accepting Orders</span>
+      </button>
+      <button class="btn-icon" onclick="toggleTheme()" title="Contrast Mode">&#9788;</button>
+      <button class="btn-icon" onclick="logout()" title="Logout">&#x2715;</button>
+    </div>
+  </header>
+
+  <div class="container">
+    <div id="authView" style="display: none;">
+      <div class="login-box">
+        <h2>Merchant Login</h2>
+        <p>Access your restaurant live kitchen terminal, menu items, and financial settlements.</p>
+        <div class="field">
+          <label>Merchant Access Token / Session Token</label>
+          <input type="password" id="loginToken" class="input" placeholder="Paste Merchant Bearer Token or API key">
+        </div>
+        <button class="btn" onclick="submitLogin()">Access Kitchen Terminal</button>
+      </div>
+    </div>
+
+    <div id="mainView" style="display: none;">
+      <div class="incoming-alert-banner" id="incomingAlertBanner">
+        <span>NEW INCOMING ORDER RECEIVED! Immediate kitchen action required.</span>
+        <button class="btn" style="width: auto; padding: 8px 16px;" onclick="switchTab('orders')">View Orders</button>
+      </div>
+
+      <div class="nav-tabs">
+        <button class="nav-tab active" id="tabOrdersBtn" onclick="switchTab('orders')">
+          Kitchen Orders <span class="tab-badge" id="activeOrdersCount">0</span>
+        </button>
+        <button class="nav-tab" id="tabMenuBtn" onclick="switchTab('menu')">
+          Menu & 86 Inventory
+        </button>
+        <button class="nav-tab" id="tabSettlementsBtn" onclick="switchTab('settlements')">
+          Financial Settlements
+        </button>
+      </div>
+
+      <!-- Tab 1: Live Kitchen Display -->
+      <div id="tabOrders" class="kitchen-grid">
+        <div class="kitchen-col">
+          <div class="col-header">
+            <span>Incoming / Placed</span>
+            <span class="col-count" id="countPlaced">0</span>
+          </div>
+          <div class="col-orders" id="ordersPlacedList">
+            <div style="color: var(--text-muted); text-align: center; padding: 30px 10px; font-size: 13px;">No new orders awaiting acceptance.</div>
+          </div>
+        </div>
+
+        <div class="kitchen-col">
+          <div class="col-header">
+            <span>In Kitchen (Preparing)</span>
+            <span class="col-count" id="countPreparing">0</span>
+          </div>
+          <div class="col-orders" id="ordersPreparingList">
+            <div style="color: var(--text-muted); text-align: center; padding: 30px 10px; font-size: 13px;">No orders currently being prepared.</div>
+          </div>
+        </div>
+
+        <div class="kitchen-col">
+          <div class="col-header">
+            <span>Ready for Courier</span>
+            <span class="col-count" id="countReady">0</span>
+          </div>
+          <div class="col-orders" id="ordersReadyList">
+            <div style="color: var(--text-muted); text-align: center; padding: 30px 10px; font-size: 13px;">No orders awaiting courier pickup.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 2: Menu & 86 Inventory Manager -->
+      <div id="tabMenu" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+          <div>
+            <h2 style="font-size: 20px; font-weight: 800;">Menu Availability & 86 Control</h2>
+            <p style="color: var(--text-muted); font-size: 13px;">Instantly toggle items out-of-stock (86) to prevent customer orders when kitchen ingredients run low.</p>
+          </div>
+          <button class="btn btn-secondary" style="width: auto; padding: 8px 16px;" onclick="loadMenu()">Refresh Menu</button>
+        </div>
+        <div id="menuCategoriesContainer">Loading menu...</div>
+      </div>
+
+      <!-- Tab 3: Financial Settlements -->
+      <div id="tabSettlements" style="display: none;">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Gross Food Sales</div>
+            <div class="stat-value primary" id="statGrossSales">GH₵ 0.00</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Platform Fee (15%)</div>
+            <div class="stat-value" id="statCommission">GH₵ 0.00</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Net Payable Balance</div>
+            <div class="stat-value primary" id="statNetPayable">GH₵ 0.00</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Completed Orders</div>
+            <div class="stat-value" id="statOrderCount">0</div>
+          </div>
+        </div>
+
+        <div style="background: var(--surface); border: 1px solid var(--card-border); border-radius: 14px; padding: 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <h3 style="font-size: 16px; font-weight: 800;">Settlement Ledger History</h3>
+            <button class="btn btn-secondary" style="width: auto; padding: 8px 14px; font-size: 13px;" onclick="downloadSettlementsCsv()">Export CSV</button>
+          </div>
+          <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 13px;" id="settlementsTable">
+              <thead>
+                <tr style="border-bottom: 1px solid var(--card-border); color: var(--text-muted); text-align: left;">
+                  <th style="padding: 10px;">Date</th>
+                  <th style="padding: 10px;">Order ID</th>
+                  <th style="padding: 10px;">Payment Method</th>
+                  <th style="padding: 10px;">Gross</th>
+                  <th style="padding: 10px;">Commission (15%)</th>
+                  <th style="padding: 10px;">Net Payable</th>
+                </tr>
+              </thead>
+              <tbody id="settlementsTableBody">
+                <tr><td colspan="6" style="padding: 20px; text-align: center; color: var(--text-muted);">No settlement records found.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reject Order Modal -->
+  <div class="modal-overlay" id="rejectModal">
+    <div class="modal-card">
+      <div class="modal-title">Reject Incoming Order</div>
+      <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">Select a reason for declining this order. The customer will be refunded immediately.</p>
+      <div class="field">
+        <label>Reason</label>
+        <select id="rejectReasonSelect" class="input">
+          <option value="kitchen_busy">Kitchen too busy / Over capacity</option>
+          <option value="out_of_ingredients">Out of essential ingredients (86)</option>
+          <option value="store_closing">Restaurant closing soon</option>
+          <option value="other">Other kitchen reason</option>
+        </select>
+      </div>
+      <div style="display: flex; gap: 10px;">
+        <button class="btn btn-secondary" onclick="closeRejectModal()">Cancel</button>
+        <button class="btn btn-danger" onclick="confirmRejectOrder()">Reject Order</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let activeToken = localStorage.getItem('elesend_merchant_token') || '';
+    let currentRestaurant = null;
+    let currentOrders = [];
+    let selectedPrepTimes = {};
+    let pendingRejectOrderId = null;
+    let pollInterval = null;
+    let audioCtx = null;
+    let rawSettlementsData = [];
+
+    function playKitchenChime() {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const now = audioCtx.currentTime;
+        const osc1 = audioCtx.createOscillator();
+        const osc2 = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc1.type = 'triangle';
+        osc2.type = 'sine';
+        osc1.frequency.setValueAtTime(880, now);
+        osc1.frequency.exponentialRampToValueAtTime(1320, now + 0.18);
+        osc2.frequency.setValueAtTime(440, now);
+        gain.gain.setValueAtTime(0.3, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+        osc1.connect(gain);
+        osc2.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc1.start(now);
+        osc2.start(now);
+        osc1.stop(now + 0.6);
+        osc2.stop(now + 0.6);
+      } catch (e) {
+        console.warn('Audio chime unsupported or blocked', e);
+      }
+    }
+
+    window.addEventListener('offline', () => {
+      document.getElementById('offlineBanner').style.display = 'block';
+    });
+    window.addEventListener('online', () => {
+      document.getElementById('offlineBanner').style.display = 'none';
+      refreshAll();
+    });
+
+    function toggleTheme() {
+      document.body.classList.toggle('kitchen-light');
+    }
+
+    function switchTab(tab) {
+      document.getElementById('tabOrdersBtn').classList.toggle('active', tab === 'orders');
+      document.getElementById('tabMenuBtn').classList.toggle('active', tab === 'menu');
+      document.getElementById('tabSettlementsBtn').classList.toggle('active', tab === 'settlements');
+
+      document.getElementById('tabOrders').style.display = tab === 'orders' ? 'grid' : 'none';
+      document.getElementById('tabMenu').style.display = tab === 'menu' ? 'block' : 'none';
+      document.getElementById('tabSettlements').style.display = tab === 'settlements' ? 'block' : 'none';
+
+      if (tab === 'menu') loadMenu();
+      if (tab === 'settlements') loadSettlements();
+    }
+
+    async function apiRequest(path, options = {}) {
+      const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+      if (activeToken) headers['Authorization'] = 'Bearer ' + activeToken;
+      const res = await fetch(path, { ...options, headers });
+      if (res.status === 401 || res.status === 403) {
+        if (!activeToken) {
+          showAuthView();
+          throw new Error('Authentication required');
+        }
+      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Server error (' + res.status + ')');
+      return data;
+    }
+
+    function showAuthView() {
+      document.getElementById('authView').style.display = 'block';
+      document.getElementById('mainView').style.display = 'none';
+    }
+
+    function showMainView() {
+      document.getElementById('authView').style.display = 'none';
+      document.getElementById('mainView').style.display = 'block';
+    }
+
+    function submitLogin() {
+      const val = document.getElementById('loginToken').value.trim();
+      if (!val) return alert('Please enter your merchant bearer token');
+      activeToken = val;
+      localStorage.setItem('elesend_merchant_token', val);
+      init();
+    }
+
+    function logout() {
+      if (confirm('Logout of Kitchen Terminal?')) {
+        localStorage.removeItem('elesend_merchant_token');
+        activeToken = '';
+        currentRestaurant = null;
+        if (pollInterval) clearInterval(pollInterval);
+        showAuthView();
+      }
+    }
+
+    async function loadRestaurant() {
+      try {
+        const list = await apiRequest('/api/v1/restaurants?mine=true');
+        if (!list || list.length === 0) {
+          alert('No restaurant account linked to this token. Please contact ELESEND support.');
+          return;
+        }
+        currentRestaurant = list[0];
+        document.getElementById('restaurantHeaderName').textContent = currentRestaurant.name;
+        updateStoreStatusUI();
+      } catch (err) {
+        console.error('Failed to load restaurant profile', err);
+      }
+    }
+
+    function updateStoreStatusUI() {
+      if (!currentRestaurant) return;
+      const dot = document.getElementById('storeStatusDot');
+      const text = document.getElementById('storeStatusText');
+      if (currentRestaurant.is_paused) {
+        dot.className = 'status-dot paused';
+        text.textContent = 'Paused (Busy Buffer)';
+      } else if (currentRestaurant.is_open) {
+        dot.className = 'status-dot online';
+        text.textContent = 'Accepting Orders';
+      } else {
+        dot.className = 'status-dot';
+        text.textContent = 'Store Closed';
+      }
+    }
+
+    async function toggleStoreOpen() {
+      if (!currentRestaurant) return;
+      const newStatus = !currentRestaurant.is_open;
+      try {
+        const updated = await apiRequest('/api/v1/restaurants/' + currentRestaurant.id, {
+          method: 'POST',
+          body: JSON.stringify({ isOpen: newStatus })
+        });
+        currentRestaurant.is_open = updated.is_open;
+        updateStoreStatusUI();
+      } catch (err) {
+        alert('Failed to update store status: ' + err.message);
+      }
+    }
+
+    async function pollOrders() {
+      if (!currentRestaurant) return;
+      try {
+        const orders = await apiRequest('/api/v1/food-orders?restaurantId=' + currentRestaurant.id + '&limit=50');
+        renderKitchenBoard(orders);
+      } catch (err) {
+        console.error('Error fetching orders:', err);
+      }
+    }
+
+    function renderKitchenBoard(orders) {
+      const placed = [];
+      const preparing = [];
+      const ready = [];
+
+      let hasNewPlaced = false;
+
+      (orders || []).forEach(o => {
+        if (['SUBMITTED', 'PLACED'].includes(o.state)) {
+          placed.push(o);
+          const isPaid = o.payment_status === 'PAID' && o.shipment_paid !== false;
+          if (isPaid && !currentOrders.find(prev => prev.id === o.id && ['SUBMITTED', 'PLACED'].includes(prev.state) && prev.payment_status === 'PAID')) {
+            hasNewPlaced = true;
+          }
+        } else if (['ACCEPTED', 'PREPARING'].includes(o.state)) {
+          preparing.push(o);
+        } else if (o.state === 'READY_FOR_PICKUP' || (o.state === 'IN_TRANSIT' && ['FAILED', 'RETURN_REQUESTED', 'RETURNED'].includes(o.shipment_state))) {
+          ready.push(o);
+        }
+      });
+
+      currentOrders = orders || [];
+
+      const hasPaidPlaced = placed.some(o => o.payment_status === 'PAID' && o.shipment_paid !== false);
+      if (hasNewPlaced) {
+        playKitchenChime();
+        document.getElementById('incomingAlertBanner').style.display = 'flex';
+      } else if (!hasPaidPlaced) {
+        document.getElementById('incomingAlertBanner').style.display = 'none';
+      }
+
+      document.getElementById('activeOrdersCount').textContent = placed.length + preparing.length + ready.length;
+      document.getElementById('countPlaced').textContent = placed.length;
+      document.getElementById('countPreparing').textContent = preparing.length;
+      document.getElementById('countReady').textContent = ready.length;
+
+      renderPlacedList(placed);
+      renderPreparingList(preparing);
+      renderReadyList(ready);
+    }
+
+    function formatItemOptions(item) {
+      const raw = item.options ?? item.options_json;
+      if (!raw) return '';
+      if (typeof raw === 'string') return raw;
+      if (Array.isArray(raw)) {
+        return raw.map(opt => {
+          if (!opt) return '';
+          if (typeof opt === 'string') return opt;
+          const label = opt.name || opt.group || 'Option';
+          const price = Number(opt.priceMinor ?? opt.price_minor ?? 0);
+          return price > 0 ? `${label} (+GH₵ ${(price / 100).toFixed(2)})` : label;
+        }).filter(Boolean).join(', ');
+      }
+      return '';
+    }
+
+    function renderPlacedList(list) {
+      const el = document.getElementById('ordersPlacedList');
+      if (list.length === 0) {
+        el.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 30px 10px; font-size: 13px;">No new orders awaiting acceptance.</div>';
+        return;
+      }
+      el.innerHTML = list.map(o => {
+        const selPrep = selectedPrepTimes[o.id] || Number(o.estimated_prep_minutes || o.prep_time_minutes || 20);
+        const subtotalMinor = Number(o.subtotal_minor ?? o.items_total_minor ?? 0);
+        const totalMinor = Number(o.total_minor ?? subtotalMinor);
+        const isPaid = o.payment_status === 'PAID' && o.shipment_paid !== false;
+        return `
+          <div class="order-card ${isPaid ? 'new-pulse' : ''}" style="${isPaid ? '' : 'opacity: 0.85; border-style: dashed;'}">
+            <div class="order-header">
+              <span class="order-num">#${o.id.slice(0, 8).toUpperCase()}</span>
+              <span class="order-time">${new Date(o.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            </div>
+            <div class="order-customer">
+              👤 Customer Delivery • Food GH₵ ${(subtotalMinor / 100).toFixed(2)} (Total GH₵ ${(totalMinor / 100).toFixed(2)})
+            </div>
+            <div style="margin-bottom: 8px; font-size: 12px; font-weight: 700; color: ${isPaid ? 'var(--primary)' : 'var(--warning, #d97706)'};">
+              ${isPaid ? '✓ VERIFIED UPFRONT PAYMENT (FOOD + DELIVERY)' : '⏳ AWAITING CUSTOMER PAYMENT VERIFICATION — DO NOT PREPARE YET'}
+            </div>
+            ${o.special_instructions ? `<div class="order-notes">⚠️ Note: ${escapeHtml(o.special_instructions)}</div>` : ''}
+            <div class="order-items-list">
+              ${(o.items || []).map(i => {
+                const lineMinor = Number(i.total_price_minor ?? (Number(i.unit_price_minor ?? i.price_minor ?? 0) * Number(i.quantity || 1)));
+                const modsText = formatItemOptions(i);
+                return `
+                <div class="order-item-row">
+                  <span class="item-qty-name">${i.quantity}x ${escapeHtml(i.name)}</span>
+                  <span>GH₵ ${(lineMinor / 100).toFixed(2)}</span>
+                </div>
+                ${modsText ? `<div class="item-mods">+ ${escapeHtml(modsText)}</div>` : ''}
+              `;}).join('')}
+            </div>
+            <div style="font-size: 12px; font-weight: 700; color: var(--text-muted);">Preparation Time:</div>
+            <div class="prep-selector-row">
+              ${[15, 20, 25, 30].map(m => `
+                <button class="prep-btn ${selPrep === m ? 'selected' : ''}" onclick="selectPrep('${o.id}', ${m})">${m}m</button>
+              `).join('')}
+            </div>
+            <div style="display: flex; gap: 8px; margin-top: 10px;">
+              <button class="btn btn-secondary" style="flex: 1; padding: 10px;" onclick="openRejectModal('${o.id}')">Reject</button>
+              ${isPaid
+                ? `<button class="btn" style="flex: 2; padding: 10px;" onclick="acceptOrder('${o.id}')">Accept Order (${selPrep}m)</button>`
+                : `<button class="btn btn-secondary" style="flex: 2; padding: 10px; opacity: 0.6; cursor: not-allowed;" disabled title="Verified upfront payment required before kitchen acceptance">Awaiting Payment</button>`}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderPreparingList(list) {
+      const el = document.getElementById('ordersPreparingList');
+      if (list.length === 0) {
+        el.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 30px 10px; font-size: 13px;">No orders currently being prepared.</div>';
+        return;
+      }
+      el.innerHTML = list.map(o => `
+        <div class="order-card">
+          <div class="order-header">
+            <span class="order-num">#${o.id.slice(0, 8).toUpperCase()}</span>
+            <span class="prep-timer-pill">⏱ Prep: ${o.estimated_prep_minutes || o.prep_time_minutes || 20}m</span>
+          </div>
+          <div class="order-items-list">
+            ${(o.items || []).map(i => {
+              const modsText = formatItemOptions(i);
+              return `
+              <div class="order-item-row">
+                <span class="item-qty-name">${i.quantity}x ${escapeHtml(i.name)}</span>
+              </div>
+              ${modsText ? `<div class="item-mods">+ ${escapeHtml(modsText)}</div>` : ''}
+            `;}).join('')}
+          </div>
+          <div class="dispatch-pill">
+            <span>🛵 Dispatch: ${escapeHtml(o.shipment_state || 'Searching / Assigned Courier')}</span>
+          </div>
+          <button class="btn" style="margin-top: 10px; background: #087F69; color: #fff;" onclick="markReady('${o.id}')">Mark Ready for Pickup</button>
+          ${['RIDER_ASSIGNED', 'FAILED'].includes(o.shipment_state) ? `
+            <div style="display: flex; gap: 8px; margin-top: 8px;">
+              <button class="btn btn-secondary" style="flex: 1; padding: 8px; font-size: 12px;" onclick="resolveFoodOrder('${o.id}', 'reassign')">Reassign Courier</button>
+              <button class="btn btn-secondary" style="flex: 1; padding: 8px; font-size: 12px;" onclick="resolveFoodOrder('${o.id}', 'cancel_refund')">Cancel & Refund</button>
+            </div>
+          ` : ''}
+        </div>
+      `).join('');
+    }
+
+    function renderReadyList(list) {
+      const el = document.getElementById('ordersReadyList');
+      if (list.length === 0) {
+        el.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 30px 10px; font-size: 13px;">No orders awaiting courier pickup.</div>';
+        return;
+      }
+      el.innerHTML = list.map(o => `
+        <div class="order-card" style="border-color: var(--primary);">
+          <div class="order-header">
+            <span class="order-num">#${o.id.slice(0, 8).toUpperCase()}</span>
+            <span class="order-time" style="color: var(--primary); font-weight: 700;">${escapeHtml(o.state)} • ${escapeHtml(o.shipment_state || 'READY')}</span>
+          </div>
+          <div class="order-items-list">
+            ${(o.items || []).map(i => `
+              <div class="order-item-row">
+                <span class="item-qty-name">${i.quantity}x ${escapeHtml(i.name)}</span>
+              </div>
+            `).join('')}
+          </div>
+          <div class="dispatch-pill" style="border-color: var(--primary);">
+            <span>🛵 Courier Handover: ${escapeHtml(o.shipment_state || 'Awaiting')}</span>
+          </div>
+          <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">
+            Verify courier identity before release. Challenge OTP applies at recipient handover.
+          </div>
+          ${o.state === 'READY_FOR_PICKUP' && ['RIDER_ASSIGNED', 'FAILED'].includes(o.shipment_state) ? `
+            <div style="display: flex; gap: 8px; margin-top: 10px;">
+              <button class="btn btn-secondary" style="flex: 1; padding: 8px; font-size: 12px;" onclick="resolveFoodOrder('${o.id}', 'reassign')">Reassign Courier</button>
+              <button class="btn btn-secondary" style="flex: 1; padding: 8px; font-size: 12px;" onclick="resolveFoodOrder('${o.id}', 'cancel_refund')">Cancel & Refund</button>
+            </div>
+          ` : ''}
+          ${o.state === 'IN_TRANSIT' && ['FAILED', 'RETURN_REQUESTED', 'RETURNED'].includes(o.shipment_state) ? `
+            <div style="display: flex; gap: 8px; margin-top: 10px;">
+              <button class="btn btn-secondary" style="flex: 1; padding: 8px; font-size: 12px;" onclick="resolveFoodOrder('${o.id}', 'returned')">Confirm Return & Refund</button>
+              <button class="btn btn-secondary" style="flex: 1; padding: 8px; font-size: 12px;" onclick="resolveFoodOrder('${o.id}', 'cancel_refund')">Cancel & Refund</button>
+            </div>
+          ` : ''}
+        </div>
+      `).join('');
+    }
+
+    async function resolveFoodOrder(orderId, action) {
+      const reason = prompt('Enter resolution reason:', action === 'reassign' ? 'Courier unavailable at kitchen pickup' : 'Order could not be completed; refunding customer');
+      if (!reason || reason.trim().length < 3) return;
+      try {
+        await apiRequest('/api/v1/food-orders/' + orderId + '/resolve', {
+          method: 'POST',
+          body: JSON.stringify({ action, reason: reason.trim() })
+        });
+        pollOrders();
+      } catch (err) {
+        alert('Resolution failed: ' + err.message);
+      }
+    }
+
+    function selectPrep(orderId, mins) {
+      selectedPrepTimes[orderId] = mins;
+      renderKitchenBoard(currentOrders);
+    }
+
+    async function acceptOrder(orderId) {
+      const order = currentOrders.find(x => x.id === orderId);
+      if (order && (order.payment_status !== 'PAID' || order.shipment_paid === false)) {
+        alert('Cannot accept order before upfront food and delivery payment is verified.');
+        return;
+      }
+      const estimatedPrepMinutes = selectedPrepTimes[orderId] || Number(order?.estimated_prep_minutes || 20);
+      try {
+        await apiRequest('/api/v1/food-orders/' + orderId + '/accept', {
+          method: 'POST',
+          body: JSON.stringify({ estimatedPrepMinutes })
+        });
+        pollOrders();
+      } catch (err) {
+        alert('Failed to accept order: ' + err.message);
+      }
+    }
+
+    function openRejectModal(orderId) {
+      pendingRejectOrderId = orderId;
+      document.getElementById('rejectModal').style.display = 'flex';
+    }
+    function closeRejectModal() {
+      pendingRejectOrderId = null;
+      document.getElementById('rejectModal').style.display = 'none';
+    }
+    async function confirmRejectOrder() {
+      if (!pendingRejectOrderId) return;
+      const reason = document.getElementById('rejectReasonSelect').value;
+      try {
+        await apiRequest('/api/v1/food-orders/' + pendingRejectOrderId + '/reject', {
+          method: 'POST',
+          body: JSON.stringify({ reason })
+        });
+        closeRejectModal();
+        pollOrders();
+      } catch (err) {
+        alert('Failed to reject order: ' + err.message);
+      }
+    }
+
+    async function markReady(orderId) {
+      try {
+        await apiRequest('/api/v1/food-orders/' + orderId + '/ready', {
+          method: 'POST'
+        });
+        pollOrders();
+      } catch (err) {
+        alert('Failed to mark ready: ' + err.message);
+      }
+    }
+
+    async function loadMenu() {
+      if (!currentRestaurant) return;
+      const container = document.getElementById('menuCategoriesContainer');
+      container.innerHTML = '<div style="color: var(--text-muted); padding: 20px;">Refreshing menu...</div>';
+      try {
+        const menu = await apiRequest('/api/v1/restaurants/' + currentRestaurant.id + '/menu');
+        if (!menu || !menu.categories || menu.categories.length === 0) {
+          container.innerHTML = '<div style="color: var(--text-muted); padding: 20px;">No menu categories configured.</div>';
+          return;
+        }
+        container.innerHTML = menu.categories.map(cat => `
+          <div class="menu-cat-card">
+            <div class="menu-cat-title">
+              <span>${escapeHtml(cat.name)}</span>
+              <span style="font-size: 13px; color: var(--text-muted);">${(cat.items || []).length} items</span>
+            </div>
+            <table class="menu-items-table">
+              <thead>
+                <tr>
+                  <th>Dish Name</th>
+                  <th>Price</th>
+                  <th>Prep</th>
+                  <th style="text-align: right;">Availability (86)</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${(cat.items || []).map(item => `
+                  <tr>
+                    <td>
+                      <div style="font-weight: 700;">${escapeHtml(item.name)}</div>
+                      ${item.description ? `<div style="font-size: 12px; color: var(--text-muted);">${escapeHtml(item.description)}</div>` : ''}
+                    </td>
+                    <td style="font-family: var(--mono); font-weight: 700;">GH₵ ${(item.price_minor / 100).toFixed(2)}</td>
+                    <td style="color: var(--text-muted);">${item.prep_time_minutes || 15}m</td>
+                    <td style="text-align: right;">
+                      <label class="switch">
+                        <input type="checkbox" ${item.is_available ? 'checked' : ''} onchange="toggleItem86('${item.id}', this.checked)">
+                        <span class="slider"></span>
+                      </label>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `).join('');
+      } catch (err) {
+        container.innerHTML = '<div style="color: var(--danger); padding: 20px;">Failed to load menu: ' + escapeHtml(err.message) + '</div>';
+      }
+    }
+
+    async function toggleItem86(itemId, isAvailable) {
+      if (!currentRestaurant) return;
+      try {
+        await apiRequest('/api/v1/restaurants/' + currentRestaurant.id + '/items/' + itemId, {
+          method: 'POST',
+          body: JSON.stringify({ isAvailable })
+        });
+      } catch (err) {
+        alert('Failed to update item availability: ' + err.message);
+        loadMenu();
+      }
+    }
+
+    async function loadSettlements() {
+      if (!currentRestaurant) return;
+      try {
+        const data = await apiRequest('/api/v1/restaurants/' + currentRestaurant.id + '/settlements');
+        rawSettlementsData = data.settlements || [];
+        const totals = data.totals || {};
+
+        document.getElementById('statGrossSales').textContent = 'GH₵ ' + (Number(totals.grossSalesMinor ?? totals.gross_sales_minor ?? 0) / 100).toFixed(2);
+        document.getElementById('statCommission').textContent = 'GH₵ ' + (Number(totals.commissionMinor ?? totals.commission_minor ?? 0) / 100).toFixed(2);
+        document.getElementById('statNetPayable').textContent = 'GH₵ ' + (Number(totals.netPayableMinor ?? totals.net_payable_minor ?? 0) / 100).toFixed(2);
+        document.getElementById('statOrderCount').textContent = totals.totalOrders ?? totals.count ?? 0;
+
+        const tbody = document.getElementById('settlementsTableBody');
+        if (rawSettlementsData.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" style="padding: 20px; text-align: center; color: var(--text-muted);">No settlement transactions recorded yet.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = rawSettlementsData.map(s => `
+          <tr style="border-bottom: 1px solid var(--line);">
+            <td style="padding: 10px;">${new Date(s.order_date || s.created_at).toLocaleDateString()}</td>
+            <td style="padding: 10px; font-family: var(--mono);">${s.order_id.slice(0, 8).toUpperCase()}</td>
+            <td style="padding: 10px; text-transform: uppercase;">${escapeHtml(s.payment_method || 'DIGITAL')}</td>
+            <td style="padding: 10px; font-weight: 700;">GH₵ ${(Number(s.gross_sales_minor) / 100).toFixed(2)}</td>
+            <td style="padding: 10px; color: var(--danger);">GH₵ ${(Number(s.commission_minor) / 100).toFixed(2)}</td>
+            <td style="padding: 10px; color: var(--primary); font-weight: 700;">GH₵ ${(Number(s.net_payable_minor) / 100).toFixed(2)}</td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        console.error('Failed to load settlements:', err);
+      }
+    }
+
+    function downloadSettlementsCsv() {
+      if (rawSettlementsData.length === 0) return alert('No settlement data to export.');
+      let csv = 'Order Date,Order ID,Payment Method,Gross Sales (GHS),Commission 15% (GHS),Net Payable (GHS)\\n';
+      rawSettlementsData.forEach(s => {
+        csv += `"${new Date(s.order_date || s.created_at).toISOString()}","${s.order_id}","${s.payment_method || 'DIGITAL'}",${(Number(s.gross_sales_minor)/100).toFixed(2)},${(Number(s.commission_minor)/100).toFixed(2)},${(Number(s.net_payable_minor)/100).toFixed(2)}\\n`;
+      });
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', 'elesend-kitchen-settlements-' + (currentRestaurant?.id || 'export') + '.csv');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
+    }
+
+    async function init() {
+      if (!activeToken) {
+        showAuthView();
+        return;
+      }
+      showMainView();
+      await loadRestaurant();
+      await pollOrders();
+      if (pollInterval) clearInterval(pollInterval);
+      pollInterval = setInterval(pollOrders, 4000);
+    }
+
+    function refreshAll() {
+      if (activeToken && currentRestaurant) {
+        pollOrders();
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

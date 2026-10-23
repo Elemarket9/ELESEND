@@ -6,7 +6,7 @@ import {database} from '../services/api/db.mjs';
 import {check,phone,passwordMatches} from '../services/api/security.mjs';
 import {encryptAdminSecret} from '../services/api/admin-mfa.mjs';
 const p=phone(process.env.ADMIN_PHONE),pw=process.env.ADMIN_PASSWORD;
-check(typeof pw==='string'&&pw.length>=12,400,'ADMIN_PASSWORD required');
+check(typeof pw==='string'&&pw.length>=16,400,'ADMIN_PASSWORD must have at least 16 characters');
 const db=database();
 try{await db.tx(async c=>{
  const user=(await c.query("SELECT id,password_hash FROM users WHERE phone=$1 AND kind='admin' FOR UPDATE",[p])).rows[0];

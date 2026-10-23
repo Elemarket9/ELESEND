@@ -63,6 +63,15 @@ export function calculateCommissionBreakdown(amountMinor, rateBps) {
 }
 
 export function commissionEngine(db) {
+  async function requireAdminPermission(c, actor, permissions) {
+    check(actor?.kind === 'admin', 403, 'Administrator access required');
+    const list = Array.isArray(permissions) ? permissions : [permissions];
+    const has = (await c.query(
+      'SELECT 1 FROM permissions WHERE user_id = $1 AND permission = ANY($2::text[])',
+      [actor.id, list]
+    )).rowCount;
+    check(has, 403, 'Commission configuration permission required');
+  }
   return {
     /**
      * Resolves commission rate adhering to the deterministic hierarchy:
@@ -251,7 +260,7 @@ export function commissionEngine(db) {
      * Create a commission rule with guardrails against accidental extreme rates.
      */
     async createRule(actor, input) {
-      check(actor?.kind === 'admin', 403, 'Administrator access required');
+      await requireAdminPermission(db, actor, ['finance:configure', 'pricing:write']);
       const v = createRuleSchema.parse(input);
 
       // Guardrail check: if rate > 20% (delivery) or > 30% (restaurant), require explicit confirmation
@@ -329,7 +338,7 @@ export function commissionEngine(db) {
      * Enroll a rider in the 0% Founding Rider Campaign.
      */
     async enrollFoundingRider(actor, { riderId, days = 90, maxOrders = null, rationale } = {}) {
-      check(actor?.kind === 'admin', 403, 'Administrator access required');
+      await requireAdminPermission(db, actor, ['finance:configure', 'pricing:write']);
       check(riderId && typeof riderId === 'string', 400, 'Rider ID required');
 
       const now = new Date();
@@ -354,7 +363,7 @@ export function commissionEngine(db) {
      * Pause an active commission rule.
      */
     async pauseRule(actor, ruleId, rationale) {
-      check(actor?.kind === 'admin', 403, 'Administrator access required');
+      await requireAdminPermission(db, actor, ['finance:configure', 'pricing:write']);
       check(rationale && rationale.trim().length >= 5, 400, 'Rationale required (min 5 chars)');
 
       return db.tx(async c => {
@@ -385,7 +394,7 @@ export function commissionEngine(db) {
      * Resume a paused commission rule.
      */
     async resumeRule(actor, ruleId, rationale) {
-      check(actor?.kind === 'admin', 403, 'Administrator access required');
+      await requireAdminPermission(db, actor, ['finance:configure', 'pricing:write']);
       check(rationale && rationale.trim().length >= 5, 400, 'Rationale required (min 5 chars)');
 
       return db.tx(async c => {
@@ -416,7 +425,7 @@ export function commissionEngine(db) {
      * Revoke a commission rule permanently.
      */
     async revokeRule(actor, ruleId, rationale) {
-      check(actor?.kind === 'admin', 403, 'Administrator access required');
+      await requireAdminPermission(db, actor, ['finance:configure', 'pricing:write']);
       check(rationale && rationale.trim().length >= 5, 400, 'Rationale required (min 5 chars)');
 
       return db.tx(async c => {
@@ -447,7 +456,7 @@ export function commissionEngine(db) {
      * Update an existing commission rule.
      */
     async updateRule(actor, ruleId, updates) {
-      check(actor?.kind === 'admin', 403, 'Administrator access required');
+      await requireAdminPermission(db, actor, ['finance:configure', 'pricing:write']);
       const updateSchema = z.object({
         name: z.string().min(2).max(120).optional(),
         rateBps: z.number().int().min(0).max(10000).optional(),
@@ -529,7 +538,7 @@ export function commissionEngine(db) {
      * List commission rules with optional filtering.
      */
     async listRules(actor, { category, scopeType, status } = {}) {
-      check(actor?.kind === 'admin', 403, 'Administrator access required');
+      await requireAdminPermission(db, actor, ['finance:read', 'finance:approve', 'finance:configure', 'pricing:write']);
       const conditions = [];
       const values = [];
 
@@ -566,7 +575,7 @@ export function commissionEngine(db) {
      * Fetch audit trail for a rule or system-wide.
      */
     async getAuditLogs(actor, ruleId) {
-      check(actor?.kind === 'admin', 403, 'Administrator access required');
+      await requireAdminPermission(db, actor, ['finance:read', 'finance:approve', 'finance:configure', 'pricing:write']);
       if (ruleId) {
         return (await db.query(
           `SELECT l.*, u.phone AS actor_phone 

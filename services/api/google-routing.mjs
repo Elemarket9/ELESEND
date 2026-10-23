@@ -15,7 +15,7 @@ export function googleRouting({apiKey,vehicleModes={car:'DRIVE',motorcycle:'TWO_
   return {distanceMeters:distance,durationSeconds:Math.ceil(seconds),source:'routing-provider',trafficAware:travelMode==='DRIVE',geometry:polyline?{encodedPolyline:polyline}:undefined,
    motorcycleBeta:travelMode==='TWO_WHEELER'};
  }
- async function post(path,body,mask){const res=await fetchImpl('https://routes.googleapis.com/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Goog-Api-Key':apiKey,'X-Goog-FieldMask':mask},body:JSON.stringify(body),signal:AbortSignal.timeout(timeoutMs)});
+ async function post(path,body,mask){const res=await fetchImpl('https://routes.googleapis.com/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Goog-Api-Key':apiKey,'X-Goog-FieldMask':mask,'Accept-Encoding':'gzip, deflate'},body:JSON.stringify(body),signal:AbortSignal.timeout(timeoutMs)});
   check(res.ok,503,'Google routing service unavailable');return res.json();}
  return {
   async route(from,to,{vehicle='car'}={}){const s=settings(vehicle);const result=await post('directions/v2:computeRoutes',{origin:waypoint(from),destination:waypoint(to),...s},'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline');

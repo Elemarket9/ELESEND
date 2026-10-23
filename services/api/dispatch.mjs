@@ -1,3 +1,4 @@
+import {foodDispatchAllowed} from './food-payment.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from './security.mjs';
@@ -7,6 +8,8 @@ import {roadMatrixBatched,memoRoadRouting} from './algorithms/roads.mjs';
 import {discoverByRadii} from './algorithms/discovery.mjs';
 import {eligibleAndRank} from './algorithms/ranking.mjs';
 import {cashEligible} from './finance.mjs';
+import {evaluateRiderWeeklyEligibility} from './weekly-settlement.mjs';
+import {requireDebtEligible} from './rider-wallet.mjs';
 import {buildRemainingRoadCorridor} from './algorithms/corridor.mjs';
 import {smoothGps} from './algorithms/gps.mjs';
 import {calibrateETA} from './algorithms/eta.mjs';
@@ -241,15 +244,22 @@ export function dispatchEngine(db,{routing}={}){
  async function dispatchShipment(sid){uuid.parse(sid);
   const sh=(await db.query(`SELECT s.*,q.request FROM shipments s JOIN quotes q ON q.id=s.quote_id WHERE s.id=$1`,[sid])).rows[0];check(sh,404,'Shipment unavailable');
   if(sh.state!=='AWAITING_ASSIGNMENT'||!(sh.paid||sh.payment_method==='CASH'))return {status:'not_dispatchable'};
+  if(!await foodDispatchAllowed(db,sid))return {status:'awaiting_paid_kitchen_acceptance'};
   const p=await policy(db);if(sh.dispatch_attempts>=p.max_attempts)return {status:'manual_review_required'};
   const nearbyRiders=await nearby(sh.request.pickup,sh.request.weightG,{vehicle:sh.request.vehicle??null,shipmentId:sid,parcelCategory:sh.request.parcelCategory??'general',parcelSize:sh.request.parcelSize??'small'});
   // Avoid buying route-matrix calls for riders already blocked by commission policy.
   // Acceptance STILL independently revalidates under a locked rider transaction.
   const eligible=[];
   for(const r of nearbyRiders){
-   if(sh.payment_method!=='CASH'){eligible.push(r);continue;}
-   try{await db.tx(c=>cashEligible(c,r.id,sh.commission_minor));eligible.push(r);}
-   catch(e){if(e.status!==403&&e.status!==409)throw e;}
+   try{
+    await db.tx(async c=>{
+     const weekly=await evaluateRiderWeeklyEligibility(c,r.id);
+     check(weekly.eligible,409,`Rider commission eligibility: ${weekly.reason}`);
+     await requireDebtEligible(c,r.id);
+     if(sh.payment_method==='CASH')await cashEligible(c,r.id,sh.commission_minor);
+    });
+    eligible.push(r);
+   }catch(e){if(e.status!==403&&e.status!==409)throw e;}
   }
   let ranked;try{ranked=await evaluate(eligible,sh.request.pickup,{request:sh.request,shipmentId:sid,dispatchPolicy:p});}catch(e){
    // Backoff routing-provider outages, never fabricate straight-line success.
@@ -260,6 +270,7 @@ export function dispatchEngine(db,{routing}={}){
   return db.tx(async c=>{
    const s=(await c.query('SELECT * FROM shipments WHERE id=$1 FOR UPDATE',[sid])).rows[0];check(s,404);
    if(s.state!=='AWAITING_ASSIGNMENT'||!(s.paid||s.payment_method==='CASH'))return {status:'not_dispatchable'};
+   if(!await foodDispatchAllowed(c,sid))return {status:'awaiting_paid_kitchen_acceptance'};
    await c.query("UPDATE dispatch_offers SET status='expired' WHERE shipment_id=$1 AND status='offered' AND expires_at<=now()",[sid]);
    if((await c.query("SELECT 1 FROM dispatch_offers WHERE shipment_id=$1 AND status='offered'",[sid])).rowCount)return {status:'offer_pending'};
    if(s.dispatch_attempts>=p.max_attempts)return {status:'manual_review_required'};
@@ -316,6 +327,7 @@ export function dispatchEngine(db,{routing}={}){
    const r=(await c.query('SELECT * FROM riders WHERE id=$1 FOR UPDATE',[actor.id])).rows[0];authorizedRider(r);check(r.online,409,'Rider offline');
    const s=(await c.query('SELECT * FROM shipments WHERE id=$1 FOR UPDATE',[sid])).rows[0];check(s,404);
    check((s.paid||s.payment_method==='CASH')&&s.state==='AWAITING_ASSIGNMENT',409,'Shipment already assigned or unavailable');
+   check(await foodDispatchAllowed(c,sid),409,'Food order awaits verified payment and kitchen acceptance');
    const o=(await c.query("SELECT * FROM dispatch_offers WHERE id=$1 AND shipment_id=$2 AND rider_id=$3 FOR UPDATE",[offerId,sid,actor.id])).rows[0];
    check(o&&o.status==='offered'&&new Date(o.expires_at)>new Date(),409,'Offer expired or not assigned to rider');
    const p=await policy(c);check(r.position_at&&new Date(r.position_at).getTime()>Date.now()-p.fresh_seconds*1000,409,'Location refresh required');
@@ -345,6 +357,11 @@ export function dispatchEngine(db,{routing}={}){
     check(proposed.filter(x=>x.shipmentId===current.id&&x.kind==='pickup').length===(current.state==='RIDER_ASSIGNED'?1:0),409,'Accepted parcel custody sequence changed');
    }
    check(s.amount_minor-s.commission_minor===o.quoted_entitlement_minor,409,'Compensation changed: fresh offer required');
+   const weekly=await evaluateRiderWeeklyEligibility(c,actor.id);
+   check(weekly.eligible,409,`Rider commission eligibility: ${weekly.reason}`);
+   // Locks commission_accounts (same lock as commission posting/repayment) so a concurrent debt
+   // increase cannot slip an assignment past the configured debt limit.
+   await requireDebtEligible(c,actor.id);
    if(s.payment_method==='CASH')await cashEligible(c,actor.id,s.commission_minor);
    await c.query("UPDATE dispatch_offers SET status='accepted',accepted_at=now() WHERE id=$1",[o.id]);
    await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE shipment_id=$1 AND id<>$2 AND status='offered'",[sid,o.id]);
@@ -374,7 +391,7 @@ export function dispatchEngine(db,{routing}={}){
    const pre=(await c.query('SELECT company_id FROM riders WHERE id=$1',[actor.id])).rows[0];check(pre,403,'Rider required');
    if(pre.company_id)await c.query('SELECT id FROM companies WHERE id=$1 FOR UPDATE',[pre.company_id]);
    const r=(await c.query('SELECT * FROM riders WHERE id=$1 FOR UPDATE',[actor.id])).rows[0];check(r,403,'Rider required');
-   const s=(await c.query('SELECT * FROM shipments WHERE id=$1 FOR UPDATE',[sid])).rows[0];check(s,404,'Shipment unavailable');check(s.rider_id===actor.id,403,'Assigned rider required');check(s.state==='RIDER_ASSIGNED',409,'Pickup custody started or assignment no longer releasable');
+   const s=(await c.query('SELECT * FROM shipments WHERE id=$1 FOR UPDATE',[sid])).rows[0];check(s,404,'Shipment unavailable');check(s.rider_id===actor.id,403,'Assigned rider required');check(['RIDER_ASSIGNED','FAILED'].includes(s.state),409,'Pickup custody started or assignment no longer releasable');
    check(!(await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[sid])).rowCount,409,'Parcel already collected');
    check(!(await c.query('SELECT 1 FROM cash_collections WHERE shipment_id=$1',[sid])).rowCount,409,'Cash already reported: manual reassignment and reconciliation required');
    await c.query('UPDATE challenges SET expires_at=now() WHERE shipment_id=$1 AND consumed_at IS NULL',[sid]);
@@ -426,6 +443,7 @@ export function dispatchEngine(db,{routing}={}){
  return {removedSamples:samples.rowCount,removedRiderSnapshots:snapshots.rowCount,removedShipmentTracking:tracking.rowCount};
  });}
  async function tick(limit=8){check(Number.isInteger(limit)&&limit>=1&&limit<=20,400);const due=(await db.query(`SELECT s.id FROM shipments s WHERE state='AWAITING_ASSIGNMENT' AND (paid OR payment_method='CASH') AND next_dispatch_at<=now()
+    AND NOT EXISTS (SELECT 1 FROM food_orders f WHERE f.shipment_id=s.id AND (f.payment_status<>'PAID' OR f.payment_method='CASH' OR f.state NOT IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')))
     AND NOT EXISTS (SELECT 1 FROM dispatch_offers o WHERE o.shipment_id=s.id AND o.status='offered' AND o.expires_at>now())
     ORDER BY next_dispatch_at,created_at LIMIT $1`,[limit])).rows;
   const results=[];for(const row of due){try{results.push(await dispatchShipment(row.id));}catch(e){results.push({shipmentId:row.id,status:'error',code:e.code??e.status??'internal'});}}return results;

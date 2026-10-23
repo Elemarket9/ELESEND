@@ -8,10 +8,21 @@ import {marketService} from './markets.mjs';
 import {ghanaSearch,ghanaReverseGeocode} from './infrastructure/maps/ghana-geocoder.mjs';
 import {getPublicTracking,renderTrackingHtml} from './infrastructure/maps/web-tracker.mjs';
 import {renderAdminPortalHtml} from './admin-web/admin-portal.mjs';
+import {renderRestaurantPortalHtml,renderRestaurantManifestJson} from './restaurant-web/restaurant-portal.mjs';
 import {restaurantService} from './restaurant.mjs';
 import {restaurantOrderService} from './restaurant-orders.mjs';
 import {commissionEngine} from './commission-engine.mjs';
-export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null}={}){
+import {
+  getRiderWeeklySummary,
+  getRiderWeeklyHistory,
+  getAdminSettlementOverview,
+  reconcileAndEnforceWeeklyRestrictions,
+  evaluateRiderWeeklyEligibility,
+  getWeeklySettlementSettings,
+  updateWeeklySettlementSettings
+} from './weekly-settlement.mjs';
+import {walletSummary,walletDebt,walletTransactions,adminWalletOverview,adminWalletReconciliation,walletPolicyView,updateWalletPolicy} from './rider-wallet.mjs';
+export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null}={}){
   const net=network(db),vehicles=vehicleService(db),markets=marketService(db);
   const restaurants=restaurant||restaurantService(db);
   const restOrders=restaurantOrders||restaurantOrderService(db,{platform:app,dispatcher,routing:app?.routing});
@@ -21,6 +32,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
  res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
  const send=(code,body)=>{res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(body));};
  try{
+  check(!req.url.includes('\0')&&!(req.headers.host??'').includes('\0'),400,'Invalid request characters');
+  if(req.headers['content-encoding']&&req.headers['content-encoding'].toLowerCase()!=='identity')check(false,415,'Content-Encoding not supported');
   const path=new URL(req.url,'http://localhost').pathname,method=req.method;
 
   if(method==='OPTIONS'){
@@ -30,6 +43,10 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    res.writeHead(204).end();return;
   }
   if(path==='/health'&&method==='GET'){send(200,{status:'alive',service:'elesend'});return;}
+  if(method==='GET'&&['/checkout/complete','/checkout/cancelled','/settlement/complete','/settlement/cancelled'].includes(path)){
+   res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});
+   res.end('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Return to ELESEND</title></head><body><h1>Return to ELESEND</h1><p>The app will verify your payment status. This page does not confirm a charge or cancellation.</p><p><a href="elesend://payments">Open ELESEND</a></p></body></html>');return;
+  }
   if(path==='/ready'&&method==='GET'){
    const secret=process.env.READINESS_PROBE_TOKEN;
    check(secret&&secret.length>=32&&equal(req.headers['x-elesend-health-token'],secret),404,'Endpoint not found');
@@ -55,12 +72,23 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    res.end(renderAdminPortalHtml());
    return;
   }
+  if(method==='GET'&&(path==='/restaurant'||path==='/restaurant/'||path==='/restaurant/index.html')){
+   res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});
+   res.end(renderRestaurantPortalHtml());
+   return;
+  }
+  if(method==='GET'&&path==='/restaurant/manifest.json'){
+   res.writeHead(200,{'Content-Type':'application/manifest+json; charset=utf-8'});
+   res.end(renderRestaurantManifestJson());
+   return;
+  }
   if(!path.startsWith('/api/v1/'))check(false,404,'Endpoint not found');
   let body={},rawBody=Buffer.alloc(0);if(method==='POST'){
    check((req.headers['content-type']??'').split(';')[0]==='application/json',415,'JSON required');let size=0;const parts=[];
    for await(const part of req.iterator({destroyOnReturn:false})){size+=part.length;if(size>32768){res.setHeader('Connection','close');req.resume();check(false,413,'Request too large');}parts.push(part);}
    rawBody=Buffer.concat(parts);try{body=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(rawBody)||'{}');}catch{check(false,400,'Invalid JSON');}
   }
+  if(method==='POST'&&['/api/v1/payments/webhook','/api/v1/payments/checkout-webhook','/api/v1/payments/commission-webhook'].includes(path)&&paymentsWebhook){send(200,await paymentsWebhook(rawBody,req.headers));return;}
   if(method==='POST'&&path==='/api/v1/payments/checkout-webhook'){
    check(checkout,503,'Checkout unavailable');send(200,await checkout.webhook(rawBody,req.headers));return;
   }
@@ -80,9 +108,21 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/me/phone-challenge')result=await app.phoneChallenge(actor);
   else if(method==='POST'&&path==='/api/v1/me/phone-verify')result=await app.verifyPhone(actor,body);
   else if(method==='GET'&&path==='/api/v1/payments/methods'){check(checkout,503);result=await checkout.methods();}
-  else if(method==='GET'&&path==='/api/v1/admin/payments/methods'){check(checkout,503);check(actor.kind==='admin',403);result=await checkout.methods();}
+  else if(method==='GET'&&path==='/api/v1/admin/payments/methods'){check(checkout,503);check(actor.kind==='admin',403,'Administrator required');check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])",[actor.id,['payments:configure','finance:read','finance:approve','finance:configure']])).rowCount,403,'Payment or finance permission required');result=await checkout.methods();}
   else if(method==='POST'&&path==='/api/v1/admin/payments/methods'){check(checkout,503);result=await checkout.configure(actor,body);}
   else if(method==='GET'&&path==='/api/v1/admin/payments/exceptions'){check(checkout,503);result=await checkout.exceptionQueue(actor);}
+  else if(method==='GET'&&path==='/api/v1/admin/payments/operation-exceptions'){check(moneyOperations,503);result=await moneyOperations.exceptions(actor);}
+  else if(method==='GET'&&path==='/api/v1/admin/payments/refunds'){check(moneyOperations,503);result=await moneyOperations.refunds(actor);}
+  else if(method==='POST'&&/^\/api\/v1\/admin\/payments\/refunds\/[0-9a-f-]+\/submit$/.test(path)){check(moneyOperations,503);result=await moneyOperations.submitRefund(actor,path.split('/')[6]);}
+  else if(method==='POST'&&/^\/api\/v1\/admin\/payments\/refunds\/[0-9a-f-]+\/reconcile$/.test(path)){check(moneyOperations,503);result=await moneyOperations.reconcileRefund(actor,path.split('/')[6]);}
+  else if(method==='POST'&&/^\/api\/v1\/admin\/payments\/refunds\/[0-9a-f-]+\/retry$/.test(path)){check(moneyOperations,503);result=await moneyOperations.retryRefund(actor,path.split('/')[6]);}
+  else if(method==='POST'&&path==='/api/v1/me/payout-beneficiary'){check(moneyOperations,503);result=await moneyOperations.verifyBeneficiary(actor,body);}
+  else if(method==='GET'&&path==='/api/v1/admin/payments/payouts'){check(moneyOperations,503);result=await moneyOperations.payouts(actor);}
+  else if(method==='POST'&&path==='/api/v1/admin/payments/payouts'){check(moneyOperations,503);result=await moneyOperations.proposePayout(actor,body);}
+  else if(method==='POST'&&/^\/api\/v1\/admin\/payments\/payouts\/[0-9a-f-]+\/approve$/.test(path)){check(moneyOperations,503);result=await moneyOperations.approvePayout(actor,path.split('/')[6]);}
+  else if(method==='POST'&&/^\/api\/v1\/admin\/payments\/payouts\/[0-9a-f-]+\/reconcile$/.test(path)){check(moneyOperations,503);result=await moneyOperations.reconcilePayout(actor,path.split('/')[6]);}
+  else if(method==='POST'&&/^\/api\/v1\/admin\/payments\/payouts\/[0-9a-f-]+\/retry$/.test(path)){check(moneyOperations,503);result=await moneyOperations.retryPayout(actor,path.split('/')[6]);}
+  else if(method==='GET'&&path==='/api/v1/admin/restaurants'){check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission='verification:write'",[actor.id])).rowCount,403);result=await restaurants.listRestaurants({includePending:true});}
   else if(method==='POST'&&/^\/api\/v1\/shipments\/[0-9a-f-]+\/checkout$/.test(path)){check(checkout,503);result=await checkout.initiate(actor,path.split('/')[4],body);}
   else if(method==='GET'&&/^\/api\/v1\/shipments\/[0-9a-f-]+\/checkout$/.test(path)){check(checkout,503);result=await checkout.status(actor,path.split('/')[4]);}
   else if(method==='GET'&&path==='/api/v1/me')result=actor;
@@ -141,8 +181,57 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='GET'&&path==='/api/v1/earnings')result=await app.earnings(actor);
   else if(method==='GET'&&path==='/api/v1/rider/finance'){check(finance,503);result=await finance.snapshot(actor);}
   else if(method==='POST'&&path==='/api/v1/rider/finance/settle'){check(finance,503);result=await finance.initiate(actor,body);}
+  else if(method==='GET'&&path==='/api/v1/rider/commissions/summary'){check(actor?.kind==='rider',403,'Rider required');result=await getRiderWeeklySummary(db,actor.id);}
+  else if(method==='GET'&&path==='/api/v1/rider/commissions/weeks'){check(actor?.kind==='rider',403,'Rider required');result=await getRiderWeeklyHistory(db,actor.id);}
+  else if(method==='GET'&&path==='/api/v1/rider/commissions/entries'){check(actor?.kind==='rider',403,'Rider required');result=(await getRiderWeeklySummary(db,actor.id)).recentDeliveries;}
+  else if(method==='GET'&&path==='/api/v1/rider/eligibility'){check(actor?.kind==='rider',403,'Rider required');result=await evaluateRiderWeeklyEligibility(db,actor.id);}
+  // Rider wallet: available to debt-restricted/suspended riders (authentication only) so repayment is never blocked.
+  else if(method==='GET'&&path==='/api/v1/rider/wallet/summary')result=await walletSummary(db,actor);
+  else if(method==='GET'&&path==='/api/v1/rider/wallet/debt')result=await walletDebt(db,actor);
+  else if(method==='GET'&&path==='/api/v1/rider/wallet/transactions')result=await walletTransactions(db,actor,{limit:new URL(req.url,'http://localhost').searchParams.get('limit')??100});
+  else if(method==='POST'&&path==='/api/v1/rider/wallet/topups'){check(actor?.kind==='rider',403,'Rider required');check(finance,503);result=await finance.initiate(actor,{...body,kind:'commission_repayment'});}
+  else if(method==='GET'&&/^\/api\/v1\/rider\/wallet\/topups\/[0-9a-f-]{36}$/.test(path)){check(actor?.kind==='rider',403,'Rider required');check(finance,503);result=await finance.paymentStatus(actor,path.split('/')[6]);}
+  else if(method==='GET'&&path==='/api/v1/admin/finance/wallet-overview')result=await adminWalletOverview(db,actor);
+  else if(method==='GET'&&path==='/api/v1/admin/finance/reconciliation')result=await adminWalletReconciliation(db,actor);
+  else if(method==='GET'&&path==='/api/v1/admin/finance/wallet-policy')result=await walletPolicyView(db,actor);
+  else if(method==='POST'&&path==='/api/v1/admin/finance/wallet-policy')result=await updateWalletPolicy(db,actor,body);
+  else if(method==='POST'&&path==='/api/v1/rider/commissions/payments'){check(actor?.kind==='rider',403,'Rider required');check(finance,503);result=await finance.initiate(actor,{...body,kind:'commission_repayment'});}
+  else if(method==='GET'&&/^\/api\/v1\/rider\/commissions\/payments\/[0-9a-f-]+$/.test(path)){
+   check(actor?.kind==='rider',403,'Rider required');
+   const intentId=path.split('/')[5];
+   if(finance&&typeof finance.paymentStatus==='function'){
+    result=await finance.paymentStatus(actor,intentId);
+   }else{
+    const row=(await db.query('SELECT id, provider, provider_reference, amount_minor, status, receipt_number, momo_network, momo_phone, confirmed_at, created_at FROM settlement_intents WHERE id=$1 AND rider_id=$2',[intentId,actor.id])).rows[0];
+    check(row,404,'Settlement intent not found');
+    result={...row,intentId:row.id,reference:row.provider_reference,amountMinor:Number(row.amount_minor)};
+   }
+  }
+  else if(method==='POST'&&/^\/api\/v1\/rider\/commissions\/payments\/[0-9a-f-]+\/reconcile$/.test(path)){
+   check(actor?.kind==='rider',403,'Rider required');check(finance,503);
+   result=await finance.reconcileIntent(path.split('/')[5],{actor});
+  }
+  else if(method==='GET'&&path==='/api/v1/admin/rider-settlements'){
+   const u=new URL(req.url,'http://localhost').searchParams;
+   result=await getAdminSettlementOverview(db,{actor,filter:u.get('filter')||'all'});
+  }
+  else if(method==='POST'&&path==='/api/v1/admin/rider-settlements/reconcile'){
+   check(actor?.kind==='admin',403,'Administrator required');
+   check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])",[actor.id,['finance:configure','finance:approve']])).rowCount,403,'Finance permission required');
+   if(finance&&typeof finance.reconcileDue==='function')await finance.reconcileDue({olderThanSeconds:0});
+   result=await reconcileAndEnforceWeeklyRestrictions(db);
+  }
+  else if(method==='GET'&&path==='/api/v1/admin/rider-settlements/settings'){
+   check(actor?.kind==='admin',403,'Administrator required');
+   check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])",[actor.id,['finance:read','finance:approve','finance:configure']])).rowCount,403,'Finance permission required');
+   result=await getWeeklySettlementSettings(db);
+  }
+  else if(method==='POST'&&path==='/api/v1/admin/rider-settlements/settings'){
+   result=await updateWeeklySettlementSettings(db,actor,body);
+  }
   else if(method==='POST'&&path==='/api/v1/rider/cash-report'){check(finance,503);result=await finance.reportCash(actor,body.shipmentId,{reportedMinor:body.reportedMinor,cashPayer:body.cashPayer,idempotencyKey:body.idempotencyKey});}
   else if(method==='GET'&&path==='/api/v1/admin/finance/aging'){check(finance,503);result=await finance.aging(actor);}
+  else if(method==='GET'&&path==='/api/v1/admin/finance/settlement-exceptions'){check(finance,503);result=await finance.settlementExceptions(actor);}
   else if(method==='POST'&&/^\/api\/v1\/admin\/finance\/riders\/[0-9a-f-]+\/policy$/.test(path)){check(finance,503);result=await finance.policy(actor,path.split('/')[6],body);}
   else if(method==='GET'&&path==='/api/v1/admin/finance/adjustments'){check(finance,503);result=await finance.adjustmentQueue(actor);}
   else if(method==='POST'&&path==='/api/v1/admin/finance/adjustments'){check(finance,503);result=await finance.adjustmentRequest(actor,body);}
@@ -202,7 +291,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/batch-dispatch$/.test(path))result=await restOrders.evaluateBatchDispatch(actor,path.split('/')[4],body);
   // Food Ordering Endpoints
   else if(method==='POST'&&path==='/api/v1/food-orders/quote')result=await restOrders.quoteFoodOrder(actor,body);
-  else if(method==='POST'&&path==='/api/v1/food-orders')result=await restOrders.createFoodOrder(actor,body,{paymentMethod:body.paymentMethod,specialInstructions:body.specialInstructions});
+  else if(method==='POST'&&path==='/api/v1/food-orders')result=await restOrders.createFoodOrder(actor,body,{paymentMethod:body.paymentMethod,specialInstructions:body.specialInstructions,idempotencyKey:req.headers['idempotency-key']});
   else if(method==='GET'&&path==='/api/v1/food-orders'){
     const u=new URL(req.url,'http://localhost').searchParams;
     result=await restOrders.listFoodOrders(actor,{restaurantId:u.get('restaurantId'),state:u.get('state'),limit:u.get('limit')});
@@ -213,6 +302,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+\/ready$/.test(path))result=await restOrders.markReadyForPickup(actor,path.split('/')[4]);
   else if(method==='POST'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+\/reject$/.test(path))result=await restOrders.rejectOrder(actor,path.split('/')[4],body);
   else if(method==='POST'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+\/cancel$/.test(path))result=await restOrders.cancelOrder(actor,path.split('/')[4],body);
+  else if(method==='POST'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+\/resolve$/.test(path))result=await restOrders.resolveOrder(actor,path.split('/')[4],body);
   else {
    const m=path.match(/^\/api\/v1\/shipments\/([^/]+)(?:\/(accept|pickup-challenge|delivery-challenge|verify|transition|location|tracking|dispatch|disputes))?$/);check(m,404,'Endpoint not found');const [,sid,action]=m;
    if(method==='GET'&&!action)result=await app.get(actor,sid);

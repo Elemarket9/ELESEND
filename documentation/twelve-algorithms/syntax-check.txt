@@ -1,2 +1,0 @@
-Node v22.16.0 source/test syntax check: 51 files, 0 failures
-No errors.

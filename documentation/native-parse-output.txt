@@ -1,4 +1,0 @@
-apps/mobile/App.js: 0 JSX/JS syntax errors
-apps/mobile/index.js: 0 JSX/JS syntax errors
-apps/mobile/src/api.js: 0 JSX/JS syntax errors
-apps/mobile/src/tracking.js: 0 JSX/JS syntax errors

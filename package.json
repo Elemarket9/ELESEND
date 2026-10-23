@@ -4,22 +4,16 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.16"
+    "node": ">=22.23.4 <23.0.0 || >=24.22.1 <25.0.0 || >=26.12.1"
   },
   "scripts": {
-    "start": "node --env-file-if-exists=.env services/api/server.mjs",
-    "db:migrate": "node --env-file-if-exists=.env scripts/migrate.mjs",
     "test": "node --env-file-if-exists=.env --test --test-concurrency=1 tests/*.test.mjs",
+    "test:unit": "node --test tests/configuration.test.mjs",
+    "start": "node --env-file-if-exists=.env services/api/server.mjs",
+    "worker": "node --env-file-if-exists=.env services/api/worker.mjs",
+    "db:migrate": "node --env-file-if-exists=.env scripts/migrate.mjs",
     "admin:create": "node --env-file-if-exists=.env scripts/admin.mjs",
-    "baseline": "node scripts/baseline.mjs",
-    "test:db": "node --test --test-concurrency=1 tests/dispatch-db.test.mjs tests/multi-parcel-db.test.mjs tests/cash-finance-db.test.mjs tests/checkout-db.test.mjs",
-    "test:security": "node --test tests/release-security.test.mjs",
-    "admin:mfa:provision": "node --env-file-if-exists=.env scripts/admin-mfa-provision.mjs",
-    "test:unit": "node --test tests/release-security.test.mjs tests/admin-security-and-host-isolation.test.mjs tests/twelve-algorithms-implementation.test.mjs tests/advanced-algorithms.test.mjs tests/dispatch-unit.test.mjs tests/multi-parcel-unit.test.mjs tests/pricing.test.mjs tests/unbeatable-pricing.test.mjs tests/google-routing.test.mjs tests/client-ip.test.mjs tests/architecture-static.test.mjs tests/checkout-policy.test.mjs tests/payment-provider-unit.test.mjs tests/checkout-ui-contract.test.mjs tests/private-ghana-maps.test.mjs",
-    "test:algorithms": "node --test tests/advanced-algorithms.test.mjs tests/architecture-static.test.mjs",
-    "test:algorithms-full": "node --test tests/twelve-algorithms-implementation.test.mjs tests/advanced-algorithms.test.mjs tests/dispatch-unit.test.mjs tests/multi-parcel-unit.test.mjs tests/pricing.test.mjs tests/google-routing.test.mjs tests/client-ip.test.mjs tests/architecture-static.test.mjs",
-    "test:payments:unit": "node --test tests/checkout-policy.test.mjs tests/payment-provider-unit.test.mjs tests/checkout-ui-contract.test.mjs",
-    "test:payments:db": "node --test --test-concurrency=1 tests/checkout-db.test.mjs"
+    "admin:mfa:provision": "node --env-file-if-exists=.env scripts/admin-mfa-provision.mjs"
   },
   "dependencies": {
     "pg": "8.16.3",

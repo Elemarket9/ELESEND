@@ -1,2 +1,0 @@
-Native React Native app JSX parse diagnostics: 0
-JSX transpile diagnostics: 0
