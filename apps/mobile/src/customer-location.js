@@ -245,6 +245,205 @@ export function buildConfirmedLocation({
     nearestPlace: reverseGeocode?.nearestPlace || null,
     manuallyAdjusted: Boolean(isAdjusted),
     instructions: manualInstructions?.trim() || null,
+    positionKind: isAdjusted ? 'customer_pin' : 'gps',
+    confidence: isAdjusted ? 'medium' : 'high',
     confirmedAt: new Date().toISOString()
+  };
+}
+
+const MANUAL_FIELDS = ['region', 'city', 'community', 'street', 'house', 'landmark', 'instructions'];
+
+export function readManualFields(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const fields = {};
+  for (const key of MANUAL_FIELDS) fields[key] = String(source[key] ?? '').replace(/\s+/g, ' ').trim();
+  return fields;
+}
+
+export function composeManualAddress(fields) {
+  const value = readManualFields(fields);
+  const parts = [value.house, value.street, value.community, value.city, value.region].filter(Boolean);
+  let text = parts.join(', ');
+  if (value.landmark) text += text ? ` — near ${value.landmark}` : `Near ${value.landmark}`;
+  if (value.instructions) text += text ? `. ${value.instructions}` : value.instructions;
+  return text.trim();
+}
+
+export function assessManualAddress(fields) {
+  const value = readManualFields(fields);
+  if (value.landmark.length >= 3 || value.community.length >= 3) return {ok: true};
+  if (value.city && (value.street.length >= 2 || value.house.length >= 1 || value.instructions.length >= 8)) return {ok: true};
+  return {
+    ok: false,
+    reason: 'Add a community, landmark, or a street within a city. A region or city on its own is not enough to identify a pickup or delivery point.'
+  };
+}
+
+export function positionStatus(kind) {
+  switch (kind) {
+    case 'verified_record': return {label: 'Verified place', tone: 'verified'};
+    case 'approximate': return {label: 'Approximate location', tone: 'approximate'};
+    case 'customer_pin': return {label: 'Customer-selected pin', tone: 'pin'};
+    case 'gps': return {label: 'GPS position', tone: 'gps'};
+    default: return {label: 'Unresolved address', tone: 'unresolved'};
+  }
+}
+
+export function isQuotableLocation(loc) {
+  if (!loc || !['verified_record', 'approximate', 'customer_pin', 'gps'].includes(loc.positionKind)) return false;
+  return validateCoordinates(loc).valid === true && String(loc.address || '').trim().length >= 5;
+}
+
+export function locationFromSearchResult(place) {
+  if (!place || !Number.isFinite(Number(place.latitude)) || !Number.isFinite(Number(place.longitude)) || place.needsConfirmation) {
+    return null;
+  }
+  const validation = validateCoordinates(place);
+  if (!validation.valid) return null;
+  return {
+    latitude: validation.latitude,
+    longitude: validation.longitude,
+    address: `${place.name}${place.label ? ` • ${place.label}` : ''}`,
+    locality: place.locality || null,
+    city: place.city || null,
+    region: place.region || null,
+    nearestPlace: place.name,
+    landmark: place.name,
+    matchedLandmarkId: place.id || null,
+    positionKind: 'verified_record',
+    confidence: 'high',
+    uncertaintyNote: place.nameConflict ? 'The same name exists in more than one area. Check the city before confirming.' : null,
+    needsConfirmation: Boolean(place.needsConfirmation || place.nameConflict)
+  };
+}
+
+export function locationFromGps(result) {
+  if (!result?.ok || !result.coordinates) return null;
+  const validation = validateCoordinates(result.coordinates);
+  if (!validation.valid) return null;
+  return {
+    latitude: validation.latitude,
+    longitude: validation.longitude,
+    address: result.displayAddress,
+    locality: result.reverseGeocode?.locality || null,
+    city: result.reverseGeocode?.city || null,
+    region: result.region || result.reverseGeocode?.region || null,
+    nearestPlace: result.recognizedNearby || null,
+    landmark: result.recognizedNearby || null,
+    accuracyMeters: result.accuracyMeters,
+    accuracyLabel: result.accuracyLabel,
+    positionKind: 'gps',
+    confidence: result.accuracyTier === 'high' ? 'high' : 'medium',
+    uncertaintyNote: result.advisory || null
+  };
+}
+
+export function locationFromMapPress(coordinate, reverse) {
+  const validation = validateCoordinates(coordinate);
+  if (!validation.valid) {
+    throw new Error(validation.reason);
+  }
+  const landmark = reverse?.nearestPlace || null;
+  return {
+    latitude: validation.latitude,
+    longitude: validation.longitude,
+    address: reverse?.address || `Selected pin (${validation.latitude.toFixed(5)}, ${validation.longitude.toFixed(5)})`,
+    locality: reverse?.locality || null,
+    city: reverse?.city || null,
+    region: reverse?.region || null,
+    nearestPlace: landmark,
+    landmark,
+    positionKind: 'customer_pin',
+    confidence: 'medium',
+    uncertaintyNote: 'You placed this pin. It is not a verified address record.'
+  };
+}
+
+export function locationFromResolve(fields, resolved, pin = null) {
+  const originalManual = readManualFields(fields);
+  const address = composeManualAddress(originalManual);
+  const base = {
+    address,
+    originalManual,
+    locality: originalManual.community || null,
+    city: originalManual.city || null,
+    region: originalManual.region || null,
+    landmark: originalManual.landmark || null,
+    nearestPlace: originalManual.landmark || null,
+    uncertaintyNote: resolved?.uncertainty || null,
+    conflicts: resolved?.conflicts || []
+  };
+  if (pin && Number.isFinite(Number(pin.latitude)) && Number.isFinite(Number(pin.longitude))) {
+    const validation = validateCoordinates(pin);
+    if (!validation.valid) throw new Error(validation.reason);
+    return {
+      ...base,
+      latitude: validation.latitude,
+      longitude: validation.longitude,
+      positionKind: 'customer_pin',
+      confidence: 'medium',
+      uncertaintyNote: 'You placed this pin. The written address is unchanged.'
+    };
+  }
+  const suggestion = resolved?.suggestion;
+  if (suggestion && Number.isFinite(Number(suggestion.latitude)) && Number.isFinite(Number(suggestion.longitude))) {
+    const validation = validateCoordinates(suggestion);
+    if (!validation.valid) {
+      return {...base, latitude: null, longitude: null, positionKind: 'none', confidence: 'none'};
+    }
+    return {
+      ...base,
+      latitude: validation.latitude,
+      longitude: validation.longitude,
+      locality: suggestion.locality || base.locality,
+      city: suggestion.city || base.city,
+      region: suggestion.region || base.region,
+      landmark: suggestion.name || base.landmark,
+      nearestPlace: suggestion.name || base.nearestPlace,
+      matchedLandmarkId: suggestion.id || null,
+      positionKind: suggestion.positionKind,
+      confidence: suggestion.confidence,
+      uncertaintyNote: suggestion.uncertainty || base.uncertaintyNote
+    };
+  }
+  return {...base, latitude: null, longitude: null, positionKind: 'none', confidence: 'none'};
+}
+
+export function buildViewportQuery(bounds, zoom) {
+  if (!bounds) return null;
+  const {west, south, east, north} = bounds;
+  if (![west, south, east, north, zoom].every(Number.isFinite)) return null;
+  const params = new URLSearchParams({
+    west: String(west),
+    south: String(south),
+    east: String(east),
+    north: String(north),
+    zoom: String(Math.round(zoom * 10) / 10)
+  });
+  return params.toString();
+}
+
+export function boundsFromRegion(region) {
+  if (!region || !Number.isFinite(region.latitude) || !Number.isFinite(region.longitude)) return null;
+  const latDelta = Number(region.latitudeDelta) > 0 ? region.latitudeDelta : region.longitudeDelta;
+  const lonDelta = Number(region.longitudeDelta) > 0 ? region.longitudeDelta : latDelta;
+  if (!Number.isFinite(latDelta) || !Number.isFinite(lonDelta)) return null;
+  return {
+    west: region.longitude - lonDelta / 2,
+    east: region.longitude + lonDelta / 2,
+    south: region.latitude - latDelta / 2,
+    north: region.latitude + latDelta / 2,
+    zoom: Math.max(1, Math.min(18, Math.log2(360 / lonDelta)))
+  };
+}
+
+export function createDebouncer(waitMs) {
+  let timer = null;
+  return fn => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      fn();
+    }, waitMs);
   };
 }

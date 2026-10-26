@@ -1,6 +1,6 @@
 import React,{forwardRef,useId,useImperativeHandle,useMemo,useRef} from 'react';
 import {View,Text,Platform,Linking} from 'react-native';
-import {MapView as NativeMap,Camera,MarkerView,ShapeSource,LineLayer} from '@maplibre/maplibre-react-native';
+import {MapView as NativeMap,Camera,MarkerView,ShapeSource,CircleLayer,LineLayer} from '@maplibre/maplibre-react-native';
 import {privateTileUrl,privateMapStyle,OSM_ATTRIBUTION} from './private-map-style.mjs';
 import {VECTOR_TILE_URL, GLYPHS_URL, isDevelopmentEnvironment} from '../config.js';
 
@@ -17,7 +17,15 @@ const coordinate=p=>[p.longitude,p.latitude];
 export const MAP_RENDERER='elesend-private';
 export const MAP_TRAFFIC_SUPPORTED=false;
 
-export default forwardRef(function MapView({initialRegion,children,onPress,onMapReady,onPanDrag,style,accessibilityLabel},ref){
+function regionFromEvent(event){
+ const props=event?.properties||{};
+ const bounds=props.visibleBounds||props.bounds||null;
+ const zoom=Number.isFinite(props.zoomLevel)?props.zoomLevel:Number.isFinite(props.zoom)?props.zoom:null;
+ const center=Array.isArray(event?.geometry?.coordinates)?event.geometry.coordinates:null;
+ return {zoom,bounds,center,isUserInteraction:props.isUserInteraction===true};
+}
+
+export default forwardRef(function MapView({initialRegion,children,onPress,onMapReady,onPanDrag,onRegionDidChange,style,accessibilityLabel},ref){
  const camera=useRef(null);
  const initial=useMemo(()=>({centerCoordinate:coordinate(initialRegion),zoomLevel:Math.max(1,Math.min(20,Math.log2(360/initialRegion.longitudeDelta)))}),[]);
  useImperativeHandle(ref,()=>({
@@ -29,10 +37,11 @@ export default forwardRef(function MapView({initialRegion,children,onPress,onMap
    camera.current?.fitBounds([Math.max(...lons),Math.max(...lats)],[Math.min(...lons),Math.min(...lats)],[edgePadding.top??40,edgePadding.right??40,edgePadding.bottom??40,edgePadding.left??40],animated?600:0);
   }
  }),[]);
- return <View style={style} accessibilityLabel={accessibilityLabel}>
+ return <View style={[style,{overflow:'hidden'}]} collapsable={false} accessibilityLabel={accessibilityLabel}>
   <NativeMap style={{flex:1}} mapStyle={mapStyle} attributionEnabled logoEnabled={false} compassEnabled
    onDidFinishLoadingMap={onMapReady}
    onRegionWillChange={event=>{if(event?.properties?.isUserInteraction)onPanDrag?.();}}
+   onRegionDidChange={event=>{if(onRegionDidChange)onRegionDidChange(regionFromEvent(event));}}
    onPress={event=>{const c=event?.geometry?.coordinates;if(Array.isArray(c)&&c.length>=2)onPress?.({nativeEvent:{coordinate:{longitude:c[0],latitude:c[1]}}});}}>
    <Camera ref={camera} defaultSettings={initial}/>{children}
   </NativeMap>
@@ -43,9 +52,42 @@ export default forwardRef(function MapView({initialRegion,children,onPress,onMap
 
 export function Marker({coordinate:point,children,title,pinColor='#14695b',anchor={x:0.5,y:1}}){
  const id=useId();
+ if(!point||!Number.isFinite(Number(point.latitude))||!Number.isFinite(Number(point.longitude)))return null;
  return <MarkerView id={id} coordinate={coordinate(point)} anchor={anchor}>
-  <View collapsable={false} accessibilityLabel={title}>{children??<View style={{width:20,height:20,borderRadius:10,backgroundColor:pinColor,borderWidth:3,borderColor:'white'}}/>}</View>
+  <View collapsable={false} accessibilityLabel={title} style={{alignItems:'center'}}>
+   {children??(
+    <View style={{alignItems:'center'}}>
+     {title?<View style={{backgroundColor:pinColor,paddingHorizontal:8,paddingVertical:3,borderRadius:8,marginBottom:2}}><Text style={{color:'#ffffff',fontSize:11,fontWeight:'700'}}>{title}</Text></View>:null}
+     <View style={{width:18,height:18,borderRadius:9,backgroundColor:pinColor,borderWidth:3,borderColor:'white'}}/>
+    </View>
+   )}
+  </View>
  </MarkerView>;
+}
+
+export function LandmarkLayer({features,onPress}){
+ const id=useId().replace(/:/g,'');
+ if(!features?.length)return null;
+ const shape={type:'FeatureCollection',features:features.filter(feature=>Number.isFinite(feature?.latitude)&&Number.isFinite(feature?.longitude)).map(feature=>({
+  type:'Feature',
+  properties:{id:feature.id,name:feature.name||'',kind:feature.kind||'place',count:feature.count||1,city:feature.city||''},
+  geometry:{type:'Point',coordinates:[feature.longitude,feature.latitude]}
+ }))};
+ if(!shape.features.length)return null;
+ return <ShapeSource id={'landmarks-'+id} shape={shape} onPress={event=>{
+  const feature=event?.features?.[0]||event?.nativeEvent?.features?.[0];
+  const coords=feature?.geometry?.coordinates;
+  if(!feature?.properties||!Array.isArray(coords))return;
+  onPress?.({...feature.properties,longitude:coords[0],latitude:coords[1]});
+ }}>
+  <CircleLayer id={'landmarks-circle-'+id} style={{
+   circleRadius:['case',['==',['get','kind'],'cluster'],14,5],
+   circleColor:['case',['==',['get','kind'],'cluster'],'#0f766e','#526b64'],
+   circleOpacity:0.9,
+   circleStrokeWidth:1.5,
+   circleStrokeColor:'#ffffff'
+  }}/>
+ </ShapeSource>;
 }
 
 export function RiderMarker({coordinate:point,heading=0,vehicle='motorcycle',title='Courier'}){
