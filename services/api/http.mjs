@@ -6,6 +6,8 @@ import {vehicleService} from './vehicle.mjs';
 import {clientIp,resolveVerifiedHost} from './client-ip.mjs';
 import {marketService} from './markets.mjs';
 import {ghanaSearch,ghanaReverseGeocode} from './infrastructure/maps/ghana-geocoder.mjs';
+import {viewportMarkers} from './infrastructure/maps/viewport-markers.mjs';
+import {resolveManualAddress,saveAddressSubmission} from './infrastructure/maps/address-intelligence.mjs';
 import {getPublicTracking,renderTrackingHtml} from './infrastructure/maps/web-tracker.mjs';
 import {renderAdminPortalHtml} from './admin-web/admin-portal.mjs';
 import {renderRestaurantPortalHtml,renderRestaurantManifestJson} from './restaurant-web/restaurant-portal.mjs';
@@ -135,10 +137,29 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    result=await ghanaPostGps(body.address);
   }
   else if(method==='GET'&&path==='/api/v1/maps/search'){
-   const q=new URL(req.url,'http://localhost').searchParams.get('q')??'';
+   const u=new URL(req.url,'http://localhost');
+   const q=u.searchParams.get('q')??'';
    check(q.length>=2,400,'Enter at least 2 characters to search');
    await limit(db,'maps-search:'+actor.id,60,60);
-   result=ghanaSearch(q);
+   const lat=Number(u.searchParams.get('lat')),lon=Number(u.searchParams.get('lon'));
+   const near=Number.isFinite(lat)&&Number.isFinite(lon)?{latitude:lat,longitude:lon}:null;
+   result=ghanaSearch(q,{near});
+  }
+  else if(method==='GET'&&path==='/api/v1/maps/viewport'){
+   const u=new URL(req.url,'http://localhost').searchParams;
+   await limit(db,'maps-viewport:'+actor.id,120,60);
+   result=viewportMarkers({west:Number(u.get('west')),south:Number(u.get('south')),east:Number(u.get('east')),north:Number(u.get('north')),zoom:Number(u.get('zoom'))});
+  }
+  else if(method==='POST'&&path==='/api/v1/maps/resolve-address'){
+   check(['customer','business'].includes(actor.kind)&&!actor.api_client_id,403,'Customer account required');
+   await limit(db,'maps-resolve:'+actor.id,40,60);
+   const near=body?.near&&typeof body.near==='object'?body.near:null;
+   const fields=body?.original&&typeof body.original==='object'?body.original:body;
+   result=resolveManualAddress(fields,{near});
+  }
+  else if(method==='POST'&&path==='/api/v1/maps/address-submissions'){
+   await limit(db,'maps-address:'+actor.id,30,60);
+   result=await saveAddressSubmission(db,actor,body);
   }
   else if(method==='GET'&&path==='/api/v1/maps/reverse'){
    const u=new URL(req.url,'http://localhost').searchParams;

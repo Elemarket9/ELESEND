@@ -62,7 +62,7 @@ const NATIONAL_ANCHORS = [
 
 export const GHANA_GAZETTEER = [...rawGazetteer, ...NATIONAL_ANCHORS];
 
-const ABBREVIATIONS = {
+export const ABBREVIATIONS = {
   uni: 'university',
   coll: 'college',
   kuc: 'kaaf university college',
@@ -215,6 +215,56 @@ for (let i = 0; i < GHANA_GAZETTEER.length; i++) {
   gList.push(i);
 }
 
+const DUPLICATE_IDS = new Set();
+const idSeen = new Map();
+for (const place of GHANA_GAZETTEER) {
+  if (!place.id) continue;
+  const prior = idSeen.get(place.id);
+  if (prior) {
+    DUPLICATE_IDS.add(place.id);
+    if (prior.latitude !== place.latitude || prior.longitude !== place.longitude) place._idConflict = true;
+  } else idSeen.set(place.id, place);
+}
+const DISTANT_NAMES = new Set();
+const byName = new Map();
+for (const place of GHANA_GAZETTEER) {
+  const key = place._nameLower;
+  if (!key) continue;
+  let list = byName.get(key);
+  if (!list) { list = []; byName.set(key, list); }
+  list.push(place);
+}
+for (const [key, list] of byName) {
+  if (list.length < 2) continue;
+  let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+  for (const place of list) {
+    minLat = Math.min(minLat, place.latitude);
+    maxLat = Math.max(maxLat, place.latitude);
+    minLon = Math.min(minLon, place.longitude);
+    maxLon = Math.max(maxLon, place.longitude);
+  }
+  const span = Math.hypot((maxLat - minLat) * 111000, (maxLon - minLon) * 111000 * Math.cos(((minLat + maxLat) / 2) * Math.PI / 180));
+  if (span > 2000) DISTANT_NAMES.add(key);
+}
+for (const place of GHANA_GAZETTEER) place._distantName = DISTANT_NAMES.has(place._nameLower);
+
+export function gazetteerAudit() {
+  let outsideGhana = 0;
+  for (const place of GHANA_GAZETTEER) {
+    const lat = place.latitude, lon = place.longitude;
+    if (!(lat >= GHANA_BOUNDS.minLatitude && lat <= GHANA_BOUNDS.maxLatitude && lon >= GHANA_BOUNDS.minLongitude && lon <= GHANA_BOUNDS.maxLongitude)) outsideGhana++;
+  }
+  return {
+    records: GHANA_GAZETTEER.length,
+    duplicateIds: [...DUPLICATE_IDS],
+    distantNameCount: DISTANT_NAMES.size,
+    outsideGhana
+  };
+}
+
+function inLatitude(value) { return value >= GHANA_BOUNDS.minLatitude && value <= GHANA_BOUNDS.maxLatitude; }
+function inLongitude(value) { return value >= GHANA_BOUNDS.minLongitude && value <= GHANA_BOUNDS.maxLongitude; }
+
 // Generic category stop words that frequently occur in landmark descriptions
 const GENERIC_CATEGORY_WORDS = new Set([
   'government', 'hospital', 'clinic', 'polyclinic', 'school', 'station', 'market', 
@@ -228,33 +278,71 @@ const QUERY_CACHE = new Map();
 const MAX_CACHE_SIZE = 1000;
 
 // Fast In-Memory Geocoding Search (< 1ms across 31,000+ records)
-export function ghanaSearch(query, {limit = 10, db = null} = {}) {
+export function interpretCoordinateQuery(query) {
+  const clean = String(query || '').trim();
+  const coordMatch = /^(-?\d{1,2}(?:\.\d+)?)[,\s]+(-?\d{1,3}(?:\.\d+)?)$/.exec(clean);
+  if (!coordMatch) return null;
+  const first = Number(coordMatch[1]);
+  const second = Number(coordMatch[2]);
+  const ordered = inLatitude(first) && inLongitude(second);
+  const reversed = inLatitude(second) && inLongitude(first);
+  if (ordered && reversed) {
+    return {
+      name: 'Conflicting coordinate order',
+      label: 'Both orders fall inside Ghana. Nothing was chosen automatically.',
+      type: 'coordinate',
+      coordinateOrder: 'ambiguous',
+      needsConfirmation: true,
+      latitude: null,
+      longitude: null,
+      uncertainty: 'These numbers were not applied. Confirm which value is latitude.'
+    };
+  }
+  if (ordered) {
+    return {
+      name: `Location (${first.toFixed(5)}, ${second.toFixed(5)})`,
+      label: 'Custom pin in Ghana',
+      latitude: first,
+      longitude: second,
+      type: 'coordinate',
+      coordinateOrder: 'latitude_longitude',
+      needsConfirmation: false
+    };
+  }
+  if (reversed) {
+    return {
+      name: `Location (${second.toFixed(5)}, ${first.toFixed(5)})`,
+      label: 'Entered as longitude, latitude. Confirm before use.',
+      latitude: second,
+      longitude: first,
+      type: 'coordinate',
+      coordinateOrder: 'interpreted_longitude_latitude',
+      needsConfirmation: true,
+      uncertainty: 'The first number is a Ghana longitude, not a latitude. The map will not move until you confirm.'
+    };
+  }
+  return null;
+}
+
+export function ghanaSearch(query, {limit = 10, near = null} = {}) {
   check(typeof query === 'string', 400, 'Search query must be text');
   const clean = query.trim();
   if (!clean) return [];
   check(clean.length <= 150, 400, 'Search query too long');
+  const nearOk = near && inLatitude(Number(near.latitude)) && inLongitude(Number(near.longitude))
+    ? {latitude: Number(near.latitude), longitude: Number(near.longitude)}
+    : null;
+  const nearKey = nearOk ? `${nearOk.latitude.toFixed(2)},${nearOk.longitude.toFixed(2)}` : '';
 
   // Check LRU cache
-  const cacheKey = `${clean.toLowerCase()}:${limit}`;
+  const cacheKey = `${clean.toLowerCase()}:${limit}:${nearKey}`;
   if (QUERY_CACHE.has(cacheKey)) {
     return QUERY_CACHE.get(cacheKey);
   }
 
-  // 1. Coordinate parsing (e.g. "5.6212, -0.1748")
-  const coordMatch = /^(-?\d{1,2}(?:\.\d+)?)[,\s]+(-?\d{1,3}(?:\.\d+)?)$/.exec(clean);
-  if (coordMatch) {
-    const lat = Number(coordMatch[1]), lon = Number(coordMatch[2]);
-    if (lat >= GHANA_BOUNDS.minLatitude && lat <= GHANA_BOUNDS.maxLatitude && lon >= GHANA_BOUNDS.minLongitude && lon <= GHANA_BOUNDS.maxLongitude) {
-      const coordRes = [{
-        name: `Location (${lat.toFixed(5)}, ${lon.toFixed(5)})`,
-        label: 'Custom pin in Ghana',
-        latitude: lat,
-        longitude: lon,
-        type: 'coordinate'
-      }];
-      return coordRes;
-    }
-  }
+  // 1. Coordinate parsing (e.g. "5.6212, -0.1748"). Reversed pairs are flagged, never silently stored.
+  const coordHit = interpretCoordinateQuery(clean);
+  if (coordHit) return [coordHit];
 
   // 2. Tokenize, expand abbreviations and normalize
   const cleanLower = clean.toLowerCase();
@@ -484,9 +572,47 @@ export function ghanaSearch(query, {limit = 10, db = null} = {}) {
     scored.push({place, score});
   }
 
-  scored.sort((a, b) => b.score - a.score);
+  if (terms.length === 1) {
+    const exactName = terms[0];
+    const alignedExists = scored.some(item => item.place._nameLower === exactName && (item.place._cityLower === exactName || item.place._localityLower === exactName));
+    if (alignedExists) {
+      for (const item of scored) {
+        if (item.place._nameLower !== exactName) continue;
+        const aligned = item.place._cityLower === exactName || item.place._localityLower === exactName;
+        item.score += aligned ? 60 : -220;
+      }
+    }
+  }
 
-  const results = scored.slice(0, Math.max(1, Math.min(limit, 30))).map(({place, score}) => ({
+  if (nearOk) {
+    for (const item of scored) {
+      const metres = haversine(nearOk, item.place);
+      item.distanceMeters = Math.round(metres);
+      if (metres < 3000) item.score += 80;
+      else if (metres < 20000) item.score += 40;
+      // Names that already exist in several distant places should follow the map, not a far duplicate.
+      if (item.place._distantName && metres > 40000) item.score -= Math.min(280, Math.round((metres - 40000) / 500));
+    }
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  const deduped = [];
+  const seenIds = new Set();
+  for (const item of scored.slice(0, 80)) {
+    if (item.place.id && seenIds.has(item.place.id)) continue;
+    if (item.place.id) seenIds.add(item.place.id);
+    const twin = deduped.find(kept => kept.place._nameLower === item.place._nameLower && haversine(kept.place, item.place) <= 400);
+    if (twin) {
+      if (item.place.id) (twin.duplicateIds ||= []).push(item.place.id);
+      continue;
+    }
+    deduped.push(item);
+  }
+  const top = deduped[0];
+  const second = deduped[1];
+  const ambiguous = Boolean(top && second && haversine(top.place, second.place) > 30000 && second.score >= top.score * 0.75);
+
+  const results = deduped.slice(0, Math.max(1, Math.min(limit, 30))).map(({place, score, duplicateIds, distanceMeters}) => ({
     id: place.id,
     name: place.name,
     label: `${place.locality || place.region}, ${place.city || place.region}`,
@@ -502,7 +628,12 @@ export function ghanaSearch(query, {limit = 10, db = null} = {}) {
     aliases: place.aliases || [],
     entrance: place.entrance || null,
     street: place.street || null,
-    score: Number(score.toFixed(1))
+    score: Number(score.toFixed(1)),
+    duplicateIds: duplicateIds || [],
+    duplicateRecord: DUPLICATE_IDS.has(place.id),
+    nameConflict: place._distantName === true,
+    ambiguous,
+    distanceMeters: Number.isFinite(distanceMeters) ? distanceMeters : null
   }));
 
   // Store in bounded LRU cache

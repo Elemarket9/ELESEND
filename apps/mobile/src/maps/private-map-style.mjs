@@ -23,9 +23,9 @@ export function privateMapStyle(tileUrl,{glyphsUrl=null}={}){
     {id:'roads',type:'line',source:'ghana','source-layer':'roads',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#ffffff','line-width':['interpolate',['linear'],['zoom'],6,0.5,14,4,18,12]}},
     ...(glyphsUrl?[
      {id:'roads-label',type:'symbol',source:'ghana','source-layer':'roads',minzoom:12,layout:{'symbol-placement':'line','text-field':['get','name'],'text-size':11,'text-font':['Noto Sans Regular','Roboto Regular']},paint:{'text-color':'#444444','text-halo-color':'#ffffff','text-halo-width':1.5}},
-     {id:'places-label',type:'symbol',source:'ghana','source-layer':'places',minzoom:7,layout:{'text-field':['get','name'],'text-size':13,'text-font':['Noto Sans Bold','Roboto Bold'],'text-offset':[0,0.8],'text-anchor':'top'},paint:{'text-color':'#143a32','text-halo-color':'#ffffff','text-halo-width':2}}
+     {id:'places-label',type:'symbol',source:'ghana','source-layer':'places',minzoom:13,layout:{'text-field':['get','name'],'text-size':12,'text-font':['Noto Sans Bold','Roboto Bold'],'text-offset':[0,0.6],'text-anchor':'top'},paint:{'text-color':'#143a32','text-halo-color':'#ffffff','text-halo-width':1.5}}
     ]:[]),
-    {id:'places',type:'circle',source:'ghana','source-layer':'places',paint:{'circle-radius':2,'circle-color':'#526b64'}}
+    {id:'places',type:'circle',source:'ghana','source-layer':'places',minzoom:16,paint:{'circle-radius':['interpolate',['linear'],['zoom'],16,2,18,3.5],'circle-color':'#526b64','circle-opacity':0.75,'circle-stroke-width':1,'circle-stroke-color':'#ffffff'}}
    ]:[])
   ]};
 }

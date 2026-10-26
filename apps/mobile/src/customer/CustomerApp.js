@@ -22,7 +22,8 @@ import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline } from '../maps/map-adapter';
 import QRCode from 'react-native-qrcode-svg';
 import { call, loadToken, saveToken, clearToken, ghc, BASE } from '../api';
-import { detectCustomerLocation, buildConfirmedLocation } from '../customer-location';
+import { detectCustomerLocation, isQuotableLocation } from '../customer-location';
+import LocationExperience from './LocationExperience';
 import { normalizeGhanaPhone, isValidGhanaPhone, formatGhanaDisplayPhone } from '../phone';
 import { colors, typography, spacing, radii } from '../theme';
 
@@ -58,14 +59,9 @@ export default function CustomerApp() {
   const [quoted, setQuoted] = useState(null);
   const [myShipments, setMyShipments] = useState([]);
   const [trackingShipment, setTrackingShipment] = useState(null);
-  const [placeQuery, setPlaceQuery] = useState('');
-  const [placesList, setPlacesList] = useState([]);
   const [detectedLocation, setDetectedLocation] = useState(null);
-  const [detectingGps, setDetectingGps] = useState(false);
   const [locationTarget, setLocationTarget] = useState('pickup');
   const [deliveryInstructions, setDeliveryInstructions] = useState('');
-  const [ghanaAddress, setGhanaAddress] = useState('');
-  const [ghanaAddressLookup, setGhanaAddressLookup] = useState(false);
   const [paymentMethods, setPaymentMethods] = useState([{ method: 'CASH', enabled: true }]);
   const [paymentEmail, setPaymentEmail] = useState('');
   const [checkoutSession, setCheckoutSession] = useState(null);
@@ -86,13 +82,13 @@ export default function CustomerApp() {
   const [foodDeliveryCoords, setFoodDeliveryCoords] = useState(null);
   const [foodRecipientPhone, setFoodRecipientPhone] = useState('');
   const [foodInstructions, setFoodInstructions] = useState('');
+  const [foodPlaceOpen, setFoodPlaceOpen] = useState(false);
   const [foodQuote, setFoodQuote] = useState(null);
   const [foodPaymentMethod, setFoodPaymentMethod] = useState('MOMO');
   const [myFoodOrders, setMyFoodOrders] = useState([]);
   const [activeFoodTracking, setActiveFoodTracking] = useState(null);
 
   const addressLookupEpoch = useRef(0);
-  const mapRef = useRef(null);
   const foodRequest = useRef(null);
 
   const edit = (k, v) => setCredentials(c => ({ ...c, [k]: v }));
@@ -148,10 +144,6 @@ export default function CustomerApp() {
     call('GET', '/api/v1/payments/methods')
       .then(setPaymentMethods)
       .catch(() => setPaymentMethods([{ method: 'CASH', enabled: true }]));
-
-    call('GET', '/api/v1/maps/config')
-      .then(v => setGhanaAddressLookup(v.ghanaPostGpsLookup === true))
-      .catch(() => {});
 
     loadFoodRestaurants();
     refreshActivity();
@@ -274,56 +266,30 @@ export default function CustomerApp() {
   }
 
   // --- Parcel Delivery Actions ---
-  async function runPlaceSearch() {
-    if (placeQuery.trim().length < 2) return;
-    const res = await call('GET', `/api/v1/maps/search?q=${encodeURIComponent(placeQuery.trim())}`);
-    setPlacesList(res || []);
-  }
-
-  function pickPlace(p) {
-    const target = locationTarget || (booking.pickup ? 'destination' : 'pickup');
-    const pin = { latitude: p.latitude, longitude: p.longitude, address: `${p.name} • ${p.label}` };
-    updateBooking(target, pin);
-    mapRef.current?.animateToRegion({
-      latitude: pin.latitude,
-      longitude: pin.longitude,
-      latitudeDelta: 0.012,
-      longitudeDelta: 0.012
-    }, 500);
-    setPlacesList([]);
-    setPlaceQuery('');
-    if (target === 'pickup' && !booking.destination) {
-      setLocationTarget('destination');
-    }
-  }
-
   async function useCurrentLocation(target = 'pickup') {
     setLocationTarget(target);
-    setDetectingGps(true);
     const res = await detectCustomerLocation({
       locationApi: Location,
       reverseGeocodeApi: async (lat, lon) => call('GET', `/api/v1/maps/reverse?lat=${lat}&lon=${lon}`),
       timeoutMs: 12000
     });
-    setDetectingGps(false);
     if (!res.ok) {
       setError(res.message);
       return;
     }
     setDetectedLocation(res);
-    mapRef.current?.animateToRegion({
-      latitude: res.coordinates.latitude,
-      longitude: res.coordinates.longitude,
-      latitudeDelta: 0.008,
-      longitudeDelta: 0.008
-    }, 600);
 
     const pin = {
       latitude: res.coordinates.latitude,
       longitude: res.coordinates.longitude,
       address: res.displayAddress,
       accuracyMeters: res.accuracyMeters,
-      detectedByGps: true
+      accuracyLabel: res.accuracyLabel,
+      detectedByGps: true,
+      positionKind: 'gps',
+      confidence: res.accuracyTier === 'high' ? 'high' : 'medium',
+      uncertaintyNote: res.advisory || null,
+      landmark: res.recognizedNearby || null
     };
     if (target === 'food') {
       setFoodDeliveryAddress(res.displayAddress);
@@ -335,32 +301,10 @@ export default function CustomerApp() {
     }
   }
 
-  function handleMapPress(e) {
-    if (step !== 0) return;
-    const coord = e.nativeEvent.coordinate;
-    const target = locationTarget || (booking.pickup ? 'destination' : 'pickup');
-    updateBooking(target, {
-      address: `Selected Pin (${coord.latitude.toFixed(4)}, ${coord.longitude.toFixed(4)})`,
-      latitude: coord.latitude,
-      longitude: coord.longitude
-    });
-    call('GET', `/api/v1/maps/reverse?lat=${coord.latitude}&lon=${coord.longitude}`)
-      .then(res => {
-        if (res?.address) {
-          updateBooking(target, {
-            address: res.address,
-            latitude: coord.latitude,
-            longitude: coord.longitude
-          });
-        }
-      })
-      .catch(() => {});
-  }
-
   function sanitizeAddressPayload(loc) {
     if (!loc) return null;
     return {
-      address: String(loc.address || '').trim(),
+      address: String(loc.address || '').trim().slice(0, 400),
       latitude: Number(loc.latitude),
       longitude: Number(loc.longitude)
     };
@@ -368,8 +312,9 @@ export default function CustomerApp() {
 
   async function requestParcelQuote(overrides = {}) {
     const nextBooking = { ...booking, ...overrides };
-    if (!nextBooking.pickup) throw Error('Set pickup location');
-    if (!nextBooking.destination) throw Error('Set destination location');
+    if (!isQuotableLocation(nextBooking.pickup) || !isQuotableLocation(nextBooking.destination)) {
+      throw Error('Confirm pickup and destination on the map before requesting a fare. No distance or fee is estimated without a real position.');
+    }
     const recipient = normalizeGhanaPhone(nextBooking.recipientPhone);
     if (!isValidGhanaPhone(recipient)) throw Error('Enter a valid Ghana recipient phone');
 
@@ -872,15 +817,31 @@ export default function CustomerApp() {
         </TouchableOpacity>
       </View>
 
-      {/* TAB CONTENT */}
+      {tab === 'Send' && step === 0 ? (
+        <LocationExperience
+          pickup={booking.pickup}
+          destination={booking.destination}
+          target={locationTarget}
+          onTarget={setLocationTarget}
+          pickupLabel="Set Pickup"
+          destinationLabel="Set Destination"
+          title="Send a parcel"
+          callApi={call}
+          onCommit={(role, loc) => updateBooking(role, loc)}
+          onContinue={() => {
+            if (!isQuotableLocation(booking.pickup) || !isQuotableLocation(booking.destination)) {
+              setError('Confirm a real map point for pickup and destination. ELESEND does not estimate distance, time, or a fare from an unresolved address.');
+              return;
+            }
+            setError('');
+            setStep(1);
+          }}
+        />
+      ) : (
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
 
-        {/* ================================================================= */}
-        {/* TAB 1: SEND PARCEL */}
-        {/* ================================================================= */}
         {tab === 'Send' && (
           <View>
-            {/* Step Stepper */}
             <View style={styles.stepperRow}>
               {['1. Location', '2. Package', '3. Confirm'].map((label, idx) => (
                 <View key={label} style={[styles.stepBadge, step === idx && styles.stepBadgeActive, step > idx && styles.stepBadgeComplete]}>
@@ -888,131 +849,6 @@ export default function CustomerApp() {
                 </View>
               ))}
             </View>
-
-            {/* STEP 0: LOCATIONS & MAP */}
-            {step === 0 && (
-              <View style={styles.card}>
-                <Text style={styles.cardHeading}>Pickup & Delivery Points</Text>
-                <Text style={styles.cardSubheading}>Search Ghanaian landmarks or drop pins directly on the map.</Text>
-
-                {/* Active Selection Target (Pickup vs Destination) */}
-                <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
-                  <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel="Select Pickup Point"
-                    onPress={() => setLocationTarget('pickup')}
-                    style={[styles.pillBtn, locationTarget === 'pickup' && styles.pillBtnActive, { flex: 1, alignItems: 'center' }]}>
-                    <Text style={[styles.pillBtnText, locationTarget === 'pickup' && { color: colors.primary, fontWeight: '700' }]}>
-                      🟢 Set Pickup
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel="Select Destination Point"
-                    onPress={() => setLocationTarget('destination')}
-                    style={[styles.pillBtn, locationTarget === 'destination' && styles.pillBtnActive, { flex: 1, alignItems: 'center' }]}>
-                    <Text style={[styles.pillBtnText, locationTarget === 'destination' && { color: '#F87171', fontWeight: '700' }]}>
-                      🔴 Set Destination
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* GPS Auto-detect Button */}
-                <TouchableOpacity
-                  onPress={() => execute(() => useCurrentLocation(locationTarget || (booking.pickup ? 'destination' : 'pickup')))}
-                  style={styles.gpsDetectBtn}
-                  disabled={detectingGps}>
-                  {detectingGps ? <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} /> : <Text style={{ fontSize: 18, marginRight: 8 }}>📍</Text>}
-                  <Text style={styles.gpsDetectText}>{detectingGps ? 'Locating device...' : 'Use My Current Location'}</Text>
-                </TouchableOpacity>
-
-                {/* Landmark Search */}
-                <View style={styles.searchRow}>
-                  <TextInput
-                    placeholder="Search landmark (e.g. Accra Mall, Kejetia)"
-                    placeholderTextColor={colors.textMuted}
-                    style={[styles.input, { flex: 1 }]}
-                    value={placeQuery}
-                    onChangeText={setPlaceQuery}
-                    onSubmitEditing={() => execute(runPlaceSearch)}
-                  />
-                  <TouchableOpacity onPress={() => execute(runPlaceSearch)} style={styles.searchActionBtn}>
-                    <Text style={styles.searchActionText}>Search</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* Search Results */}
-                {placesList.length > 0 && (
-                  <View style={styles.dropdownList}>
-                    {placesList.map((p, i) => (
-                      <TouchableOpacity key={i} onPress={() => pickPlace(p)} style={styles.dropdownItem}>
-                        <Text style={styles.placeTitle}>📍 {p.name}</Text>
-                        <Text style={styles.placeSub}>{p.label}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
-
-                {/* Quick Ghana Landmark Chips */}
-                <View style={styles.chipsRow}>
-                  {[
-                    { name: 'Accra Mall', latitude: 5.6214, longitude: -0.1741, label: 'Tetteh Quarshie' },
-                    { name: 'Kotoka Airport', latitude: 5.6052, longitude: -0.1717, label: 'Airport Area' },
-                    { name: 'Kejetia Market', latitude: 6.6961, longitude: -1.6244, label: 'Central Kumasi' },
-                    { name: 'Tema Harbour', latitude: 5.6322, longitude: 0.0076, label: 'Tema Hub' }
-                  ].map(chip => (
-                    <TouchableOpacity key={chip.name} onPress={() => pickPlace(chip)} style={styles.chip}>
-                      <Text style={styles.chipText}>📍 {chip.name}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                {/* Pickup & Destination Cards */}
-                <View style={styles.addressSummaryCard}>
-                  <View style={styles.addressRow}>
-                    <Text style={styles.addressIcon}>🟢</Text>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.addressType}>Pickup Location</Text>
-                      <Text style={styles.addressText}>{booking.pickup?.address || 'Not selected (Tap map or search)'}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.addressDivider} />
-                  <View style={styles.addressRow}>
-                    <Text style={styles.addressIcon}>🔴</Text>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.addressType}>Destination Location</Text>
-                      <Text style={styles.addressText}>{booking.destination?.address || 'Not selected (Tap map or search)'}</Text>
-                    </View>
-                  </View>
-                </View>
-
-                {/* Private Map View */}
-                <View style={styles.mapContainer}>
-                  <MapView
-                    ref={mapRef}
-                    initialRegion={{ latitude: 5.6037, longitude: -0.1870, longitudeDelta: 0.12 }}
-                    style={StyleSheet.absoluteFill}
-                    onPress={handleMapPress}>
-                    {booking.pickup && (
-                      <Marker coordinate={booking.pickup} pinColor={colors.primary} title="Pickup" />
-                    )}
-                    {booking.destination && (
-                      <Marker coordinate={booking.destination} pinColor={colors.danger} title="Destination" />
-                    )}
-                  </MapView>
-                </View>
-
-                <TouchableOpacity
-                  onPress={() => {
-                    if (!booking.pickup) { setError('Please select a pickup point'); return; }
-                    if (!booking.destination) { setError('Please select a delivery destination'); return; }
-                    setStep(1);
-                  }}
-                  style={[styles.primaryBtn, { marginTop: 16 }]}>
-                  <Text style={styles.primaryBtnText}>Continue to Package Details →</Text>
-                </TouchableOpacity>
-              </View>
-            )}
 
             {/* STEP 1: PACKAGE & RECIPIENT */}
             {step === 1 && (
@@ -1085,7 +921,17 @@ export default function CustomerApp() {
             {step === 2 && (
               <View style={styles.card}>
                 <Text style={styles.cardHeading}>Confirm & Book Delivery</Text>
-                
+                <View style={styles.addressSummaryCard}>
+                  <Text style={styles.addressType}>Pickup · {booking.pickup?.positionKind || 'unconfirmed'}</Text>
+                  <Text style={styles.addressText}>{booking.pickup?.address}</Text>
+                  {!!booking.pickup?.uncertaintyNote && <Text style={styles.placeSub}>{booking.pickup.uncertaintyNote}</Text>}
+                  <View style={styles.addressDivider} />
+                  <Text style={styles.addressType}>Destination · {booking.destination?.positionKind || 'unconfirmed'}</Text>
+                  <Text style={styles.addressText}>{booking.destination?.address}</Text>
+                  {!!booking.destination?.uncertaintyNote && <Text style={styles.placeSub}>{booking.destination.uncertaintyNote}</Text>}
+                </View>
+                <Text style={styles.cardSubheading}>The fare below is calculated by the server from these confirmed points. It is not estimated on the phone.</Text>
+
                 <View style={styles.quoteSummaryBox}>
                   <Text style={styles.quoteAmount}>{quoted ? ghc(quoted.amount_minor) : 'Updating Fare...'}</Text>
                   <Text style={styles.quoteDetails}>Authoritative Delivery Fare ({quoted?.vehicle || booking.vehicle})</Text>
@@ -1290,6 +1136,11 @@ export default function CustomerApp() {
                     style={[styles.gpsDetectBtn, { marginTop: 8 }]}>
                     <Text style={styles.gpsDetectText}>📍 Use Current Location for Food</Text>
                   </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => setFoodPlaceOpen(true)}
+                    style={[styles.gpsDetectBtn, { marginTop: 8 }]}>
+                    <Text style={styles.gpsDetectText}>Search, map pin, or enter address</Text>
+                  </TouchableOpacity>
 
                   <Text style={[styles.inputLabel, { marginTop: 12 }]}>Handover & Landmark Instructions (Optional)</Text>
                   <TextInput
@@ -1465,151 +1316,23 @@ export default function CustomerApp() {
           </View>
         )}
       </ScrollView>
+      )}
+      {foodPlaceOpen && (
+        <Modal visible animationType="slide" onRequestClose={() => setFoodPlaceOpen(false)}>
+          <LocationExperience
+            mode="single"
+            title="Food delivery location"
+            callApi={call}
+            onCancel={() => setFoodPlaceOpen(false)}
+            onConfirmSingle={loc => {
+              setFoodDeliveryAddress(loc.address);
+              setFoodDeliveryCoords({latitude: loc.latitude, longitude: loc.longitude});
+              setFoodPlaceOpen(false);
+              loadFoodRestaurants(loc);
+            }}
+          />
+        </Modal>
+      )}
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
-  center: { alignItems: 'center', justifyContent: 'center' },
-  splashTitle: { fontSize: 28, fontWeight: '800', color: colors.text, marginTop: 16 },
-  splashSubtitle: { fontSize: 13, color: colors.primary, letterSpacing: 2, marginTop: 4 },
-  brandIconBox: { width: 56, height: 56, borderRadius: 16, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
-  brandIconText: { fontSize: 32, fontWeight: '900', color: colors.bg },
-  authScroll: { padding: 24, paddingTop: 60 },
-  authHeader: { marginBottom: 28 },
-  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 12 },
-  brandTitle: { fontSize: 24, fontWeight: '800', color: colors.text },
-  brandTagline: { fontSize: 11, fontWeight: '700', color: colors.primary, letterSpacing: 1.5 },
-  authSubtitle: { fontSize: 14, color: colors.textMuted, lineHeight: 20 },
-  authCard: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: 20, borderWidth: 1, borderColor: colors.cardBorder },
-  authCardTitle: { fontSize: 20, fontWeight: '700', color: colors.text, marginBottom: 4 },
-  authCardSubtitle: { fontSize: 13, color: colors.textMuted, marginBottom: 20 },
-  inputGroup: { marginBottom: 14 },
-  inputLabel: { fontSize: 13, fontWeight: '600', color: colors.textMuted, marginBottom: 6 },
-  input: { backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1, borderColor: colors.cardBorder, padding: 12, color: colors.text, fontSize: 14 },
-  phoneInputRow: { flexDirection: 'row', gap: 8 },
-  countryBadge: { backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1, borderColor: colors.cardBorder, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  flag: { fontSize: 16 },
-  countryCode: { color: colors.text, fontWeight: '600', fontSize: 14 },
-  phoneInput: { flex: 1, backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1, borderColor: colors.cardBorder, padding: 12, color: colors.text, fontSize: 14 },
-  primaryBtn: { backgroundColor: colors.primary, borderRadius: radii.md, padding: 14, alignItems: 'center', justifyContent: 'center' },
-  primaryBtnText: { color: colors.bg, fontSize: 15, fontWeight: '700' },
-  secondaryBtn: { backgroundColor: colors.card, borderRadius: radii.md, padding: 14, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.cardBorder },
-  secondaryBtnText: { color: colors.text, fontSize: 14, fontWeight: '600' },
-  dangerBtn: { backgroundColor: '#7F1D1D', borderRadius: radii.md, padding: 12, alignItems: 'center', justifyContent: 'center' },
-  dangerBtnText: { color: '#FCA5A5', fontSize: 13, fontWeight: '700' },
-  switchAuthBtn: { marginTop: 16, alignItems: 'center', padding: 8 },
-  switchAuthText: { color: colors.primary, fontSize: 13, fontWeight: '600' },
-  errorBox: { backgroundColor: '#450A0A', padding: 12, borderRadius: radii.md, marginHorizontal: 16, marginTop: 8, borderWidth: 1, borderColor: colors.danger },
-  errorText: { color: '#F87171', fontSize: 13, fontWeight: '600' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 48, paddingBottom: 14, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.cardBorder },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  headerBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
-  headerBadgeText: { fontSize: 18, fontWeight: '900', color: colors.bg },
-  headerTitle: { fontSize: 16, fontWeight: '800', color: colors.text },
-  headerSubtitle: { fontSize: 12, color: colors.textMuted },
-  logoutBtn: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: radii.sm, backgroundColor: colors.card },
-  logoutBtnText: { fontSize: 12, fontWeight: '600', color: colors.textMuted },
-  tabBar: { flexDirection: 'row', backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.cardBorder },
-  tabItem: { flex: 1, paddingVertical: 12, alignItems: 'center' },
-  tabItemActive: { borderBottomWidth: 2, borderBottomColor: colors.primary },
-  tabText: { fontSize: 13, fontWeight: '600', color: colors.textMuted },
-  tabTextActive: { color: colors.primary, fontWeight: '700' },
-  scrollContent: { padding: 16 },
-  stepperRow: { flexDirection: 'row', gap: 8, marginBottom: 14 },
-  stepBadge: { flex: 1, paddingVertical: 8, backgroundColor: colors.card, borderRadius: radii.sm, alignItems: 'center' },
-  stepBadgeActive: { backgroundColor: colors.cardBorder, borderWidth: 1, borderColor: colors.primary },
-  stepBadgeComplete: { backgroundColor: colors.primaryDark },
-  stepBadgeText: { fontSize: 12, fontWeight: '600', color: colors.textMuted },
-  stepBadgeTextActive: { color: colors.primary, fontWeight: '700' },
-  card: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: 16, borderWidth: 1, borderColor: colors.cardBorder, marginBottom: 16 },
-  cardHeading: { fontSize: 18, fontWeight: '700', color: colors.text, marginBottom: 4 },
-  cardSubheading: { fontSize: 13, color: colors.textMuted, marginBottom: 14 },
-  gpsDetectBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.card, padding: 12, borderRadius: radii.md, marginBottom: 12, borderWidth: 1, borderColor: colors.cardBorder },
-  gpsDetectText: { color: colors.primary, fontWeight: '600', fontSize: 13 },
-  searchRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
-  searchActionBtn: { backgroundColor: colors.card, borderRadius: radii.md, paddingHorizontal: 16, justifyContent: 'center', borderWidth: 1, borderColor: colors.cardBorder },
-  searchActionText: { color: colors.primary, fontWeight: '700', fontSize: 13 },
-  dropdownList: { backgroundColor: colors.card, borderRadius: radii.md, marginBottom: 12, borderWidth: 1, borderColor: colors.cardBorder, overflow: 'hidden' },
-  dropdownItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: colors.line },
-  placeTitle: { fontSize: 14, fontWeight: '600', color: colors.text },
-  placeSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
-  chipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 14 },
-  chip: { backgroundColor: colors.card, paddingVertical: 6, paddingHorizontal: 10, borderRadius: radii.full, borderWidth: 1, borderColor: colors.cardBorder },
-  chipText: { fontSize: 12, color: colors.textMuted, fontWeight: '500' },
-  addressSummaryCard: { backgroundColor: colors.card, borderRadius: radii.md, padding: 12, marginBottom: 14, borderWidth: 1, borderColor: colors.cardBorder },
-  addressRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
-  addressIcon: { fontSize: 14 },
-  addressType: { fontSize: 11, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase' },
-  addressText: { fontSize: 13, color: colors.text, marginTop: 2 },
-  addressDivider: { height: 1, backgroundColor: colors.line, marginVertical: 8 },
-  mapContainer: { height: 220, borderRadius: radii.md, overflow: 'hidden', borderWidth: 1, borderColor: colors.cardBorder },
-  vehicleRow: { flexDirection: 'row', gap: 8, marginTop: 6 },
-  vehicleCard: { flex: 1, backgroundColor: colors.card, borderRadius: radii.md, padding: 10, alignItems: 'center', borderWidth: 1, borderColor: colors.cardBorder },
-  vehicleCardActive: { borderColor: colors.primary, backgroundColor: colors.cardBorder },
-  vehicleLabel: { fontSize: 13, fontWeight: '700', color: colors.text },
-  vehicleCap: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
-  quoteSummaryBox: { backgroundColor: colors.card, borderRadius: radii.md, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: colors.cardBorder, marginTop: 10 },
-  quoteAmount: { fontSize: 28, fontWeight: '800', color: colors.primary },
-  quoteDetails: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
-  paymentMethodRow: { flexDirection: 'row', gap: 8, marginTop: 6 },
-  paymentMethodCard: { flex: 1, backgroundColor: colors.card, borderRadius: radii.md, padding: 10, alignItems: 'center', borderWidth: 1, borderColor: colors.cardBorder },
-  paymentMethodCardActive: { borderColor: colors.primary, backgroundColor: colors.cardBorder },
-  paymentMethodText: { fontSize: 13, fontWeight: '700', color: colors.text },
-  cashPayerRow: { marginTop: 14 },
-  pillBtn: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: radii.full, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.cardBorder },
-  pillBtnActive: { backgroundColor: colors.primaryDark, borderColor: colors.primary },
-  pillBtnText: { fontSize: 13, color: colors.text, fontWeight: '600' },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  sectionTitle: { fontSize: 18, fontWeight: '700', color: colors.text },
-  cartBadgeBtn: { backgroundColor: colors.primary, paddingVertical: 6, paddingHorizontal: 12, borderRadius: radii.full },
-  cartBadgeText: { color: colors.bg, fontSize: 12, fontWeight: '700' },
-  restaurantCard: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: colors.cardBorder },
-  restHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  restName: { fontSize: 16, fontWeight: '700', color: colors.text },
-  restOpenBadge: { backgroundColor: '#064E3B', paddingVertical: 3, paddingHorizontal: 8, borderRadius: radii.sm },
-  restOpenText: { color: '#6EE7B7', fontSize: 10, fontWeight: '800' },
-  restCuisine: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
-  restDeliveryInfo: { fontSize: 12, color: colors.primary, marginTop: 6 },
-  modalScreen: { flex: 1, backgroundColor: colors.bg },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 48, paddingBottom: 12, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.cardBorder },
-  modalTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
-  closeBtn: { padding: 8 },
-  closeBtnText: { color: colors.primary, fontWeight: '700', fontSize: 14 },
-  menuCatTitle: { fontSize: 16, fontWeight: '800', color: colors.primary, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 },
-  dishCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, padding: 12, borderRadius: radii.md, marginBottom: 8, borderWidth: 1, borderColor: colors.cardBorder },
-  dishName: { fontSize: 14, fontWeight: '700', color: colors.text },
-  dishPrice: { fontSize: 13, color: colors.primary, fontWeight: '600', marginTop: 2 },
-  addDishBtn: { backgroundColor: colors.card, paddingVertical: 6, paddingHorizontal: 12, borderRadius: radii.md, borderWidth: 1, borderColor: colors.primary },
-  addDishBtnText: { color: colors.primary, fontSize: 12, fontWeight: '700' },
-  modalOverlay: { flex: 1, backgroundColor: '#000000AA', justifyContent: 'center', padding: 20 },
-  dishCustomizerCard: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: 20, borderWidth: 1, borderColor: colors.cardBorder },
-  dishModalTitle: { fontSize: 18, fontWeight: '700', color: colors.text },
-  dishModalPrice: { fontSize: 16, fontWeight: '800', color: colors.primary, marginTop: 4 },
-  modifierTitle: { fontSize: 13, fontWeight: '700', color: colors.textMuted, marginBottom: 6 },
-  modifierOptionRow: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: colors.card, padding: 10, borderRadius: radii.sm, marginBottom: 6, borderWidth: 1, borderColor: colors.cardBorder },
-  modifierOptionRowActive: { borderColor: colors.primary, backgroundColor: colors.cardBorder },
-  optionName: { fontSize: 13, color: colors.text },
-  optionPrice: { fontSize: 13, color: colors.primary, fontWeight: '600' },
-  cartItemRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, padding: 12, borderRadius: radii.md, marginBottom: 8 },
-  cartItemName: { fontSize: 14, fontWeight: '700', color: colors.text },
-  cartItemPrice: { fontSize: 13, color: colors.primary, marginTop: 2 },
-  foodQuoteBox: { backgroundColor: colors.surface, borderRadius: radii.md, padding: 14, marginTop: 16, borderWidth: 1, borderColor: colors.cardBorder },
-  foodSummaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
-  foodSummaryLabel: { fontSize: 14, color: colors.textMuted },
-  foodSummaryVal: { fontSize: 14, color: colors.text, fontWeight: '600' },
-  activeOrderCard: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: colors.cardBorder },
-  orderCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  orderId: { fontSize: 15, fontWeight: '700', color: colors.text },
-  statusBadge: { backgroundColor: colors.card, paddingVertical: 4, paddingHorizontal: 10, borderRadius: radii.full, borderWidth: 1, borderColor: colors.primary },
-  statusBadgeText: { fontSize: 11, fontWeight: '700', color: colors.primary },
-  orderAmount: { fontSize: 14, color: colors.textMuted, marginTop: 6 },
-  otpBanner: { backgroundColor: colors.card, borderRadius: radii.md, padding: 14, marginTop: 12, alignItems: 'center', borderWidth: 1, borderColor: colors.primary },
-  otpBannerTitle: { fontSize: 12, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase' },
-  otpBannerCode: { fontSize: 32, fontWeight: '900', color: colors.primary, letterSpacing: 8, marginVertical: 4 },
-  otpBannerHelp: { fontSize: 11, color: colors.textMuted, textAlign: 'center' },
-  emptyCard: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: 32, alignItems: 'center', marginTop: 20 },
-  emptyTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
-  emptySub: { fontSize: 13, color: colors.textMuted, textAlign: 'center', marginTop: 4 }
-});
