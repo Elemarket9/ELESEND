@@ -10,15 +10,21 @@ jobs:
           POSTGRES_USER: elesend
           POSTGRES_PASSWORD: test-only-password
           POSTGRES_DB: elesend_test_ci
+          PGUSER: elesend
+          PGPASSWORD: test-only-password
+          PGDATABASE: elesend_test_ci
         ports: ['5432:5432']
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U elesend -d elesend_test_ci"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
     env:
       DATABASE_URL: postgres://elesend:test-only-password@localhost:5432/elesend_test_ci
       TEST_DATABASE_URL: postgres://elesend:test-only-password@localhost:5432/elesend_test_ci
+      PGUSER: elesend
+      PGPASSWORD: test-only-password
+      PGDATABASE: elesend_test_ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

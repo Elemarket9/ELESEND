@@ -74,9 +74,19 @@ export function database(url = process.env.DATABASE_URL, options = {}) {
   }
 
   const pool = new pg.Pool(poolConfig);
+  const activeClients = new Set();
+  pool.on('connect', client => {
+    activeClients.add(client);
+    client.once('end', () => activeClients.delete(client));
+  });
+  pool.on('error', () => {});
   return {
     query: (...args) => pool.query(...args),
-    close: () => pool.end(),
+    close: async () => {
+      const closing = [...activeClients].map(client => new Promise(resolve => client.once('end', resolve)));
+      await pool.end();
+      await Promise.allSettled(closing);
+    },
     pool,
     async tx(fn) {
       const c = await pool.connect();

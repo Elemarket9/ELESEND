@@ -9,12 +9,9 @@ import {checkoutService} from '../services/api/checkout.mjs';
 test('concurrent food booking, payment callbacks and cancellation',{skip:!process.env.TEST_DATABASE_URL},async()=>{
  const configured=new URL(process.env.TEST_DATABASE_URL);
  assert.match(configured.pathname,/^\/elesend_test/);
- const name='elesend_test_race_'+randomUUID().replaceAll('-','');
- assert.match(name,/^elesend_test_race_[a-f0-9]{32}$/);
- const admin=database(configured.toString());let db,created=false;
+ const db=database(configured.toString());
  try{
-  await admin.query('CREATE DATABASE "'+name+'"');created=true;
-  configured.pathname='/'+name;db=database(configured.toString());await migrate(db);
+  await migrate(db);
   const customer=randomUUID(),owner=randomUUID(),restaurant=randomUUID(),item=randomUUID();
   for(const [id,kind] of [[customer,'customer'],[owner,'business']])await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'test-only',$3,now())",[id,'+2332'+randomInt(10000000,99999999),kind]);
   await db.query('UPDATE pricing_policies SET active=false');
@@ -51,8 +48,6 @@ test('concurrent food booking, payment callbacks and cancellation',{skip:!proces
    else assert.equal((await db.query('SELECT count(*)::int AS count FROM checkout_unapplied_payments WHERE shipment_id=$1',[next.shipment_id])).rows[0].count,1);
   }
  }finally{
-  if(db)await db.close();
-  if(created)await admin.query('DROP DATABASE "'+name+'" WITH (FORCE)');
-  await admin.close();
+  await db.close();
  }
 });
