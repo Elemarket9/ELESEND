@@ -61,9 +61,12 @@ export default function RiderApp() {
   const [offers, setOffers] = useState([]);
   const [manifest, setManifest] = useState(null);
   const [speed, setSpeed] = useState(null);
+  const [mapReportShipment, setMapReportShipment] = useState(null);
+  const [mapReportNotes, setMapReportNotes] = useState('');
   const [trackingSeconds, setTrackingSeconds] = useState(15);
   const [shifts, setShifts] = useState(null);
   const [offlineCopy, setOfflineCopy] = useState(null);
+  const [vibrationEnabled, setVibrationEnabled] = useState(true);
 
   // Financial & Weekly Settlement State
   const [commSummary, setCommSummary] = useState(null);
@@ -80,6 +83,13 @@ export default function RiderApp() {
   const [challenge, setChallenge] = useState(null);
   const [otp, setOtp] = useState('');
   const [reportedCash, setReportedCash] = useState({});
+
+  // Order-Scoped Real-Time Chat State (Customer & Restaurant)
+  const [riderChatModal, setRiderChatModal] = useState(false);
+  const [riderChatConv, setRiderChatConv] = useState(null);
+  const [riderChatMessages, setRiderChatMessages] = useState([]);
+  const [riderChatInput, setRiderChatInput] = useState('');
+  const [riderUnreadTotal, setRiderUnreadTotal] = useState(0);
 
   const watch = useRef(null);
   const prevOffersRef = useRef(new Set());
@@ -145,7 +155,7 @@ export default function RiderApp() {
           const currentOffers = o || [];
           const currentIds = currentOffers.map(x => x.offerId || x.id);
           const hasNewOffer = currentIds.some(id => !prevOffersRef.current.has(id));
-          if (hasNewOffer && currentOffers.length > 0) {
+          if (vibrationEnabled && hasNewOffer && currentOffers.length > 0) {
             try { Vibration.vibrate([0, 400, 200, 400]); } catch {}
           } else if (currentOffers.length === 0) {
             try { Vibration.cancel(); } catch {}
@@ -444,6 +454,11 @@ export default function RiderApp() {
 
   async function releaseAssignment(shipmentId, reason = 'Unable to complete pickup before custody') {
     await call('POST', '/api/v1/rider/assignments/release', { shipmentId, reason });
+    if (riderChatConv?.shipmentId === shipmentId) {
+      setRiderChatModal(false);
+      setRiderChatConv(null);
+      setRiderChatMessages([]);
+    }
     const m = await call('GET', '/api/v1/rider/manifest').catch(() => null);
     setManifest(m);
     setError('Assignment released for reassignment.');
@@ -456,6 +471,82 @@ export default function RiderApp() {
     setManifest(m);
     setError(`Shipment updated (${action}).`);
   }
+
+  // --- Order-Scoped Real-Time Chat (Customer & Restaurant) ---
+  async function openRiderOrderChat({ conversationType, shipmentId, foodOrderId }) {
+    try {
+      const conv = await call('POST', '/api/v1/chat/conversations', {
+        conversationType,
+        shipmentId: shipmentId || null,
+        foodOrderId: foodOrderId || null
+      });
+      setRiderChatConv(conv);
+      setRiderChatModal(true);
+      await refreshRiderChatMessages(conv.id);
+    } catch (e) {
+      setError(e.message || 'Unable to open order chat');
+    }
+  }
+
+  async function refreshRiderChatMessages(conversationId) {
+    if (!conversationId) return;
+    try {
+      const res = await call('GET', `/api/v1/chat/conversations/${conversationId}/messages`);
+      setRiderChatConv(res.conversation);
+      const msgs = res.messages || [];
+      setRiderChatMessages(msgs);
+      const lastSeq = msgs.length > 0 ? msgs[msgs.length - 1].seq : 0;
+      if (lastSeq > 0) {
+        await call('POST', `/api/v1/chat/conversations/${conversationId}/read`, { upToSeq: lastSeq }).catch(() => null);
+      }
+    } catch (e) {
+      // If rider was reassigned or membership revoked, clear and close immediately
+      setRiderChatModal(false);
+      setRiderChatConv(null);
+      setRiderChatMessages([]);
+    }
+  }
+
+  async function sendRiderChatMessage({ messageType = 'text', bodyText = '', quickReplyKey = null }) {
+    if (!riderChatConv?.id) return;
+    if (messageType === 'text' && !isStationary(speed)) {
+      setError('Stop safely before typing a custom message, or tap a one-tap quick reply.');
+      return;
+    }
+    try {
+      const msg = await call('POST', `/api/v1/chat/conversations/${riderChatConv.id}/messages`, {
+        clientMessageId: Crypto.randomUUID(),
+        messageType,
+        bodyText,
+        quickReplyKey
+      });
+      setRiderChatInput('');
+      setRiderChatMessages(prev => (prev.some(m => m.id === msg.id) ? prev : [...prev, msg]));
+    } catch (e) {
+      setError(e.message || 'Failed to send message');
+    }
+  }
+
+  async function reportRiderChatAbuse(reasonCategory = 'harassment') {
+    if (!riderChatConv?.id) return;
+    try {
+      await call('POST', `/api/v1/chat/conversations/${riderChatConv.id}/report`, {
+        reasonCategory,
+        details: 'Reported by courier from order chat'
+      });
+      Alert.alert('Report Submitted', 'ELESEND Safety & Support has received your report.');
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  useEffect(() => {
+    if (!riderChatModal || !riderChatConv?.id) return;
+    const t = setInterval(() => {
+      refreshRiderChatMessages(riderChatConv.id);
+    }, 3000);
+    return () => clearInterval(t);
+  }, [riderChatModal, riderChatConv?.id]);
 
   // --- Financial & Commission Actions ---
   async function submitMomoRepayment() {
@@ -799,6 +890,15 @@ export default function RiderApp() {
         {/* ================================================================= */}
         {tab === 'Jobs' && (
           <View>
+            {!isStationary(speed) && (
+              <View style={styles.motionWarningBanner}>
+                <Text style={styles.motionWarningTitle}>⚠️ MOTORCYCLE IN MOTION</Text>
+                <Text style={styles.motionWarningSub}>
+                  Speed exceeds 9 km/h. For your safety, stop safely roadside before accepting delivery jobs.
+                </Text>
+              </View>
+            )}
+
             {!online && (
               <View style={styles.offlineNoticeCard}>
                 <Text style={styles.offlineNoticeTitle}>You are currently Offline</Text>
@@ -852,8 +952,9 @@ export default function RiderApp() {
                     accessibilityRole="button"
                     accessibilityLabel={`Accept job for ${o.description || 'Package'} earning ${ghc(o.amount_minor)}`}
                     onPress={() => execute(() => acceptOffer(o))}
-                    style={[styles.primaryBtn, { flex: 2, minHeight: 56 }]}>
-                    <Text style={styles.primaryBtnText}>Accept Job ⚡</Text>
+                    style={[styles.primaryBtn, { flex: 2, minHeight: 56 }, !isStationary(speed) && { opacity: 0.6 }]}
+                    disabled={!isStationary(speed)}>
+                    <Text style={styles.primaryBtnText}>{isStationary(speed) ? 'Accept Job ⚡' : 'Stop to Accept 🛑'}</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -883,6 +984,21 @@ export default function RiderApp() {
                       Payment: {s.payment_method === 'CASH' ? '💵 Cash on Delivery' : '📱 Paid Digitally'}
                     </Text>
 
+                    <Text style={styles.manifestPackageInfo}>
+                      📦 {s.description || 'Standard Package'}
+                    </Text>
+
+                    {Boolean(s.pickup?.address) && (
+                      <Text style={styles.manifestRoutePoint}>
+                        🟢 Pickup: {s.pickup.address}
+                      </Text>
+                    )}
+                    {Boolean(s.destination?.address) && (
+                      <Text style={styles.manifestRoutePoint}>
+                        🏁 Dropoff: {s.destination.address}
+                      </Text>
+                    )}
+
                     {/* Turn-by-Turn GPS Button */}
                     <TouchableOpacity
                       onPress={() => {
@@ -892,6 +1008,26 @@ export default function RiderApp() {
                       style={styles.navButton}>
                       <Text style={styles.navButtonText}>📍 Open Turn-by-Turn Navigation</Text>
                     </TouchableOpacity>
+
+                    {/* Order-Scoped Chat Buttons (Customer & Kitchen) */}
+                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                      <TouchableOpacity
+                        accessibilityRole="button"
+                        accessibilityLabel="Chat with Customer"
+                        onPress={() => execute(() => openRiderOrderChat({ conversationType: 'CUSTOMER_RIDER', shipmentId: s.id, foodOrderId: s.food_order_id }))}
+                        style={[styles.secondaryBtn, { flex: 1, minHeight: 46, borderColor: colors.primary }]}>
+                        <Text style={[styles.secondaryBtnText, { color: colors.primary }]}>💬 Chat Customer</Text>
+                      </TouchableOpacity>
+                      {Boolean(s.food_order_id || s.restaurant_id) && (
+                        <TouchableOpacity
+                          accessibilityRole="button"
+                          accessibilityLabel="Chat with Restaurant Kitchen"
+                          onPress={() => execute(() => openRiderOrderChat({ conversationType: 'RIDER_RESTAURANT', shipmentId: s.id, foodOrderId: s.food_order_id }))}
+                          style={[styles.secondaryBtn, { flex: 1, minHeight: 46 }]}>
+                          <Text style={styles.secondaryBtnText}>🍲 Chat Kitchen</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
 
                     {/* Verification & Handover Action Buttons */}
                     {s.state === 'RIDER_ASSIGNED' && (
@@ -920,6 +1056,30 @@ export default function RiderApp() {
 
                     {['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(s.state) && (
                       <View>
+                        {/* Call Customer for Unclear Entrance / Unmapped Road (Phase 5) */}
+                        <View style={{ flexDirection: 'row', gap: 8, marginVertical: 8 }}>
+                          <TouchableOpacity
+                            accessibilityRole="button"
+                            accessibilityLabel="Call Customer for Directions"
+                            onPress={() => {
+                              const phone = s.recipient_phone || s.customer_phone;
+                              if (phone) Linking.openURL(`tel:${phone}`).catch(() => Alert.alert('Call Failed', `Direct phone: ${phone}`));
+                              else Alert.alert('Customer Phone', 'Phone number unavailable for this shipment.');
+                            }}
+                            style={[styles.secondaryBtn, { flex: 1, borderColor: colors.primary, minHeight: 48, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6 }]}>
+                            <Text style={{ fontSize: 16 }}>📞</Text>
+                            <Text style={[styles.secondaryBtnText, { color: colors.primary }]}>Call Customer</Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            accessibilityRole="button"
+                            accessibilityLabel="Help Improve ELESEND Map"
+                            onPress={() => { setMapReportNotes(''); setMapReportShipment(s.id); }}
+                            style={[styles.secondaryBtn, { flex: 1, minHeight: 48, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6 }]}>
+                            <Text style={{ fontSize: 16 }}>🗺️</Text>
+                            <Text style={styles.secondaryBtnText}>Improve Map</Text>
+                          </TouchableOpacity>
+                        </View>
                         {s.payment_method === 'CASH' && !reportedCash[s.id] && (
                           <View style={styles.codWarningBanner}>
                             <Text style={styles.codWarningTitle}>⚠️ CASH ON DELIVERY REQUIRED</Text>
@@ -989,6 +1149,24 @@ export default function RiderApp() {
             )}
 
             {/* Handover OTP Entry Modal */}
+            <Modal visible={Boolean(mapReportShipment)} animationType="fade" transparent onRequestClose={() => setMapReportShipment(null)}>
+              <View style={styles.otpCard}>
+                <Text style={styles.otpCardTitle}>Report a missing road</Text>
+                <Text>Stop safely and describe the issue. Reports require review before map publication.</Text>
+                <TextInput accessibilityLabel="Map report description" value={mapReportNotes} onChangeText={setMapReportNotes} placeholder="Describe the missing road" multiline />
+                <TouchableOpacity accessibilityRole="button" onPress={() => execute(async () => {
+                  if (!isStationary(speed)) throw Error('Stop safely before reporting a map issue');
+                  if (mapReportNotes.trim().length < 10) throw Error('Describe the issue in at least 10 characters');
+                  const permission=await Location.requestForegroundPermissionsAsync();
+                  if (permission.status !== 'granted') throw Error('Location permission is required for a map report');
+                  const position=await Location.getCurrentPositionAsync({accuracy:Location.Accuracy.High});
+                  await call('POST','/api/v1/rider/map-report',{shipmentId:mapReportShipment,reportType:'missing_road',latitude:position.coords.latitude,longitude:position.coords.longitude,notes:mapReportNotes.trim(),currentSpeedMps:Math.max(0,position.coords.speed ?? speed ?? 0)});
+                  setMapReportShipment(null);
+                  Alert.alert('Report received','Your observation is awaiting geographic review.');
+                })}><Text>Submit for review</Text></TouchableOpacity>
+                <TouchableOpacity accessibilityRole="button" onPress={() => setMapReportShipment(null)}><Text>Cancel</Text></TouchableOpacity>
+              </View>
+            </Modal>
             <Modal visible={Boolean(activeParcel && challenge)} animationType="fade" transparent>
               <View style={styles.modalOverlay}>
                 <View style={styles.otpCard}>
@@ -1034,6 +1212,102 @@ export default function RiderApp() {
                       <Text style={styles.primaryBtnText}>Verify & Complete</Text>
                     </TouchableOpacity>
                   </View>
+                </View>
+              </View>
+            </Modal>
+
+            {/* Rider Order-Scoped Real-Time Chat Modal */}
+            <Modal visible={riderChatModal} animationType="slide" onRequestClose={() => setRiderChatModal(false)}>
+              <View style={[styles.screen, { paddingTop: 48, paddingHorizontal: 16, paddingBottom: 16 }]}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: colors.cardBorder }}>
+                  <View>
+                    <Text style={{ fontSize: 16, fontWeight: '800', color: colors.text }}>
+                      💬 {riderChatConv?.conversationType || 'Order Chat'}
+                    </Text>
+                    <Text style={{ fontSize: 11, color: colors.textMuted }}>
+                      Assignment Epoch #{riderChatConv?.assignmentEpoch || 1} • {riderChatConv?.state || 'ACTIVE'}
+                    </Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <TouchableOpacity
+                      onPress={() => reportRiderChatAbuse('harassment')}
+                      style={{ backgroundColor: '#450A0A', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 }}>
+                      <Text style={{ color: '#FCA5A5', fontSize: 11, fontWeight: '700' }}>🚩 Report</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => setRiderChatModal(false)}
+                      style={{ backgroundColor: colors.card, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 }}>
+                      <Text style={{ color: colors.text, fontSize: 12, fontWeight: '700' }}>✕ Close</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                <ScrollView style={{ flex: 1, marginVertical: 12 }}>
+                  {riderChatMessages.map(msg => {
+                    const isMine = msg.senderRole === 'rider';
+                    return (
+                      <View
+                        key={msg.id}
+                        style={{
+                          alignSelf: isMine ? 'flex-end' : 'flex-start',
+                          backgroundColor: isMine ? colors.primaryDark : colors.surface,
+                          borderRadius: 10,
+                          padding: 10,
+                          marginBottom: 8,
+                          maxWidth: '84%',
+                          borderWidth: 1,
+                          borderColor: isMine ? colors.primary : colors.cardBorder
+                        }}>
+                        <Text style={{ fontSize: 10, color: colors.textMuted, fontWeight: '700' }}>
+                          {String(msg.senderRole || '').toUpperCase()} • #{msg.seq}
+                        </Text>
+                        <Text style={{ fontSize: 13, color: colors.text, marginTop: 2 }}>
+                          {msg.bodyText || (msg.messageType === 'location_pin' ? `📍 Pin: ${msg.locationPin?.label || ''}` : '')}
+                        </Text>
+                        <Text style={{ fontSize: 10, color: colors.textMuted, marginTop: 4, textAlign: 'right' }}>
+                          {msg.deliveryStatus || 'SENT'}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+
+                {/* Stationary-Safe Large Quick-Reply Buttons */}
+                <Text style={{ fontSize: 11, color: colors.textMuted, marginBottom: 6 }}>
+                  ⚡ One-Tap Safe Courier Replies:
+                </Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ maxHeight: 44, marginBottom: 10 }}>
+                  {[
+                    { key: 'rider_on_my_way', label: "I'm on my way." },
+                    { key: 'rider_arrived_pickup', label: "I've arrived at the pickup point." },
+                    { key: 'rider_confirm_entrance', label: 'Please confirm the entrance.' },
+                    { key: 'rider_traffic_delay', label: 'There is a delay due to traffic.' },
+                    { key: 'rider_waiting_gate', label: "I'm waiting at the gate." }
+                  ].map(preset => (
+                    <TouchableOpacity
+                      key={preset.key}
+                      onPress={() => sendRiderChatMessage({ messageType: 'quick_reply', quickReplyKey: preset.key, bodyText: preset.label })}
+                      style={{ backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.primary, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 8, marginRight: 8 }}>
+                      <Text style={{ color: colors.text, fontSize: 12, fontWeight: '700' }}>{preset.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TextInput
+                    style={[styles.input, { flex: 1 }]}
+                    editable={isStationary(speed)}
+                    placeholder={isStationary(speed) ? 'Type message (when stationary)...' : 'Stop moving to type custom text'}
+                    placeholderTextColor={colors.textMuted}
+                    value={riderChatInput}
+                    onChangeText={setRiderChatInput}
+                  />
+                  <TouchableOpacity
+                    disabled={!isStationary(speed)}
+                    onPress={() => sendRiderChatMessage({ messageType: 'text', bodyText: riderChatInput })}
+                    style={[styles.primaryBtn, { minHeight: 46, paddingHorizontal: 18 }, !isStationary(speed) && { opacity: 0.5 }]}>
+                    <Text style={styles.primaryBtnText}>Send</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
             </Modal>
@@ -1228,6 +1502,10 @@ const styles = StyleSheet.create({
   codWarningBanner: { backgroundColor: '#78350F', borderRadius: radii.md, padding: 12, marginTop: 10, borderWidth: 1, borderColor: '#F59E0B' },
   codWarningTitle: { color: '#FDE68A', fontSize: 12, fontWeight: '800', letterSpacing: 0.5 },
   codWarningSub: { color: '#FEF3C7', fontSize: 12, marginTop: 2, lineHeight: 16 },
+  motionWarningBanner: { backgroundColor: '#451A03', borderRadius: radii.md, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: '#D97706' },
+  motionWarningTitle: { color: '#FCD34D', fontSize: 12, fontWeight: '800', letterSpacing: 0.5 },
+  motionWarningSub: { color: '#FEF3C7', fontSize: 12, marginTop: 2, lineHeight: 16 },
+  manifestPackageInfo: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
   modalCodAlert: { backgroundColor: '#451A03', borderRadius: radii.md, padding: 12, marginBottom: 14, borderWidth: 1, borderColor: '#D97706' },
   modalCodAlertTitle: { color: '#FCD34D', fontSize: 12, fontWeight: '800' },
   modalCodAlertText: { color: '#FEF3C7', fontSize: 12, marginTop: 2 },

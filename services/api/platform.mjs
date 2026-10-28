@@ -10,9 +10,13 @@ import {requireFoodPayment} from './food-payment.mjs';
 import {calculateQuote} from './pricing.mjs';
 import {getSurgeMultiplier,validateGhanaBoundary} from './pricing-surge.mjs';
 import {measuredSurge} from './pricing-surge.mjs';
+import {haversine} from './dispatch-geometry.mjs';
 import {featureService} from './algorithms/features.mjs';
 import {detectFraudSignals} from './algorithms/fraud.mjs';
 import {marketService} from './markets.mjs';
+import {getRedisClient} from './infrastructure/cache/redis.mjs';
+import {promotionEngine} from './promotion-engine.mjs';
+import {disconnectRealtimeUser} from './chat-engine.mjs';
 const id=()=>randomUUID();
 const uuid=z.string().uuid();
 const registration=z.object({phone:z.string().max(30),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional()}).strict();
@@ -119,7 +123,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   }
   await db.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '12 hours')",[hash(token),u.id]);return {token,user:{id:u.id,kind:u.kind}};
  },
- async authenticate(token){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const u=(await db.query("SELECT u.id,u.kind FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR s.admin_mfa_verified=true)",[hash(token)])).rows[0];check(u,401,'Session expired or administrator MFA required');return u;},
+ async authenticate(token){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const u=(await db.query("SELECT u.id,u.kind,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR s.admin_mfa_verified=true)",[hash(token)])).rows[0];check(u,401,'Session expired or administrator MFA required');if(u.kind==='rider'){const r=(await db.query("SELECT r.status, c.status AS company_status, r.company_id FROM riders r LEFT JOIN companies c ON c.id=r.company_id WHERE r.id=$1",[u.id])).rows[0];check(r&&r.status==='approved'&&(!r.company_id||r.company_status==='approved'),403,'Rider account suspended or not approved');}if(u.kind==='company'){const c=(await db.query("SELECT status FROM companies WHERE owner_id=$1",[u.id])).rows[0];check(c&&c.status==='approved',403,'Company suspended or not approved');}return u;},
  async logout(token){await db.query('DELETE FROM sessions WHERE token_hash=$1',[hash(token)]);return {ok:true};},
  async setPricing(actor,input){const v=z.object({baseMinor:z.number().int().min(1).max(1000000),perKmMinor:z.number().int().min(1).max(100000),commissionBps:z.number().int().min(0).max(10000).default(1300),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null),perMinuteMinor:z.number().int().min(0).max(100000).default(0),waitPerMinuteMinor:z.number().int().min(0).max(100000).default(0),perExtraStopMinor:z.number().int().min(0).max(1000000).default(0)}).strict().parse(input);
   return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');await c.query('UPDATE pricing_policies SET active=false WHERE active AND vehicle IS NULL');const pid=id();await c.query('INSERT INTO pricing_policies(id,base_minor,per_km_minor,commission_bps,commission_mode,commission_fixed_minor,commission_cap_minor,per_minute_minor,wait_per_minute_minor,per_extra_stop_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[pid,v.baseMinor,v.perKmMinor,v.commissionBps,v.commissionMode,v.commissionFixedMinor,v.commissionCapMinor,v.perMinuteMinor,v.waitPerMinuteMinor,v.perExtraStopMinor]);await audit(c,actor.id,'pricing.created',pid);return {id:pid};});
@@ -162,12 +166,33 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   });
  },
  async approve(actor,type,target,status){check(['riders','companies'].includes(type),400);uuid.parse(target);check(['approved','suspended','rejected'].includes(status),400);
-  return db.tx(async c=>{await permission(c,actor,'verification:write');const result=await c.query(`UPDATE ${type} SET status=$2 WHERE id=$1 RETURNING id`,[target,status]);check(result.rowCount,404);await audit(c,actor.id,type+'.'+status,target);return {ok:true};});
+  return db.tx(async c=>{await permission(c,actor,'verification:write');
+   if(type==='riders'){
+    const result=await c.query('UPDATE riders SET status=$2,online=CASE WHEN $2=\'approved\' THEN online ELSE false END WHERE id=$1 RETURNING id',[target,status]);check(result.rowCount,404);
+    if(status!=='approved'){
+     await c.query('DELETE FROM sessions WHERE user_id = $1',[target]);disconnectRealtimeUser(target,'account_'+status);await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[target]);
+     await c.query("UPDATE notification_jobs SET state='expired',lease_until=NULL WHERE recipient_id=$1 AND kind='dispatch_offer' AND state IN ('pending','sending')",[target]);
+     getRedisClient().removeRiderLocation(target).catch(()=>{});
+    }
+   }else{
+    const result=await c.query('UPDATE companies SET status=$2 WHERE id=$1 RETURNING id',[target,status]);check(result.rowCount,404);
+    if(status!=='approved'){
+     await c.query('DELETE FROM sessions WHERE user_id = (SELECT owner_id FROM companies WHERE id = $1) OR user_id IN (SELECT id FROM riders WHERE company_id = $1)',[target]);
+     const ownerRow = (await c.query('SELECT owner_id FROM companies WHERE id = $1', [target])).rows[0];
+     if (ownerRow) disconnectRealtimeUser(ownerRow.owner_id, 'company_' + status);
+     const companyRiders=(await c.query('UPDATE riders SET online=false WHERE company_id=$1 RETURNING id',[target])).rows;
+     await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE status='offered' AND rider_id IN (SELECT id FROM riders WHERE company_id=$1)",[target]);
+     await c.query("UPDATE notification_jobs SET state='expired',lease_until=NULL WHERE kind='dispatch_offer' AND state IN ('pending','sending') AND recipient_id IN (SELECT id FROM riders WHERE company_id=$1)",[target]);
+     for(const cr of companyRiders){getRedisClient().removeRiderLocation(cr.id).catch(()=>{});disconnectRealtimeUser(cr.id,'company_'+status);}
+    }
+   }
+   await audit(c,actor.id,type+'.'+status,target);return {ok:true};
+  });
  },
  async availability(actor,input){const v=z.object({online:z.boolean()}).strict().parse(input);return db.tx(async c=>{const r=await rider(c,actor);
    if(v.online&&process.env.NODE_ENV==='production')await requireVerifiedPhone(c,actor);
    if(v.online&&r.vehicle==='car')check((await c.query("SELECT 1 FROM rider_vehicle_registrations WHERE rider_id=$1 AND vehicle='car' AND verification_status='approved'",[actor.id])).rowCount,403,'Car must be manually verified before going online');
-   await c.query('UPDATE riders SET online=$2 WHERE id=$1',[actor.id,v.online]);if(!v.online)await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[actor.id]);return v;});},
+   await c.query('UPDATE riders SET online=$2 WHERE id=$1',[actor.id,v.online]);if(!v.online){await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[actor.id]);getRedisClient().removeRiderLocation(actor.id).catch(()=>{});}return v;});},
  async quote(actor,input){check(['customer','business'].includes(actor.kind),403);
   // Do not accept live bookings when an essential custody-verification provider is absent.
   if(process.env.NODE_ENV==='production'){
@@ -221,7 +246,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async accept(actor,sid,offerId){check(dispatch,503,'Dispatch engine unavailable');return dispatch.accept(actor,sid,offerId);},
  async get(actor,sid){uuid.parse(sid);const s=(await db.query('SELECT * FROM shipments WHERE id=$1',[sid])).rows[0];check(s,404);await access(db,actor,s);const q=(await db.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];return {...s,details:q.request};},
  async list(actor){
-  const baseQuery=`SELECT s.*, (SELECT id FROM food_orders WHERE shipment_id=s.id) AS food_order_id, q.request AS details, q.request->'pickup' AS pickup, q.request->'destination' AS destination FROM shipments s JOIN quotes q ON q.id=s.quote_id`;
+  const baseQuery=`SELECT s.*, (SELECT id FROM food_orders WHERE shipment_id=s.id) AS food_order_id, (SELECT phone FROM users WHERE id=s.rider_id) AS rider_phone, q.request AS details, q.request->'pickup' AS pickup, q.request->'destination' AS destination FROM shipments s JOIN quotes q ON q.id=s.quote_id`;
   if(['customer','business'].includes(actor.kind))return (await db.query(`${baseQuery} WHERE s.customer_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
   if(actor.kind==='rider')return (await db.query(`${baseQuery} WHERE s.rider_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
   if(actor.kind==='company')return (await db.query(`${baseQuery} JOIN companies c ON c.id=s.company_id WHERE c.owner_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
@@ -299,14 +324,26 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
      check(collection&&collection.reported_status==='reported_full'&&Number(collection.reported_minor)===Number(s.amount_minor),409,'Full cash collection report required for normal handover. Open a payment dispute or exception/return flow for unpaid or partial cash.');
     }else check(s.paid,409,'Digital payment must be verified');
     await c.query("UPDATE shipments SET state='COMPLETED',completed_at=now() WHERE id=$1",[sid]);
-    const fo=(await c.query('SELECT id, subtotal_minor, food_commission_bps, food_commission_minor, restaurant_id FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[sid])).rows[0];
+    const fo=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[sid])).rows[0];
     if(fo){
-     const food=(await c.query('SELECT * FROM food_orders WHERE id=$1',[fo.id])).rows[0];
+     const food=fo;
      await requireFoodPayment(c,food);
      await c.query("UPDATE food_orders SET state='DELIVERED', payment_status='PAID', completed_at=now(), updated_at=now() WHERE id=$1",[fo.id]);
-     const grossSales=fo.subtotal_minor, commBps=fo.food_commission_bps, commMinor=fo.food_commission_minor, netPayable=grossSales-commMinor;
-     await c.query(`INSERT INTO restaurant_settlements(order_id,restaurant_id,gross_sales_minor,commission_bps,commission_minor,net_payable_minor,status)
-       VALUES($1,$2,$3,$4,$5,$6,'accrued') ON CONFLICT(order_id) DO NOTHING`,[fo.id,fo.restaurant_id,grossSales,commBps,commMinor,netPayable]);
+     const grossSales=Number(fo.subtotal_minor);
+     const restDiscount=Number(fo.restaurant_funded_discount_minor||0);
+     const elesendSubsidy=Number(fo.elesend_funded_discount_minor||0);
+     const commBps=Number(fo.food_commission_bps);
+     const commMinor=Number(fo.food_commission_minor);
+     const netPayable=grossSales-restDiscount-commMinor;
+     const commBasis=fo.commission_calculation_basis||'gross_subtotal';
+     const commBase=Number(fo.commission_base_minor??grossSales);
+     await c.query(`INSERT INTO restaurant_settlements(
+       order_id,restaurant_id,gross_sales_minor,restaurant_discount_minor,elesend_subsidy_minor,
+       commission_bps,commission_minor,net_payable_minor,commission_basis,commission_base_minor,
+       commission_snapshot,promotion_snapshot,status
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'accrued') ON CONFLICT(order_id) DO NOTHING`,
+      [fo.id,fo.restaurant_id,grossSales,restDiscount,elesendSubsidy,commBps,commMinor,netPayable,commBasis,commBase,JSON.stringify(fo.commission_snapshot||{}),JSON.stringify(fo.promotion_snapshot||{})]);
+     await promotionEngine(db).finalizeOrderPromotions(c,fo.id);
     }
     const entitlementMinor = Number(BigInt(s.amount_minor) - BigInt(s.commission_minor));
     await c.query('INSERT INTO financial_entries(shipment_id,beneficiary_id,customer_charge_minor,commission_minor,entitlement_minor,payout_status) VALUES($1,$2,$3,$4,$5,$6)',[sid,s.company_id??actor.id,s.amount_minor,s.commission_minor,entitlementMinor,s.payment_method==='CASH'?'cash_rider_reported':'held']);
@@ -336,18 +373,46 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     const plan=s.rider_id?(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[s.rider_id])).rows[0]:null;
     if(plan)await c.query('UPDATE rider_dispatch_plans SET stops=$2,revision=revision+1,updated_at=now() WHERE rider_id=$1',[s.rider_id,JSON.stringify(removeShipment(plan.stops,sid))]);
     await c.query('DELETE FROM dispatch_commitments WHERE shipment_id=$1',[sid]);
-    if(s.rider_id)await c.query('UPDATE locations SET shipment_id=NULL,updated_at=now() WHERE rider_id=$1 AND shipment_id=$2',[s.rider_id,sid]);
+    if(s.rider_id)await c.query('DELETE FROM locations WHERE rider_id=$1 AND shipment_id=$2',[s.rider_id,sid]);
     const fo=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[sid])).rows[0];
     if(fo&&!['DELIVERED','CANCELLED','REJECTED'].includes(fo.state)){
      await requestCheckoutRefund(c,s,v.reason||'Returned after delivery failure');
      await c.query("UPDATE food_orders SET state='CANCELLED',updated_at=now() WHERE id=$1",[fo.id]);
+     await promotionEngine(db).releaseOrderPromotions(c,fo.id,{reason:'food_order_returned',isRefund:Boolean(s.paid)});
      await c.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[actor.id,'food_order.returned_cancelled:'+v.reason,fo.id]);
     }
    }
    await audit(c,actor.id,'shipment.'+v.action,sid);await event(c,sid,to);return {state:to,refundReviewRequired:(v.action==='cancel'||v.action==='returned')&&s.paid};
   });
  },
- async location(actor,sid,input){const v=z.object({latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict().parse(input);return db.tx(async c=>{await rider(c,actor);const s=await locked(c,sid);check(s.rider_id===actor.id&&['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state),403);await c.query('INSERT INTO locations(shipment_id,rider_id,latitude,longitude) VALUES($1,$2,$3,$4) ON CONFLICT(shipment_id) DO UPDATE SET latitude=$3,longitude=$4,updated_at=now()',[sid,actor.id,v.latitude,v.longitude]);return {ok:true};});},
+ async location(actor,sid,input){
+  const v=z.object({
+   latitude:z.number().min(-90).max(90),
+   longitude:z.number().min(-180).max(180),
+   accuracyMeters:z.number().min(0).max(120).optional(),
+   observedAt:z.string().datetime().optional()
+  }).strict().parse(input);
+  validateGhanaBoundary(v.latitude,v.longitude);
+  if(v.observedAt){
+   const ageMs=Date.now()-new Date(v.observedAt).getTime();
+   check(Number.isFinite(ageMs)&&ageMs>=-60000&&ageMs<=180000,422,'Stale or future-dated GPS sample rejected');
+  }
+  return db.tx(async c=>{
+   await rider(c,actor);
+   const s=await locked(c,sid);
+   check(s.rider_id===actor.id&&['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state),403);
+   const prev=(await c.query('SELECT latitude,longitude,updated_at FROM locations WHERE shipment_id=$1',[sid])).rows[0];
+   if(prev&&Number.isFinite(Number(prev.latitude))&&Number.isFinite(Number(prev.longitude))&&prev.updated_at){
+    const dtSeconds=Math.max(1,(Date.now()-new Date(prev.updated_at).getTime())/1000);
+    if(dtSeconds<=60){
+     const distMeters=haversine({latitude:Number(prev.latitude),longitude:Number(prev.longitude)},{latitude:v.latitude,longitude:v.longitude});
+     check(distMeters/Math.max(dtSeconds,5)<=60,422,'Impossible GPS velocity leap rejected');
+    }
+   }
+   await c.query('INSERT INTO locations(shipment_id,rider_id,latitude,longitude) VALUES($1,$2,$3,$4) ON CONFLICT(shipment_id) DO UPDATE SET latitude=$3,longitude=$4,updated_at=now()',[sid,actor.id,v.latitude,v.longitude]);
+   return {ok:true};
+  });
+ },
  async tracking(actor,sid){await this.get(actor,sid);return (await db.query("SELECT latitude,longitude,updated_at FROM locations WHERE shipment_id=$1 AND updated_at>now()-interval '24 hours'",[sid])).rows[0]??null;},
  async dispute(actor,sid,input){const v=z.object({category:z.enum(['lost','damaged','payment','misconduct','address','other']),detail:z.string().min(5).max(2000)}).strict().parse(input);await this.get(actor,sid);return db.tx(async c=>{await locked(c,sid);const did=id();await c.query('INSERT INTO disputes(id,shipment_id,reporter_id,category,detail) VALUES($1,$2,$3,$4,$5)',[did,sid,actor.id,v.category,v.detail]);await audit(c,actor.id,'dispute.opened',sid);return {id:did};});},
  async earnings(actor){return (await db.query('SELECT f.* FROM financial_entries f WHERE f.beneficiary_id=$1 OR f.beneficiary_id IN (SELECT id FROM companies WHERE owner_id=$1) ORDER BY f.created_at DESC LIMIT 100',[actor.id])).rows;},

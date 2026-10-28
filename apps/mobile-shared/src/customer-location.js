@@ -11,10 +11,17 @@ export const GHANA_SERVICE_ENVELOPE = Object.freeze({
   maxLon: 1.2
 });
 
+// Maximum age for a fix to be presented as a freshly measured current position.
+export const FRESH_FIX_MAX_AGE_MS = 120000;
+// Maximum age of a cached (last-known) device fix that may be offered as a fallback.
+export const LAST_KNOWN_MAX_AGE_MS = 180000;
+
 export const ACCURACY_TIERS = Object.freeze({
   HIGH: 'high',         // <= 25m: Suitable for exact gate/entrance
   MODERATE: 'moderate', // 25m - 100m: Acceptable street level, adjustment recommended
-  APPROXIMATE: 'approx' // > 100m: Wide area, manual pin adjustment required
+  APPROXIMATE: 'approx', // > 100m: Wide area, manual pin adjustment required
+  UNKNOWN: 'unknown',   // Accuracy metric missing or unverified
+  CUSTOMER_CONFIRMED: 'customer_confirmed' // Explicitly verified or adjusted by the customer
 });
 
 /**
@@ -50,13 +57,23 @@ export function validateCoordinates(coords) {
 /**
  * Evaluates GPS accuracy and timestamp freshness.
  */
-export function evaluateGpsQuality({ accuracy, timestamp, maxAgeMs = 120000 }) {
-  const acc = Number.isFinite(Number(accuracy)) ? Math.max(0, Math.round(Number(accuracy))) : 50;
+export function evaluateGpsQuality({ accuracy, timestamp, maxAgeMs = 120000, isLastKnown = false, customerConfirmed = false }) {
+  const hasNumericAcc = accuracy !== null && accuracy !== undefined && accuracy !== '' && Number.isFinite(Number(accuracy)) && Number(accuracy) > 0;
+  const acc = hasNumericAcc ? Math.max(0, Math.round(Number(accuracy))) : 50;
   
   let tier = ACCURACY_TIERS.HIGH;
   let advisory = null;
 
-  if (acc > 100) {
+  if (customerConfirmed) {
+    tier = ACCURACY_TIERS.CUSTOMER_CONFIRMED;
+    advisory = `Customer-confirmed location${hasNumericAcc ? ` (±${acc}m)` : ''}.`;
+  } else if (isLastKnown) {
+    tier = ACCURACY_TIERS.APPROXIMATE;
+    advisory = `Approximate fix from recent device cache (±${acc}m). Please drag the pin to your exact building or entrance.`;
+  } else if (!hasNumericAcc) {
+    tier = ACCURACY_TIERS.UNKNOWN;
+    advisory = 'GPS accuracy unknown. Please review and drag the pin to your exact building or entrance.';
+  } else if (acc > 100) {
     tier = ACCURACY_TIERS.APPROXIMATE;
     advisory = `Approximate location (±${acc}m). Please drag the pin to your exact building or entrance.`;
   } else if (acc > 25) {
@@ -71,6 +88,7 @@ export function evaluateGpsQuality({ accuracy, timestamp, maxAgeMs = 120000 }) {
 
   return {
     accuracyMeters: acc,
+    hasAccuracyMetric: hasNumericAcc,
     tier,
     isFresh,
     advisory
@@ -80,8 +98,9 @@ export function evaluateGpsQuality({ accuracy, timestamp, maxAgeMs = 120000 }) {
 /**
  * Formats a user-facing label for GPS accuracy.
  */
-export function formatAccuracyLabel(accuracyMeters) {
+export function formatAccuracyLabel(accuracyMeters, isLastKnown = false) {
   const m = Math.max(1, Math.round(Number(accuracyMeters) || 15));
+  if (isLastKnown) return `±${m}m (Recent fix)`;
   if (m <= 25) return `±${m}m (High accuracy)`;
   if (m <= 100) return `±${m}m (Street level)`;
   return `±${m}m (Approximate)`;
@@ -89,6 +108,7 @@ export function formatAccuracyLabel(accuracyMeters) {
 
 /**
  * Orchestrates customer location detection with device permission, timeout, and reverse geocoding.
+ * Includes graceful fallback to getLastKnownPositionAsync for indoor or cold GPS locks.
  */
 export async function detectCustomerLocation({
   locationApi,
@@ -135,25 +155,46 @@ export async function detectCustomerLocation({
     };
   }
 
-  // 3. Acquire current GPS position with timeout
-  let position;
+  // 3. Acquire current GPS position with timeout; fall back to getLastKnownPositionAsync
+  let position = null;
+  let isLastKnown = false;
+  let timeoutHandle = null;
   try {
     const positionPromise = locationApi.getCurrentPositionAsync({
-      accuracy: locationApi.Accuracy?.High ?? 4,
-      maximumAge: 30000
+      accuracy: locationApi.Accuracy?.High ?? 4
     });
 
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Location request timed out')), timeoutMs)
-    );
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Location request timed out')), timeoutMs);
+    });
 
     position = await Promise.race([positionPromise, timeoutPromise]);
   } catch (err) {
-    return {
-      ok: false,
-      error: 'acquisition_failed',
-      message: 'Could not obtain GPS position in time. Please select your location on the map or search manually.'
-    };
+    // Indoor or cold satellite lock fallback: a cached fix is accepted only if it carries a
+    // timestamp proving it is <= 3 minutes old. It is flagged isLastKnown and never presented
+    // as a freshly measured position.
+    if (typeof locationApi.getLastKnownPositionAsync === 'function') {
+      try {
+        const lastKnown = await locationApi.getLastKnownPositionAsync({ maxAge: LAST_KNOWN_MAX_AGE_MS });
+        const ageMs = Date.now() - Number(lastKnown?.timestamp);
+        if (lastKnown?.coords && Number.isFinite(ageMs) && ageMs >= -60000 && ageMs <= LAST_KNOWN_MAX_AGE_MS) {
+          position = lastKnown;
+          isLastKnown = true;
+        }
+      } catch {
+        // Fallback failed
+      }
+    }
+
+    if (!position?.coords) {
+      return {
+        ok: false,
+        error: 'acquisition_failed',
+        message: 'Could not obtain GPS position in time. Please select your location on the map or search manually.'
+      };
+    }
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 
   if (!position?.coords) {
@@ -165,7 +206,16 @@ export async function detectCustomerLocation({
   }
 
   const { latitude, longitude, accuracy } = position.coords;
-  const timestamp = position.timestamp || Date.now();
+  // Refuse fabricated "now" timestamps: without a device timestamp we cannot prove freshness.
+  const rawTs = Number(position.timestamp);
+  if (!Number.isFinite(rawTs)) {
+    return {
+      ok: false,
+      error: 'missing_timestamp',
+      message: 'Device GPS fix had no timestamp. Please retry, search an address, or drop a map pin.'
+    };
+  }
+  const timestamp = rawTs;
 
   // 4. Validate coordinates
   const validation = validateCoordinates({ latitude, longitude });
@@ -179,8 +229,27 @@ export async function detectCustomerLocation({
     };
   }
 
-  // 5. Evaluate quality
-  const quality = evaluateGpsQuality({ accuracy, timestamp });
+  // 5. Evaluate quality. getCurrentPositionAsync may still return a cached OS fix
+  // whose timestamp is stale; never present that as a freshly measured position.
+  const ageMs = Date.now() - timestamp;
+  if (!isLastKnown) {
+    if (!Number.isFinite(ageMs) || ageMs < -60000 || ageMs > LAST_KNOWN_MAX_AGE_MS) {
+      return {
+        ok: false,
+        error: 'stale_fix',
+        message: 'Device returned a stale GPS fix. Please retry outdoors, search an address, or drop a map pin.'
+      };
+    }
+    if (ageMs > FRESH_FIX_MAX_AGE_MS) {
+      isLastKnown = true;
+    }
+  }
+  const quality = evaluateGpsQuality({
+    accuracy,
+    timestamp,
+    maxAgeMs: FRESH_FIX_MAX_AGE_MS,
+    isLastKnown
+  });
 
   // 6. Reverse geocode via private backend
   let addressInfo = null;
@@ -205,8 +274,10 @@ export async function detectCustomerLocation({
     },
     accuracyMeters: quality.accuracyMeters,
     accuracyTier: quality.tier,
-    accuracyLabel: formatAccuracyLabel(quality.accuracyMeters),
+    accuracyLabel: formatAccuracyLabel(quality.accuracyMeters, isLastKnown),
     advisory: quality.advisory,
+    isFresh: !isLastKnown && quality.isFresh,
+    isLastKnown,
     reverseGeocode: addressInfo,
     displayAddress,
     recognizedNearby: addressInfo?.nearestPlace || addressInfo?.locality || null,

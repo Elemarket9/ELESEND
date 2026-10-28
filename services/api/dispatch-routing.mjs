@@ -1,6 +1,8 @@
 import {check} from './security.mjs';
+import {haversine} from './dispatch-geometry.mjs';
+
 /** Distances and durations are ONLY from a configured road-network routing service. */
-export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,fetchImpl=fetch}){
+export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,maxSnapMeters=2500,fetchImpl=fetch}){
  function base(value){const u=new URL(value);check(['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash,500,'Routing base URL must not contain secrets/query');return u;}
  check(endpoint||vehicleRoutes,500,'OSRM graph configuration required');
  const origin=endpoint?base(endpoint):null;
@@ -9,6 +11,7 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,f
   const car=vehicleRoutes.car;if(car)for(const [vehicle,entry] of Object.entries(vehicleRoutes))if(vehicle!=='car')check(base(entry.endpoint).toString()!==base(car.endpoint).toString(),500,'Non-car vehicles require a separate verified graph endpoint');
  }
  check(Number.isInteger(timeoutMs)&&timeoutMs>=200&&timeoutMs<=15000,500,'Invalid routing timeout');
+ check(Number.isFinite(maxSnapMeters)&&maxSnapMeters>=50&&maxSnapMeters<=10000,500,'Invalid routing snap threshold');
  check(profiles&&typeof profiles==='object',500,'Routing vehicle profiles required');
  function profile(vehicle){const p=vehicleRoutes?vehicleRoutes[vehicle]?.profile:profiles[vehicle];check(typeof p==='string'&&/^[a-zA-Z0-9_-]{1,32}$/.test(p),503,'No configured road graph for vehicle');return p;}
  function coords(point){check(point&&Number.isFinite(point.latitude)&&Math.abs(point.latitude)<=90&&Number.isFinite(point.longitude)&&Math.abs(point.longitude)<=180,400,'Invalid coordinates');return `${point.longitude},${point.latitude}`;}
@@ -27,13 +30,39 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,f
    check(!['NoRoute','NoTable'].includes(body.code),422,'No connected road path');check(body.code==='Ok',503,'Routing service could not resolve road path');return body;
   }finally{inFlight--;}
  }
+ function validateWaypoints(waypoints){
+  if(!Array.isArray(waypoints))return;
+  for(const wp of waypoints){
+   if(wp&&Number.isFinite(wp.distance)){
+    check(wp.distance<=maxSnapMeters,422,'No connected road path');
+   }
+  }
+ }
  function normalize(distance,duration){check(Number.isFinite(distance)&&distance>=0&&distance<=10000000&&Number.isFinite(duration)&&duration>=0&&duration<=604800,503,'Invalid road estimate');return {distanceMeters:Math.ceil(distance),durationSeconds:Math.ceil(duration),source:'routing-provider',trafficAware:false};}
  return {
-  async route(from,to,{vehicle='car'}={}){const p=profile(vehicle),body=await request(`/route/v1/${p}/${coords(from)};${coords(to)}?overview=full&geometries=geojson&steps=false`,vehicle);check(body.routes?.length&&body.routes[0].geometry,503,'No connected road route');return {...normalize(body.routes[0].distance,body.routes[0].duration),geometry:body.routes[0].geometry};},
-  async matrix(sources,destination,{vehicle='car'}={}){check(Array.isArray(sources)&&sources.length>0&&sources.length<=30,400,'Invalid matrix');const p=profile(vehicle);
+  async route(from,to,{vehicle='car'}={}){
+   const p=profile(vehicle),body=await request(`/route/v1/${p}/${coords(from)};${coords(to)}?overview=full&geometries=geojson&steps=false`,vehicle);
+   check(body.routes?.length&&body.routes[0].geometry,503,'No connected road route');
+   validateWaypoints(body.waypoints);
+   const straightLine=haversine(from,to);
+   if(straightLine>250){
+    check(Number(body.routes[0].distance)>=straightLine*0.25,422,'No connected road path');
+   }
+   return {...normalize(body.routes[0].distance,body.routes[0].duration),geometry:body.routes[0].geometry};
+  },
+  async matrix(sources,destination,{vehicle='car'}={}){
+   check(Array.isArray(sources)&&sources.length>0&&sources.length<=30,400,'Invalid matrix');const p=profile(vehicle);
    const all=[...sources,destination],last=all.length-1;const body=await request(`/table/v1/${p}/${all.map(coords).join(';')}?sources=${sources.map((_,i)=>i).join(';')}&destinations=${last}&annotations=duration,distance`,vehicle);
-   check(body.durations?.length===sources.length&&body.distances?.length===sources.length,503,'Route matrix response malformed');return sources.map((_,i)=>{
-    const d=body.durations[i]?.[0],m=body.distances[i]?.[0];return d===null||m===null?null:normalize(m,d);
+   check(body.durations?.length===sources.length&&body.distances?.length===sources.length,503,'Route matrix response malformed');
+   validateWaypoints(body.destinations);
+   const srcWps=Array.isArray(body.sources)?body.sources:null;
+   return sources.map((src,i)=>{
+    if(srcWps&&srcWps[i]&&Number.isFinite(srcWps[i].distance)&&srcWps[i].distance>maxSnapMeters)return null;
+    const d=body.durations[i]?.[0],m=body.distances[i]?.[0];
+    if(d===null||m===null||!Number.isFinite(d)||!Number.isFinite(m))return null;
+    const straightLine=haversine(src,destination);
+    if(straightLine>250&&m<straightLine*0.25)return null;
+    return normalize(m,d);
    });
   },
   capabilities:Object.freeze({roadNetwork:true,traffic:false,mapMatching:false,multiVehicleProfileMustBeConfigured:true})

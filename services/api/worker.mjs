@@ -4,9 +4,8 @@
  * Runs background dispatch ticks, notification retries, corridor refreshes,
  * payment reconciliation, sample pruning, and maintenance in a dedicated process.
  * 
- * In containerized cloud environments (AWS ECS, GCP Cloud Run with jobs,
- * Kubernetes, Render, Railway), run this as a standalone background worker
- * separate from stateless, auto-scaled HTTP API instances.
+ * In multi-instance production environments, run this as a standalone background
+ * worker separate from stateless HTTP API instances.
  */
 
 import { database } from './db.mjs';

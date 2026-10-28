@@ -1,9 +1,9 @@
 /**
- * ELESEND Unified Cloud Portability & Configuration Module
+ * ELESEND Unified Environment & Runtime Configuration Module
  * 
  * Provides centralized, validated, and fail-fast environment configuration
- * supporting VPS, Docker, AWS ECS/RDS, GCP Cloud Run/SQL, Render, Railway, Fly.io,
- * and local development/test environments.
+ * supporting local development, test, staging, and containerized production
+ * runtime environments.
  */
 
 import {isIP} from 'node:net';

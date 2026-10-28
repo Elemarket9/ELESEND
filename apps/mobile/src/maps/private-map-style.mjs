@@ -1,10 +1,15 @@
 export const OSM_ATTRIBUTION='© OpenStreetMap contributors';
+export function isLocalOrPrivateMapHost(hostname){
+ if(!hostname)return false;
+ const h=hostname.toLowerCase();
+ return h==='localhost'||h==='127.0.0.1'||h==='10.0.2.2'||/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)||/^192\.168\.\d{1,3}\.\d{1,3}$/.test(h)||/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(h);
+}
 export function privateTileUrl(value,{development=false}={}){
  if(!value)return null;
  if(typeof value!=='string'||value.length>1000)throw Error('Invalid private map tile URL');
  const url=new URL(value);
- const local=['localhost','127.0.0.1','10.0.2.2'].includes(url.hostname);
- if(url.username||url.password||url.search||url.hash||!(url.protocol==='https:'||(development&&local&&url.protocol==='http:')))throw Error('Private map tiles require HTTPS outside emulator development');
+ const local=isLocalOrPrivateMapHost(url.hostname);
+ if(url.username||url.password||url.search||url.hash||!(url.protocol==='https:'||(development&&local&&url.protocol==='http:')))throw Error('Private map tiles require HTTPS outside local development');
  if(!value.includes('{z}')||!value.includes('{x}')||!value.includes('{y}'))throw Error('Private map URL requires z/x/y placeholders');
  if(/(^|\.)(googleapis\.com|google\.com|openstreetmap\.org|mapbox\.com|maptiler\.com|maplibre\.org|geoapify\.com)$/.test(url.hostname))throw Error('Configure your own tile server, not a third-party public service');
  return value;

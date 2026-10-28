@@ -1,4 +1,4 @@
-// QR text encoding is built into the app's React Native 0.81 runtime.
+// CommonJS extension is required because this app declares type: module.
 const {getDefaultConfig} = require('expo/metro-config');
 const config = getDefaultConfig(__dirname);
 module.exports = config;

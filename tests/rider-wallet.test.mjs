@@ -134,7 +134,7 @@ test('rider wallet, COD commission debt, automatic recovery and debt restriction
    assert.equal(w.walletBalanceMinor,2000);assert.equal(w.outstandingDebtMinor,0);
    assert.equal(w.withdrawableMinor,2000,'eligible digital earnings are withdrawable immediately');
    assert.equal(w.lifetime.debtRecoveredFromEarningsMinor,10000);
-   assert.deepEqual((await c.query('SELECT amount_minor FROM rider_debt_recoveries WHERE rider_id=$1 ORDER BY created_at,seq',[rider])).rows.map(r=>Number(r.amount_minor)),[4000,6000]);
+   assert.deepEqual((await c.query('SELECT amount_minor FROM rider_debt_recoveries WHERE rider_id=$1 ORDER BY created_at,seq,amount_minor ASC',[rider])).rows.map(r=>Number(r.amount_minor)),[4000,6000]);
    // Delivery commission is assessed once per delivery; recovery never re-charges commission.
    const fees=(await c.query(`SELECT j.shipment_id,sum(l.amount_minor)::bigint AS fee FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id WHERE l.account='platform_commission_revenue' AND j.shipment_id=ANY($1::uuid[]) GROUP BY j.shipment_id`,[[a.id,b.id]])).rows;
    assert.deepEqual(Object.fromEntries(fees.map(r=>[r.shipment_id,Number(r.fee)])),{[a.id]:1000,[b.id]:2000});

@@ -7,16 +7,23 @@
     "node": ">=22.23.4 <23.0.0 || >=24.22.1 <25.0.0 || >=26.12.1"
   },
   "scripts": {
+    "local:prepare": "node --env-file-if-exists=.env scripts/prepare-local-test.mjs",
+    "local:simulate": "node --env-file-if-exists=.env scripts/local-delivery-simulator.mjs",
+    "local:load": "node --env-file-if-exists=.env scripts/prelaunch-load.mjs",
+    "local:geography": "node --env-file-if-exists=.env scripts/prelaunch-geography.mjs",
+    "local:device": "node --env-file-if-exists=.env scripts/local-device-session.mjs",
     "test": "node --env-file-if-exists=.env --test --test-concurrency=1 tests/*.test.mjs",
     "test:unit": "node --test tests/configuration.test.mjs",
     "start": "node --env-file-if-exists=.env services/api/server.mjs",
     "worker": "node --env-file-if-exists=.env services/api/worker.mjs",
     "db:migrate": "node --env-file-if-exists=.env scripts/migrate.mjs",
+    "migrate": "node --env-file-if-exists=.env scripts/migrate.mjs",
     "admin:create": "node --env-file-if-exists=.env scripts/admin.mjs",
     "admin:mfa:provision": "node --env-file-if-exists=.env scripts/admin-mfa-provision.mjs"
   },
   "dependencies": {
     "pg": "8.16.3",
+    "redis": "^6.3.0",
     "zod": "4.4.0"
   }
 }

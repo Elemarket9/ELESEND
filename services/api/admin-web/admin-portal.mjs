@@ -139,6 +139,8 @@ export function renderAdminPortalHtml() {
         <button class="tab-btn" onclick="switchTab('riskTab', this)">🛡️ Risk Signals & Fraud</button>
         <button class="tab-btn" onclick="switchTab('financeTab', this)">📊 Financial Aging</button>
         <button class="tab-btn" onclick="switchTab('paymentsTab', this)">💳 Payment Methods</button>
+        <button class="tab-btn" onclick="switchTab('promotionsTab', this)">🎁 Restaurant Commissions & Promos</button>
+        <button class="tab-btn" onclick="switchTab('supportChatTab', this)">💬 Support Chat & Moderation</button>
       </div>
 
       <!-- PANEL 1: Dispatch & Algorithms -->
@@ -496,6 +498,220 @@ export function renderAdminPortalHtml() {
         </div>
       </div>
 
+      <!-- PANEL 7: Restaurant Commissions & Promotions -->
+      <div id="promotionsTab" class="panel">
+        <div class="grid-2">
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-title">
+              <span>Global Restaurant Commission Policy</span>
+              <button class="action-btn" onclick="loadPromotionsTab()">Refresh</button>
+            </div>
+            <div class="card-subtitle">Default 10.0% (1,000 bps) food commission & deterministic calculation basis.</div>
+            <form onsubmit="handleSaveRestaurantCommissionSettings(event)">
+              <div class="form-group">
+                <label class="form-label">Default Restaurant Commission %</label>
+                <input type="number" id="restDefaultCommPct" class="form-input" value="10.0" step="0.1" min="0" max="30" required>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Default Calculation Basis</label>
+                <select id="restDefaultCommBasis" class="form-input">
+                  <option value="gross_subtotal">Gross Food Subtotal (Platform Default)</option>
+                  <option value="net_after_restaurant_discount">Net After Restaurant-Funded Discount</option>
+                  <option value="net_after_all_discounts">Net After All Discounts</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Operator Rationale</label>
+                <input type="text" id="restCommRationale" class="form-input" placeholder="Reason for policy update" required>
+              </div>
+              <button type="submit" class="btn-primary">Update Global Restaurant Commission</button>
+            </form>
+          </div>
+
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-title">Merchant-Specific Commission Agreement</div>
+            <div class="card-subtitle">Assign custom contract rate, partner tier, or commission basis per restaurant.</div>
+            <form onsubmit="handleSaveRestaurantAgreement(event)">
+              <div class="form-group">
+                <label class="form-label">Restaurant UUID</label>
+                <input type="text" id="agreeRestId" class="form-input" placeholder="Restaurant ID" required>
+              </div>
+              <div class="grid-2" style="margin-bottom:12px;">
+                <div>
+                  <label class="form-label">Custom Rate %</label>
+                  <input type="number" id="agreeRatePct" class="form-input" placeholder="e.g. 8.0" step="0.1" min="0" max="30">
+                </div>
+                <div>
+                  <label class="form-label">Partner Tier</label>
+                  <select id="agreeTier" class="form-input">
+                    <option value="standard">Standard</option>
+                    <option value="founding">Founding Partner</option>
+                    <option value="strategic">Strategic Partner</option>
+                    <option value="enterprise">Enterprise</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Calculation Basis Override</label>
+                <select id="agreeBasis" class="form-input">
+                  <option value="">Use Global Default</option>
+                  <option value="gross_subtotal">Gross Food Subtotal</option>
+                  <option value="net_after_restaurant_discount">Net After Restaurant Discount</option>
+                  <option value="net_after_all_discounts">Net After All Discounts</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Contract Notes / Justification</label>
+                <input type="text" id="agreeNotes" class="form-input" placeholder="Commercial contract reference" required>
+              </div>
+              <button type="submit" class="btn-primary">Save Merchant Agreement</button>
+            </form>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Create ELESEND-Funded or Joint Co-Funded Promotion Campaign</span>
+          </div>
+          <div class="card-subtitle">ELESEND-funded subsidies never reduce restaurant payout or rider earnings. Joint campaigns require explicit merchant opt-in consent.</div>
+          <form onsubmit="handleCreateAdminPromotion(event)" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px;">
+            <div>
+              <label class="form-label">Campaign Name</label>
+              <input type="text" id="promoName" class="form-input" placeholder="e.g. Accra Food Fest 20%" required>
+            </div>
+            <div>
+              <label class="form-label">Funding Source</label>
+              <select id="promoOwnerType" class="form-input">
+                <option value="elesend">ELESEND Platform-Funded (100%)</option>
+                <option value="joint">Joint Co-Funded Partnership</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Discount Type</label>
+              <select id="promoDiscountType" class="form-input">
+                <option value="percentage_off">Percentage Off (%)</option>
+                <option value="fixed_amount_off">Fixed Amount Off (GH₵)</option>
+                <option value="free_delivery">Free Delivery</option>
+                <option value="discounted_delivery">Discounted Delivery</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Value (% or GH₵)</label>
+              <input type="number" id="promoValue" class="form-input" value="15" step="0.5" min="0" required>
+            </div>
+            <div>
+              <label class="form-label">Promo Code (optional)</label>
+              <input type="text" id="promoCode" class="form-input" placeholder="e.g. ELESEND15">
+            </div>
+            <div>
+              <label class="form-label">Total Budget Cap (GH₵)</label>
+              <input type="number" id="promoBudgetGhc" class="form-input" value="1000" step="10" min="1">
+            </div>
+            <div>
+              <label class="form-label">Restaurant Share % (Joint)</label>
+              <input type="number" id="promoRestSharePct" class="form-input" value="0" min="0" max="100">
+            </div>
+            <div>
+              <label class="form-label">Commission Concession %</label>
+              <input type="number" id="promoCommConcessionPct" class="form-input" value="0" min="0" max="10" step="0.5">
+            </div>
+            <div style="display:flex; align-items:flex-end;">
+              <button type="submit" class="btn-primary">Launch Campaign</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Active & Scheduled Promotion Campaigns</span>
+            <button class="action-btn" onclick="loadPromotionsTab()">Refresh Campaigns</button>
+          </div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Campaign</th>
+                  <th>Owner / Split</th>
+                  <th>Discount</th>
+                  <th>Budget Used</th>
+                  <th>Redemptions</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="adminPromotionsTable">
+                <tr><td colspan="7" style="text-align:center; color:var(--text-muted);">Loading campaigns...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- PANEL 8: Support Chat & Safety Moderation -->
+      <div id="supportChatTab" class="panel">
+        <div class="grid-2">
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-title">
+              <span>Escalated Customer Support Conversations</span>
+              <button class="action-btn" onclick="loadSupportChatTab()">Refresh Queue</button>
+            </div>
+            <div class="card-subtitle">Order-scoped support escalations. Inspecting non-support threads requires an audited justification.</div>
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Conversation</th>
+                    <th>Category / Order</th>
+                    <th>State</th>
+                    <th>Last Message</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="supportConversationsTable">
+                  <tr><td colspan="5" style="text-align:center; color:var(--text-muted);">Loading support queue...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card" style="margin-bottom:0;">
+            <div class="card-title">
+              <span>Chat Abuse & Safety Reports</span>
+            </div>
+            <div class="card-subtitle">Reported messages & participants. Moderate with mandatory resolution notes.</div>
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Report</th>
+                    <th>Category</th>
+                    <th>Reported Message / Details</th>
+                    <th>Status</th>
+                    <th>Moderate</th>
+                  </tr>
+                </thead>
+                <tbody id="abuseReportsTable">
+                  <tr><td colspan="5" style="text-align:center; color:var(--text-muted);">Loading abuse reports...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="supportInspectorCard" style="display:none; margin-top:20px;">
+          <div class="card-title">
+            <span id="supportInspectorTitle">Support Thread Inspector</span>
+            <button class="action-btn" onclick="document.getElementById('supportInspectorCard').style.display='none'">Close</button>
+          </div>
+          <div id="supportInspectorMessages" style="max-height:280px; overflow-y:auto; background:var(--bg); border:1px solid var(--card-border); border-radius:8px; padding:12px; margin-bottom:12px;"></div>
+          <form onsubmit="handleSendSupportMessage(event)" style="display:flex; gap:10px;">
+            <input type="hidden" id="supportActiveConvId">
+            <input type="text" id="supportReplyInput" class="form-input" placeholder="Type official ELESEND Support response..." required>
+            <button type="submit" class="btn-primary" style="width:auto; padding:12px 20px;">Send Reply</button>
+          </form>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -519,6 +735,11 @@ export function renderAdminPortalHtml() {
 
     function ghc(minor) {
       return 'GH₵' + (Number(minor || 0) / 100).toFixed(2);
+    }
+
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
     }
 
     async function checkAuth() {
@@ -597,6 +818,8 @@ export function renderAdminPortalHtml() {
       if (tabId === 'riskTab') loadRisk();
       if (tabId === 'financeTab') loadFinance();
       if (tabId === 'paymentsTab') loadPaymentMethods();
+      if (tabId === 'promotionsTab') loadPromotionsTab();
+      if (tabId === 'supportChatTab') loadSupportChatTab();
     }
 
     async function loadAlgorithms() {
@@ -605,10 +828,10 @@ export function renderAdminPortalHtml() {
         const tb = document.getElementById('algorithmsTable');
         tb.innerHTML = algos.map(a => \`
           <tr>
-            <td><strong>\${a.feature_key.replaceAll('_', ' ').toUpperCase()}</strong></td>
+            <td><strong>\${escapeHtml(a.feature_key.replaceAll('_', ' ').toUpperCase())}</strong></td>
             <td><span class="badge \${a.enabled ? 'badge-active' : 'badge-danger'}">\${a.enabled ? 'ENABLED' : 'DISABLED'}</span></td>
             <td>
-              <button class="action-btn" onclick="toggleAlgorithm('\${a.feature_key}', \${!a.enabled})">\${a.enabled ? 'Disable' : 'Enable'}</button>
+              <button class="action-btn" onclick="toggleAlgorithm('\${escapeHtml(a.feature_key)}', \${!a.enabled})">\${a.enabled ? 'Disable' : 'Enable'}</button>
             </td>
           </tr>
         \`).join('');
@@ -618,11 +841,11 @@ export function renderAdminPortalHtml() {
         pBox.innerHTML = \`
           <div class="card" style="margin-bottom:0;">
             <div class="stat-label">Search Radius</div>
-            <div class="stat-value">\${policy.search_radii_m?.[0] || 5000} m</div>
+            <div class="stat-value">\${Number(policy.search_radii_m?.[0] || 5000)} m</div>
           </div>
           <div class="card" style="margin-bottom:0;">
             <div class="stat-label">Max Active Parcels</div>
-            <div class="stat-value">\${policy.max_active_parcels || 2}</div>
+            <div class="stat-value">\${Number(policy.max_active_parcels || 2)}</div>
           </div>
         \`;
       } catch (e) {
@@ -648,11 +871,11 @@ export function renderAdminPortalHtml() {
         const tb = document.getElementById('pricingTable');
         tb.innerHTML = tariffs.map(t => \`
           <tr>
-            <td><strong>\${(t.vehicle || 'STANDARD').toUpperCase()}</strong></td>
+            <td><strong>\${escapeHtml((t.vehicle || 'STANDARD').toUpperCase())}</strong></td>
             <td>\${ghc(t.base_minor)}</td>
             <td>\${ghc(t.per_km_minor)}</td>
             <td>\${ghc(t.per_minute_minor || 0)}</td>
-            <td><span class="badge badge-active">\${(t.commission_bps / 100).toFixed(1)}% (\${t.commission_mode || 'pct'})</span></td>
+            <td><span class="badge badge-active">\${(t.commission_bps / 100).toFixed(1)}% (\${escapeHtml(t.commission_mode || 'pct')})</span></td>
             <td>\${t.rush_hour_enabled ? 'Active ⚡' : 'Off'}</td>
           </tr>
         \`).join('');
@@ -703,16 +926,16 @@ export function renderAdminPortalHtml() {
         }
         tb.innerHTML = rules.map(r => \`
           <tr>
-            <td><strong>\${r.name}</strong><br><small style="color:var(--text-muted);">\${r.reason || ''}</small></td>
-            <td><span class="badge badge-active">\${r.category.replaceAll('_', ' ').toUpperCase()}</span></td>
-            <td>\${r.scope_type.toUpperCase()}\${r.scope_id ? '<br><small>' + r.scope_id.substring(0,8) + '...</small>' : ''}</td>
-            <td><strong>\${r.ratePercent}</strong></td>
-            <td>\${r.applied_orders}\${r.max_orders ? ' / ' + r.max_orders : ''}</td>
-            <td><span class="badge \${r.status === 'active' ? 'badge-active' : r.status === 'paused' ? 'badge-warning' : 'badge-danger'}">\${r.status.toUpperCase()}</span></td>
+            <td><strong>\${escapeHtml(r.name)}</strong><br><small style="color:var(--text-muted);">\${escapeHtml(r.reason || '')}</small></td>
+            <td><span class="badge badge-active">\${escapeHtml(r.category.replaceAll('_', ' ').toUpperCase())}</span></td>
+            <td>\${escapeHtml(r.scope_type.toUpperCase())}\${r.scope_id ? '<br><small>' + escapeHtml(r.scope_id.substring(0,8)) + '...</small>' : ''}</td>
+            <td><strong>\${escapeHtml(r.ratePercent)}</strong></td>
+            <td>\${Number(r.applied_orders || 0)}\${r.max_orders ? ' / ' + Number(r.max_orders) : ''}</td>
+            <td><span class="badge \${r.status === 'active' ? 'badge-active' : r.status === 'paused' ? 'badge-warning' : 'badge-danger'}">\${escapeHtml(r.status.toUpperCase())}</span></td>
             <td>
-              \${r.status === 'active' ? \`<button class="action-btn" onclick="pauseCommissionRule('\${r.id}')">Pause</button>\` : ''}
-              \${r.status === 'paused' ? \`<button class="action-btn" onclick="resumeCommissionRule('\${r.id}')">Resume</button>\` : ''}
-              \${r.status !== 'revoked' ? \`<button class="action-btn" style="color:var(--danger-color);" onclick="revokeCommissionRule('\${r.id}')">Revoke</button>\` : ''}
+              \${r.status === 'active' ? \`<button class="action-btn" onclick="pauseCommissionRule('\${escapeHtml(r.id)}')">Pause</button>\` : ''}
+              \${r.status === 'paused' ? \`<button class="action-btn" onclick="resumeCommissionRule('\${escapeHtml(r.id)}')">Resume</button>\` : ''}
+              \${r.status !== 'revoked' ? \`<button class="action-btn" style="color:var(--danger-color);" onclick="revokeCommissionRule('\${escapeHtml(r.id)}')">Revoke</button>\` : ''}
             </td>
           </tr>
         \`).join('');
@@ -813,13 +1036,13 @@ export function renderAdminPortalHtml() {
         }
         tb.innerHTML = (queue.riders || []).map(r => \`
           <tr>
-            <td>\${r.phone || r.id.slice(0, 8)}</td>
+            <td>\${escapeHtml(r.phone || r.id.slice(0, 8))}</td>
             <td>COURIER</td>
-            <td>\${r.vehicle || 'motorcycle'}</td>
-            <td><span class="badge badge-warn">\${r.status.toUpperCase()}</span></td>
+            <td>\${escapeHtml(r.vehicle || 'motorcycle')}</td>
+            <td><span class="badge badge-warn">\${escapeHtml(r.status.toUpperCase())}</span></td>
             <td>
-              <button class="action-btn" onclick="reviewRider('\${r.id}', 'approved')">Approve</button>
-              <button class="action-btn btn-danger" onclick="reviewRider('\${r.id}', 'suspended')">Reject</button>
+              <button class="action-btn" onclick="reviewRider('\${escapeHtml(r.id)}', 'approved')">Approve</button>
+              <button class="action-btn btn-danger" onclick="reviewRider('\${escapeHtml(r.id)}', 'suspended')">Reject</button>
             </td>
           </tr>
         \`).join('');
@@ -854,11 +1077,11 @@ export function renderAdminPortalHtml() {
           const sev = (s.severity || 'warn').toUpperCase();
           return \`
           <tr>
-            <td><code>#\${String(s.id)}</code></td>
-            <td>\${s.rider_id ? String(s.rider_id).slice(0,8) : 'N/A'}</td>
-            <td><span class="badge badge-danger">\${flagCode}</span></td>
-            <td>Severity: <strong>\${sev}</strong>\${s.shipment_id ? ' • Shipment ' + String(s.shipment_id).slice(0,8) : ''}</td>
-            <td>\${(s.review_status || (s.reviewed ? 'reviewed' : 'pending')).toUpperCase()}</td>
+            <td><code>#\${escapeHtml(String(s.id))}</code></td>
+            <td>\${s.rider_id ? escapeHtml(String(s.rider_id).slice(0,8)) : 'N/A'}</td>
+            <td><span class="badge badge-danger">\${escapeHtml(flagCode)}</span></td>
+            <td>Severity: <strong>\${escapeHtml(sev)}</strong>\${s.shipment_id ? ' • Shipment ' + escapeHtml(String(s.shipment_id).slice(0,8)) : ''}</td>
+            <td>\${escapeHtml((s.review_status || (s.reviewed ? 'reviewed' : 'pending')).toUpperCase())}</td>
             <td>
               \${isPending ? \`
                 <button class="action-btn" onclick="reviewRisk(\${Number(s.id)}, 'reviewed')">Mark Reviewed</button>
@@ -925,17 +1148,17 @@ export function renderAdminPortalHtml() {
             const badgeClass = p.status === 'paid' ? 'badge-active' : ['failed', 'needs_review'].includes(p.status) ? 'badge-danger' : 'badge-warn';
             return \`
               <tr>
-                <td><code>\${p.id.slice(0,8)}</code></td>
-                <td><code>\${p.shipment_id.slice(0,8)}</code> • <strong>\${p.kind.toUpperCase()}</strong></td>
-                <td>\${p.recipient_reference}<br><small style="color:var(--text-muted);">Beneficiary: \${p.beneficiary_id.slice(0,8)}\${p.company_id ? ' (Co: ' + p.company_id.slice(0,8) + ')' : ''}</small></td>
+                <td><code>\${escapeHtml(p.id.slice(0,8))}</code></td>
+                <td><code>\${escapeHtml(p.shipment_id.slice(0,8))}</code> • <strong>\${escapeHtml(p.kind.toUpperCase())}</strong></td>
+                <td>\${escapeHtml(p.recipient_reference)}<br><small style="color:var(--text-muted);">Beneficiary: \${escapeHtml(p.beneficiary_id.slice(0,8))}\${p.company_id ? ' (Co: ' + escapeHtml(p.company_id.slice(0,8)) + ')' : ''}</small></td>
                 <td><strong>\${ghc(p.amount_minor)}</strong></td>
-                <td><span class="badge \${badgeClass}">\${p.status.toUpperCase()}</span>\${p.failure_reason ? '<br><small style="color:var(--danger);">' + p.failure_reason + '</small>' : ''}</td>
+                <td><span class="badge \${badgeClass}">\${escapeHtml(p.status.toUpperCase())}</span>\${p.failure_reason ? '<br><small style="color:var(--danger);">' + escapeHtml(p.failure_reason) + '</small>' : ''}</td>
                 <td>
                   \${p.status === 'proposed' ? (selfProposed
                     ? '<span style="font-size:11px;color:var(--text-muted);">Awaiting 2nd Approver</span>'
-                    : \`<button class="action-btn" onclick="approvePayoutOp('\${p.id}')">Approve (2nd Admin)</button>\`) : ''}
-                  \${['approved', 'initiating', 'pending', 'needs_review'].includes(p.status) ? \`<button class="action-btn" onclick="reconcilePayoutOp('\${p.id}')">Reconcile</button>\` : ''}
-                  \${p.status === 'failed' ? \`<button class="action-btn" onclick="retryPayoutOp('\${p.id}')">Safe Retry</button>\` : ''}
+                    : \`<button class="action-btn" onclick="approvePayoutOp('\${escapeHtml(p.id)}')">Approve (2nd Admin)</button>\`) : ''}
+                  \${['approved', 'initiating', 'pending', 'needs_review'].includes(p.status) ? \`<button class="action-btn" onclick="reconcilePayoutOp('\${escapeHtml(p.id)}')">Reconcile</button>\` : ''}
+                  \${p.status === 'failed' ? \`<button class="action-btn" onclick="retryPayoutOp('\${escapeHtml(p.id)}')">Safe Retry</button>\` : ''}
                 </td>
               </tr>
             \`;
@@ -954,15 +1177,15 @@ export function renderAdminPortalHtml() {
             const badgeClass = r.status === 'refunded' ? 'badge-active' : ['failed', 'needs_review'].includes(r.status) ? 'badge-danger' : 'badge-warn';
             return \`
               <tr>
-                <td><code>\${r.id.slice(0,8)}</code></td>
-                <td><code>\${r.shipment_id.slice(0,8)}</code></td>
-                <td><code>\${r.reference || r.provider_reference || r.provider_id || ''}</code></td>
+                <td><code>\${escapeHtml(r.id.slice(0,8))}</code></td>
+                <td><code>\${escapeHtml(r.shipment_id.slice(0,8))}</code></td>
+                <td><code>\${escapeHtml(r.reference || r.provider_reference || r.provider_id || '')}</code></td>
                 <td><strong>\${ghc(r.amount_minor)}</strong></td>
-                <td><span class="badge \${badgeClass}">\${r.status.toUpperCase()}</span><br><small style="color:var(--text-muted);">\${r.failure_reason || r.reason || ''}</small></td>
+                <td><span class="badge \${badgeClass}">\${escapeHtml(r.status.toUpperCase())}</span><br><small style="color:var(--text-muted);">\${escapeHtml(r.failure_reason || r.reason || '')}</small></td>
                 <td>
-                  \${r.status === 'queued' ? \`<button class="action-btn" onclick="submitRefundOp('\${r.id}')">Submit Refund</button>\` : ''}
-                  \${['pending', 'initiating', 'needs_review'].includes(r.status) ? \`<button class="action-btn" onclick="reconcileRefundOp('\${r.id}')">Reconcile</button>\` : ''}
-                  \${r.status === 'failed' ? \`<button class="action-btn" onclick="retryRefundOp('\${r.id}')">Safe Retry</button>\` : ''}
+                  \${r.status === 'queued' ? \`<button class="action-btn" onclick="submitRefundOp('\${escapeHtml(r.id)}')">Submit Refund</button>\` : ''}
+                  \${['pending', 'initiating', 'needs_review'].includes(r.status) ? \`<button class="action-btn" onclick="reconcileRefundOp('\${escapeHtml(r.id)}')">Reconcile</button>\` : ''}
+                  \${r.status === 'failed' ? \`<button class="action-btn" onclick="retryRefundOp('\${escapeHtml(r.id)}')">Safe Retry</button>\` : ''}
                 </td>
               </tr>
             \`;
@@ -1035,11 +1258,11 @@ export function renderAdminPortalHtml() {
         const tb = document.getElementById('paymentsTable');
         tb.innerHTML = methods.map(m => \`
           <tr>
-            <td><strong>\${m.method}</strong></td>
+            <td><strong>\${escapeHtml(m.method)}</strong></td>
             <td>\${m.method === 'CASH' ? 'Cash at pickup or drop-off' : m.method === 'MOMO' ? 'Mobile Money (MTN, Telecel, AT)' : m.method === 'CARD' ? 'Debit / Credit Card (Hosted)' : 'Scan & Pay QR'}</td>
             <td><span class="badge \${m.enabled ? 'badge-active' : 'badge-danger'}">\${m.enabled ? 'ACTIVE' : 'DISABLED'}</span></td>
             <td>
-              <button class="action-btn" onclick="togglePaymentMethod('\${m.method}', \${!m.enabled})">\${m.enabled ? 'Disable' : 'Enable'}</button>
+              <button class="action-btn" onclick="togglePaymentMethod('\${escapeHtml(m.method)}', \${!m.enabled})">\${m.enabled ? 'Disable' : 'Enable'}</button>
             </td>
           </tr>
         \`).join('');
@@ -1058,6 +1281,236 @@ export function renderAdminPortalHtml() {
       } catch (e) {
         alert(e.message);
       }
+    }
+
+    async function loadPromotionsTab() {
+      try {
+        const settings = await api('/api/v1/admin/commission/restaurant-settings');
+        if (settings) {
+          document.getElementById('restDefaultCommPct').value = ((settings.default_commission_bps || 1000) / 100).toFixed(1);
+          document.getElementById('restDefaultCommBasis').value = settings.default_commission_basis || 'gross_subtotal';
+        }
+      } catch (e) { console.error(e); }
+
+      try {
+        const promos = await api('/api/v1/admin/promotions');
+        const tb = document.getElementById('adminPromotionsTable');
+        if (!promos || promos.length === 0) {
+          tb.innerHTML = '<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:16px;">No promotion campaigns created yet.</td></tr>';
+          return;
+        }
+        tb.innerHTML = promos.map(p => \`
+          <tr>
+            <td><strong>\${escapeHtml(p.name)}</strong>\${p.promoCode ? '<br><code>' + escapeHtml(p.promoCode) + '</code>' : ''}</td>
+            <td><span class="badge badge-active">\${escapeHtml(p.ownerType.toUpperCase())}</span><br><small>ELESEND \${(p.elesendFundingBps/100).toFixed(0)}% / Rest \${(p.restaurantFundingBps/100).toFixed(0)}%</small></td>
+            <td>\${p.discountType === 'percentage_off' ? (p.discountBps/100).toFixed(1) + '% OFF' : p.discountType === 'free_delivery' ? 'FREE DELIVERY' : ghc(p.discountAmountMinor) + ' OFF'}</td>
+            <td>\${ghc(p.spentBudgetMinor || 0)}\${p.budgetCapMinor ? ' / ' + ghc(p.budgetCapMinor) : ' (Unlimited)'}</td>
+            <td>\${Number(p.redemptionsUsed || 0)}\${p.maxTotalRedemptions ? ' / ' + Number(p.maxTotalRedemptions) : ''}</td>
+            <td><span class="badge \${p.status === 'active' ? 'badge-active' : 'badge-warn'}">\${escapeHtml(p.status.toUpperCase())}</span></td>
+            <td>
+              \${p.ownerType === 'joint' ? \`<button class="action-btn" onclick="inviteRestaurantToPromo('\${escapeHtml(p.id)}')">Invite Merchant</button>\` : ''}
+              \${p.status === 'active' ? \`<button class="action-btn" onclick="setAdminPromoStatus('\${escapeHtml(p.id)}', 'paused')">Pause</button>\` : ''}
+              \${p.status === 'paused' ? \`<button class="action-btn" onclick="setAdminPromoStatus('\${escapeHtml(p.id)}', 'active')">Resume</button>\` : ''}
+            </td>
+          </tr>
+        \`).join('');
+      } catch (e) { console.error(e); }
+    }
+
+    async function handleSaveRestaurantCommissionSettings(e) {
+      e.preventDefault();
+      const pct = parseFloat(document.getElementById('restDefaultCommPct').value || '10');
+      const basis = document.getElementById('restDefaultCommBasis').value;
+      const rationale = document.getElementById('restCommRationale').value.trim();
+      try {
+        await api('/api/v1/admin/commission/restaurant-settings', {
+          method: 'POST',
+          body: JSON.stringify({
+            defaultCommissionBps: Math.round(pct * 100),
+            defaultCommissionBasis: basis,
+            rationale
+          })
+        });
+        alert('Global restaurant commission settings updated.');
+        loadPromotionsTab();
+      } catch (err) { alert(err.message); }
+    }
+
+    async function handleSaveRestaurantAgreement(e) {
+      e.preventDefault();
+      const restId = document.getElementById('agreeRestId').value.trim();
+      const rateVal = document.getElementById('agreeRatePct').value;
+      const tier = document.getElementById('agreeTier').value;
+      const basis = document.getElementById('agreeBasis').value || null;
+      const contractNotes = document.getElementById('agreeNotes').value.trim();
+      try {
+        await api(\`/api/v1/admin/restaurants/\${restId}/commission-agreement\`, {
+          method: 'POST',
+          body: JSON.stringify({
+            customCommissionBps: rateVal !== '' ? Math.round(parseFloat(rateVal) * 100) : null,
+            commissionTier: tier,
+            commissionCalculationBasis: basis,
+            contractNotes
+          })
+        });
+        alert('Merchant commission agreement saved.');
+      } catch (err) { alert(err.message); }
+    }
+
+    async function handleCreateAdminPromotion(e) {
+      e.preventDefault();
+      const name = document.getElementById('promoName').value.trim();
+      const ownerType = document.getElementById('promoOwnerType').value;
+      const discountType = document.getElementById('promoDiscountType').value;
+      const val = parseFloat(document.getElementById('promoValue').value || '0');
+      const promoCode = document.getElementById('promoCode').value.trim() || null;
+      const budgetGhc = parseFloat(document.getElementById('promoBudgetGhc').value || '0');
+      const restSharePct = parseFloat(document.getElementById('promoRestSharePct').value || '0');
+      const commConcessionPct = parseFloat(document.getElementById('promoCommConcessionPct').value || '0');
+
+      const restBps = ownerType === 'joint' ? Math.round(restSharePct * 100) : 0;
+      const elesendBps = 10000 - restBps;
+
+      try {
+        await api('/api/v1/admin/promotions', {
+          method: 'POST',
+          body: JSON.stringify({
+            name,
+            ownerType,
+            discountType,
+            fundingSource: ownerType === 'joint' ? 'joint' : 'elesend',
+            discountBps: discountType === 'percentage_off' ? Math.round(val * 100) : null,
+            discountAmountMinor: discountType !== 'percentage_off' && discountType !== 'free_delivery' ? Math.round(val * 100) : null,
+            promoCode,
+            budgetCapMinor: budgetGhc > 0 ? Math.round(budgetGhc * 100) : null,
+            elesendFundingBps: elesendBps,
+            restaurantFundingBps: restBps,
+            commissionConcessionBps: Math.round(commConcessionPct * 100),
+            status: 'active'
+          })
+        });
+        alert('Promotion campaign created.');
+        loadPromotionsTab();
+      } catch (err) { alert(err.message); }
+    }
+
+    async function inviteRestaurantToPromo(campaignId) {
+      const restId = prompt('Enter Restaurant UUID to invite to this Joint Co-Funded Campaign (requires merchant explicit consent):');
+      if (!restId) return;
+      try {
+        await api(\`/api/v1/admin/promotions/\${campaignId}/invite-restaurants\`, {
+          method: 'POST',
+          body: JSON.stringify({ restaurantIds: [restId.trim()] })
+        });
+        alert('Invitation sent to merchant portal for explicit opt-in consent.');
+      } catch (err) { alert(err.message); }
+    }
+
+    async function setAdminPromoStatus(campaignId, status) {
+      const reason = prompt('Enter reason for status change:', 'Operator campaign adjustment');
+      if (!reason) return;
+      try {
+        await api(\`/api/v1/admin/promotions/\${campaignId}/status\`, {
+          method: 'POST',
+          body: JSON.stringify({ status, reason })
+        });
+        loadPromotionsTab();
+      } catch (err) { alert(err.message); }
+    }
+
+    async function loadSupportChatTab() {
+      try {
+        const data = await api('/api/v1/admin/chat/support-queue');
+        const convTb = document.getElementById('supportConversationsTable');
+        const convs = data.supportConversations || [];
+        if (!convs.length) {
+          convTb.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:16px;">No active support escalations in queue.</td></tr>';
+        } else {
+          convTb.innerHTML = convs.map(c => \`
+            <tr>
+              <td><code>\${escapeHtml(c.id.slice(0,8))}</code></td>
+              <td><strong>\${escapeHtml((c.supportCategory || 'general').toUpperCase())}</strong><br><small>\${c.foodOrderId ? 'Food Order ' + escapeHtml(c.foodOrderId.slice(0,8)) : c.shipmentId ? 'Shipment ' + escapeHtml(c.shipmentId.slice(0,8)) : ''}</small></td>
+              <td><span class="badge badge-active">\${escapeHtml(c.state)}</span></td>
+              <td>\${escapeHtml(c.lastMessagePreview || 'No messages yet')}</td>
+              <td><button class="action-btn" onclick="inspectSupportConversation('\${escapeHtml(c.id)}')">Open Thread</button></td>
+            </tr>
+          \`).join('');
+        }
+
+        const repTb = document.getElementById('abuseReportsTable');
+        const reports = data.abuseReports || [];
+        if (!reports.length) {
+          repTb.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:16px;">No chat abuse reports filed.</td></tr>';
+        } else {
+          repTb.innerHTML = reports.map(r => \`
+            <tr>
+              <td><code>\${escapeHtml(r.id.slice(0,8))}</code><br><small>Role: \${escapeHtml(r.reporter_role)}</small></td>
+              <td><span class="badge badge-danger">\${escapeHtml(r.category.toUpperCase())}</span></td>
+              <td><strong>\${escapeHtml(r.message_body || '(Conversation Report)')}</strong><br><small style="color:var(--text-muted);">\${escapeHtml(r.details)}</small></td>
+              <td><span class="badge \${r.status === 'resolved' ? 'badge-active' : 'badge-warn'}">\${escapeHtml(r.status.toUpperCase())}</span></td>
+              <td>
+                \${r.status === 'open' || r.status === 'investigating' ? \`
+                  <button class="action-btn" onclick="moderateAbuseReport('\${escapeHtml(r.id)}', true)">Redact & Resolve</button>
+                  <button class="action-btn" onclick="moderateAbuseReport('\${escapeHtml(r.id)}', false)">Dismiss</button>
+                \` : 'Handled'}
+              </td>
+            </tr>
+          \`).join('');
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    async function inspectSupportConversation(convId) {
+      try {
+        const res = await api(\`/api/v1/chat/conversations/\${convId}/messages?justification=Support%20Queue%20Investigation\`);
+        document.getElementById('supportActiveConvId').value = convId;
+        document.getElementById('supportInspectorTitle').textContent = 'Support Thread #' + convId.slice(0, 8);
+        const box = document.getElementById('supportInspectorMessages');
+        box.innerHTML = (res.messages || []).map(m => \`
+          <div style="margin-bottom:8px; padding:8px; border-radius:6px; background:rgba(255,255,255,0.04);">
+            <div style="font-size:11px; color:var(--primary); font-weight:700;">\${escapeHtml(m.senderRole.toUpperCase())} • \${escapeHtml(m.deliveryStatus)}</div>
+            <div style="font-size:13px; margin-top:2px;">\${escapeHtml(m.body)}</div>
+          </div>
+        \`).join('') || '<div style="color:var(--text-muted);">No messages yet.</div>';
+        document.getElementById('supportInspectorCard').style.display = 'block';
+      } catch (err) { alert(err.message); }
+    }
+
+    async function handleSendSupportMessage(e) {
+      e.preventDefault();
+      const convId = document.getElementById('supportActiveConvId').value;
+      const body = document.getElementById('supportReplyInput').value.trim();
+      if (!convId || !body) return;
+      try {
+        await api(\`/api/v1/chat/conversations/\${convId}/messages\`, {
+          method: 'POST',
+          body: JSON.stringify({
+            clientMessageId: 'supp-' + Date.now(),
+            messageType: 'text',
+            body
+          })
+        });
+        document.getElementById('supportReplyInput').value = '';
+        await inspectSupportConversation(convId);
+        loadSupportChatTab();
+      } catch (err) { alert(err.message); }
+    }
+
+    async function moderateAbuseReport(reportId, redact) {
+      const notes = prompt('Enter mandatory moderation resolution notes (minimum 8 characters):', redact ? 'Verified policy violation; message redacted.' : 'Reviewed and dismissed.');
+      if (!notes || notes.trim().length < 8) return;
+      try {
+        await api(\`/api/v1/admin/chat/abuse-reports/\${reportId}/moderate\`, {
+          method: 'POST',
+          body: JSON.stringify({
+            status: redact ? 'resolved' : 'dismissed',
+            redactMessage: Boolean(redact),
+            restrictConversation: false,
+            resolutionNotes: notes.trim()
+          })
+        });
+        loadSupportChatTab();
+      } catch (err) { alert(err.message); }
     }
 
     // Initialize

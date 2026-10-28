@@ -8,7 +8,9 @@ export async function migrate(db){await db.tx(async c=>{
   const sql=await readFile(new URL('../database/migrations/'+name,import.meta.url),'utf8');
   const sha=createHash('sha256').update(sql).digest('hex');
   const old=(await c.query('SELECT sha256 FROM schema_migrations WHERE name=$1',[name])).rows[0];
-  if(old){if(old.sha256!==sha)throw Error('Applied migration checksum mismatch: '+name);continue;}
+  const lfSha=createHash('sha256').update(sql.replace(/\r\n/g,'\n')).digest('hex');
+  const crlfSha=createHash('sha256').update(sql.replace(/\r\n/g,'\n').replace(/\n/g,'\r\n')).digest('hex');
+  if(old){if(old.sha256!==sha&&old.sha256!==lfSha&&old.sha256!==crlfSha)throw Error('Applied migration checksum mismatch: '+name);continue;}
   await c.query(sql);await c.query('INSERT INTO schema_migrations(name,sha256) VALUES($1,$2)',[name,sha]);
  }
 });}

@@ -7,12 +7,16 @@ import {check} from './security.mjs';
 import {haversine} from './dispatch-geometry.mjs';
 import {calculateQuote} from './pricing.mjs';
 import {evaluateRestaurantBatch} from './algorithms/restaurant-batch.mjs';
+import {promotionEngine} from './promotion-engine.mjs';
+import {commissionEngine} from './commission-engine.mjs';
 
 const uuid = z.string().uuid();
 
 export function restaurantOrderService(db, {platform = null, dispatcher = null, routing = null,acceptanceTimeoutSeconds=300,courierTimeoutSeconds=1200,unpaidTimeoutSeconds=1800} = {}) {
   check(db && typeof db.query === 'function', 500, 'Database instance required');
   for(const value of [acceptanceTimeoutSeconds,courierTimeoutSeconds,unpaidTimeoutSeconds])check(Number.isInteger(value)&&value>=60&&value<=86400,500,'Invalid food order timeout');
+  const promos = promotionEngine(db);
+  const commissions = commissionEngine(db);
 
   async function quoteFoodOrder(actor, input) {
     await marketService(db).assertGhanaOperating();
@@ -28,7 +32,12 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       deliveryLatitude: z.number().finite().min(4.5).max(11.5),
       deliveryLongitude: z.number().finite().min(-3.5).max(1.5),
       customerPhone: z.string().trim().transform(p => p.replace(/\s+/g, '')).pipe(z.string().regex(/^(\+233|0)[25][0-9]{8}$/, 'Valid Ghana phone number required')),
-      specialInstructions: z.string().trim().max(300).optional().default('')
+      specialInstructions: z.string().trim().max(300).optional().default(''),
+      promoCode: z.string().trim().max(40).nullable().optional(),
+      promoCodes: z.array(z.string().trim().max(40)).max(5).optional(),
+      campaignIds: z.array(z.string().uuid()).max(5).optional(),
+      paymentMethod: z.enum(['MOMO', 'CARD', 'QR', 'BANK_QR']).optional().default('MOMO'),
+      requireValidPromoCode: z.boolean().optional()
     }).strict();
 
     const data = schema.parse(input);
@@ -124,17 +133,16 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
 
       orderItems.push({
         itemId: it.id,
+        menuItemId: it.id,
+        categoryId: it.category_id || null,
         name: it.name,
         quantity: requested.quantity,
         unitPriceMinor: Number(unitPriceMinor),
         totalPriceMinor: Number(totalItemMinor),
+        lineTotalMinor: Number(totalItemMinor),
         options: selectedOpts
       });
     }
-
-    // Independent food commission calculation (default 10%, strictly decoupled from delivery)
-    const foodCommBps = BigInt(restaurant.food_commission_bps);
-    const foodCommissionMinor = foodCommBps === 0n ? 0 : Math.min(Number(foodSubtotalMinor), Number((foodSubtotalMinor * foodCommBps + 5000n) / 10000n));
 
     // Calculate delivery quote using platform pricing policy
     const policy = (await db.query(
@@ -159,7 +167,28 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
 
     const deliveryQuote = calculateQuote(policy, roadDistanceMeters, {durationSeconds: roadDurationSeconds});
     const deliveryFeeMinor = deliveryQuote.amountMinor;
-    const totalMinor = Number(foodSubtotalMinor) + deliveryFeeMinor;
+
+    const mergedPromoCodes = [
+      ...(data.promoCode ? [data.promoCode] : []),
+      ...(Array.isArray(data.promoCodes) ? data.promoCodes : [])
+    ];
+    const normPaymentMethod = data.paymentMethod === 'QR' ? 'BANK_QR' : (data.paymentMethod || 'MOMO');
+
+    const promoEval = await promos.evaluateCheckoutPromotions(db, {
+      actor,
+      restaurant,
+      orderItems,
+      foodSubtotalMinor: Number(foodSubtotalMinor),
+      deliveryFeeMinor,
+      promoCodes: mergedPromoCodes,
+      campaignIds: data.campaignIds || [],
+      paymentMethod: normPaymentMethod,
+      deliveryAddress: data.deliveryAddress
+    });
+
+    if ((data.requireValidPromoCode ?? (mergedPromoCodes.length > 0 || (Array.isArray(data.campaignIds) && data.campaignIds.length > 0))) && promoEval.rejectedPromotions.length > 0) {
+      check(false, 400, promoEval.rejectedPromotions[0].message);
+    }
 
     return {
       restaurantId: restaurant.id,
@@ -174,22 +203,55 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       customerPhone: data.customerPhone,
       items: orderItems,
       subtotalMinor: Number(foodSubtotalMinor),
-      foodCommissionBps: Number(foodCommBps),
-      foodCommissionMinor,
+      originalSubtotalMinor: Number(foodSubtotalMinor),
+      foodDiscountMinor: promoEval.foodDiscountMinor,
+      deliveryDiscountMinor: promoEval.deliveryDiscountMinor,
+      totalDiscountMinor: promoEval.totalDiscountMinor,
+      elesendFundedDiscountMinor: promoEval.elesendFundedDiscountMinor,
+      restaurantFundedDiscountMinor: promoEval.restaurantFundedDiscountMinor,
+      elesendFoodDiscountMinor: promoEval.elesendFoodDiscountMinor,
+      restaurantFoodDiscountMinor: promoEval.restaurantFoodDiscountMinor,
+      elesendDeliveryDiscountMinor: promoEval.elesendDeliveryDiscountMinor,
+      restaurantDeliveryDiscountMinor: promoEval.restaurantDeliveryDiscountMinor,
+      customerFoodPayableMinor: promoEval.customerFoodPayableMinor,
+      customerDeliveryPayableMinor: promoEval.customerDeliveryPayableMinor,
+      foodCommissionBps: promoEval.foodCommissionBps,
+      foodCommissionRateBps: promoEval.foodCommissionBps,
+      foodCommissionMinor: promoEval.foodCommissionMinor,
+      commissionCalculationBasis: promoEval.commissionCalculationBasis,
+      commissionBaseMinor: promoEval.commissionBaseMinor,
+      commissionRuleId: promoEval.commissionRuleId,
+      commissionPolicy: promoEval.commissionPolicy,
+      restaurantNetSettlementMinor: promoEval.restaurantNetSettlementMinor,
+      netRestaurantSettlementMinor: promoEval.restaurantNetSettlementMinor,
       deliveryFeeMinor,
       deliveryCommissionMinor: deliveryQuote.commissionMinor,
-      totalMinor,
+      totalMinor: promoEval.totalCustomerPayableMinor,
+      appliedPromotions: promoEval.appliedPromotions,
+      rejectedPromotions: promoEval.rejectedPromotions,
+      appliedPromoCodes: promoEval.appliedPromoCodes,
       estimatedPrepMinutes: maxItemPrepMinutes,
       specialInstructions: data.specialInstructions
     };
   }
 
-  async function createFoodOrder(actor, quoteInput, {paymentMethod = 'MOMO', specialInstructions = '', idempotencyKey} = {}) {
+  async function createFoodOrder(actor, quoteInput, {paymentMethod = 'MOMO', specialInstructions = '', idempotencyKey, promoCode = null, promoCodes = [], campaignIds = []} = {}) {
     check(actor && ['customer', 'business'].includes(actor.kind), 403, 'Customer credentials required');
     check(['MOMO', 'CARD', 'QR'].includes(paymentMethod), 400, 'Food orders require upfront payment for food and delivery; cash is not accepted');
     check(typeof idempotencyKey==='string'&&/^[a-zA-Z0-9_-]{8,128}$/.test(idempotencyKey),400,'Food order idempotency key required');
     check((await db.query('SELECT phone_verified_at FROM users WHERE id=$1',[actor.id])).rows[0]?.phone_verified_at,403,'Verify your phone before placing a food order');
-    const requestHash=createHash('sha256').update(JSON.stringify({quoteInput,paymentMethod,specialInstructions})).digest('hex');
+    const mergedPromoCodes = [
+      ...(promoCode ? [promoCode] : []),
+      ...(quoteInput.promoCode ? [quoteInput.promoCode] : []),
+      ...(Array.isArray(promoCodes) ? promoCodes : []),
+      ...(Array.isArray(quoteInput.promoCodes) ? quoteInput.promoCodes : [])
+    ];
+    const mergedCampaignIds = [
+      ...(Array.isArray(campaignIds) ? campaignIds : []),
+      ...(Array.isArray(quoteInput.campaignIds) ? quoteInput.campaignIds : [])
+    ];
+    const hasExplicitPromo = mergedPromoCodes.length > 0 || mergedCampaignIds.length > 0;
+    const requestHash=createHash('sha256').update(JSON.stringify({quoteInput,paymentMethod,specialInstructions,mergedPromoCodes,mergedCampaignIds})).digest('hex');
     const existing=(await db.query('SELECT * FROM food_orders WHERE customer_id=$1 AND request_key=$2',[actor.id,idempotencyKey])).rows[0];
     if(existing){check(existing.request_hash===requestHash,409,'Idempotency key reused with different food order');return existing;}
 
@@ -205,7 +267,11 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       deliveryLatitude: quoteInput.deliveryLatitude,
       deliveryLongitude: quoteInput.deliveryLongitude,
       customerPhone: quoteInput.customerPhone,
-      specialInstructions: specialInstructions || quoteInput.specialInstructions || ''
+      specialInstructions: specialInstructions || quoteInput.specialInstructions || '',
+      promoCodes: mergedPromoCodes,
+      campaignIds: mergedCampaignIds,
+      paymentMethod,
+      requireValidPromoCode: hasExplicitPromo
     });
 
     return db.tx(async c => {
@@ -217,7 +283,25 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       const orderId = randomUUID();
       const shipmentKey = `food-${orderId}`;
 
+      const restaurant = (await c.query('SELECT * FROM restaurants WHERE id = $1', [quote.restaurantId])).rows[0];
+      const normPayMethod = paymentMethod === 'QR' ? 'BANK_QR' : (paymentMethod || 'MOMO');
+      const txPromoEval = await promos.evaluateCheckoutPromotions(c, {
+        actor,
+        restaurant,
+        orderItems: quote.items,
+        foodSubtotalMinor: quote.subtotalMinor,
+        deliveryFeeMinor: quote.deliveryFeeMinor,
+        promoCodes: mergedPromoCodes,
+        campaignIds: mergedCampaignIds,
+        paymentMethod: normPayMethod,
+        deliveryAddress: quote.deliveryAddress
+      });
+      if (hasExplicitPromo && txPromoEval.rejectedPromotions.length > 0) {
+        check(false, 409, txPromoEval.rejectedPromotions[0].message);
+      }
+
       // 1. Create a platform quote for the delivery leg
+      // Rider delivery tariff & commission remain 100% intact (never reduced by delivery discounts)
       const policy = (await c.query(
         "SELECT * FROM pricing_policies WHERE active AND (vehicle = 'motorcycle' OR vehicle IS NULL) ORDER BY vehicle = 'motorcycle' DESC LIMIT 1"
       )).rows[0];
@@ -239,7 +323,9 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         vehicle: 'motorcycle',
         parcelCategory: 'food',
         parcelSize: 'small',
-        description: `Food Delivery: ${quote.restaurantName}`
+        description: quote.specialInstructions
+          ? `Food Delivery: ${quote.restaurantName} (Notes: ${quote.specialInstructions})`
+          : `Food Delivery: ${quote.restaurantName}`
       };
 
       await c.query(
@@ -270,27 +356,75 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         ]
       );
 
-      // 3. Create food order (Always starts PENDING payment until PSP confirms)
+      // 3. Create food order with full immutable commission & promotion snapshots
       const order = (await c.query(
         `INSERT INTO food_orders (
           id, customer_id, restaurant_id, shipment_id, state,
           subtotal_minor, food_commission_bps, food_commission_minor,
           delivery_fee_minor, total_minor, payment_method, payment_status,
           estimated_prep_minutes, delivery_address, delivery_latitude, delivery_longitude,
-          customer_phone, special_instructions, request_key, request_hash
+          customer_phone, special_instructions, request_key, request_hash,
+          food_discount_minor, delivery_discount_minor,
+          restaurant_funded_discount_minor, elesend_funded_discount_minor,
+          customer_food_payable_minor, customer_delivery_payable_minor,
+          restaurant_net_settlement_minor, commission_calculation_basis,
+          commission_base_minor, commission_rule_id,
+          commission_snapshot, promotion_snapshot, applied_promo_codes
         ) VALUES (
-          $1, $2, $3, $4, 'SUBMITTED', $5, $6, $7, $8, $9, $10, 'PENDING', $11, $12, $13, $14, $15, $16, $17, $18
+          $1, $2, $3, $4, 'SUBMITTED',
+          $5, $6, $7,
+          $8, $9, $10, 'PENDING',
+          $11, $12, $13, $14,
+          $15, $16, $17, $18,
+          $19, $20,
+          $21, $22,
+          $23, $24,
+          $25, $26,
+          $27, $28,
+          $29, $30, $31
         ) RETURNING *`,
         [
           orderId, actor.id, quote.restaurantId, shipmentId,
-          quote.subtotalMinor, quote.foodCommissionBps, quote.foodCommissionMinor,
-          quote.deliveryFeeMinor, quote.totalMinor, paymentMethod,
+          quote.subtotalMinor, txPromoEval.foodCommissionBps, txPromoEval.foodCommissionMinor,
+          quote.deliveryFeeMinor, txPromoEval.totalCustomerPayableMinor, paymentMethod,
           quote.estimatedPrepMinutes, quote.deliveryAddress, quote.deliveryLatitude,
-          quote.deliveryLongitude, quote.customerPhone, quote.specialInstructions, idempotencyKey, requestHash
+          quote.deliveryLongitude, quote.customerPhone, quote.specialInstructions, idempotencyKey, requestHash,
+          txPromoEval.foodDiscountMinor, txPromoEval.deliveryDiscountMinor,
+          txPromoEval.restaurantFundedDiscountMinor, txPromoEval.elesendFundedDiscountMinor,
+          txPromoEval.customerFoodPayableMinor, txPromoEval.customerDeliveryPayableMinor,
+          txPromoEval.restaurantNetSettlementMinor, txPromoEval.commissionCalculationBasis,
+          txPromoEval.commissionBaseMinor, txPromoEval.commissionRuleId,
+          JSON.stringify(txPromoEval.commissionPolicy || {}),
+          JSON.stringify({
+            appliedPromotions: txPromoEval.appliedPromotions,
+            foodDiscountMinor: txPromoEval.foodDiscountMinor,
+            deliveryDiscountMinor: txPromoEval.deliveryDiscountMinor,
+            elesendFundedDiscountMinor: txPromoEval.elesendFundedDiscountMinor,
+            restaurantFundedDiscountMinor: txPromoEval.restaurantFundedDiscountMinor
+          }),
+          txPromoEval.appliedPromoCodes || []
         ]
       )).rows[0];
 
-      // 4. Create food order items
+      // 4. Atomically reserve promotional redemptions and budgets under row locks
+      if (txPromoEval.appliedPromotions.length > 0) {
+        await promos.reservePromotionsForOrder(c, {
+          orderId,
+          actor,
+          restaurant,
+          evaluation: txPromoEval
+        });
+      }
+
+      if (txPromoEval.commissionRuleId) {
+        await commissions.recordOrderCommissionApplied(c, txPromoEval.commissionRuleId, {
+          orderAmountMinor: txPromoEval.commissionBaseMinor,
+          standardRateBps: txPromoEval.commissionPolicy?.standardRateBps ?? 1000,
+          appliedRateBps: txPromoEval.foodCommissionBps
+        });
+      }
+
+      // 5. Create food order items
       for (const it of quote.items) {
         await c.query(
           `INSERT INTO food_order_items (
@@ -308,7 +442,14 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         [actor.id, 'food_order.created', orderId]
       );
 
-      return {...order, items: quote.items};
+      return {
+        ...order,
+        net_restaurant_settlement_minor: order.restaurant_net_settlement_minor,
+        restaurant_food_discount_minor: txPromoEval.restaurantFoodDiscountMinor,
+        elesend_food_discount_minor: txPromoEval.elesendFoodDiscountMinor,
+        items: quote.items,
+        appliedPromotions: txPromoEval.appliedPromotions
+      };
     });
   }
 
@@ -376,7 +517,7 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
     } else if (actor.kind === 'rider') {
       params.push(actor.id);
       conditions.push(`s.rider_id = $${params.length}`);
-    } else if (actor.kind !== 'admin') {
+    } else if (actor.kind === 'admin') { if (restaurantId) { uuid.parse(restaurantId); params.push(restaurantId); conditions.push(`f.restaurant_id = $${params.length}`); } } else if (actor.kind !== 'admin') {
       check(false, 403, 'Unauthorized account kind');
     }
 
@@ -546,6 +687,9 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         await requestCheckoutRefund(c,shipment,reason);
         await c.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[order.shipment_id]);
         await c.query("UPDATE dispatch_offers SET status='expired' WHERE shipment_id=$1 AND status='offered'",[order.shipment_id]);
+        await promos.releaseOrderPromotions(c, orderId, {reason: `rejected:${reason}`, isRefund: Boolean(shipment.paid)});
+      } else {
+        await promos.releaseOrderPromotions(c, orderId, {reason: `rejected:${reason}`, isRefund: false});
       }
 
       await c.query(
@@ -576,6 +720,9 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         await requestCheckoutRefund(c,shipment,reason);
         await c.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[order.shipment_id]);
         await c.query("UPDATE dispatch_offers SET status='expired' WHERE shipment_id=$1 AND status='offered'",[order.shipment_id]);
+        await promos.releaseOrderPromotions(c, orderId, {reason: `cancelled:${reason}`, isRefund: Boolean(shipment.paid)});
+      } else {
+        await promos.releaseOrderPromotions(c, orderId, {reason: `cancelled:${reason}`, isRefund: false});
       }
 
       await c.query(
@@ -594,7 +741,7 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         const nextStops = plan.stops.filter(x => x.shipmentId !== shipment.id);
         await c.query('UPDATE rider_dispatch_plans SET stops = $2, revision = revision + 1, updated_at = now() WHERE rider_id = $1', [shipment.rider_id, JSON.stringify(nextStops)]);
       }
-      await c.query('UPDATE locations SET shipment_id = NULL, updated_at = now() WHERE rider_id = $1 AND shipment_id = $2', [shipment.rider_id, shipment.id]);
+      await c.query('DELETE FROM locations WHERE rider_id = $1 AND shipment_id = $2', [shipment.rider_id, shipment.id]);
     }
     await c.query('DELETE FROM dispatch_commitments WHERE shipment_id = $1', [shipment.id]);
     await c.query("UPDATE dispatch_offers SET status = 'expired' WHERE shipment_id = $1 AND status = 'offered'", [shipment.id]);
@@ -658,6 +805,7 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         }
         await requestCheckoutRefund(c, shipment, v.reason);
         const updated = (await c.query("UPDATE food_orders SET state = 'CANCELLED', updated_at = now() WHERE id = $1 RETURNING *", [orderId])).rows[0];
+        await promos.releaseOrderPromotions(c, orderId, {reason: `returned_cancelled:${v.reason}`, isRefund: Boolean(shipment.paid)});
         await c.query('INSERT INTO audit_logs(actor_id, action, entity_id) VALUES($1, $2, $3)', [actor.id, `food_order.returned_cancelled:${v.reason}`, orderId]);
         return {orderId, state: updated.state, shipmentState: 'RETURNED', riderId: shipment.rider_id, refundReviewRequired: Boolean(shipment.paid)};
       }
@@ -671,6 +819,7 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         await c.query("UPDATE shipments SET state = 'CANCELLED', rider_id = NULL, company_id = NULL WHERE id = $1", [shipment.id]);
         await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'CANCELLED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'CANCELLED'})]);
         const updated = (await c.query("UPDATE food_orders SET state = 'CANCELLED', updated_at = now() WHERE id = $1 RETURNING *", [orderId])).rows[0];
+        await promos.releaseOrderPromotions(c, orderId, {reason: `resolved_cancelled:${v.reason}`, isRefund: Boolean(shipment.paid)});
         await c.query('INSERT INTO audit_logs(actor_id, action, entity_id) VALUES($1, $2, $3)', [actor.id, `food_order.resolved_cancelled:${v.reason}`, orderId]);
         return {orderId, state: updated.state, shipmentState: 'CANCELLED', riderId: null, refundReviewRequired: Boolean(shipment.paid)};
       } else {
@@ -687,6 +836,7 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         }
         await requestCheckoutRefund(c, shipment, v.reason);
         const updated = (await c.query("UPDATE food_orders SET state = 'CANCELLED', updated_at = now() WHERE id = $1 RETURNING *", [orderId])).rows[0];
+        await promos.releaseOrderPromotions(c, orderId, {reason: `post_pickup_cancelled:${v.reason}`, isRefund: Boolean(shipment.paid)});
         await c.query('INSERT INTO audit_logs(actor_id, action, entity_id) VALUES($1, $2, $3)', [actor.id, `food_order.post_pickup_cancelled:${v.reason}`, orderId]);
         return {orderId, state: updated.state, shipmentState: 'RETURNED', riderId: shipment.rider_id, refundReviewRequired: Boolean(shipment.paid)};
       }
@@ -711,6 +861,8 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
     const totals = (await db.query(
       `SELECT
         COALESCE(SUM(gross_sales_minor), 0)::bigint AS gross_sales_minor,
+        COALESCE(SUM(restaurant_discount_minor), 0)::bigint AS restaurant_discount_minor,
+        COALESCE(SUM(elesend_subsidy_minor), 0)::bigint AS elesend_subsidy_minor,
         COALESCE(SUM(commission_minor), 0)::bigint AS commission_minor,
         COALESCE(SUM(net_payable_minor), 0)::bigint AS net_payable_minor,
         COUNT(*)::int AS count
@@ -725,6 +877,8 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       foodCommissionBps: r.food_commission_bps,
       totals: {
         grossSalesMinor: Number(totals.gross_sales_minor),
+        restaurantDiscountMinor: Number(totals.restaurant_discount_minor),
+        elesendSubsidyMinor: Number(totals.elesend_subsidy_minor),
         commissionMinor: Number(totals.commission_minor),
         netPayableMinor: Number(totals.net_payable_minor),
         totalOrders: totals.count
@@ -757,6 +911,7 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         await c.query("UPDATE food_orders SET state='CANCELLED',updated_at=now() WHERE id=$1",[id]);
         await c.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[s.id]);
         await c.query("UPDATE dispatch_offers SET status='expired' WHERE shipment_id=$1 AND status='offered'",[s.id]);
+        await promos.releaseOrderPromotions(c, id, {reason: `auto_cancelled:${reason}`, isRefund: Boolean(s.paid)});
         await c.query("INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,'food_order_cancelled',$3) ON CONFLICT(id) DO NOTHING",['food-expired:'+id,f.customer_id,JSON.stringify({orderId:id,reason,message:s.paid?'Your food order could not be fulfilled. It was cancelled and a full refund is due.':'Your unpaid food order expired.'})]);
         await c.query("INSERT INTO audit_logs(action,entity_id) VALUES($1,$2)",['food_order.auto_cancelled:'+reason,id]);
         return {id,status:'cancelled',reason};
@@ -795,10 +950,16 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
     if (riderId) {
       uuid.parse(riderId);
       const riderRow = (await db.query(
-        `SELECT r.id, r.vehicle, r.max_weight_g AS capacity_g, l.latitude, l.longitude
+        `SELECT r.id, r.vehicle, r.max_weight_g AS capacity_g,
+                COALESCE(l.latitude, ST_Y(r.current_position::geometry)) AS latitude,
+                COALESCE(l.longitude, ST_X(r.current_position::geometry)) AS longitude
          FROM riders r
          LEFT JOIN locations l ON l.rider_id = r.id
-         WHERE r.id = $1 AND r.status = 'approved'`,
+         LEFT JOIN commission_accounts ca ON ca.rider_id = r.id
+         WHERE r.id = $1
+           AND r.status = 'approved'
+           AND r.financial_restriction IS NULL
+           AND COALESCE(ca.blocked, false) = false`,
         [riderId]
       )).rows[0];
       check(riderRow, 404, 'Eligible rider not found');
@@ -811,31 +972,43 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         currentLoadedG: 0
       };
     } else {
-      // Find nearest approved active rider
+      // Find nearest approved, debt-eligible active rider using live current_position or active location pin
       const riderRow = (await db.query(
-        `SELECT r.id, r.vehicle, r.max_weight_g AS capacity_g, l.latitude, l.longitude
+        `SELECT r.id, r.vehicle, r.max_weight_g AS capacity_g,
+                COALESCE(l.latitude, ST_Y(r.current_position::geometry)) AS latitude,
+                COALESCE(l.longitude, ST_X(r.current_position::geometry)) AS longitude
          FROM riders r
-         JOIN locations l ON l.rider_id = r.id
-         WHERE r.status = 'approved' AND r.online
-         ORDER BY ( (l.latitude - $1)*(l.latitude - $1) + (l.longitude - $2)*(l.longitude - $2) ) ASC
+         LEFT JOIN locations l ON l.rider_id = r.id
+         LEFT JOIN commission_accounts ca ON ca.rider_id = r.id
+         WHERE r.status = 'approved'
+           AND r.online = true
+           AND r.financial_restriction IS NULL
+           AND COALESCE(ca.blocked, false) = false
+           AND (l.latitude IS NOT NULL OR r.current_position IS NOT NULL)
+         ORDER BY (
+           (COALESCE(l.latitude, ST_Y(r.current_position::geometry)) - $1) * (COALESCE(l.latitude, ST_Y(r.current_position::geometry)) - $1) +
+           (COALESCE(l.longitude, ST_X(r.current_position::geometry)) - $2) * (COALESCE(l.longitude, ST_X(r.current_position::geometry)) - $2)
+         ) ASC
          LIMIT 1`,
         [r.latitude, r.longitude]
       )).rows[0];
 
       assignedRider = riderRow ? {
         id: riderRow.id,
-        latitude: riderRow.latitude,
-        longitude: riderRow.longitude,
+        latitude: Number(riderRow.latitude),
+        longitude: Number(riderRow.longitude),
         vehicle: riderRow.vehicle || 'motorcycle',
         maxCapacityG: riderRow.capacity_g || 15000,
-        currentLoadedG: 0
+        currentLoadedG: 0,
+        riderSimulated: false
       } : {
         id: 'mock-dispatch-rider',
         latitude: r.latitude,
         longitude: r.longitude,
         vehicle: 'motorcycle',
         maxCapacityG: 15000,
-        currentLoadedG: 0
+        currentLoadedG: 0,
+        riderSimulated: true
       };
     }
 
@@ -869,7 +1042,11 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       [actor.id, `restaurant.batch_evaluated:feasible_${result.feasible}`, restaurantId]
     );
 
-    return result;
+    return {
+      ...result,
+      riderId: assignedRider.id,
+      riderSimulated: Boolean(assignedRider.riderSimulated)
+    };
   }
 
   return {

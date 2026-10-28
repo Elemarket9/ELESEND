@@ -52,10 +52,17 @@ export function resolvePostgresSsl(url, options = {}) {
 export function database(url = process.env.DATABASE_URL, options = {}) {
   if (!url) throw Error('DATABASE_URL required: use a dedicated ELESEND database');
 
+  const poolMax = options.max ?? (process.env.DATABASE_POOL_MAX ? parseInt(process.env.DATABASE_POOL_MAX, 10) : 10);
+  const idleTimeout = options.idleTimeoutMillis ?? (process.env.DATABASE_IDLE_TIMEOUT_MS ? parseInt(process.env.DATABASE_IDLE_TIMEOUT_MS, 10) : 30000);
+  const connTimeout = options.connectionTimeoutMillis ?? (process.env.DATABASE_CONNECTION_TIMEOUT_MS ? parseInt(process.env.DATABASE_CONNECTION_TIMEOUT_MS, 10) : 5000);
+  const statementTimeout = options.statementTimeoutMillis ?? (process.env.DATABASE_STATEMENT_TIMEOUT_MS ? parseInt(process.env.DATABASE_STATEMENT_TIMEOUT_MS, 10) : 15000);
+
   const poolConfig = {
     connectionString: url,
-    max: options.max ?? 10,
-    connectionTimeoutMillis: options.connectionTimeoutMillis ?? 5000
+    max: Number.isInteger(poolMax) && poolMax > 0 ? poolMax : 10,
+    idleTimeoutMillis: idleTimeout,
+    connectionTimeoutMillis: connTimeout,
+    statement_timeout: statementTimeout
   };
 
   const ssl = resolvePostgresSsl(url, options);

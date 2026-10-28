@@ -113,6 +113,10 @@ export async function assignmentEligibility(c,riderId,{lock=false}={}){
  if(!rider)return {eligible:false,restrictions:[{code:'RIDER_NOT_FOUND'}]};
  const restrictions=[];
  if(rider.status!=='approved')restrictions.push({code:'ACCOUNT_STATUS',status:rider.status});
+ if(rider.company_id){
+  const company=(await c.query('SELECT status FROM companies WHERE id=$1',[rider.company_id])).rows[0];
+  if(!company||company.status!=='approved')restrictions.push({code:'COMPANY_STATUS',status:company?.status??'missing'});
+ }
  const debt=await debtState(c,riderId,{lock});
  const weekly=await evaluateRiderWeeklyEligibility(c,riderId);
  if(!weekly.eligible)restrictions.push({code:weekly.reason||'OVERDUE_CASH_COMMISSION',overdueMinor:weekly.overdueMinor??0});

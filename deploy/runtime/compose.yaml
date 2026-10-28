@@ -1,15 +1,17 @@
 # ELESEND mobile API ONLY; Caddy provides HTTPS for Android/iOS clients, not a website.
-# Run: docker compose -f deploy/vps/compose.yaml --env-file .env.vps up -d --build
+# Run: docker compose -f deploy/runtime/compose.yaml --env-file .env.runtime up -d --build
 services:
   db:
     image: postgis/postgis:18-3.6
     restart: unless-stopped
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
     environment:
       POSTGRES_DB: elesend
       POSTGRES_USER: elesend
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Required}
     volumes:
       - pgdata:/var/lib/postgresql
+      - ./postgres.conf:/etc/postgresql/postgresql.conf:ro
     networks: [private]
     healthcheck:
       test: [CMD-SHELL, 'pg_isready -U elesend -d elesend']
@@ -17,6 +19,32 @@ services:
       timeout: 5s
       retries: 10
     logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+    deploy:
+      resources:
+        limits:
+          memory: 4096M
+        reservations:
+          memory: 1024M
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    networks: [private]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 256M
   migrate:
     build: {context: ../..}
     command: [node, scripts/migrate.mjs]
@@ -29,6 +57,7 @@ services:
       db: {condition: service_healthy}
     networks: [private]
   api:
+    image: ${ELESEND_API_IMAGE:-elesend-api:latest}
     build: {context: ../..}
     restart: unless-stopped
     read_only: true
@@ -45,6 +74,7 @@ services:
       ADMIN_MASTER_KEY: ${ADMIN_MASTER_KEY:?Set 32+ character admin master key}
       AUDIT_LOG_SECRET: ${AUDIT_LOG_SECRET:?Set 32+ character audit log secret}
       NODE_ENV: production
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       BACKGROUND_JOBS_ENABLED: ${BACKGROUND_JOBS_ENABLED:-true}
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
       READINESS_PROBE_TOKEN: ${READINESS_PROBE_TOKEN:-}
@@ -102,6 +132,12 @@ services:
       migrate: {condition: service_completed_successfully}
     networks: [private,egress]
     logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+        reservations:
+          memory: 512M
   caddy:
     image: caddy:2
     restart: unless-stopped
@@ -118,6 +154,12 @@ services:
     depends_on: [api]
     networks: [egress]
     logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
 networks:
   private: {internal: true}
   egress: {}

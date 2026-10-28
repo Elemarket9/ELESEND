@@ -79,7 +79,7 @@ test('generic SMS gateway configuration validates required fields and is wired i
  assert.equal(validSms.config.sms.provider,'https_gateway');
  assert.doesNotThrow(()=>httpsSmsGateway(validSms.config.sms.httpsGateway));
 
- for(const path of ['compose.yaml','deploy/vps/compose.yaml']){
+ for(const path of ['compose.yaml','deploy/runtime/compose.yaml']){
   const yaml=readFileSync(new URL('../'+path,import.meta.url),'utf8');
   assert.match(yaml,/SMS_GATEWAY_ENDPOINT:\s*\$\{SMS_GATEWAY_ENDPOINT:-\}/);
   assert.match(yaml,/SMS_GATEWAY_ALLOWED_HOST:\s*\$\{SMS_GATEWAY_ALLOWED_HOST:-\}/);

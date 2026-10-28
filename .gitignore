@@ -8,3 +8,10 @@ node_modules/
 *.log
 *.zip
 .runtime/
+.expo/
+**/.expo/
+.agents/
+data/osm/
+data/overture/
+audit-reports/
+tests/screenshots/

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Customer flavor manifest overlay (com.elesend.customer).
+  The customer app uses foreground, while-in-use location only (customer-location.js requests
+  foreground permission exclusively). Background location, location foreground-service
+  permissions, and expo-location's background LocationTaskService are required only by the
+  rider flavor and are removed here (Google Play background-location policy, privacy minimisation).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+  <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" tools:node="remove"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" tools:node="remove"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove"/>
+  <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" tools:node="remove"/>
+  <application>
+    <service
+      android:name="expo.modules.location.services.LocationTaskService"
+      tools:node="remove"/>
+  </application>
+</manifest>

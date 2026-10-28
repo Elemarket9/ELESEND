@@ -26,4 +26,14 @@ jobs:
           node-version: '24.22.1'
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm test
+      - name: Run database migrations
+        run: npm run migrate
+      - name: Run backend, geospatial, security, and mobile logic tests
+        run: npm test
+      - name: Verify mobile modules syntax and release manifest security
+        run: |
+          node --check apps/mobile/src/config.js
+          node --check apps/mobile/src/customer-location.js
+          node --check apps/mobile/src/manual-address.js
+          node --check apps/mobile/src/booking-contract.js
+          node --check apps/mobile/src/maps/private-map-style.mjs

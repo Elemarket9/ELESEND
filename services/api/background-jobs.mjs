@@ -5,8 +5,9 @@
  */
 import {reconcileAndEnforceWeeklyRestrictions} from './weekly-settlement.mjs';
 import {runScheduledRecovery} from './rider-wallet.mjs';
+import {runGeographicLearningCycle} from './infrastructure/maps/egia/background-learner.mjs';
 
-export const LOCKS={dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207};
+export const LOCKS={dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208};
 
 const warn=(component,code,extra={})=>process.stderr.write(JSON.stringify({level:'warn',component,code,...extra})+'\n');
 
@@ -58,11 +59,21 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
    if(recovered.length)process.stdout.write(JSON.stringify({level:'info',component:'wallet_reconciliation',msg:'catch_up_recovery',riders:recovered.length})+'\n');
   }),
   pruning:guarded('location_retention',LOCKS.dispatchPruning,async()=>{await dispatch?.pruneSamples();}),
+   geoLearning:guarded('geo_learning',LOCKS.geoLearning,async()=>{await runGeographicLearningCycle(db);}),
   corridors:guarded('corridor_refresh',LOCKS.corridors,async()=>{await dispatch?.refreshCorridors();}),
   maintenance:guarded('maintenance',LOCKS.maintenance,async()=>{
    await db.query("DELETE FROM rate_limits WHERE expires_at<now()-interval '1 hour'");
    await db.query("DELETE FROM sessions WHERE expires_at<now()-interval '24 hours'");
    await db.query("DELETE FROM account_phone_challenges WHERE expires_at<now()-interval '24 hours'");
+   const notifDays = parseInt(process.env.NOTIFICATION_RETENTION_DAYS || '14', 10);
+   if (notifDays > 0) {
+     await db.query("DELETE FROM notification_jobs WHERE state IN ('sent','expired') AND created_at < now() - ($1::int * interval '1 day')", [notifDays]);
+   }
+   const riskDays = parseInt(process.env.RISK_SIGNAL_RETENTION_DAYS || '90', 10);
+   if (riskDays > 0) {
+     await db.query("DELETE FROM operational_risk_signals WHERE review_status IN ('reviewed','dismissed') AND created_at < now() - ($1::int * interval '1 day')", [riskDays]);
+   }
+   // Financial checkout intents, transactions, journals, and audit logs are permanently retained under legal and financial audit requirements.
    await reconcileAndEnforceWeeklyRestrictions(db);
   })
  };
@@ -78,6 +89,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
   every(jobs.corridors,60000,!!dispatch);
   every(jobs.maintenance,3600000);
   every(jobs.walletRecon,900000);
+   every(jobs.geoLearning,1800000);
   return api;
  }
  function stop(){while(timers.length)clearInterval(timers.pop());}

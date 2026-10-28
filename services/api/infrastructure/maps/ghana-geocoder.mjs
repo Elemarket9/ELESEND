@@ -227,6 +227,10 @@ const GENERIC_CATEGORY_WORDS = new Set([
 const QUERY_CACHE = new Map();
 const MAX_CACHE_SIZE = 1000;
 
+// Bounded LRU Cache for reverse geocoding (~10m precision, 2,000 points)
+const REVERSE_CACHE = new Map();
+const MAX_REVERSE_CACHE_SIZE = 2000;
+
 // Fast In-Memory Geocoding Search (< 1ms across 31,000+ records)
 export function ghanaSearch(query, {limit = 10, db = null} = {}) {
   check(typeof query === 'string', 400, 'Search query must be text');
@@ -520,6 +524,11 @@ export function ghanaReverseGeocode(lat, lon) {
   check(Number.isFinite(lat) && lat >= GHANA_BOUNDS.minLatitude && lat <= GHANA_BOUNDS.maxLatitude, 400, 'Latitude outside Ghana');
   check(Number.isFinite(lon) && lon >= GHANA_BOUNDS.minLongitude && lon <= GHANA_BOUNDS.maxLongitude, 400, 'Longitude outside Ghana');
 
+  const cacheKey = `${lat.toFixed(4)}:${lon.toFixed(4)}`;
+  if (REVERSE_CACHE.has(cacheKey)) {
+    return { ...REVERSE_CACHE.get(cacheKey), latitude: lat, longitude: lon };
+  }
+
   const gLat = Math.floor(lat / GRID_CELL_SIZE);
   const gLon = Math.floor(lon / GRID_CELL_SIZE);
   let closest = null, minDist = Infinity;
@@ -561,16 +570,22 @@ export function ghanaReverseGeocode(lat, lon) {
   const distanceLabel = distKm < 0.1 ? 'At' : distKm < 1 ? `~${Math.round(minDist)}m from` : `~${distKm.toFixed(1)} km from`;
   const address = `${distanceLabel} ${closest.name}, ${closest.locality || closest.region}, ${closest.city || closest.region}`;
 
-  return {
+  const cachedEntry = {
     address,
     nearestPlace: closest.name,
     locality: closest.locality || closest.region,
     city: closest.city || closest.region,
     region: closest.region,
-    distanceMeters: Math.round(minDist),
-    latitude: lat,
-    longitude: lon
+    distanceMeters: Math.round(minDist)
   };
+
+  if (REVERSE_CACHE.size >= MAX_REVERSE_CACHE_SIZE) {
+    const firstKey = REVERSE_CACHE.keys().next().value;
+    REVERSE_CACHE.delete(firstKey);
+  }
+  REVERSE_CACHE.set(cacheKey, cachedEntry);
+
+  return { ...cachedEntry, latitude: lat, longitude: lon };
 }
 
 // PostgreSQL / PostGIS Direct Spatial Search

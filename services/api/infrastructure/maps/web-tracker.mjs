@@ -1,3 +1,4 @@
+import {createHmac,timingSafeEqual} from 'node:crypto';
 import {haversine} from '../../dispatch-geometry.mjs';
 
 export function escapeHtml(str) {
@@ -27,28 +28,80 @@ export function statusToLabel(state){
  }
 }
 
-export async function getPublicTracking(db, token){
- if(!token||typeof token!=='string')return null;
+function resolveSigningKey(secretOverride){
+ const envKey=secretOverride||process.env.TRACKING_TOKEN_SECRET||process.env.OTP_KEY||process.env.JWT_SECRET;
+ if(!envKey&&process.env.NODE_ENV==='production'){
+  const err=new Error('TRACKING_TOKEN_SECRET or OTP_KEY is required in production');
+  err.status=500;
+  throw err;
+ }
+ const raw=envKey||'elesend-dev-tracking-key-0123456789abcdef';
+ return Buffer.from(String(raw),'utf8');
+}
+
+export function createPublicTrackingToken(shipmentId,{expiresInSeconds=48*3600,secret=null}={}){
+ if(!shipmentId||!/^[0-9a-f-]{36}$/i.test(String(shipmentId).trim()))throw Error('Valid shipmentId required');
+ const id=String(shipmentId).trim().toLowerCase();
+ const exp=Math.floor(Date.now()/1000)+Math.max(60,Math.min(7*86400,Number(expiresInSeconds)||172800));
+ const payload=`${id}.${exp}`;
+ const sig=createHmac('sha256',resolveSigningKey(secret)).update(payload).digest('hex').slice(0,32);
+ return `${payload}.${sig}`;
+}
+
+export function verifyPublicTrackingToken(token,{secret=null}={}){
+ if(!token||typeof token!=='string')return {valid:false,shipmentId:null,signed:false};
  const clean=token.trim();
- if(!/^[0-9a-f-]{36}$/i.test(clean))return null;
+ const signedMatch=/^([0-9a-f-]{36})\.(\d{10,12})\.([0-9a-f]{32})$/i.exec(clean);
+ if(signedMatch){
+  const [,id,expStr,sigHex]=signedMatch;
+  const exp=Number(expStr);
+  if(!Number.isFinite(exp)||exp*1000<Date.now())return {valid:false,shipmentId:null,signed:true,expired:true};
+  const payload=`${id.toLowerCase()}.${expStr}`;
+  const expected=createHmac('sha256',resolveSigningKey(secret)).update(payload).digest('hex').slice(0,32);
+  const a=Buffer.from(sigHex.toLowerCase(),'utf8'),b=Buffer.from(expected,'utf8');
+  if(a.length===b.length&&timingSafeEqual(a,b)){
+   return {valid:true,shipmentId:id.toLowerCase(),signed:true,expiresAt:new Date(exp*1000).toISOString()};
+  }
+  return {valid:false,shipmentId:null,signed:true};
+ }
+ if(/^[0-9a-f-]{36}$/i.test(clean)){
+  return {valid:true,shipmentId:clean.toLowerCase(),signed:false};
+ }
+ return {valid:false,shipmentId:null,signed:false};
+}
+
+function sanitizePublicAddress(addr,fallbackLabel){
+ if(!addr||typeof addr!=='string')return fallbackLabel;
+ // Redact bracketed private delivery instructions (e.g. "[Instructions: Blue gate code 1234]") from unauthenticated public views
+ const stripped=addr.replace(/\s*\[Instructions:[^\]]*\]/gi,'').trim();
+ return stripped||fallbackLabel;
+}
+
+export async function getPublicTracking(db, token, {actor=null, secret=null}={}){
+ const parsed=verifyPublicTrackingToken(token,{secret});
+ if(!parsed.valid||!parsed.shipmentId)return null;
 
  const query=`
-  SELECT s.id, s.state, s.amount_minor, s.created_at, s.completed_at,
+  SELECT s.id, s.customer_id, s.rider_id, s.state, s.amount_minor, s.created_at, s.completed_at,
          q.request,
          l.latitude AS courier_lat, l.longitude AS courier_lon, l.updated_at AS courier_time,
-         r.vehicle AS rider_vehicle
+         r.vehicle AS rider_vehicle,
+         u.phone AS rider_phone
   FROM shipments s
   JOIN quotes q ON q.id=s.quote_id
   LEFT JOIN locations l ON l.shipment_id=s.id
   LEFT JOIN riders r ON r.id=s.rider_id
+  LEFT JOIN users u ON u.id=r.id
   WHERE s.id=$1
  `;
 
- const res=await db.query(query,[clean]);
+ const res=await db.query(query,[parsed.shipmentId]);
  if(!res.rows.length)return null;
  const row=res.rows[0];
 
- // Expiration check: public tracking links expire 2 hours after completion or 48 hours after creation
+ // Terminal or expired shipments are not publicly trackable
+ if(['CANCELLED','RETURNED'].includes(row.state))return null;
+
  const now = Date.now();
  if (row.completed_at && (now - new Date(row.completed_at).getTime()) > 2 * 60 * 60 * 1000) {
   return null;
@@ -56,6 +109,15 @@ export async function getPublicTracking(db, token){
  if (row.created_at && (now - new Date(row.created_at).getTime()) > 48 * 60 * 60 * 1000) {
   return null;
  }
+
+ const isAuthorizedActor = Boolean(
+  actor && (
+   actor.kind === 'admin' ||
+   actor.id === row.customer_id ||
+   (row.rider_id && actor.id === row.rider_id)
+  )
+ );
+ const isPrivilegedView = isAuthorizedActor || parsed.signed;
 
  const req=row.request||{};
 
@@ -74,26 +136,46 @@ export async function getPublicTracking(db, token){
   const mins=Math.max(1,Math.round((distMeters/1000)/(courier.vehicle==='motorcycle'?28:22)*60));
   etaEstimate={
    remainingDistanceKm:Math.round(distMeters/100)/10,
-   estimatedMinutes:mins
+   estimatedMinutes:mins,
+   estimateType:'straight_line_approximation',
+   isRoadVerified:false
   };
  }
 
+ const pickupAddr = isPrivilegedView
+  ? (req.pickup?.address || 'Pickup Location')
+  : sanitizePublicAddress(req.pickup?.address, 'Pickup Location');
+ const destAddr = isPrivilegedView
+  ? (req.destination?.address || 'Delivery Destination')
+  : sanitizePublicAddress(req.destination?.address, 'Delivery Destination');
+
  return {
   shipmentId:row.id,
+  trackingToken: isAuthorizedActor ? createPublicTrackingToken(row.id,{secret}) : undefined,
   state:row.state,
   statusLabel:statusToLabel(row.state),
   vehicle:courier?.vehicle||req.vehicle||'motorcycle',
-  pickup:req.pickup?{address:req.pickup.address||'Pickup Location',latitude:req.pickup.latitude,longitude:req.pickup.longitude}:null,
-  destination:req.destination?{address:req.destination.address||'Delivery Destination',latitude:req.destination.latitude,longitude:req.destination.longitude}:null,
-  courier,
+  pickup: req.pickup ? {
+   address: pickupAddr,
+   latitude: isPrivilegedView ? (req.pickup.latitude ?? null) : null,
+   longitude: isPrivilegedView ? (req.pickup.longitude ?? null) : null
+  } : null,
+  destination: req.destination ? {
+   address: destAddr,
+   latitude: isPrivilegedView ? (req.destination.latitude ?? null) : null,
+   longitude: isPrivilegedView ? (req.destination.longitude ?? null) : null
+  } : null,
+  courier: isPrivilegedView ? courier : null,
+  // Raw riderPhone PII is only exposed to authenticated shipment participants or verified signed tracking tokens
+  riderPhone: (isCourierActive && isPrivilegedView) ? (row.rider_phone || null) : null,
   eta:etaEstimate,
   createdAt:row.created_at,
   completedAt:row.completed_at
  };
 }
 
-export function renderTrackingHtml(data){
- const safeData=JSON.stringify(data).replace(/</g,'\\u003c');
+export function renderTrackingHtml(data, trackingTokenOverride = null){
+ const pollToken = trackingTokenOverride || data.trackingToken || data.shipmentId;
  const steps=['AWAITING_ASSIGNMENT','RIDER_ASSIGNED','IN_TRANSIT','COMPLETED'];
  const stateIndex=steps.indexOf(data.state);
  const activeStep=stateIndex===-1?(data.state==='PICKUP_VERIFIED'?1:data.state==='AWAITING_DELIVERY_OTP'?2:0):stateIndex;
@@ -171,7 +253,7 @@ export function renderTrackingHtml(data){
 
   <div class="card">
    <div class="status-title" id="status-label">${safeStatusLabel}</div>
-   <div class="status-subtitle" id="status-desc">Order #${shortId} • Verified road delivery</div>
+   <div class="status-subtitle" id="status-desc">Order #${shortId} • Live delivery telemetry</div>
 
    <div class="stepper">
     <div class="step-node ${activeStep>=0?'done':''} ${activeStep===0?'active':''}">
@@ -195,17 +277,16 @@ export function renderTrackingHtml(data){
    ${data.eta?`
    <div class="eta-card" id="eta-box">
     <div>
-     <div class="eta-label">ESTIMATED ARRIVAL</div>
-     <div class="status-subtitle">${escapeHtml(data.eta.remainingDistanceKm)} km remaining</div>
+     <div class="eta-label">APPROXIMATE ARRIVAL (STRAIGHT-LINE ESTIMATE)</div>
+     <div class="status-subtitle">~${escapeHtml(data.eta.remainingDistanceKm)} km direct distance</div>
     </div>
-    <div class="eta-time">${escapeHtml(data.eta.estimatedMinutes)} mins</div>
+    <div class="eta-time">~${escapeHtml(data.eta.estimatedMinutes)} mins</div>
    </div>`:''}
   </div>
 
   <div class="card" style="padding: 10px;">
    <div class="map-wrapper" id="map-box">
     <svg class="map-canvas" id="map-svg" viewBox="0 0 400 260">
-     <!-- Synthetic SVG grid & road line representation -->
      <defs>
       <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
        <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1d2a45" stroke-width="1"/>
@@ -213,20 +294,17 @@ export function renderTrackingHtml(data){
      </defs>
      <rect width="100%" height="100%" fill="url(#grid)" />
      <path id="route-line" d="M 60 200 Q 200 60 340 70" fill="none" stroke="#3fd6b3" stroke-width="4" stroke-linecap="round" stroke-dasharray="8 4"/>
-     <!-- Pickup Marker -->
      <g id="pickup-marker" transform="translate(60, 200)">
       <circle r="12" fill="#2ecc71" opacity="0.3"/>
       <circle r="7" fill="#2ecc71"/>
       <text y="-12" font-size="11" fill="#2ecc71" text-anchor="middle" font-weight="bold">Pickup</text>
      </g>
-     <!-- Dropoff Marker -->
      <g id="dropoff-marker" transform="translate(340, 70)">
       <circle r="12" fill="#e74c3c" opacity="0.3"/>
       <circle r="7" fill="#e74c3c"/>
       <text y="-12" font-size="11" fill="#e74c3c" text-anchor="middle" font-weight="bold">Dropoff</text>
      </g>
-     ${data.courier ? `<!-- Courier Marker -->
-     <g id="courier-marker" transform="translate(190, 115)">
+     ${data.courier ? `<g id="courier-marker" transform="translate(190, 115)">
       <circle class="pulse" r="18" fill="#3fd6b3" opacity="0.4"/>
       <circle r="10" fill="#172239" stroke="#3fd6b3" stroke-width="2"/>
       <text y="4" font-size="11" fill="#3fd6b3" text-anchor="middle">${data.vehicle==='car'?'🚗':'🛵'}</text>
@@ -239,7 +317,7 @@ export function renderTrackingHtml(data){
    <div class="address-row">
     <div class="icon-pin pin-p">P</div>
     <div>
-     <div class="address-role">Pickup Address</div>
+     <div class="address-role">Pickup Area</div>
      <div class="address-text">${safePickupAddress}</div>
     </div>
    </div>
@@ -247,7 +325,7 @@ export function renderTrackingHtml(data){
    <div class="address-row">
     <div class="icon-pin pin-d">D</div>
     <div>
-     <div class="address-role">Destination</div>
+     <div class="address-role">Destination Area</div>
      <div class="address-text">${safeDestAddress}</div>
     </div>
    </div>
@@ -259,8 +337,7 @@ export function renderTrackingHtml(data){
  </div>
 
  <script>
-  const token = ${JSON.stringify(data.shipmentId)};
-  // Auto-refresh every 6 seconds to update courier position and status
+  const token = ${JSON.stringify(pollToken)};
   async function pollStatus() {
    try {
     const res = await fetch('/api/v1/public-track/' + encodeURIComponent(token));
@@ -269,7 +346,7 @@ export function renderTrackingHtml(data){
     document.getElementById('state-badge').innerText = (fresh.state || '').replace(/_/g, ' ');
     document.getElementById('status-label').innerText = fresh.statusLabel || '';
     if (fresh.eta && document.getElementById('eta-box')) {
-     document.getElementById('eta-box').innerHTML = '<div><div class="eta-label">ESTIMATED ARRIVAL</div><div class="status-subtitle">' + Number(fresh.eta.remainingDistanceKm) + ' km remaining</div></div><div class="eta-time">' + Number(fresh.eta.estimatedMinutes) + ' mins</div>';
+     document.getElementById('eta-box').innerHTML = '<div><div class="eta-label">APPROXIMATE ARRIVAL (STRAIGHT-LINE ESTIMATE)</div><div class="status-subtitle">~' + Number(fresh.eta.remainingDistanceKm) + ' km direct distance</div></div><div class="eta-time">~' + Number(fresh.eta.estimatedMinutes) + ' mins</div>';
     }
    } catch(e) {}
   }

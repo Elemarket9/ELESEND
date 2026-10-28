@@ -15,6 +15,7 @@ import {smoothGps} from './algorithms/gps.mjs';
 import {calibrateETA} from './algorithms/eta.mjs';
 import {minCostBipartiteAssignment} from './algorithms/batch.mjs';
 import {featureService} from './algorithms/features.mjs';
+import {getRedisClient} from './infrastructure/cache/redis.mjs';
 const uuid=z.string().uuid();
 const sampleSchema=z.object({latitude:z.number().finite().min(-90).max(90),longitude:z.number().finite().min(-180).max(180),accuracyMeters:z.number().finite().min(0).max(1000),observedAt:z.string().datetime({offset:true}),headingDegrees:z.number().finite().min(0).max(359.999).optional(),speedMps:z.number().finite().min(0).max(80).optional()}).strict();
 const point=r=>({latitude:Number(r.latitude),longitude:Number(r.longitude)});
@@ -88,7 +89,7 @@ export function dispatchEngine(db,{routing}={}){
     const prev=(await c.query('SELECT ST_Y(current_position::geometry) AS latitude,ST_X(current_position::geometry) AS longitude FROM riders WHERE id=$1',[actor.id])).rows[0];
     const speed=haversine(point(prev),v)/elapsed;
     check(speed<=p.max_speed_mps+Math.min(10,(Number(r.position_accuracy_m)+v.accuracyMeters)/Math.max(elapsed,1)),422,'Implausible GPS movement');
-    if(await features.enabled('gps_filtering')){
+    if(await featureService(c).enabled('gps_filtering')){
      const hint=smoothGps({...point(prev),accuracyMeters:Number(r.position_accuracy_m),observedAt:new Date(r.position_at).toISOString()},v,{maxSpeedMps:p.max_speed_mps,maxAccuracyM:p.max_accuracy_m});
      check(hint.accepted,422,'GPS continuity validation rejected observation');
      // Never replace the verified raw GPS record with a fabricated smoothed observation.
@@ -96,6 +97,14 @@ export function dispatchEngine(db,{routing}={}){
    }
    await c.query('UPDATE riders SET current_position=ST_SetSRID(ST_MakePoint($2,$3),4326)::geography,position_at=$4,position_accuracy_m=$5,observed_heading_deg=$6,observed_speed_mps=$7 WHERE id=$1',[actor.id,v.longitude,v.latitude,v.observedAt,v.accuracyMeters,v.headingDegrees??null,v.speedMps??null]);
    await c.query('INSERT INTO rider_location_samples(rider_id,position,observed_at,accuracy_m) VALUES($1,ST_SetSRID(ST_MakePoint($2,$3),4326)::geography,$4,$5)',[actor.id,v.longitude,v.latitude,v.observedAt,v.accuracyMeters]);
+   getRedisClient().saveRiderLocation(actor.id, {
+     latitude: v.latitude,
+     longitude: v.longitude,
+     heading: v.headingDegrees,
+     speed: v.speedMps,
+     accuracy: v.accuracyMeters,
+     observedAt: v.observedAt
+   }).catch(() => {});
    return {ok:true,eligibleUntil:new Date(Date.parse(v.observedAt)+p.fresh_seconds*1000).toISOString()};
   });
  }
@@ -105,11 +114,42 @@ export function dispatchEngine(db,{routing}={}){
  }
  async function manifest(actor){check(actor?.kind==='rider',403,'Rider required');
   const r=(await db.query('SELECT status,multi_stop_opt_in,vehicle,max_weight_g FROM riders WHERE id=$1',[actor.id])).rows[0];check(r,403);
-  const shipments=(await db.query(`SELECT s.id,s.state,s.recipient_phone,s.amount_minor,s.commission_minor,q.request,c.promised_delivery_before
+  const shipments=(await db.query(`SELECT s.id,s.state,s.recipient_phone,s.amount_minor,s.commission_minor,s.payment_method,s.cash_payer,q.request,c.promised_delivery_before
     FROM shipments s JOIN quotes q ON q.id=s.quote_id LEFT JOIN dispatch_commitments c ON c.shipment_id=s.id
     WHERE s.rider_id=$1 AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP','FAILED','RETURN_REQUESTED') ORDER BY s.created_at`,[actor.id])).rows;
   const plan=(await db.query('SELECT stops,revision FROM rider_dispatch_plans WHERE rider_id=$1',[actor.id])).rows[0];
-  return {optedIn:r.multi_stop_opt_in,vehicle:r.vehicle,capacityG:r.max_weight_g,shipments,stops:plan?.stops??[],revision:plan?.revision??0};
+  const shipmentMap=new Map(shipments.map(s=>[s.id,s]));
+  const stops=(plan?.stops??[]).map(st=>{
+    const sh=shipmentMap.get(st.shipmentId);
+    return {
+      ...st,
+      id: st.shipmentId,
+      state: sh?.state??'RIDER_ASSIGNED',
+      recipient_phone: sh?.recipient_phone,
+      amount_minor: sh?.amount_minor??0,
+      commission_minor: sh?.commission_minor??0,
+      payment_method: sh?.payment_method??'CASH',
+      cash_payer: sh?.cash_payer??'recipient',
+      description: sh?.request?.description??'Package',
+      pickup: sh?.request?.pickup,
+      destination: sh?.request?.destination
+    };
+  });
+  const finalStops=stops.length?stops:shipments.map(s=>({
+    id: s.id,
+    shipmentId: s.id,
+    kind: s.state==='RIDER_ASSIGNED'?'pickup':'dropoff',
+    state: s.state,
+    recipient_phone: s.recipient_phone,
+    amount_minor: s.amount_minor,
+    commission_minor: s.commission_minor,
+    payment_method: s.payment_method,
+    cash_payer: s.cash_payer,
+    description: s.request?.description??'Package',
+    pickup: s.request?.pickup,
+    destination: s.request?.destination
+  }));
+  return {optedIn:r.multi_stop_opt_in,vehicle:r.vehicle,capacityG:r.max_weight_g,shipments,stops:finalStops,revision:plan?.revision??0};
  }
  // A previously accepted route must be complete and have explicit delivery deadlines before inserting another parcel.
  async function planForCandidate(r,request,sid,p,routeEngine=routing){
@@ -436,12 +476,19 @@ export function dispatchEngine(db,{routing}={}){
   }
   return {refreshed:results.length,checked:rows.length};
  }
- async function pruneSamples(){const p=await policy(db);return db.tx(async c=>{
- const samples=await c.query("DELETE FROM rider_location_samples WHERE observed_at<now()-($1::int*interval '1 hour')",[p.sample_retention_hours]);
- const snapshots=await c.query("UPDATE riders SET current_position=NULL,position_at=NULL,position_accuracy_m=NULL,observed_heading_deg=NULL,observed_speed_mps=NULL WHERE position_at<now()-($1::int*interval '1 hour')",[p.sample_retention_hours]);
- const tracking=await c.query("DELETE FROM locations WHERE updated_at<now()-($1::int*interval '1 hour')",[p.sample_retention_hours]);
- return {removedSamples:samples.rowCount,removedRiderSnapshots:snapshots.rowCount,removedShipmentTracking:tracking.rowCount};
- });}
+ async function pruneSamples(){const p=await policy(db);
+   getRedisClient().purgeStaleRiders(p.fresh_seconds || 120).catch(() => 0);
+   return db.tx(async c=>{
+  const samples=await c.query(`DELETE FROM rider_location_samples WHERE observed_at<now()-($1::int*interval '1 hour')
+    AND NOT EXISTS (SELECT 1 FROM disputes d JOIN shipments s ON d.shipment_id=s.id WHERE s.rider_id=rider_location_samples.rider_id AND d.status='open')
+    AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.rider_id=rider_location_samples.rider_id AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP','FAILED','RETURN_REQUESTED'))`,[p.sample_retention_hours]);
+  const snapshots=await c.query(`UPDATE riders SET current_position=NULL,position_at=NULL,position_accuracy_m=NULL,observed_heading_deg=NULL,observed_speed_mps=NULL WHERE position_at<now()-($1::int*interval '1 hour')
+    AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.rider_id=riders.id AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP','FAILED','RETURN_REQUESTED'))`,[p.sample_retention_hours]);
+  const tracking=await c.query(`DELETE FROM locations WHERE updated_at<now()-($1::int*interval '1 hour')
+    AND NOT EXISTS (SELECT 1 FROM disputes d WHERE d.shipment_id=locations.shipment_id AND d.status='open')
+    AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.id=locations.shipment_id AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP','FAILED','RETURN_REQUESTED'))`,[p.sample_retention_hours]);
+  return {removedSamples:samples.rowCount,removedRiderSnapshots:snapshots.rowCount,removedShipmentTracking:tracking.rowCount};
+  });}
  async function tick(limit=8){check(Number.isInteger(limit)&&limit>=1&&limit<=20,400);const due=(await db.query(`SELECT s.id FROM shipments s WHERE state='AWAITING_ASSIGNMENT' AND (paid OR payment_method='CASH') AND next_dispatch_at<=now()
     AND NOT EXISTS (SELECT 1 FROM food_orders f WHERE f.shipment_id=s.id AND (f.payment_status<>'PAID' OR f.payment_method='CASH' OR f.state NOT IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')))
     AND NOT EXISTS (SELECT 1 FROM dispatch_offers o WHERE o.shipment_id=s.id AND o.status='offered' AND o.expires_at>now())

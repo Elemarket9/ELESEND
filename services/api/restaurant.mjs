@@ -1,10 +1,96 @@
 import {randomUUID} from 'node:crypto';
+import {isIP} from 'node:net';
 import {z} from 'zod';
 import {check} from './security.mjs';
 import {haversine} from './dispatch-geometry.mjs';
+import {promotionEngine} from './promotion-engine.mjs';
 
 const uuid = z.string().uuid();
 const phoneSchema = z.string().trim().regex(/^(\+233|0)[25][0-9]{8}$/, 'Valid Ghana phone number required');
+
+export function isPrivateOrLocalHost(hostname) {
+  if (!hostname || typeof hostname !== 'string') return true;
+  const host = hostname.toLowerCase().trim().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+  if (!host) return true;
+
+  const ipType = isIP(host);
+
+  if (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.local') ||
+    host.endsWith('.internal') ||
+    host.endsWith('.lan') ||
+    host.endsWith('.home.arpa') ||
+    (!host.includes('.') && ipType === 0)
+  ) {
+    return true;
+  }
+  if (ipType === 4) {
+    const parts = host.split('.').map(Number);
+    if (parts.length !== 4 || parts.some(n => Number.isNaN(n) || n < 0 || n > 255)) return true;
+    if (parts[0] === 0) return true; // 0.0.0.0/8
+    if (parts[0] === 127) return true; // 127.0.0.0/8 Loopback
+    if (parts[0] === 10) return true; // 10.0.0.0/8 Private
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16.0.0/12 Private
+    if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16 Private
+    if (parts[0] === 169 && parts[1] === 254) return true; // 169.254.0.0/16 Link-local
+    if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return true; // CGNAT
+    if (parts[0] === 192 && parts[1] === 0 && parts[2] === 2) return true; // TEST-NET-1
+    if (parts[0] === 198 && (parts[1] === 18 || parts[1] === 19)) return true; // Benchmark
+    if (parts[0] === 198 && parts[1] === 51 && parts[2] === 100) return true; // TEST-NET-2
+    if (parts[0] === 203 && parts[1] === 0 && parts[2] === 113) return true; // TEST-NET-3
+    if (parts[0] >= 224) return true; // Multicast & Reserved
+    return false;
+  }
+
+  if (ipType === 6) {
+    if (host === '::1' || host === '::') return true;
+    if (host.startsWith('fe8') || host.startsWith('fe9') || host.startsWith('fea') || host.startsWith('feb')) return true; // fe80::/10 link-local
+    if (host.startsWith('fc') || host.startsWith('fd')) return true; // fc00::/7 unique local
+    if (host.includes('ffff:')) {
+      const idx = host.indexOf('ffff:');
+      const rest = host.slice(idx + 5);
+      if (rest.includes('.')) {
+        return isPrivateOrLocalHost(rest);
+      }
+      const parts = rest.split(':');
+      if (parts.length === 2) {
+        const high = parseInt(parts[0], 16);
+        const low = parseInt(parts[1], 16);
+        if (!Number.isNaN(high) && !Number.isNaN(low)) {
+          const v4 = `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+          return isPrivateOrLocalHost(v4);
+        }
+      }
+    }
+    if (host.includes('.')) {
+      const lastColon = host.lastIndexOf(':');
+      if (lastColon !== -1) {
+        const v4Part = host.slice(lastColon + 1);
+        if (isIP(v4Part) === 4) {
+          return isPrivateOrLocalHost(v4Part);
+        }
+      }
+    }
+    return false;
+  }
+
+  return false;
+}
+
+export const httpsImageUrlSchema = z.string().trim().max(2048).refine(val => {
+  try {
+    const u = new URL(val);
+    if (u.protocol !== 'https:') return false;
+    if (u.username || u.password) return false;
+    if (u.port && u.port !== '443') return false;
+    if (isPrivateOrLocalHost(u.hostname)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}, { message: 'Image URL must use a public https:// host and cannot target private/loopback networks' });
 
 function normalizePhone(p) {
   const clean = p.replace(/\s+/g, '');
@@ -36,7 +122,7 @@ export function restaurantService(db) {
       prepTimeMinutes: z.number().int().min(5).max(120).default(20),
       deliveryRadiusM: z.number().int().min(500).max(50000).default(10000),
       cuisine: z.string().trim().max(100).optional(),
-      imageUrl: z.string().trim().url().optional()
+      imageUrl: httpsImageUrlSchema.optional()
     }).strict();
 
     const data = schema.parse(input);
@@ -100,9 +186,19 @@ export function restaurantService(db) {
     params.push(lim);
 
     const rows = (await db.query(query, params)).rows;
+    const promosEngine = promotionEngine(db);
+    const enriched = await Promise.all(rows.map(async r => {
+      const activePromotions = await promosEngine.getPublicPromotionsForRestaurant(r.id).catch(() => []);
+      return {
+        ...r,
+        activePromotions,
+        primaryOfferBadge: activePromotions[0]?.badgeText || null,
+        primaryOfferBanner: activePromotions[0]?.bannerText || null
+      };
+    }));
 
     if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
-      return rows.map(r => {
+      return enriched.map(r => {
         const distM = haversine({ latitude, longitude }, { latitude: r.latitude, longitude: r.longitude });
         return {
           ...r,
@@ -112,7 +208,7 @@ export function restaurantService(db) {
       }).sort((a, b) => a.distanceMeters - b.distanceMeters);
     }
 
-    return rows;
+    return enriched;
   }
 
   async function updateRestaurant(actor, id, updates) {
@@ -132,7 +228,7 @@ export function restaurantService(db) {
       prepTimeMinutes: z.number().int().min(5).max(120).optional(),
       deliveryRadiusM: z.number().int().min(500).max(50000).optional(),
       cuisine: z.string().trim().max(100).optional(),
-      imageUrl: z.string().trim().url().optional(),
+      imageUrl: httpsImageUrlSchema.optional(),
       status: z.enum(['pending', 'approved', 'suspended', 'rejected']).optional(),
       foodCommissionBps: z.number().int().min(0).max(3000).optional()
     }).strict();
@@ -194,10 +290,12 @@ export function restaurantService(db) {
     )).rows[0];
   }
 
-  async function updateCategory(actor, categoryId, input) {
+  async function updateCategory(actor, categoryId, input, expectedRestaurantId = null) {
     uuid.parse(categoryId);
+    if (expectedRestaurantId) uuid.parse(expectedRestaurantId);
     const cat = (await db.query('SELECT * FROM menu_categories WHERE id = $1', [categoryId])).rows[0];
     check(cat, 404, 'Category not found');
+    if (expectedRestaurantId) check(cat.restaurant_id === expectedRestaurantId, 404, 'Category does not belong to this restaurant');
     const r = await getRestaurant(cat.restaurant_id);
     check(actor && (actor.kind === 'admin' || r.owner_id === actor.id), 403, 'Permission denied');
 
@@ -218,10 +316,12 @@ export function restaurantService(db) {
     )).rows[0];
   }
 
-  async function deleteCategory(actor, categoryId) {
+  async function deleteCategory(actor, categoryId, expectedRestaurantId = null) {
     uuid.parse(categoryId);
+    if (expectedRestaurantId) uuid.parse(expectedRestaurantId);
     const cat = (await db.query('SELECT * FROM menu_categories WHERE id = $1', [categoryId])).rows[0];
     check(cat, 404, 'Category not found');
+    if (expectedRestaurantId) check(cat.restaurant_id === expectedRestaurantId, 404, 'Category does not belong to this restaurant');
     const r = await getRestaurant(cat.restaurant_id);
     check(actor && (actor.kind === 'admin' || r.owner_id === actor.id), 403, 'Permission denied');
     await db.query('DELETE FROM menu_categories WHERE id = $1', [categoryId]);
@@ -239,11 +339,16 @@ export function restaurantService(db) {
       name: z.string().trim().min(1).max(120),
       description: z.string().trim().max(500).optional().nullable(),
       priceMinor: z.number().int().min(0),
-      imageUrl: z.string().trim().url().optional().nullable(),
+      imageUrl: httpsImageUrlSchema.optional().nullable(),
       isAvailable: z.boolean().default(true),
       prepTimeMinutes: z.number().int().min(1).max(180).default(15)
     }).strict();
     const data = schema.parse(input);
+
+    if (data.categoryId) {
+      const cat = (await db.query('SELECT restaurant_id FROM menu_categories WHERE id = $1', [data.categoryId])).rows[0];
+      check(cat && cat.restaurant_id === restaurantId, 403, 'Category does not belong to this restaurant');
+    }
 
     const id = randomUUID();
     return (await db.query(
@@ -258,10 +363,12 @@ export function restaurantService(db) {
     )).rows[0];
   }
 
-  async function updateMenuItem(actor, itemId, input) {
+  async function updateMenuItem(actor, itemId, input, expectedRestaurantId = null) {
     uuid.parse(itemId);
+    if (expectedRestaurantId) uuid.parse(expectedRestaurantId);
     const item = (await db.query('SELECT * FROM menu_items WHERE id = $1', [itemId])).rows[0];
     check(item, 404, 'Menu item not found');
+    if (expectedRestaurantId) check(item.restaurant_id === expectedRestaurantId, 404, 'Menu item does not belong to this restaurant');
     const r = await getRestaurant(item.restaurant_id);
     check(actor && (actor.kind === 'admin' || r.owner_id === actor.id), 403, 'Permission denied');
 
@@ -270,11 +377,16 @@ export function restaurantService(db) {
       name: z.string().trim().min(1).max(120).optional(),
       description: z.string().trim().max(500).optional().nullable(),
       priceMinor: z.number().int().min(0).optional(),
-      imageUrl: z.string().trim().url().optional().nullable(),
+      imageUrl: httpsImageUrlSchema.optional().nullable(),
       isAvailable: z.boolean().optional(),
       prepTimeMinutes: z.number().int().min(1).max(180).optional()
     }).strict();
     const data = schema.parse(input);
+
+    if (data.categoryId) {
+      const cat = (await db.query('SELECT restaurant_id FROM menu_categories WHERE id = $1', [data.categoryId])).rows[0];
+      check(cat && cat.restaurant_id === item.restaurant_id, 403, 'Category does not belong to this restaurant');
+    }
 
     const setClauses = [];
     const values = [];
@@ -294,10 +406,12 @@ export function restaurantService(db) {
     )).rows[0];
   }
 
-  async function deleteMenuItem(actor, itemId) {
+  async function deleteMenuItem(actor, itemId, expectedRestaurantId = null) {
     uuid.parse(itemId);
+    if (expectedRestaurantId) uuid.parse(expectedRestaurantId);
     const item = (await db.query('SELECT * FROM menu_items WHERE id = $1', [itemId])).rows[0];
     check(item, 404, 'Menu item not found');
+    if (expectedRestaurantId) check(item.restaurant_id === expectedRestaurantId, 404, 'Menu item does not belong to this restaurant');
     const r = await getRestaurant(item.restaurant_id);
     check(actor && (actor.kind === 'admin' || r.owner_id === actor.id), 403, 'Permission denied');
     await db.query('DELETE FROM menu_items WHERE id = $1', [itemId]);
@@ -305,10 +419,11 @@ export function restaurantService(db) {
   }
 
   // --- Modifiers & Options ---
-  async function createModifier(actor, itemId, input) {
+  async function createModifier(actor, itemId, input, expectedRestaurantId = null) {
     uuid.parse(itemId);
+    if (expectedRestaurantId) uuid.parse(expectedRestaurantId);
     const item = (await db.query('SELECT * FROM menu_items WHERE id = $1', [itemId])).rows[0];
-    check(item, 404, 'Menu item not found');
+    check(item && (!expectedRestaurantId || item.restaurant_id === expectedRestaurantId), 404, 'Menu item not found');
     const r = await getRestaurant(item.restaurant_id);
     check(actor && (actor.kind === 'admin' || r.owner_id === actor.id), 403, 'Permission denied');
 
@@ -329,11 +444,13 @@ export function restaurantService(db) {
     )).rows[0];
   }
 
-  async function createModifierOption(actor, modifierId, input) {
+  async function createModifierOption(actor, modifierId, input, expectedRestaurantId = null) {
     uuid.parse(modifierId);
+    if (expectedRestaurantId) uuid.parse(expectedRestaurantId);
     const mod = (await db.query('SELECT * FROM menu_item_modifiers WHERE id = $1', [modifierId])).rows[0];
     check(mod, 404, 'Modifier not found');
     const item = (await db.query('SELECT * FROM menu_items WHERE id = $1', [mod.item_id])).rows[0];
+    check(item && (!expectedRestaurantId || item.restaurant_id === expectedRestaurantId), 404, 'Modifier not found');
     const r = await getRestaurant(item.restaurant_id);
     check(actor && (actor.kind === 'admin' || r.owner_id === actor.id), 403, 'Permission denied');
 
@@ -398,13 +515,49 @@ export function restaurantService(db) {
       });
     }
 
+    const activePromotions = await promotionEngine(db).getPublicPromotionsForRestaurant(restaurantId).catch(() => []);
+
+    function computeItemOfferPreview(it) {
+      for (const p of activePromotions) {
+        if (p.code) continue; // Only automatic offers show direct item strike-through preview
+        if (p.targetType === 'delivery_fee') continue;
+        if (Array.isArray(p.excludedItemIds) && p.excludedItemIds.includes(it.id)) continue;
+        if (Array.isArray(p.eligibleItemIds) && p.eligibleItemIds.length > 0 && !p.eligibleItemIds.includes(it.id)) continue;
+        if (Array.isArray(p.eligibleCategoryIds) && p.eligibleCategoryIds.length > 0 && !p.eligibleCategoryIds.includes(it.category_id)) continue;
+        if (p.discountType === 'percentage' && p.discountBps > 0) {
+          const disc = Math.floor((Number(it.price_minor) * Number(p.discountBps)) / 10000);
+          const capped = p.maxDiscountMinor ? Math.min(disc, Number(p.maxDiscountMinor)) : disc;
+          if (capped > 0) {
+            return {
+              campaignId: p.id,
+              badgeText: p.badgeText,
+              originalPriceMinor: Number(it.price_minor),
+              discountedPriceMinor: Math.max(0, Number(it.price_minor) - capped),
+              minOrderMinor: Number(p.minOrderMinor || 0)
+            };
+          }
+        } else if (p.discountType === 'bogo') {
+          return {
+            campaignId: p.id,
+            badgeText: p.badgeText || 'BOGO',
+            originalPriceMinor: Number(it.price_minor),
+            discountedPriceMinor: Number(it.price_minor),
+            minOrderMinor: Number(p.minOrderMinor || 0)
+          };
+        }
+      }
+      return null;
+    }
+
     const itemsByCat = new Map();
     const uncategorized = [];
 
     for (const it of items) {
+      const itemOffer = computeItemOfferPreview(it);
       const fullItem = {
         ...it,
-        modifiers: modsByItem.get(it.id) || []
+        modifiers: modsByItem.get(it.id) || [],
+        itemOffer
       };
       if (it.category_id) {
         if (!itemsByCat.has(it.category_id)) itemsByCat.set(it.category_id, []);
@@ -419,7 +572,8 @@ export function restaurantService(db) {
         ...cat,
         items: itemsByCat.get(cat.id) || []
       })),
-      uncategorized
+      uncategorized,
+      activePromotions
     };
   }
 

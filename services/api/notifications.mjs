@@ -37,6 +37,10 @@ export function notificationWorker(db,{transport}={}){
    for(const job of jobs){
     try{
      if(job.kind==='dispatch_offer'&&!(await db.query("SELECT 1 FROM dispatch_offers WHERE id=$1 AND status='offered' AND expires_at>now()",[job.payload.offerId])).rowCount){await db.query("UPDATE notification_jobs SET state='expired',lease_until=NULL WHERE id=$1",[job.id]);continue;}
+     if(job.kind==='chat_message'){
+      const vp=(await db.query("SELECT p.role,c.shipment_id,s.rider_id FROM chat_participants p JOIN chat_conversations c ON c.id=p.conversation_id LEFT JOIN shipments s ON s.id=c.shipment_id WHERE p.conversation_id=$1 AND p.user_id=$2 AND p.membership_status='active' AND p.muted=FALSE AND c.state IN ('CREATED','ACTIVE','RESTRICTED')",[job.payload?.conversationId,job.recipient_id])).rows[0];
+      if(!vp||(vp.role==='rider'&&vp.rider_id!==job.recipient_id)){await db.query("UPDATE notification_jobs SET state='expired',lease_until=NULL WHERE id=$1",[job.id]);continue;}
+     }
      const user=(await db.query('SELECT phone FROM users WHERE id=$1',[job.recipient_id])).rows[0];
      const receipt=await transport.send({...job,phone:user.phone});
      await db.tx(async c=>{

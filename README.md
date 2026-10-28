@@ -79,7 +79,7 @@ Deployment requires explicit `API_PUBLIC_ORIGIN` and `WEB_PUBLIC_ORIGIN`. Config
 ### 4. Enterprise Security & Administration
 - **Hostname Isolation**: Dedicated `ADMIN_HOST` enforces strict boundary isolation, preventing admin endpoints from public exposure.
 - **Two-Factor Authentication**: RFC 6238 TOTP MFA required for all administrative actions with encrypted factor storage.
-- **Cloud & VPS Portability**: Validated unified configuration (`services/api/config.mjs`) supporting standard deployment targets: traditional Linux VPS (Docker Compose + Caddy), AWS ECS/RDS, GCP Cloud Run/Cloud SQL, Render, Railway, and Fly.io.
+- **Runtime Portability**: Validated unified configuration (`services/api/config.mjs`) supporting local development, Docker Compose (`compose.yaml` and `deploy/runtime/compose.yaml`), and environment-neutral containerized deployments.
 
 ---
 
@@ -95,7 +95,7 @@ Deployment requires explicit `API_PUBLIC_ORIGIN` and `WEB_PUBLIC_ORIGIN`. Config
 │   └── migrations/          # Versioned, append-only PostgreSQL/PostGIS migrations
 ├── deploy/
 │   ├── maps/                # Dockerfile and schema for self-hosted map tile service
-│   └── vps/                 # VPS deployment templates (Caddy, backup scripts)
+│   └── runtime/             # Environment-neutral runtime templates (Caddy, backup & rollback scripts)
 ├── packages/                # Shared contracts and type definitions
 ├── scripts/                 # Operational CLI utilities (migrate, admin, tiles)
 ├── services/
@@ -198,9 +198,9 @@ docker compose exec api node scripts/migrate.mjs
 | Variable | Description | Default / Example |
 | :--- | :--- | :--- |
 | `NODE_ENV` | Environment mode (`production` enforces HTTPS & secrets) | `development` |
-| `PORT` | HTTP port for backend service (auto-injected on cloud) | `3090` |
+| `PORT` | HTTP port for backend service | `3090` |
 | `DATABASE_URL` | PostgreSQL connection string | `postgres://user:pass@host:5432/elesend` |
-| `DATABASE_SSL` | Enable TLS for managed databases (AWS RDS, GCP Cloud SQL) | `false` |
+| `DATABASE_SSL` | Enable TLS for external database connections | `false` |
 | `JWT_SECRET` | 32+ character cryptographic secret for session tokens | *Required in prod* |
 | `ADMIN_MASTER_KEY` | 32+ character separate secret for admin credentials | *Required in prod* |
 | `AUDIT_LOG_SECRET` | 32+ character separate secret for tamper-evident logs | *Required in prod* |

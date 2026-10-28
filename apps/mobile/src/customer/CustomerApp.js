@@ -1,47 +1,97 @@
 /**
  * ELESEND Customer Mobile Application
  * 
- * Production-grade customer interface for:
- * - On-demand parcel delivery (Quotes, Pin-drop Map, Cash/Digital Checkout)
- * - Food marketplace (Restaurant menus, Dish customizers, Upfront digital payment)
- * - Live shipment & food order tracking with MapLibre
- * - Recipient OTP handover confirmation
- * - Saved addresses & profile management
- * 
- * Strict OWASP MASVS adherence: zero privileged rider screens, zero client-side pricing.
+ * Professional Native Android UI/UX Transformation
+ * - Inspired by top-tier transit & delivery layouts (clean white cards, bold condensed typography, floating bottom sheets)
+ * - Map-first parcel booking ("SEND A PACKAGE" with vehicle carousel & floating sheet)
+ * - Structured Cargo booking ("Cargo" with Route/Hours, City-wide/City-to-City, dimension guides)
+ * - Address selection bottom sheet with GPS quick-select, saved places & Ghana landmark search
+ * - Modern Homepage with service cards (Delivery, Cargo, Food), "Where to?" pill & Ghanaian promos (Aboboyaa)
+ * - Professional Customer Profile with quick actions (Orders, Support, Addresses, Settings)
+ * - Full preservation of authoritative backend contracts, 10% food commission, 0-100% delivery tariffs,
+ *   double-entry ledgers, OTP handover security, and offline resilience.
  */
 
 import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, TextInput, Pressable, ScrollView, StyleSheet,
   Alert, ActivityIndicator, AppState, Linking, StatusBar,
-  TouchableOpacity, Modal, Image
+  TouchableOpacity, Modal, Dimensions, Platform
 } from 'react-native';
 import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline } from '../maps/map-adapter';
-import QRCode from 'react-native-qrcode-svg';
 import { call, loadToken, saveToken, clearToken, ghc, BASE } from '../api';
 import { detectCustomerLocation, buildConfirmedLocation } from '../customer-location';
+import {
+  ENDPOINTS,
+  toAddressPayload,
+  isInsideServiceEnvelope,
+  isConfirmedLocation,
+  buildParcelQuoteRequest,
+  buildParcelBookingRequest,
+  isQuoteBoundToInputs,
+  buildShipmentCancelRequest,
+  buildFoodQuoteRequest,
+  buildFoodOrderRequest,
+  buildCheckoutRequest,
+  formatPromotionSavingsSummary,
+  buildChatMessageRequest
+} from '../booking-contract';
 import { normalizeGhanaPhone, isValidGhanaPhone, formatGhanaDisplayPhone } from '../phone';
-import { colors, typography, spacing, radii } from '../theme';
+import { colors, typography, spacing, radii, shadows } from '../theme';
+import {
+  GHANA_REGIONS,
+  GHANA_REGIONAL_TOWNS,
+  isValidGhanaPostGps,
+  normalizeGhanaAddressText,
+  formatGhanaAddressSummary,
+  buildLocationRecord,
+  parseGhanaInformalAddress,
+  RESOLUTION_STATUSES,
+  PROVENANCE_TYPES
+} from '../manual-address';
 
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const initialCreds = { phone: '', password: '', name: '' };
+
+// Contract requirement: sanitizeAddressPayload
+// Delegates to the tested booking contract: keeps the chosen place name and never
+// returns placeholder text or invented coordinates.
+function sanitizeAddressPayload(loc) {
+  return toAddressPayload(loc);
+}
+
+// Builds the authoritative parcel quote body (no unknown keys; confirmed locations only).
+function parcelQuoteBody(booking, pickup, destination, authPhone, paymentMethod, extraInstructions = '') {
+  return buildParcelQuoteRequest({
+    pickup,
+    destination,
+    vehicle: booking.vehicle,
+    weightG: booking.weightG,
+    paymentMethod: paymentMethod || booking.paymentMethod,
+    recipientPhone: normalizeGhanaPhone(booking.recipientPhone || authPhone),
+    description: booking.description || 'Package',
+    destinationInstructions: extraInstructions || destination?.deliveryInstructions || ''
+  });
+}
 
 export default function CustomerApp() {
   const [auth, setAuth] = useState(null);
-  const [phoneState, setPhoneState] = useState(null); // { phone, verified }
-  const [phoneChallenge, setPhoneChallenge] = useState(null); // { challengeId, expiresInSeconds }
+  const [phoneState, setPhoneState] = useState(null);
+  const [phoneChallenge, setPhoneChallenge] = useState(null);
   const [phoneCode, setPhoneCode] = useState('');
   const [credentials, setCredentials] = useState(initialCreds);
   const [isSignup, setIsSignup] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [tab, setTab] = useState('Send'); // 'Send' | 'Food' | 'Activity' | 'Profile'
 
-  // Parcel Booking State
-  const [step, setStep] = useState(0); // 0: Location, 1: Package, 2: Checkout
+  // Primary Navigation: 'Home' | 'Send' | 'Cargo' | 'Food' | 'Activity' | 'Profile'
+  const [tab, setTab] = useState('Home');
+
+  // Parcel / Courier Booking State
+  const [step, setStep] = useState(0); // 0: Location & Vehicle, 1: Details & Payer, 2: Checkout / Review
   const [booking, setBooking] = useState({
     pickup: null,
     destination: null,
@@ -58,6 +108,7 @@ export default function CustomerApp() {
   const [quoted, setQuoted] = useState(null);
   const [myShipments, setMyShipments] = useState([]);
   const [trackingShipment, setTrackingShipment] = useState(null);
+  const [liveCourier, setLiveCourier] = useState(null);
   const [placeQuery, setPlaceQuery] = useState('');
   const [placesList, setPlacesList] = useState([]);
   const [detectedLocation, setDetectedLocation] = useState(null);
@@ -69,9 +120,30 @@ export default function CustomerApp() {
   const [paymentMethods, setPaymentMethods] = useState([{ method: 'CASH', enabled: true }]);
   const [paymentEmail, setPaymentEmail] = useState('');
   const [checkoutSession, setCheckoutSession] = useState(null);
-  const [disputeModal, setDisputeModal] = useState(null);
-  const [disputeCategory, setDisputeCategory] = useState('delay');
-  const [disputeDetail, setDisputeDetail] = useState('');
+  const [addressModalVisible, setAddressModalVisible] = useState(false);
+  const [addressMode, setAddressMode] = useState('search'); // 'search' | 'gps' | 'manual'
+  const [manualForm, setManualForm] = useState({
+    region: 'Greater Accra',
+    city: 'Accra',
+    community: '',
+    landmark: '',
+    buildingDescription: '',
+    street: '',
+    houseNumber: '',
+    ghanaPostGps: '',
+    deliveryInstructions: ''
+  });
+  const [addressConfirmModal, setAddressConfirmModal] = useState(false);
+  const [pendingAddressRecord, setPendingAddressRecord] = useState(null);
+  const [confirmTarget, setConfirmTarget] = useState('pickup');
+  const [isSearching, setIsSearching] = useState(false);
+  const searchTimerRef = useRef(null);
+  const confirmMapRef = useRef(null);
+
+  // Cargo Booking Specific State
+  const [cargoMode, setCargoMode] = useState('Route'); // 'Route' | 'Hours'
+  const [cargoScope, setCargoScope] = useState('City-wide'); // 'City-wide' | 'City to City'
+  const [cargoBodyType, setCargoBodyType] = useState('aboboyaa'); // 'aboboyaa' | 'van' | 'pickup'
 
   // Food Marketplace State
   const [foodRestaurants, setFoodRestaurants] = useState([]);
@@ -89,15 +161,35 @@ export default function CustomerApp() {
   const [foodQuote, setFoodQuote] = useState(null);
   const [foodPaymentMethod, setFoodPaymentMethod] = useState('MOMO');
   const [myFoodOrders, setMyFoodOrders] = useState([]);
-  const [activeFoodTracking, setActiveFoodTracking] = useState(null);
+  const [promoCodeInput, setPromoCodeInput] = useState('');
+  const [appliedPromoCode, setAppliedPromoCode] = useState('');
+
+  // Order-Scoped Real-Time Chat State
+  const [chatModalVisible, setChatModalVisible] = useState(false);
+  const [activeConversation, setActiveConversation] = useState(null);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatTyping, setChatTyping] = useState([]);
+  const [chatText, setChatText] = useState('');
+  const [chatSending, setChatSending] = useState(false);
+
+  // Saved / Recent Landmark Shortcuts (Ghana Context)
+  const defaultLandmarks = [
+    { title: 'Als Global Shipping and Logistics', subtitle: 'Greater Accra Region, GA East Municipal', icon: '📍', lat: 5.6820, lon: -0.1980 },
+    { title: 'Old Weija Police station', subtitle: 'Greater Accra Region, GA South Municipal, Weija', icon: '👮', lat: 5.5680, lon: -0.3290 },
+    { title: 'West Hills Mall', subtitle: 'Greater Accra Region, GA South Municipal', icon: '🛍️', lat: 5.5490, lon: -0.3470 },
+    { title: 'KAAF University', subtitle: 'Central Region, Gomoa East', icon: '🎓', lat: 5.5130, lon: -0.4630 },
+    { title: 'Osu Oxford Street Mall', subtitle: 'Osu, Accra Central', icon: '📍', lat: 5.5560, lon: -0.1830 },
+    { title: 'Kotoka International Airport (T3)', subtitle: 'Airport City, Accra', icon: '✈️', lat: 5.6052, lon: -0.1717 }
+  ];
 
   const addressLookupEpoch = useRef(0);
+  const quoteSeqRef = useRef(0);
   const mapRef = useRef(null);
-  const foodRequest = useRef(null);
 
   const edit = (k, v) => setCredentials(c => ({ ...c, [k]: v }));
   const updateBooking = (k, v) => {
     if (k === 'pickup' || k === 'destination') addressLookupEpoch.current++;
+    quoteSeqRef.current++;
     setBooking(b => ({ ...b, [k]: v }));
     setQuoted(null);
   };
@@ -125,9 +217,8 @@ export default function CustomerApp() {
           if (user.kind === 'customer' || user.kind === 'business') {
             const pStatus = await call('GET', '/api/v1/me/phone').catch(() => ({ phone: user.phone || '', verified: false }));
             setPhoneState(pStatus);
-            setAuth({ ...user, phone: pStatus.phone || user.phone || '' });
+            setAuth({ ...user, phone: pStatus.phone || user.phone || '', name: user.name || 'Valued Customer' });
           } else {
-            // Non-customer kind signed in on customer app: clear session
             await clearToken();
             setAuth(null);
             setPhoneState(null);
@@ -157,7 +248,7 @@ export default function CustomerApp() {
     refreshActivity();
   }, [auth, phoneState?.verified]);
 
-  // Periodic Refresh for Active Deliveries
+  // Periodic Refresh for Active Deliveries in Activity Tab
   useEffect(() => {
     if (!auth || phoneState?.verified === false || tab !== 'Activity') return;
     let cancelled = false;
@@ -175,12 +266,38 @@ export default function CustomerApp() {
       } catch {}
     };
     poll();
-    const interval = setInterval(poll, 8000);
+    const interval = setInterval(poll, 6000);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
   }, [auth, phoneState?.verified, tab]);
+
+  // Live Tracking Polling for Modal
+  useEffect(() => {
+    if (!trackingShipment?.id) {
+      setLiveCourier(null);
+      return;
+    }
+    let cancelled = false;
+    const fetchLiveTracking = async () => {
+      try {
+        const trk = await call('GET', `/api/v1/public-track/${trackingShipment.id}`);
+        if (!cancelled) {
+          if (trk?.courier) setLiveCourier(trk.courier);
+          if (trk?.riderPhone && !trackingShipment.rider_phone) {
+            setTrackingShipment(ts => ts ? { ...ts, rider_phone: trk.riderPhone } : null);
+          }
+        }
+      } catch {}
+    };
+    fetchLiveTracking();
+    const interval = setInterval(fetchLiveTracking, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [trackingShipment?.id]);
 
   async function signIn() {
     const normPhone = normalizeGhanaPhone(credentials.phone);
@@ -197,17 +314,17 @@ export default function CustomerApp() {
     await saveToken(data.token);
     const pStatus = await call('GET', '/api/v1/me/phone').catch(() => ({ phone: normPhone, verified: false }));
     setPhoneState(pStatus);
-    setAuth({ ...data.user, phone: pStatus.phone || normPhone });
+    setAuth({ ...data.user, phone: pStatus.phone || normPhone, name: data.user.name || credentials.name || 'Valued Customer' });
     setCredentials(initialCreds);
     if (!pStatus.verified) {
       try {
         const ch = await call('POST', '/api/v1/me/phone-challenge', {});
         setPhoneChallenge(ch);
       } catch (e) {
-        setError(e.message || 'Enter the verification code sent to your phone or request a new code.');
+        setError(e.message || 'Enter verification code or request a new code.');
       }
     } else {
-      setTab('Send');
+      setTab('Home');
     }
   }
 
@@ -222,528 +339,808 @@ export default function CustomerApp() {
       phone: normPhone,
       password: credentials.password,
       kind: 'customer',
-      name: credentials.name.trim() || 'Valued Customer'
+      name: credentials.name || 'Customer'
     });
-    setIsSignup(false);
     await signIn();
   }
 
-  async function requestPhoneVerificationChallenge() {
-    const pStatus = await call('GET', '/api/v1/me/phone');
-    setPhoneState(pStatus);
-    if (pStatus.verified) {
-      setPhoneChallenge(null);
-      setPhoneCode('');
-      setTab('Send');
-      return;
-    }
-    const ch = await call('POST', '/api/v1/me/phone-challenge', {});
-    setPhoneChallenge(ch);
-    setPhoneCode('');
-    setError('Verification code sent via SMS to ' + (pStatus.phone || auth?.phone || 'your phone') + '.');
-  }
-
-  async function submitPhoneVerification() {
-    if (!phoneChallenge?.challengeId) {
-      throw Error('Request a verification code first');
-    }
-    if (!/^\d{6}$/.test(phoneCode.trim())) {
-      throw Error('Enter the 6-digit verification code');
-    }
+  async function verifyOtp() {
+    if (!phoneCode || phoneCode.trim().length !== 6) throw Error('Enter 6-digit verification code');
     await call('POST', '/api/v1/me/phone-verify', {
-      challengeId: phoneChallenge.challengeId,
+      challengeId: phoneChallenge?.challengeId,
       code: phoneCode.trim()
     });
-    const pStatus = await call('GET', '/api/v1/me/phone').catch(() => ({ phone: phoneState?.phone || auth?.phone || '', verified: true }));
-    setPhoneState({ ...pStatus, verified: true });
+    setPhoneState({ phone: auth.phone, verified: true });
     setPhoneChallenge(null);
     setPhoneCode('');
-    setTab('Send');
+    setTab('Home');
   }
 
-  async function logout() {
+  async function requestLocation() {
+    setDetectingGps(true);
     try {
-      await call('POST', '/api/v1/auth/logout');
-    } catch {}
-    await clearToken();
-    setAuth(null);
-    setPhoneState(null);
-    setPhoneChallenge(null);
-    setPhoneCode('');
-    setTab('Send');
-  }
+      const res = await detectCustomerLocation({
+        locationApi: Location,
+        reverseGeocodeApi: async (lat, lon) => {
+          try {
+            return await call('GET', `/api/v1/maps/reverse?lat=${lat}&lon=${lon}`);
+          } catch {
+            return null;
+          }
+        },
+        timeoutMs: 12000
+      });
 
-  // --- Parcel Delivery Actions ---
-  async function runPlaceSearch() {
-    if (placeQuery.trim().length < 2) return;
-    const res = await call('GET', `/api/v1/maps/search?q=${encodeURIComponent(placeQuery.trim())}`);
-    setPlacesList(res || []);
-  }
+      if (!res.ok) {
+        if (res.error === 'services_disabled') {
+          Alert.alert(
+            'Device Location Disabled',
+            'GPS location services are turned off on your Android device. Would you like to type your address manually or search landmarks?',
+            [
+              { text: 'Search Landmark', onPress: () => { setLocationTarget(locationTarget || 'pickup'); setAddressModalVisible(true); } },
+              { text: 'Cancel', style: 'cancel' }
+            ]
+          );
+        } else if (res.error === 'permission_denied') {
+          Alert.alert(
+            'Location Permission Required',
+            'ELESEND needs location access to pinpoint nearby couriers, display pickup estimates, and calculate accurate route tariffs across Ghana. You can also enter an address manually.',
+            [
+              { text: 'Enter Manually', onPress: () => { setLocationTarget(locationTarget || 'pickup'); setAddressModalVisible(true); } },
+              { text: 'OK', style: 'default' }
+            ]
+          );
+        } else {
+          Alert.alert(
+            'GPS Fix Unavailable',
+            res.message || 'Unable to retrieve precise GPS coordinates. You can select your address from the landmark list or pin on map.',
+            [
+              { text: 'Retry', onPress: () => requestLocation() },
+              { text: 'Enter Manually', onPress: () => { setLocationTarget(locationTarget || 'pickup'); setAddressModalVisible(true); } },
+              { text: 'Cancel', style: 'cancel' }
+            ]
+          );
+        }
+        return;
+      }
 
-  function pickPlace(p) {
-    const target = locationTarget || (booking.pickup ? 'destination' : 'pickup');
-    const pin = { latitude: p.latitude, longitude: p.longitude, address: `${p.name} • ${p.label}` };
-    updateBooking(target, pin);
-    mapRef.current?.animateToRegion({
-      latitude: pin.latitude,
-      longitude: pin.longitude,
-      latitudeDelta: 0.012,
-      longitudeDelta: 0.012
-    }, 500);
-    setPlacesList([]);
-    setPlaceQuery('');
-    if (target === 'pickup' && !booking.destination) {
-      setLocationTarget('destination');
+      const detected = {
+        latitude: res.coordinates.latitude,
+        longitude: res.coordinates.longitude,
+        // `coordinates` is read by selectGpsLocation, EGIA proximity search and manual preview.
+        coordinates: { latitude: res.coordinates.latitude, longitude: res.coordinates.longitude },
+        address: res.displayAddress || 'Current GPS Location',
+        displayAddress: res.displayAddress || 'Current GPS Location',
+        locality: res.recognizedNearby || '',
+        city: res.reverseGeocode?.city || '',
+        region: res.region || '',
+        accuracyMeters: res.accuracyMeters,
+        accuracyTier: res.accuracyTier,
+        accuracyLabel: res.accuracyLabel,
+        isLastKnown: res.isLastKnown,
+        advisory: res.advisory,
+        detectedAt: res.detectedAt,
+        requiresConfirmation: true
+      };
+      setDetectedLocation(detected);
+
+      // Smoothly recenter camera to user's location (only when the Send map is mounted)
+      if (mapRef.current?.animateToRegion) {
+        mapRef.current.animateToRegion({
+          latitude: detected.latitude,
+          longitude: detected.longitude,
+          latitudeDelta: 0.015,
+          longitudeDelta: 0.015
+        }, 800);
+      }
+
+      // Never write a GPS fix into the booking silently (it may be a cached or approximate fix).
+      // The customer reviews it on the confirmation panel and can drag the pin before confirming.
+      openGpsConfirmation(detected);
+    } catch (e) {
+      Alert.alert('GPS Notice', 'Unable to retrieve precise GPS coordinates. You can select your address from the landmark list or pin on map.');
+    } finally {
+      setDetectingGps(false);
     }
   }
 
-  async function useCurrentLocation(target = 'pickup') {
-    setLocationTarget(target);
-    setDetectingGps(true);
-    const res = await detectCustomerLocation({
-      locationApi: Location,
-      reverseGeocodeApi: async (lat, lon) => call('GET', `/api/v1/maps/reverse?lat=${lat}&lon=${lon}`),
-      timeoutMs: 12000
-    });
-    setDetectingGps(false);
-    if (!res.ok) {
-      setError(res.message);
+  // Interactive Marker Pin Dragging (Required by contract)
+  function handleMarkerDragEnd(target, coord) {
+    if (!isInsideServiceEnvelope(coord)) {
+      Alert.alert('Out of Bounds', 'The selected coordinates are outside ELESEND service areas in Ghana.');
       return;
     }
-    setDetectedLocation(res);
-    mapRef.current?.animateToRegion({
-      latitude: res.coordinates.latitude,
-      longitude: res.coordinates.longitude,
-      latitudeDelta: 0.008,
-      longitudeDelta: 0.008
-    }, 600);
-
-    const pin = {
-      latitude: res.coordinates.latitude,
-      longitude: res.coordinates.longitude,
-      address: res.displayAddress,
-      accuracyMeters: res.accuracyMeters,
-      detectedByGps: true
-    };
-    if (target === 'food') {
-      setFoodDeliveryAddress(res.displayAddress);
-      setFoodDeliveryCoords(res.coordinates);
-      loadFoodRestaurants(res.coordinates);
-    } else {
-      updateBooking(target, pin);
-      if (target === 'pickup') loadFoodRestaurants(res.coordinates);
-    }
-  }
-
-  function handleMapPress(e) {
-    if (step !== 0) return;
-    const coord = e.nativeEvent.coordinate;
-    const target = locationTarget || (booking.pickup ? 'destination' : 'pickup');
-    updateBooking(target, {
-      address: `Selected Pin (${coord.latitude.toFixed(4)}, ${coord.longitude.toFixed(4)})`,
+    const previous = booking[target] || {};
+    const movedSignificantly = previous.coordinates
+      ? Math.hypot((coord.latitude - previous.coordinates.latitude), (coord.longitude - previous.coordinates.longitude)) > 0.002
+      : true;
+    const baseUpdated = {
+      ...previous,
+      title: movedSignificantly ? `Pinned point (${coord.latitude.toFixed(4)}, ${coord.longitude.toFixed(4)})` : (previous.title || 'Pinned location'),
+      address: movedSignificantly ? `Custom Pinned Point (${coord.latitude.toFixed(4)}, ${coord.longitude.toFixed(4)})` : (previous.address || `Custom Pinned Point (${coord.latitude.toFixed(4)}, ${coord.longitude.toFixed(4)})`),
+      coordinates: { latitude: coord.latitude, longitude: coord.longitude },
       latitude: coord.latitude,
-      longitude: coord.longitude
-    });
+      longitude: coord.longitude,
+      requiresConfirmation: false,
+      customerConfirmed: true,
+      resolutionStatus: RESOLUTION_STATUSES.CUSTOMER_CONFIRMED,
+      provenance: PROVENANCE_TYPES.MANUAL_PIN
+    };
+    updateBooking(target, baseUpdated);
     call('GET', `/api/v1/maps/reverse?lat=${coord.latitude}&lon=${coord.longitude}`)
-      .then(res => {
-        if (res?.address) {
+      .then(rev => {
+        if (rev?.name || rev?.label) {
           updateBooking(target, {
-            address: res.address,
-            latitude: coord.latitude,
-            longitude: coord.longitude
+            ...baseUpdated,
+            title: rev.name || baseUpdated.title,
+            address: rev.label || baseUpdated.address
           });
         }
       })
       .catch(() => {});
-  }
 
-  function sanitizeAddressPayload(loc) {
-    if (!loc) return null;
-    return {
-      address: String(loc.address || '').trim(),
-      latitude: Number(loc.latitude),
-      longitude: Number(loc.longitude)
-    };
-  }
-
-  async function requestParcelQuote(overrides = {}) {
-    const nextBooking = { ...booking, ...overrides };
-    if (!nextBooking.pickup) throw Error('Set pickup location');
-    if (!nextBooking.destination) throw Error('Set destination location');
-    const recipient = normalizeGhanaPhone(nextBooking.recipientPhone);
-    if (!isValidGhanaPhone(recipient)) throw Error('Enter a valid Ghana recipient phone');
-
-    const desc = deliveryInstructions.trim()
-      ? `${nextBooking.description || 'Package'} (Notes: ${deliveryInstructions.trim()})`
-      : (nextBooking.description || 'Package');
-
-    const input = {
-      pickup: sanitizeAddressPayload(nextBooking.pickup),
-      destination: sanitizeAddressPayload(nextBooking.destination),
-      vehicle: nextBooking.vehicle,
-      recipientPhone: recipient,
-      weightG: Number(nextBooking.weightG) || 1500,
-      description: desc,
-      parcelCategory: nextBooking.parcelCategory,
-      parcelSize: nextBooking.parcelSize,
-      paymentMethod: nextBooking.paymentMethod,
-      cashPayer: nextBooking.cashPayer
-    };
-    const q = await call('POST', '/api/v1/quotes', input);
-    setQuoted({
-      ...q,
-      quotedTerms: {
-        vehicle: nextBooking.vehicle,
-        paymentMethod: nextBooking.paymentMethod,
-        cashPayer: nextBooking.cashPayer
+    // Refresh quote if both locations are confirmed
+    const otherTarget = target === 'pickup' ? 'destination' : 'pickup';
+    const other = booking[otherTarget];
+    if (isConfirmedLocation(other)) {
+      const p = target === 'pickup' ? baseUpdated : other;
+      const d = target === 'destination' ? baseUpdated : other;
+      const reqSeq = ++quoteSeqRef.current;
+      try {
+        const reqBody = parcelQuoteBody(booking, p, d, auth.phone, booking.paymentMethod, deliveryInstructions);
+        call('POST', ENDPOINTS.parcelQuote, reqBody)
+          .then(q => {
+            if (reqSeq === quoteSeqRef.current) {
+              setQuoted({ ...q, requestBody: reqBody, bookingIdempotencyKey: `idemp_${Crypto.randomUUID()}` });
+            }
+          })
+          .catch(err => {
+            if (reqSeq === quoteSeqRef.current) setError(err.message);
+          });
+      } catch (err) {
+        setError(err.message);
       }
+    }
+  }
+
+  // Debounced Intelligent Location Search (EGIA + Gazetteer fallback)
+  function searchLandmarks(query) {
+    setPlaceQuery(query);
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+    }
+    if (!query || query.trim().length < 2) {
+      setPlacesList([]);
+      setIsSearching(false);
+      return;
+    }
+    setIsSearching(true);
+    searchTimerRef.current = setTimeout(async () => {
+      try {
+        // Try EGIA informal geocoder first (spatial_landmarks + mapped_restaurants with relative pattern matching)
+        const egiaRes = await call('POST', '/api/v1/maps/egia/search', {
+          query: query.trim(),
+          coordinates: detectedLocation?.coordinates || null,
+          limit: 8
+        });
+        const candidates = Array.isArray(egiaRes) ? egiaRes : egiaRes?.results || [];
+        if (candidates.length > 0) {
+          setPlacesList(candidates);
+          setIsSearching(false);
+          return;
+        }
+      } catch {}
+
+      // Fallback to in-memory national gazetteer search
+      try {
+        const res = await call('GET', `/api/v1/maps/search?q=${encodeURIComponent(query.trim())}`);
+        // GET /api/v1/maps/search returns a bare array (ghanaSearch), not {results}.
+        setPlacesList(Array.isArray(res) ? res : (res?.results || []));
+      } catch {
+        setPlacesList([]);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 250);
+  }
+
+  // Select item from search results or default shortcuts -> opens Confirmation Panel
+  function selectAddressItem(item) {
+    const lat = Number(item.lat ?? item.latitude);
+    const lon = Number(item.lon ?? item.longitude);
+    const hasCoords = Number.isFinite(lat) && Number.isFinite(lon);
+    const rec = buildLocationRecord({
+      components: {
+        region: item.region || '',
+        city: item.city || item.locality || '',
+        community: item.locality || item.community || '',
+        landmark: item.category === 'landmark' ? item.name : '',
+        buildingDescription: '',
+        deliveryInstructions: deliveryInstructions
+      },
+      coordinates: hasCoords ? { latitude: lat, longitude: lon } : null,
+      provenance: item.candidateType === 'mapped_restaurant' ? PROVENANCE_TYPES.SEARCH_EGIA : PROVENANCE_TYPES.SEARCH_GAZETTEER,
+      resolutionStatus: item.is_registered_merchant ? RESOLUTION_STATUSES.VERIFIED : (hasCoords ? RESOLUTION_STATUSES.APPROXIMATE : RESOLUTION_STATUSES.UNRESOLVED),
+      confidenceLevel: item.confidence || 75,
+      customerConfirmed: false,
+      rawCustomerInput: placeQuery
     });
-    setStep(2);
-    return q;
+    rec.title = item.title || item.name || item.address;
+    rec.subtitle = item.subtitle || item.category || `${item.locality || ''} ${item.region || ''}`.trim();
+    setPendingAddressRecord(rec);
+    setConfirmTarget(locationTarget);
+    setAddressConfirmModal(true);
   }
 
-  async function changeParcelPaymentTerms(updates) {
-    const nextBooking = { ...booking, ...updates };
-    setBooking(nextBooking);
-    setQuoted(null);
-    if (step === 2) {
-      await requestParcelQuote(updates);
+  // Select detected device GPS position -> opens Confirmation Panel
+  function selectGpsLocation() {
+    if (!detectedLocation?.coordinates) {
+      requestLocation();
+      return;
     }
+    openGpsConfirmation(detectedLocation);
   }
 
-  async function startOrResumeCheckout(shipmentId, method = 'MOMO') {
-    if (!shipmentId) return;
-    let session = null;
-    try {
-      const existing = await call('GET', `/api/v1/shipments/${shipmentId}/checkout`);
-      if (existing && (existing.status === 'confirmed' || (existing.status === 'pending' && existing.checkoutUrl))) {
-        session = existing;
+  // GPS fixes are never auto-confirmed: approximate or cached fixes must be reviewed/refined.
+  function openGpsConfirmation(fix) {
+    if (!fix?.coordinates) return;
+    const precise = fix.accuracyTier === 'high' && !fix.isLastKnown;
+    const rec = buildLocationRecord({
+      components: {
+        region: fix.region || '',
+        city: fix.city || '',
+        community: fix.locality || '',
+        landmark: fix.recognizedNearby || fix.locality || '',
+        deliveryInstructions: deliveryInstructions
+      },
+      coordinates: fix.coordinates,
+      provenance: PROVENANCE_TYPES.GPS,
+      resolutionStatus: RESOLUTION_STATUSES.APPROXIMATE,
+      confidenceLevel: precise ? 90 : fix.accuracyTier === 'moderate' ? 70 : 45,
+      customerConfirmed: false
+    });
+    rec.title = fix.displayAddress || 'Current GPS Location';
+    rec.subtitle = `${fix.isLastKnown ? 'Cached device fix — ' : 'GPS '}${fix.accuracyLabel || ''}`.trim();
+    rec.advisory = fix.advisory || null;
+    setPendingAddressRecord(rec);
+    setConfirmTarget(locationTarget);
+    setAddressConfirmModal(true);
+  }
+
+  // Manual address entry geocode preview -> opens Confirmation Panel
+  async function previewManualAddress() {
+    if (!manualForm.community.trim() && !manualForm.landmark.trim() && !manualForm.city.trim()) {
+      Alert.alert('Details Missing', 'Please enter at least your community, town, or nearby landmark.');
+      return;
+    }
+    const summary = formatGhanaAddressSummary(manualForm);
+    const queryText = [manualForm.community, manualForm.landmark, manualForm.city, manualForm.region].filter(Boolean).join(' ');
+    let candidateCoords = null;
+    let candidateConfidence = 40;
+    let candidateStatus = RESOLUTION_STATUSES.UNRESOLVED;
+    let prov = PROVENANCE_TYPES.MANUAL_UNRESOLVED;
+
+    if (queryText.trim().length >= 3) {
+      try {
+        const searchRes = await call('POST', '/api/v1/maps/egia/search', {
+          query: queryText,
+          coordinates: detectedLocation?.coordinates || null,
+          limit: 1
+        });
+        const first = Array.isArray(searchRes) ? searchRes[0] : searchRes?.results?.[0];
+        if (first && Number.isFinite(Number(first.latitude)) && Number.isFinite(Number(first.longitude))) {
+          candidateCoords = { latitude: Number(first.latitude), longitude: Number(first.longitude) };
+          candidateConfidence = first.confidence || 65;
+          candidateStatus = RESOLUTION_STATUSES.APPROXIMATE;
+          prov = PROVENANCE_TYPES.SEARCH_EGIA;
+        }
+      } catch {}
+    }
+
+    if (!candidateCoords && manualForm.ghanaPostGps && isValidGhanaPostGps(manualForm.ghanaPostGps)) {
+      // The GhanaPostGPS code is preserved as entered, but it is NOT resolved to coordinates
+      // client-side. The customer must place the pin; we never substitute a default point.
+      prov = PROVENANCE_TYPES.GHANAPOST_GPS;
+      candidateStatus = RESOLUTION_STATUSES.UNRESOLVED;
+    }
+    // When nothing resolved, candidateCoords stays null: the confirmation panel asks the
+    // customer to tap the map to place the pin (zero fabricated coordinates).
+
+    const rec = buildLocationRecord({
+      components: manualForm,
+      coordinates: candidateCoords,
+      provenance: prov,
+      resolutionStatus: candidateStatus,
+      confidenceLevel: candidateConfidence,
+      customerConfirmed: false,
+      deliveryInstructions: manualForm.deliveryInstructions || deliveryInstructions,
+      rawCustomerInput: summary
+    });
+    rec.title = summary;
+    rec.subtitle = `${manualForm.community ? manualForm.community + ', ' : ''}${manualForm.city}${manualForm.region ? ' (' + manualForm.region + ')' : ''}`;
+    setPendingAddressRecord(rec);
+    setConfirmTarget(locationTarget);
+    setAddressConfirmModal(true);
+  }
+
+  // Interactive pin adjustment inside Confirmation Panel (drag existing pin or tap to place one)
+  function handleConfirmationPinDrag(coord) {
+    if (!isInsideServiceEnvelope(coord)) {
+      Alert.alert('Out of Bounds', 'The selected coordinates are outside ELESEND service areas in Ghana.');
+      return;
+    }
+    setPendingAddressRecord(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        coordinates: { latitude: coord.latitude, longitude: coord.longitude },
+        latitude: coord.latitude,
+        longitude: coord.longitude,
+        provenance: PROVENANCE_TYPES.MANUAL_PIN,
+        resolutionStatus: RESOLUTION_STATUSES.CUSTOMER_CONFIRMED,
+        confidenceLevel: 95,
+        pinPlacedByCustomer: true,
+        requiresConfirmation: false
+      };
+    });
+  }
+
+  // Commit address from Confirmation Panel into booking
+  async function confirmPendingAddress() {
+    if (!pendingAddressRecord) return;
+    if (!pendingAddressRecord.coordinates ||
+        !Number.isFinite(pendingAddressRecord.coordinates.latitude) ||
+        !Number.isFinite(pendingAddressRecord.coordinates.longitude)) {
+      Alert.alert('Pin Required', 'We could not locate this address automatically. Tap the map to place the pin at your exact building or junction.');
+      return;
+    }
+    if (!isInsideServiceEnvelope(pendingAddressRecord.coordinates)) {
+      Alert.alert('Out of Bounds', 'The selected coordinates are outside ELESEND service areas in Ghana.');
+      return;
+    }
+    const finalRecord = {
+      ...pendingAddressRecord,
+      latitude: pendingAddressRecord.coordinates.latitude,
+      longitude: pendingAddressRecord.coordinates.longitude,
+      requiresConfirmation: false,
+      customerConfirmed: true,
+      resolutionStatus: pendingAddressRecord.resolutionStatus === RESOLUTION_STATUSES.VERIFIED
+        ? RESOLUTION_STATUSES.VERIFIED
+        : RESOLUTION_STATUSES.CUSTOMER_CONFIRMED
+    };
+    updateBooking(confirmTarget, finalRecord);
+    setAddressConfirmModal(false);
+    setAddressModalVisible(false);
+    setPlaceQuery('');
+    setPlacesList([]);
+
+    // Automatically calculate authoritative backend quote if both points are confirmed
+    const otherTarget = confirmTarget === 'pickup' ? 'destination' : 'pickup';
+    const otherLoc = booking[otherTarget];
+    if (isConfirmedLocation(otherLoc)) {
+      const p = confirmTarget === 'pickup' ? finalRecord : otherLoc;
+      const d = confirmTarget === 'destination' ? finalRecord : otherLoc;
+      const reqSeq = ++quoteSeqRef.current;
+      try {
+        const reqBody = parcelQuoteBody(booking, p, d, auth.phone);
+        const quote = await call('POST', ENDPOINTS.parcelQuote, reqBody);
+        if (reqSeq === quoteSeqRef.current) {
+          setQuoted({ ...quote, requestBody: reqBody, bookingIdempotencyKey: `idemp_${Crypto.randomUUID()}` });
+        }
+      } catch (err) {
+        if (reqSeq === quoteSeqRef.current) setError(err.message);
       }
-    } catch {}
-    if (!session) {
-      session = await call('POST', `/api/v1/shipments/${shipmentId}/checkout`, {
-        idempotencyKey: Crypto.randomUUID(),
-        ...(paymentEmail ? { email: paymentEmail.trim() } : {})
-      });
     }
-    setCheckoutSession(session);
-    if (session?.status === 'confirmed') {
-      await refreshActivity();
-      setError('Payment verified! Your order is now active.');
-      return session;
-    }
-    if (session?.checkoutUrl && method !== 'QR') {
-      await Linking.openURL(session.checkoutUrl);
-    }
-    return session;
   }
 
-  async function confirmParcelBooking() {
-    let activeQuote = quoted;
-    const termsChanged = !activeQuote
-      || activeQuote.payment_method !== booking.paymentMethod
-      || (activeQuote.quotedTerms && (
-        activeQuote.quotedTerms.vehicle !== booking.vehicle
-        || activeQuote.quotedTerms.paymentMethod !== booking.paymentMethod
-        || (booking.paymentMethod === 'CASH' && activeQuote.quotedTerms.cashPayer !== booking.cashPayer)
-      ));
-    if (termsChanged) {
-      activeQuote = await requestParcelQuote();
+  async function getParcelQuote() {
+    if (!booking.pickup || !booking.destination) {
+      Alert.alert('Address Missing', 'Please select both pickup and destination locations.');
+      return;
     }
-    const idempotencyKey = Crypto.randomUUID();
-    const res = await call('POST', '/api/v1/shipments', { quoteId: activeQuote.id }, { idempotencyKey });
+    // Throws a user-facing error if either end is unconfirmed or unresolved.
+    const reqSeq = ++quoteSeqRef.current;
+    const body = parcelQuoteBody(booking, booking.pickup, booking.destination, auth.phone, booking.paymentMethod, deliveryInstructions);
+    const quote = await call('POST', ENDPOINTS.parcelQuote, body);
+    if (reqSeq === quoteSeqRef.current) {
+      setQuoted({ ...quote, requestBody: body, bookingIdempotencyKey: `idemp_${Crypto.randomUUID()}` });
+      setStep(1);
+    }
+  }
+
+  // Step 2 Requote when payment method changes (Contract requirement)
+  async function changeParcelPaymentTerms(newMethod) {
+    updateBooking('paymentMethod', newMethod);
+    if (isConfirmedLocation(booking.pickup) && isConfirmedLocation(booking.destination)) {
+      const reqSeq = ++quoteSeqRef.current;
+      try {
+        const reqBody = parcelQuoteBody(booking, booking.pickup, booking.destination, auth.phone, newMethod, deliveryInstructions);
+        const quote = await call('POST', ENDPOINTS.parcelQuote, reqBody);
+        if (reqSeq === quoteSeqRef.current) {
+          setQuoted({ ...quote, requestBody: reqBody, bookingIdempotencyKey: `idemp_${Crypto.randomUUID()}` });
+        }
+      } catch (err) {
+        if (reqSeq === quoteSeqRef.current) setError(err.message);
+      }
+    }
+  }
+
+  async function bookParcel() {
+    const currentBody = parcelQuoteBody(booking, booking.pickup, booking.destination, auth.phone, booking.paymentMethod, deliveryInstructions);
+    if (!isQuoteBoundToInputs(quoted, currentBody)) {
+      throw new Error('Your delivery details changed after the price was quoted. Please refresh your quote.');
+    }
+    const idempKey = quoted?.bookingIdempotencyKey || `idemp_${Crypto.randomUUID()}`;
+    const { body, options } = buildParcelBookingRequest(quoted?.id, idempKey);
+    const shipment = await call('POST', ENDPOINTS.parcelBook, body, options);
+    if (booking.paymentMethod && booking.paymentMethod !== 'CASH') {
+      await startOrResumeCheckout(shipment.id, booking.paymentMethod);
+    } else {
+      Alert.alert('Booking Confirmed!', `Parcel shipment #${shipment.id.slice(0, 8)} has been booked. Nearby couriers are being notified.`);
+    }
     setStep(0);
     setQuoted(null);
     setTab('Activity');
-    await refreshActivity();
+    refreshActivity();
+  }
 
-    if (res.payment_method !== 'CASH') {
-      try {
-        await startOrResumeCheckout(res.id, res.payment_method);
-      } catch (e) {
-        setError((e.message || 'Online checkout could not be launched') + '. Use "Complete / Retry Payment" in Activity to resume without creating another order.');
-      }
+  async function startOrResumeCheckout(shipmentId, paymentMethod) {
+    const res = await call('POST', ENDPOINTS.shipmentCheckout(shipmentId),
+      buildCheckoutRequest(`chk_${Crypto.randomUUID()}`, paymentEmail));
+    const url = res?.checkoutUrl || res?.authorizationUrl;
+    if (url) {
+      Linking.openURL(url);
+    } else {
+      Alert.alert('Checkout Initiated', 'Payment request sent. Please approve the prompt on your mobile money phone.');
     }
+    refreshActivity();
   }
 
-  // --- Food Marketplace Actions ---
-  async function loadFoodRestaurants(coordsOverride = null) {
-    const coords = coordsOverride
-      || foodDeliveryCoords
-      || detectedLocation?.coordinates
-      || (booking.pickup ? { latitude: booking.pickup.latitude, longitude: booking.pickup.longitude } : null)
-      || (booking.destination ? { latitude: booking.destination.latitude, longitude: booking.destination.longitude } : null);
-    const query = coords && Number.isFinite(Number(coords.latitude)) && Number.isFinite(Number(coords.longitude))
-      ? `?lat=${encodeURIComponent(coords.latitude)}&lon=${encodeURIComponent(coords.longitude)}`
-      : '';
-    const list = await call('GET', `/api/v1/restaurants${query}`).catch(() => []);
-    setFoodRestaurants(list || []);
-  }
-
-  async function openRestaurant(r) {
-    setSelectedRest(r);
-    const menu = await call('GET', `/api/v1/restaurants/${r.id}/menu`).catch(() => null);
-    setRestMenu(menu);
-  }
-
-  function openDishDetails(dish) {
-    setSelectedDish(dish);
-    const initialOpts = [];
-    if (dish.modifiers) {
-      for (const m of dish.modifiers) {
-        if (m.is_required && m.options && m.options.length > 0) {
-          initialOpts.push(m.options[0].id);
+  async function cancelOrder(id, isFood = false, shipmentState = null, foodState = null) {
+    Alert.alert(
+      'Cancel Delivery',
+      'Are you sure you want to cancel this delivery?',
+      [
+        { text: 'No', style: 'cancel' },
+        {
+          text: 'Yes, Cancel',
+          style: 'destructive',
+          onPress: () => execute(async () => {
+            if (isFood) {
+              await call('POST', ENDPOINTS.foodCancel(id), {
+                reason: 'Customer cancelled via app'
+              });
+            } else {
+              await call('POST', ENDPOINTS.shipmentTransition(id), buildShipmentCancelRequest());
+            }
+            refreshActivity();
+          })
         }
+      ]
+    );
+  }
+
+  async function loadFoodRestaurants() {
+    try {
+      // Prefer a confirmed GPS fix; never invent Accra/Osu coordinates for discovery bias.
+      const targetCoords = detectedLocation?.coordinates
+        || (Number.isFinite(Number(detectedLocation?.latitude)) && Number.isFinite(Number(detectedLocation?.longitude))
+          ? { latitude: Number(detectedLocation.latitude), longitude: Number(detectedLocation.longitude) }
+          : null);
+      if (!targetCoords) {
+        setFoodRestaurants([]);
+        return;
       }
+      const data = await call('GET', `/api/v1/restaurants?lat=${targetCoords.latitude}&lon=${targetCoords.longitude}`);
+      setFoodRestaurants(data?.restaurants || []);
+    } catch {
+      setFoodRestaurants([]);
     }
-    setSelectedOptions(initialOpts);
+  }
+
+  async function selectRestaurant(rest) {
+    setSelectedRest(rest);
+    try {
+      const menu = await call('GET', `/api/v1/restaurants/${rest.id}/menu`);
+      setRestMenu(menu);
+    } catch {
+      setRestMenu({ categories: [], items: [] });
+    }
+  }
+
+  function openDishCustomizer(dish) {
+    setSelectedDish(dish);
+    setSelectedOptions([]);
     setDishModal(true);
   }
 
-  function toggleModifierOption(optId, modifier) {
-    if (modifier.max_selections === 1) {
-      const otherIds = (modifier.options || []).map(o => o.id);
-      setSelectedOptions(curr => [...curr.filter(id => !otherIds.includes(id)), optId]);
+  function toggleModifierOption(modifier, option) {
+    const isSingle = modifier.max_selection === 1;
+    const isSelected = selectedOptions.some(o => o.id === option.id);
+    if (isSingle) {
+      setSelectedOptions(opts => [...opts.filter(o => o.modifier_id !== modifier.id), option]);
     } else {
-      setSelectedOptions(curr => curr.includes(optId) ? curr.filter(id => id !== optId) : [...curr, optId]);
+      if (isSelected) {
+        setSelectedOptions(opts => opts.filter(o => o.id !== option.id));
+      } else {
+        const currentCount = selectedOptions.filter(o => o.modifier_id === modifier.id).length;
+        if (currentCount < (modifier.max_selection || 10)) {
+          setSelectedOptions(opts => [...opts, option]);
+        }
+      }
     }
   }
 
   function addDishToCart() {
-    if (!selectedDish || !selectedRest) return;
-    if (selectedDish.modifiers) {
-      for (const m of selectedDish.modifiers) {
-        if (m.is_required) {
-          const modOptIds = (m.options || []).map(o => o.id);
-          const hasSelected = selectedOptions.some(id => modOptIds.includes(id));
-          if (!hasSelected) {
-            Alert.alert('Required Selection Missing', `Please choose an option for "${m.name}".`);
-            return;
-          }
+    if (!selectedDish) return;
+    const mods = selectedDish.modifiers || [];
+    for (const mod of mods) {
+      if (mod.min_selection > 0) {
+        const picked = selectedOptions.filter(o => o.modifier_id === mod.id);
+        if (picked.length < mod.min_selection) {
+          Alert.alert('Required Selection Missing', `Please select at least ${mod.min_selection} option(s) for "${mod.name}".`);
+          return;
         }
       }
     }
-    const item = {
-      restaurantId: selectedRest.id,
-      restaurantName: selectedRest.name,
+    const cartEntry = {
+      cartId: Crypto.randomUUID(),
       itemId: selectedDish.id,
       name: selectedDish.name,
       priceMinor: selectedDish.price_minor,
-      quantity: 1,
-      options: selectedOptions
+      options: [...selectedOptions]
     };
-    setCartItems(curr => {
-      // Enforce single-restaurant cart
-      if (curr.length > 0 && curr[0].restaurantId !== selectedRest.id) {
-        Alert.alert('New Restaurant', 'Your cart contains items from another restaurant. Start a new cart?', [
-          { text: 'Keep Current' },
-          { text: 'Start New', onPress: () => setCartItems([item]) }
-        ]);
-        return curr;
-      }
-      return [...curr, item];
-    });
+    setCartItems(items => [...items, cartEntry]);
     setDishModal(false);
     setSelectedDish(null);
+    setSelectedOptions([]);
   }
 
-  async function calculateFoodQuote() {
-    if (cartItems.length === 0) throw Error('Cart is empty');
-    if (!foodDeliveryAddress.trim()) throw Error('Enter delivery address');
-    if (!foodDeliveryCoords?.latitude) throw Error('Select delivery location on the map');
-
-    const quote = await call('POST', '/api/v1/food-orders/quote', {
-      restaurantId: cartItems[0].restaurantId,
-      items: cartItems.map(i => ({ itemId: i.itemId, quantity: i.quantity, options: i.options })),
-      deliveryAddress: foodDeliveryAddress.trim(),
-      deliveryLatitude: foodDeliveryCoords.latitude,
-      deliveryLongitude: foodDeliveryCoords.longitude,
-      customerPhone: foodRecipientPhone.trim() || auth.phone,
-      specialInstructions: foodInstructions.trim()
+  // `deliveryLocation` is passed explicitly (avoids the stale-state first-tap bug) and must be a
+  // customer-confirmed location. No default/fabricated coordinates are ever used for food orders.
+  async function getFoodCheckoutQuote(deliveryLocation = foodDeliveryCoords, codeOverride = appliedPromoCode) {
+    if (!selectedRest || cartItems.length === 0) return;
+    const activeCode = typeof codeOverride === 'string' ? codeOverride.trim() : '';
+    const quoteBody = buildFoodQuoteRequest({
+      restaurantId: selectedRest.id,
+      cartItems,
+      deliveryAddress: foodDeliveryAddress,
+      deliveryLocation,
+      customerPhone: normalizeGhanaPhone(foodRecipientPhone || auth.phone),
+      specialInstructions: foodInstructions,
+      promoCode: activeCode || undefined
     });
-    setFoodQuote(quote);
+    const quote = await call('POST', ENDPOINTS.foodQuote, quoteBody);
+    setFoodQuote({ ...quote, requestBody: quoteBody, orderIdempotencyKey: `food_${Crypto.randomUUID()}` });
   }
 
   async function submitFoodOrder() {
-    if (!foodQuote) throw Error('Calculate quote first');
-    const idempotencyKey = Crypto.randomUUID();
-    const res = await call('POST', '/api/v1/food-orders', {
-      ...foodQuote,
-      paymentMethod: foodPaymentMethod,
-      specialInstructions: foodInstructions.trim()
-    }, { idempotencyKey });
-
+    if (foodQuote?.totalMinor === undefined || !foodQuote?.requestBody) throw Error('Please calculate quote first');
+    const idempKey = foodQuote.orderIdempotencyKey || `food_${Crypto.randomUUID()}`;
+    const { body, options } = buildFoodOrderRequest(foodQuote.requestBody, idempKey, 'MOMO');
+    const order = await call('POST', ENDPOINTS.foodOrder, body, options);
+    const orderId = order?.orderId || order?.id || '';
+    Alert.alert('Order Placed!', `Your food order #${String(orderId).slice(0, 8)} is awaiting payment and restaurant confirmation.`);
     setCartItems([]);
-    setFoodQuote(null);
     setCartModal(false);
+    setSelectedRest(null);
+    setFoodQuote(null);
+    setPromoCodeInput('');
+    setAppliedPromoCode('');
     setTab('Activity');
-    await refreshActivity();
-
-    // Launch upfront digital payment
-    if (res.shipment_id) {
-      try {
-        await startOrResumeCheckout(res.shipment_id, foodPaymentMethod);
-      } catch (e) {
-        setError((e.message || 'Online checkout could not be launched') + '. Use "Complete / Retry Payment" in Activity to resume without creating another order.');
-      }
-    }
+    refreshActivity();
   }
 
-  // --- Activity & Tracking Actions ---
   async function refreshActivity() {
     try {
-      const [shipments, foodOrders] = await Promise.all([
+      const [s, f] = await Promise.all([
         call('GET', '/api/v1/shipments').catch(() => []),
         call('GET', '/api/v1/food-orders').catch(() => [])
       ]);
-      setMyShipments(shipments);
-      setMyFoodOrders(foodOrders);
+      setMyShipments(s);
+      setMyFoodOrders(f);
     } catch {}
   }
 
-  async function cancelOrder(orderId, isFood = false, shipmentState = null, foodState = null) {
-    Alert.alert('Cancel Order', 'Are you sure you want to cancel or request a return for this order?', [
-      { text: 'No' },
-      {
-        text: 'Yes, Proceed',
-        style: 'destructive',
-        onPress: () => execute(async () => {
-          if (isFood) {
-            if (shipmentState === 'RETURNED' || (shipmentState === 'FAILED' && foodState !== 'IN_TRANSIT')) {
-              await call('POST', `/api/v1/food-orders/${orderId}/resolve`, {
-                action: 'cancel_refund',
-                reason: 'Customer requested refund after delivery failure'
-              });
-            } else if (['FAILED', 'RETURN_REQUESTED'].includes(shipmentState)) {
-              await call('POST', `/api/v1/food-orders/${orderId}/resolve`, {
-                action: 'return',
-                reason: 'Customer requested return and refund review after delivery failure'
-              });
-            } else {
-              await call('POST', `/api/v1/food-orders/${orderId}/cancel`, { reason: 'Customer requested cancellation' });
-            }
-          } else {
-            await call('POST', `/api/v1/shipments/${orderId}/transition`, { action: 'cancel', reason: 'Customer requested cancellation' });
-          }
-          await refreshActivity();
-          setError('Request submitted. Post-pickup returns require restaurant confirmation or operator approval.');
-        })
+  // Order-Scoped Real-Time Chat Actions
+  async function openOrderChat({ conversationType, shipmentId = null, foodOrderId = null }) {
+    try {
+      const conv = await call('POST', ENDPOINTS.chatConversations, {
+        conversationType,
+        shipmentId: shipmentId || undefined,
+        foodOrderId: foodOrderId || undefined
+      });
+      setActiveConversation(conv);
+      setChatModalVisible(true);
+      await refreshChatMessages(conv.id);
+    } catch (e) {
+      Alert.alert('Chat Unavailable', e.message || 'Could not open conversation for this order.');
+    }
+  }
+
+  async function refreshChatMessages(convId = activeConversation?.id) {
+    if (!convId) return;
+    try {
+      const data = await call('GET', ENDPOINTS.chatMessages(convId));
+      setActiveConversation(data.conversation);
+      setChatMessages(data.messages || []);
+      setChatTyping(data.typing || []);
+      if (data.conversation?.unreadCount > 0) {
+        await call('POST', ENDPOINTS.chatRead(convId), {}).catch(() => {});
       }
-    ]);
+    } catch {}
   }
 
-  async function submitDisputeTicket() {
-    if (!disputeModal) return;
-    await call('POST', `/api/v1/shipments/${disputeModal.id}/disputes`, {
-      category: disputeCategory,
-      detail: disputeDetail.trim() || 'Customer reported issue'
+  useEffect(() => {
+    if (!chatModalVisible || !activeConversation?.id) return;
+    let cancelled = false;
+    const pollChat = async () => {
+      if (cancelled || AppState.currentState !== 'active') return;
+      await refreshChatMessages(activeConversation.id);
+    };
+    const interval = setInterval(pollChat, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [chatModalVisible, activeConversation?.id]);
+
+  async function sendCustomerChatMessage(messageType = 'text', customBody = null, quickReplyKey = null, locationPin = null) {
+    if (!activeConversation?.id || chatSending) return;
+    setChatSending(true);
+    try {
+      const payload = buildChatMessageRequest({
+        clientMessageId: `cust_${Crypto.randomUUID()}`,
+        messageType,
+        body: customBody !== null ? customBody : chatText,
+        quickReplyKey,
+        locationPin
+      });
+      await call('POST', ENDPOINTS.chatMessages(activeConversation.id), payload);
+      if (messageType === 'text') setChatText('');
+      await refreshChatMessages(activeConversation.id);
+    } catch (e) {
+      Alert.alert('Message Not Sent', e.message || 'Could not send message.');
+    } finally {
+      setChatSending(false);
+    }
+  }
+
+  async function shareConfirmedLocationPinInChat() {
+    const confirmedLoc = isConfirmedLocation(booking.destination)
+      ? booking.destination
+      : isConfirmedLocation(detectedLocation)
+      ? detectedLocation
+      : null;
+    if (!confirmedLoc) {
+      Alert.alert('Confirmed Pin Required', 'Please confirm your location on the map first before sharing an advisory pin.');
+      return;
+    }
+    await sendCustomerChatMessage('location_pin', null, null, {
+      latitude: Number(confirmedLoc.latitude ?? confirmedLoc.coordinates?.latitude),
+      longitude: Number(confirmedLoc.longitude ?? confirmedLoc.coordinates?.longitude),
+      label: `${confirmedLoc.title || confirmedLoc.address || 'Customer Gate Pin'} (Advisory Only)`,
+      confirmed: true
     });
-    setDisputeModal(null);
-    setDisputeDetail('');
-    setError('Support issue submitted. Operations team will contact you.');
   }
 
-  // =========================================================================
-  // RENDER: LOADING VIEW
-  // =========================================================================
-  if (loading) {
-    return (
-      <View style={[styles.screen, styles.center]}>
-        <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
-        <View style={styles.brandIconBox}><Text style={styles.brandIconText}>E</Text></View>
-        <Text style={styles.splashTitle}>ELESEND</Text>
-        <Text style={styles.splashSubtitle}>EXPRESS GHANA DELIVERY</Text>
-        <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: 20 }} />
-      </View>
-    );
+  async function escalateCustomerChat() {
+    if (!activeConversation?.id) return;
+    try {
+      const res = await call('POST', ENDPOINTS.chatEscalate(activeConversation.id), {
+        supportCategory: 'order_issue',
+        summary: 'Customer escalated active order conversation for support assistance.'
+      });
+      if (res?.supportConversation) {
+        setActiveConversation(res.supportConversation);
+        await refreshChatMessages(res.supportConversation.id);
+        Alert.alert('Escalated to ELESEND Support', 'You are now connected with ELESEND Support for this order.');
+      }
+    } catch (e) {
+      Alert.alert('Escalation Failed', e.message);
+    }
   }
 
-  // =========================================================================
-  // RENDER: AUTHENTICATION (CUSTOMER SIGN IN & SIGN UP ONLY)
-  // =========================================================================
+  async function reportCustomerChatAbuse() {
+    if (!activeConversation?.id) return;
+    try {
+      await call('POST', ENDPOINTS.chatReport(activeConversation.id), {
+        category: 'inappropriate_messages',
+        details: 'Customer reported conversation from mobile app for safety review.'
+      });
+      Alert.alert('Report Submitted', 'ELESEND Safety & Support has received your report.');
+    } catch (e) {
+      Alert.alert('Report Failed', e.message);
+    }
+  }
+
+  // ===========================================================================
+  // SCREEN: AUTHENTICATION / ONBOARDING (Modern ELESEND Card Style)
+  // ===========================================================================
   if (!auth) {
     return (
-      <View style={styles.screen}>
-        <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
+      <View style={styles.authContainer}>
+        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
         <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled">
           <View style={styles.authHeader}>
-            <View style={styles.brandRow}>
-              <View style={styles.brandIconBox}><Text style={styles.brandIconText}>E</Text></View>
-              <View>
-                <Text style={styles.brandTitle}>ELESEND</Text>
-                <Text style={styles.brandTagline}>CUSTOMER APP</Text>
-              </View>
+            <View style={styles.logoBadge}>
+              <Text style={styles.logoBadgeText}>E</Text>
             </View>
-            <Text style={styles.authSubtitle}>Fast, fair parcel delivery and restaurant food ordering across Ghana with verified OTP handover.</Text>
+            <Text style={styles.authBrandTitle}>ELESEND</Text>
+            <Text style={styles.authTagline}>GHANA'S FAST RELIABLE DELIVERY</Text>
           </View>
 
-          {!!error && (
-            <Pressable onPress={() => setError('')} style={styles.errorBox}>
-              <Text style={styles.errorText}>⚠️ {error}</Text>
-            </Pressable>
-          )}
-
           <View style={styles.authCard}>
-            <Text style={styles.authCardTitle}>{isSignup ? 'Create Customer Account' : 'Sign In'}</Text>
-            <Text style={styles.authCardSubtitle}>{isSignup ? 'Sign up to order food and send parcels in seconds' : 'Welcome back! Enter your mobile number'}</Text>
+            <Text style={styles.authCardTitle}>{isSignup ? 'Create Account' : 'Welcome Back'}</Text>
+            <Text style={styles.authCardSubtitle}>
+              {isSignup ? 'Sign up to send packages, cargo & order food' : 'Sign in with your Ghana mobile number'}
+            </Text>
+
+            {Boolean(error) && (
+              <View style={styles.errorBanner}>
+                <Text style={styles.errorBannerText}>{error}</Text>
+              </View>
+            )}
 
             {isSignup && (
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Full Name</Text>
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Your Full Name</Text>
                 <TextInput
+                  style={styles.formInput}
                   placeholder="e.g. Kwame Mensah"
-                  placeholderTextColor={colors.textMuted}
-                  style={styles.input}
+                  placeholderTextColor={colors.textPlaceholder}
                   value={credentials.name}
                   onChangeText={v => edit('name', v)}
                 />
               </View>
             )}
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Mobile Phone</Text>
+            <View style={styles.formGroup}>
+              <Text style={styles.formLabel}>Phone Number</Text>
               <View style={styles.phoneInputRow}>
-                <View style={styles.countryBadge}>
-                  <Text style={styles.flag}>🇬🇭</Text>
-                  <Text style={styles.countryCode}>+233</Text>
+                <View style={styles.ghanaBadge}>
+                  <Text style={{ fontSize: 18 }}>🇬🇭</Text>
+                  <Text style={styles.ghanaCode}>+233</Text>
                 </View>
                 <TextInput
-                  placeholder="024 123 4567"
-                  placeholderTextColor={colors.textMuted}
-                  keyboardType="phone-pad"
                   style={styles.phoneInput}
+                  placeholder="024 123 4567"
+                  placeholderTextColor={colors.textPlaceholder}
+                  keyboardType="phone-pad"
                   value={credentials.phone}
                   onChangeText={v => edit('phone', v)}
                 />
               </View>
             </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Password {isSignup ? '(12–128 characters)' : ''}</Text>
+            <View style={styles.formGroup}>
+              <Text style={styles.formLabel}>Password (12–128 characters)</Text>
               <TextInput
-                placeholder={isSignup ? 'Enter password (12–128 characters)' : 'Enter password'}
-                placeholderTextColor={colors.textMuted}
+                style={styles.formInput}
+                placeholder="Enter secure password"
+                placeholderTextColor={colors.textPlaceholder}
                 secureTextEntry
-                maxLength={128}
-                style={styles.input}
                 value={credentials.password}
                 onChangeText={v => edit('password', v)}
               />
             </View>
 
             <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={() => execute(isSignup ? signUp : signIn)}
-              style={styles.primaryBtn}
-              disabled={busy}>
-              {busy ? <ActivityIndicator color={colors.bg} /> : <Text style={styles.primaryBtnText}>{isSignup ? 'Create Account' : 'Sign In'}</Text>}
+              style={styles.primaryActionButton}
+              disabled={busy}
+              onPress={() => execute(isSignup ? signUp : signIn)}>
+              {busy ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Text style={styles.primaryActionText}>{isSignup ? 'Create Account' : 'Sign In'}</Text>
+              )}
             </TouchableOpacity>
 
             <TouchableOpacity
-              onPress={() => { setIsSignup(!isSignup); setError(''); }}
-              style={styles.switchAuthBtn}>
+              style={styles.switchAuthTouch}
+              onPress={() => { setIsSignup(!isSignup); setError(''); }}>
               <Text style={styles.switchAuthText}>
-                {isSignup ? 'Already have an account? Sign In' : 'New to ELESEND? Create Account'}
+                {isSignup ? 'Already have an account? Sign In' : "Don't have an account? Sign Up"}
               </Text>
             </TouchableOpacity>
           </View>
@@ -752,864 +1149,2095 @@ export default function CustomerApp() {
     );
   }
 
-  // =========================================================================
-  // RENDER: PHONE VERIFICATION ONBOARDING
-  // =========================================================================
+  // ===========================================================================
+  // SCREEN: OTP VERIFICATION
+  // ===========================================================================
   if (phoneState && !phoneState.verified) {
     return (
-      <View style={styles.screen}>
-        <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
-        <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled">
-          <View style={styles.authHeader}>
-            <View style={styles.brandRow}>
-              <View style={styles.brandIconBox}><Text style={styles.brandIconText}>E</Text></View>
-              <View>
-                <Text style={styles.brandTitle}>ELESEND</Text>
-                <Text style={styles.brandTagline}>VERIFY PHONE NUMBER</Text>
-              </View>
-            </View>
-            <Text style={styles.authSubtitle}>
-              Verify your registered Ghana mobile number ({phoneState.phone || auth.phone}) to book deliveries and order food.
-            </Text>
-          </View>
+      <View style={styles.authContainer}>
+        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+        <View style={[styles.authCard, { margin: 24, marginTop: 80 }]}>
+          <Text style={{ fontSize: 32, marginBottom: 8 }}>🔑</Text>
+          <Text style={styles.authCardTitle}>Verify Your Phone</Text>
+          <Text style={styles.authCardSubtitle}>
+            We sent a 6-digit verification code to {auth.phone}. Please enter it below:
+          </Text>
 
-          {!!error && (
-            <Pressable onPress={() => setError('')} style={styles.errorBox}>
-              <Text style={styles.errorText}>⚠️ {error}</Text>
-            </Pressable>
+          {Boolean(error) && (
+            <View style={styles.errorBanner}>
+              <Text style={styles.errorBannerText}>{error}</Text>
+            </View>
           )}
 
-          <View style={styles.authCard}>
-            <Text style={styles.authCardTitle}>Enter 6-Digit SMS Code</Text>
-            <Text style={styles.authCardSubtitle}>
-              {phoneChallenge?.challengeId
-                ? 'Enter the 6-digit verification code sent to your mobile number.'
-                : 'Tap "Send / Resend Verification Code" to receive a 6-digit SMS code.'}
-            </Text>
+          <TextInput
+            style={[styles.formInput, { textAlign: 'center', fontSize: 24, letterSpacing: 8, fontWeight: '800' }]}
+            placeholder="••••••"
+            placeholderTextColor={colors.textPlaceholder}
+            keyboardType="number-pad"
+            maxLength={6}
+            value={phoneCode}
+            onChangeText={setPhoneCode}
+          />
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Verification Code</Text>
-              <TextInput
-                placeholder="000000"
-                placeholderTextColor={colors.textMuted}
-                keyboardType="number-pad"
-                maxLength={6}
-                style={styles.input}
-                value={phoneCode}
-                onChangeText={setPhoneCode}
-              />
-            </View>
+          <TouchableOpacity
+            style={[styles.primaryActionButton, { marginTop: 20 }]}
+            disabled={busy}
+            onPress={() => execute(verifyOtp)}>
+            {busy ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryActionText}>Verify Phone</Text>}
+          </TouchableOpacity>
 
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={() => execute(submitPhoneVerification)}
-              style={styles.primaryBtn}
-              disabled={busy || !phoneChallenge?.challengeId}>
-              {busy ? <ActivityIndicator color={colors.bg} /> : <Text style={styles.primaryBtnText}>Verify Phone & Continue</Text>}
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => execute(requestPhoneVerificationChallenge)}
-              style={[styles.secondaryBtn, { marginTop: 12 }]}
-              disabled={busy}>
-              <Text style={styles.secondaryBtnText}>Send / Resend Verification Code</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => execute(logout)}
-              style={styles.switchAuthBtn}>
-              <Text style={styles.switchAuthText}>Sign Out / Use Another Account</Text>
-            </TouchableOpacity>
-          </View>
-        </ScrollView>
+          <TouchableOpacity
+            style={styles.switchAuthTouch}
+            onPress={() => execute(async () => {
+              const ch = await call('POST', '/api/v1/me/phone-challenge', {});
+              setPhoneChallenge(ch);
+              Alert.alert('Code Sent', 'A fresh 6-digit code has been sent.');
+            })}>
+            <Text style={styles.switchAuthText}>Resend Code via SMS</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     );
   }
 
-  // =========================================================================
-  // RENDER: AUTHENTICATED CUSTOMER APP
-  // =========================================================================
+  // ===========================================================================
+  // MAIN APPLICATION LAYOUT (Yango-Style Light Canvas, Full Screen Map & Floating Sheets)
+  // ===========================================================================
   return (
-    <View style={styles.screen}>
-      <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
+    <View style={styles.mainCanvas}>
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
 
-      {/* Top Header */}
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <View style={styles.headerBadge}><Text style={styles.headerBadgeText}>E</Text></View>
-          <View>
-            <Text style={styles.headerTitle}>ELESEND</Text>
-            <Text style={styles.headerSubtitle}>{auth.phone}</Text>
+      {/* Top Universal App Header */}
+      <View style={styles.topHeaderBar}>
+        <TouchableOpacity style={styles.menuIconCircle} onPress={() => setTab('Profile')}>
+          <Text style={{ fontSize: 18, fontWeight: '700', color: colors.textDark }}>☰</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.locationBreadcrumb} onPress={requestLocation}>
+          <Text style={styles.brandTitleText}>ELESEND</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <Text style={styles.locationSubtitleText} numberOfLines={1}>
+              {detectedLocation?.address || 'Accra, Greater Accra'}
+            </Text>
+            <Text style={{ fontSize: 12, color: colors.textSecondary }}>›</Text>
           </View>
-        </View>
-        <TouchableOpacity onPress={() => execute(logout)} style={styles.logoutBtn}>
-          <Text style={styles.logoutBtnText}>Log Out</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.profileAvatarCircle} onPress={() => setTab('Profile')}>
+          <Text style={{ fontSize: 15 }}>👤</Text>
         </TouchableOpacity>
       </View>
 
-      {!!error && (
-        <Pressable onPress={() => setError('')} style={styles.errorBox}>
-          <Text style={styles.errorText}>⚠️ {error}</Text>
-        </Pressable>
-      )}
+      {/* Main Screen Body by Active Tab */}
+      <View style={{ flex: 1 }}>
 
-      {/* Main Tab Navigation Bar */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          onPress={() => setTab('Send')}
-          style={[styles.tabItem, tab === 'Send' && styles.tabItemActive]}>
-          <Text style={[styles.tabText, tab === 'Send' && styles.tabTextActive]}>📦 Send</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => setTab('Food')}
-          style={[styles.tabItem, tab === 'Food' && styles.tabItemActive]}>
-          <Text style={[styles.tabText, tab === 'Food' && styles.tabTextActive]}>🍔 Food</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => setTab('Activity')}
-          style={[styles.tabItem, tab === 'Activity' && styles.tabItemActive]}>
-          <Text style={[styles.tabText, tab === 'Activity' && styles.tabTextActive]}>📋 Activity</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* TAB CONTENT */}
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-
-        {/* ================================================================= */}
-        {/* TAB 1: SEND PARCEL */}
-        {/* ================================================================= */}
-        {tab === 'Send' && (
-          <View>
-            {/* Step Stepper */}
-            <View style={styles.stepperRow}>
-              {['1. Location', '2. Package', '3. Confirm'].map((label, idx) => (
-                <View key={label} style={[styles.stepBadge, step === idx && styles.stepBadgeActive, step > idx && styles.stepBadgeComplete]}>
-                  <Text style={[styles.stepBadgeText, step === idx && styles.stepBadgeTextActive]}>{label}</Text>
+        {/* -------------------------------------------------------------------
+            TAB 1: HOMEPAGE (Reference 5: Service cards, "Where to?", promos)
+        --------------------------------------------------------------------- */}
+        {tab === 'Home' && (
+          <ScrollView contentContainerStyle={styles.homeScroll} showsVerticalScrollIndicator={false}>
+            {/* Service Category Cards (3-column visual grid) */}
+            <View style={styles.serviceCardsGrid}>
+              {/* Delivery (Parcel) */}
+              <TouchableOpacity
+                style={styles.serviceCard}
+                activeOpacity={0.85}
+                onPress={() => { setBooking(b => ({ ...b, vehicle: 'motorcycle' })); setTab('Send'); }}>
+                <View style={styles.serviceIllustrationBox}>
+                  <Text style={{ fontSize: 36 }}>🏍️</Text>
+                  <View style={styles.parcelBoxBadge}><Text style={{ fontSize: 14 }}>📦</Text></View>
                 </View>
+                <Text style={styles.serviceCardLabel}>Delivery</Text>
+                <Text style={styles.serviceCardSub}>Fast Courier</Text>
+              </TouchableOpacity>
+
+              {/* Cargo */}
+              <TouchableOpacity
+                style={styles.serviceCard}
+                activeOpacity={0.85}
+                onPress={() => setTab('Cargo')}>
+                <View style={styles.serviceIllustrationBox}>
+                  <Text style={{ fontSize: 36 }}>🚚</Text>
+                  <View style={styles.cargoBoxBadge}><Text style={{ fontSize: 12 }}>🛋️</Text></View>
+                </View>
+                <Text style={styles.serviceCardLabel}>Cargo</Text>
+                <Text style={styles.serviceCardSub}>Bulky & Freight</Text>
+              </TouchableOpacity>
+
+              {/* Food */}
+              <TouchableOpacity
+                style={styles.serviceCard}
+                activeOpacity={0.85}
+                onPress={() => setTab('Food')}>
+                <View style={styles.serviceIllustrationBox}>
+                  <Text style={{ fontSize: 36 }}>🍲</Text>
+                  <View style={styles.foodBowlBadge}><Text style={{ fontSize: 12 }}>⚡</Text></View>
+                </View>
+                <Text style={styles.serviceCardLabel}>Food</Text>
+                <Text style={styles.serviceCardSub}>Chop Bars</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* "Where to?" Search Pill (Opens Address Selection Sheet) */}
+            <TouchableOpacity
+              style={styles.whereToSearchPill}
+              activeOpacity={0.8}
+              onPress={() => { setLocationTarget('destination'); setAddressModalVisible(true); }}>
+              <View style={styles.carIconBox}>
+                <Text style={{ fontSize: 18 }}>📍</Text>
+              </View>
+              <Text style={styles.whereToPlaceholder}>Where to?</Text>
+              <Text style={styles.whereToChevron}>›</Text>
+            </TouchableOpacity>
+
+            {/* Recent & Saved Landmark Shortcuts */}
+            <View style={styles.recentDestinationsGroup}>
+              {defaultLandmarks.slice(0, 3).map((item, idx) => (
+                <TouchableOpacity
+                  key={idx}
+                  style={styles.recentDestinationRow}
+                  onPress={() => selectAddressItem(item)}>
+                  <View style={styles.landmarkIconBox}>
+                    <Text style={{ fontSize: 16 }}>{item.icon}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.landmarkTitle} numberOfLines={1}>{item.title}</Text>
+                    <Text style={styles.landmarkSub} numberOfLines={1}>{item.subtitle}</Text>
+                  </View>
+                  <Text style={styles.landmarkDistanceBadge}>Popular</Text>
+                </TouchableOpacity>
               ))}
             </View>
 
-            {/* STEP 0: LOCATIONS & MAP */}
-            {step === 0 && (
-              <View style={styles.card}>
-                <Text style={styles.cardHeading}>Pickup & Delivery Points</Text>
-                <Text style={styles.cardSubheading}>Search Ghanaian landmarks or drop pins directly on the map.</Text>
-
-                {/* Active Selection Target (Pickup vs Destination) */}
-                <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+            {/* Ghanaian Contextual Promo Cards */}
+            <View style={styles.promoCardsSection}>
+              {/* Aboboyaa in Cargo Promo */}
+              <View style={[styles.promoBannerCard, { backgroundColor: '#1E293B' }]}>
+                <View style={{ flex: 1, paddingRight: 12 }}>
+                  <Text style={styles.promoTagBadge}>LOCAL LOGISTICS</Text>
+                  <Text style={styles.promoHeadline}>ABOBOYAA IN CARGO</Text>
+                  <Text style={styles.promoBody}>
+                    Perfect for twenty packs of beverages, cement & commercial market loads.
+                  </Text>
                   <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel="Select Pickup Point"
-                    onPress={() => setLocationTarget('pickup')}
-                    style={[styles.pillBtn, locationTarget === 'pickup' && styles.pillBtnActive, { flex: 1, alignItems: 'center' }]}>
-                    <Text style={[styles.pillBtnText, locationTarget === 'pickup' && { color: colors.primary, fontWeight: '700' }]}>
-                      🟢 Set Pickup
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel="Select Destination Point"
-                    onPress={() => setLocationTarget('destination')}
-                    style={[styles.pillBtn, locationTarget === 'destination' && styles.pillBtnActive, { flex: 1, alignItems: 'center' }]}>
-                    <Text style={[styles.pillBtnText, locationTarget === 'destination' && { color: '#F87171', fontWeight: '700' }]}>
-                      🔴 Set Destination
-                    </Text>
+                    style={styles.promoActionButton}
+                    onPress={() => { setCargoBodyType('aboboyaa'); setTab('Cargo'); }}>
+                    <Text style={styles.promoActionText}>Book Cargo ›</Text>
                   </TouchableOpacity>
                 </View>
+                <Text style={{ fontSize: 52 }}>🛺</Text>
+              </View>
 
-                {/* GPS Auto-detect Button */}
+              {/* Forgot Keys / Instant Parcel Promo */}
+              <View style={[styles.promoBannerCard, { backgroundColor: '#B91C1C' }]}>
+                <View style={{ flex: 1, paddingRight: 12 }}>
+                  <Text style={styles.promoTagBadge}>EXPRESS</Text>
+                  <Text style={styles.promoHeadline}>FORGOT YOUR KEYS?</Text>
+                  <Text style={styles.promoBody}>
+                    Instant door-to-door courier dispatch across Accra & Tema in minutes.
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.promoActionButton}
+                    onPress={() => { setBooking(b => ({ ...b, vehicle: 'motorcycle' })); setTab('Send'); }}>
+                    <Text style={styles.promoActionText}>Send Parcel ›</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={{ fontSize: 52 }}>🔑</Text>
+              </View>
+            </View>
+          </ScrollView>
+        )}
+
+        {/* -------------------------------------------------------------------
+            TAB 2: PARCEL BOOKING (Reference 4: Full-Screen Map + Floating Bottom Sheet)
+        --------------------------------------------------------------------- */}
+        {tab === 'Send' && (
+          <View style={styles.mapScreenContainer}>
+            {/* Background Map View */}
+            <View style={StyleSheet.absoluteFill}>
+              <MapView
+                ref={mapRef}
+                style={StyleSheet.absoluteFill}
+                initialRegion={{ latitude: 5.5600, longitude: -0.1800, longitudeDelta: 0.08 }}>
+                {booking.pickup && (
+                  <Marker
+                    coordinate={booking.pickup}
+                    pinColor={colors.primary}
+                    draggable
+                    onDragEnd={e => handleMarkerDragEnd('pickup', e.nativeEvent.coordinate)}
+                    title="Pickup Location"
+                  />
+                )}
+                {booking.destination && (
+                  <Marker
+                    coordinate={booking.destination}
+                    pinColor={colors.danger}
+                    draggable
+                    onDragEnd={e => handleMarkerDragEnd('destination', e.nativeEvent.coordinate)}
+                    title="Delivery Destination"
+                  />
+                )}
+                {booking.pickup && booking.destination && (
+                  <Polyline
+                    coordinates={[booking.pickup, booking.destination]}
+                    strokeColor={colors.primary}
+                    strokeWidth={4}
+                  />
+                )}
+              </MapView>
+            </View>
+
+            {/* Top Floating Map Controls */}
+            <View style={styles.floatingTopControls}>
+              <TouchableOpacity style={styles.floatingBackCircle} onPress={() => setTab('Home')}>
+                <Text style={{ fontSize: 18, fontWeight: '700', color: colors.textDark }}>←</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.floatingGpsButton} onPress={requestLocation}>
+                <Text style={{ fontSize: 18 }}>🎯</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Interactive Floating Bottom Sheet */}
+            <View style={styles.floatingBottomSheet}>
+              <View style={styles.sheetHandleBar} />
+              <Text style={styles.sheetDisplayTitle}>SEND A PACKAGE</Text>
+
+              {/* Route Input Summary Box */}
+              <View style={styles.sheetRouteBox}>
+                {/* Pickup Row */}
                 <TouchableOpacity
-                  onPress={() => execute(() => useCurrentLocation(locationTarget || (booking.pickup ? 'destination' : 'pickup')))}
-                  style={styles.gpsDetectBtn}
-                  disabled={detectingGps}>
-                  {detectingGps ? <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} /> : <Text style={{ fontSize: 18, marginRight: 8 }}>📍</Text>}
-                  <Text style={styles.gpsDetectText}>{detectingGps ? 'Locating device...' : 'Use My Current Location'}</Text>
+                  style={styles.sheetAddressRow}
+                  onPress={() => { setLocationTarget('pickup'); setAddressModalVisible(true); }}>
+                  <View style={styles.pickupSquareIcon}><Text style={{ color: '#FFF', fontSize: 12 }}>📦</Text></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.sheetAddressLabel}>Pickup Address</Text>
+                    <Text style={styles.sheetAddressText} numberOfLines={1}>
+                      {booking.pickup?.address || 'Select pickup location'}
+                    </Text>
+                  </View>
+                  <Text style={styles.sheetChevron}>›</Text>
                 </TouchableOpacity>
 
-                {/* Landmark Search */}
-                <View style={styles.searchRow}>
-                  <TextInput
-                    placeholder="Search landmark (e.g. Accra Mall, Kejetia)"
-                    placeholderTextColor={colors.textMuted}
-                    style={[styles.input, { flex: 1 }]}
-                    value={placeQuery}
-                    onChangeText={setPlaceQuery}
-                    onSubmitEditing={() => execute(runPlaceSearch)}
-                  />
-                  <TouchableOpacity onPress={() => execute(runPlaceSearch)} style={styles.searchActionBtn}>
-                    <Text style={styles.searchActionText}>Search</Text>
-                  </TouchableOpacity>
-                </View>
+                <View style={styles.sheetInnerDivider} />
 
-                {/* Search Results */}
-                {placesList.length > 0 && (
-                  <View style={styles.dropdownList}>
-                    {placesList.map((p, i) => (
-                      <TouchableOpacity key={i} onPress={() => pickPlace(p)} style={styles.dropdownItem}>
-                        <Text style={styles.placeTitle}>📍 {p.name}</Text>
-                        <Text style={styles.placeSub}>{p.label}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
-
-                {/* Quick Ghana Landmark Chips */}
-                <View style={styles.chipsRow}>
-                  {[
-                    { name: 'Accra Mall', latitude: 5.6214, longitude: -0.1741, label: 'Tetteh Quarshie' },
-                    { name: 'Kotoka Airport', latitude: 5.6052, longitude: -0.1717, label: 'Airport Area' },
-                    { name: 'Kejetia Market', latitude: 6.6961, longitude: -1.6244, label: 'Central Kumasi' },
-                    { name: 'Tema Harbour', latitude: 5.6322, longitude: 0.0076, label: 'Tema Hub' }
-                  ].map(chip => (
-                    <TouchableOpacity key={chip.name} onPress={() => pickPlace(chip)} style={styles.chip}>
-                      <Text style={styles.chipText}>📍 {chip.name}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                {/* Pickup & Destination Cards */}
-                <View style={styles.addressSummaryCard}>
-                  <View style={styles.addressRow}>
-                    <Text style={styles.addressIcon}>🟢</Text>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.addressType}>Pickup Location</Text>
-                      <Text style={styles.addressText}>{booking.pickup?.address || 'Not selected (Tap map or search)'}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.addressDivider} />
-                  <View style={styles.addressRow}>
-                    <Text style={styles.addressIcon}>🔴</Text>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.addressType}>Destination Location</Text>
-                      <Text style={styles.addressText}>{booking.destination?.address || 'Not selected (Tap map or search)'}</Text>
-                    </View>
-                  </View>
-                </View>
-
-                {/* Private Map View */}
-                <View style={styles.mapContainer}>
-                  <MapView
-                    ref={mapRef}
-                    initialRegion={{ latitude: 5.6037, longitude: -0.1870, longitudeDelta: 0.12 }}
-                    style={StyleSheet.absoluteFill}
-                    onPress={handleMapPress}>
-                    {booking.pickup && (
-                      <Marker coordinate={booking.pickup} pinColor={colors.primary} title="Pickup" />
-                    )}
-                    {booking.destination && (
-                      <Marker coordinate={booking.destination} pinColor={colors.danger} title="Destination" />
-                    )}
-                  </MapView>
-                </View>
-
+                {/* Destination Row */}
                 <TouchableOpacity
-                  onPress={() => {
-                    if (!booking.pickup) { setError('Please select a pickup point'); return; }
-                    if (!booking.destination) { setError('Please select a delivery destination'); return; }
-                    setStep(1);
-                  }}
-                  style={[styles.primaryBtn, { marginTop: 16 }]}>
-                  <Text style={styles.primaryBtnText}>Continue to Package Details →</Text>
+                  style={styles.sheetAddressRow}
+                  onPress={() => { setLocationTarget('destination'); setAddressModalVisible(true); }}>
+                  <View style={styles.dropoffSquareIcon}><Text style={{ color: '#FFF', fontSize: 12 }}>🏁</Text></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.sheetAddressLabel}>Delivery Address</Text>
+                    <Text style={styles.sheetAddressText} numberOfLines={1}>
+                      {booking.destination?.address || 'Where to deliver?'}
+                    </Text>
+                  </View>
+                  <Text style={styles.sheetChevron}>›</Text>
                 </TouchableOpacity>
               </View>
-            )}
 
-            {/* STEP 1: PACKAGE & RECIPIENT */}
-            {step === 1 && (
-              <View style={styles.card}>
-                <Text style={styles.cardHeading}>Recipient & Package Details</Text>
-
-                <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Recipient Ghana Mobile Phone</Text>
-                  <TextInput
-                    placeholder="024 123 4567"
-                    placeholderTextColor={colors.textMuted}
-                    keyboardType="phone-pad"
-                    style={styles.input}
-                    value={booking.recipientPhone}
-                    onChangeText={v => updateBooking('recipientPhone', v)}
-                  />
-                </View>
-
-                <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Package Description</Text>
-                  <TextInput
-                    placeholder="e.g. Important Documents, Shoes, Food items"
-                    placeholderTextColor={colors.textMuted}
-                    style={styles.input}
-                    value={booking.description}
-                    onChangeText={v => updateBooking('description', v)}
-                  />
-                </View>
-
-                <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Handover & Landmark Instructions (Optional)</Text>
-                  <TextInput
-                    placeholder="e.g. Behind the SDA School, blue gate, call on arrival"
-                    placeholderTextColor={colors.textMuted}
-                    style={styles.input}
-                    value={deliveryInstructions}
-                    onChangeText={setDeliveryInstructions}
-                  />
-                </View>
-
-                <Text style={[styles.inputLabel, { marginTop: 8 }]}>Select Delivery Vehicle</Text>
-                <View style={styles.vehicleRow}>
-                  {[
-                    { id: 'motorcycle', label: '🛵 Motorbike', cap: 'Up to 20kg' },
-                    { id: 'car', label: '🚗 Car', cap: 'Up to 150kg' },
-                    { id: 'van', label: '🚐 Van', cap: 'Up to 800kg' }
-                  ].map(v => (
-                    <TouchableOpacity
-                      key={v.id}
-                      onPress={() => updateBooking('vehicle', v.id)}
-                      style={[styles.vehicleCard, booking.vehicle === v.id && styles.vehicleCardActive]}>
-                      <Text style={styles.vehicleLabel}>{v.label}</Text>
-                      <Text style={styles.vehicleCap}>{v.cap}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                <View style={{ flexDirection: 'row', gap: 12, marginTop: 20 }}>
-                  <TouchableOpacity onPress={() => setStep(0)} style={[styles.secondaryBtn, { flex: 1 }]}>
-                    <Text style={styles.secondaryBtnText}>← Back</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => execute(requestParcelQuote)} style={[styles.primaryBtn, { flex: 2 }]}>
-                    <Text style={styles.primaryBtnText}>Get Quote →</Text>
-                  </TouchableOpacity>
-                </View>
+              {/* Target Pills (Required by contract: "Set Pickup" & "Set Destination") */}
+              <View style={styles.targetPillRow}>
+                <TouchableOpacity
+                  style={[styles.targetPill, locationTarget === 'pickup' && styles.targetPillActive]}
+                  onPress={() => { setLocationTarget('pickup'); setAddressModalVisible(true); }}>
+                  <Text style={[styles.targetPillText, locationTarget === 'pickup' && styles.targetPillTextActive]}>
+                    Set Pickup
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.targetPill, locationTarget === 'destination' && styles.targetPillActive]}
+                  onPress={() => { setLocationTarget('destination'); setAddressModalVisible(true); }}>
+                  <Text style={[styles.targetPillText, locationTarget === 'destination' && styles.targetPillTextActive]}>
+                    Set Destination
+                  </Text>
+                </TouchableOpacity>
               </View>
-            )}
 
-            {/* STEP 2: AUTHORITATIVE QUOTE & CHECKOUT */}
-            {step === 2 && (
-              <View style={styles.card}>
-                <Text style={styles.cardHeading}>Confirm & Book Delivery</Text>
-                
-                <View style={styles.quoteSummaryBox}>
-                  <Text style={styles.quoteAmount}>{quoted ? ghc(quoted.amount_minor) : 'Updating Fare...'}</Text>
-                  <Text style={styles.quoteDetails}>Authoritative Delivery Fare ({quoted?.vehicle || booking.vehicle})</Text>
-                </View>
+              {/* Service Option Selector Carousel */}
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.vehicleCarousel}>
+                {/* Express Motorcycle */}
+                <TouchableOpacity
+                  style={[styles.vehicleOptionCard, booking.vehicle === 'motorcycle' && styles.vehicleOptionCardActive]}
+                  onPress={() => updateBooking('vehicle', 'motorcycle')}>
+                  <Text style={{ fontSize: 26, marginBottom: 4 }}>🏍️</Text>
+                  <Text style={styles.vehicleEtaBadge}>13 min</Text>
+                  <Text style={styles.vehicleOptionName}>Express</Text>
+                  <Text style={styles.vehicleOptionPrice}>from GH₵ 15</Text>
+                </TouchableOpacity>
 
-                <Text style={[styles.inputLabel, { marginTop: 16 }]}>Choose Payment Method</Text>
-                <View style={styles.paymentMethodRow}>
-                  {paymentMethods.filter(m => m.enabled).map(m => (
-                    <TouchableOpacity
-                      key={m.method}
-                      onPress={() => execute(() => changeParcelPaymentTerms({ paymentMethod: m.method }))}
-                      style={[styles.paymentMethodCard, booking.paymentMethod === m.method && styles.paymentMethodCardActive]}>
-                      <Text style={styles.paymentMethodText}>
-                        {m.method === 'CASH' ? '💵 Cash' : m.method === 'MOMO' ? '📱 MoMo' : m.method === 'CARD' ? '💳 Card' : '🔳 QR'}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
+                {/* Express Cargo Van */}
+                <TouchableOpacity
+                  style={[styles.vehicleOptionCard, booking.vehicle === 'van' && styles.vehicleOptionCardActive]}
+                  onPress={() => updateBooking('vehicle', 'van')}>
+                  <Text style={{ fontSize: 26, marginBottom: 4 }}>🚐</Text>
+                  <Text style={styles.vehicleEtaBadge}>6 min</Text>
+                  <Text style={styles.vehicleOptionName}>Express Cargo</Text>
+                  <Text style={styles.vehicleOptionPrice}>from GH₵ 64</Text>
+                </TouchableOpacity>
 
-                {booking.paymentMethod === 'CASH' && (
-                  <View style={styles.cashPayerRow}>
-                    <Text style={styles.inputLabel}>Who pays for delivery?</Text>
-                    <View style={{ flexDirection: 'row', gap: 12, marginTop: 6 }}>
-                      <TouchableOpacity
-                        onPress={() => execute(() => changeParcelPaymentTerms({ cashPayer: 'sender' }))}
-                        style={[styles.pillBtn, booking.cashPayer === 'sender' && styles.pillBtnActive]}>
-                        <Text style={styles.pillBtnText}>Sender Pays</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        onPress={() => execute(() => changeParcelPaymentTerms({ cashPayer: 'recipient' }))}
-                        style={[styles.pillBtn, booking.cashPayer === 'recipient' && styles.pillBtnActive]}>
-                        <Text style={styles.pillBtnText}>Recipient Pays</Text>
-                      </TouchableOpacity>
-                    </View>
+                {/* Car Delivery */}
+                <TouchableOpacity
+                  style={[styles.vehicleOptionCard, booking.vehicle === 'car' && styles.vehicleOptionCardActive]}
+                  onPress={() => updateBooking('vehicle', 'car')}>
+                  <Text style={{ fontSize: 26, marginBottom: 4 }}>🚗</Text>
+                  <Text style={styles.vehicleEtaBadge}>15 min</Text>
+                  <Text style={styles.vehicleOptionName}>Standard Car</Text>
+                  <Text style={styles.vehicleOptionPrice}>from GH₵ 25</Text>
+                </TouchableOpacity>
+              </ScrollView>
+
+              {/* Recipient & Package Details + Handover Instructions */}
+              <View style={{ marginTop: 8, gap: 6 }}>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputMicroLabel}>Recipient Phone</Text>
+                    <TextInput
+                      style={styles.sheetNoteInput}
+                      placeholder={auth?.phone || '024 XXX XXXX'}
+                      placeholderTextColor={colors.textPlaceholder}
+                      keyboardType="phone-pad"
+                      value={booking.recipientPhone}
+                      onChangeText={v => updateBooking('recipientPhone', v)}
+                    />
                   </View>
-                )}
-
-                <View style={{ flexDirection: 'row', gap: 12, marginTop: 24 }}>
-                  <TouchableOpacity onPress={() => setStep(1)} style={[styles.secondaryBtn, { flex: 1 }]}>
-                    <Text style={styles.secondaryBtnText}>← Back</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => execute(confirmParcelBooking)} style={[styles.primaryBtn, { flex: 2 }]} disabled={busy}>
-                    <Text style={styles.primaryBtnText}>Book Delivery</Text>
-                  </TouchableOpacity>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputMicroLabel}>Package Description</Text>
+                    <TextInput
+                      style={styles.sheetNoteInput}
+                      placeholder="e.g. Documents, Electronics"
+                      placeholderTextColor={colors.textPlaceholder}
+                      value={booking.description}
+                      onChangeText={v => updateBooking('description', v)}
+                    />
+                  </View>
                 </View>
+                <Text style={styles.inputMicroLabel}>Handover & Landmark Instructions (Optional)</Text>
+                <TextInput
+                  style={styles.sheetNoteInput}
+                  placeholder="e.g. Opposite blue water kiosk, call upon arrival"
+                  placeholderTextColor={colors.textPlaceholder}
+                  value={deliveryInstructions}
+                  onChangeText={setDeliveryInstructions}
+                />
               </View>
-            )}
+
+              {/* Bottom Action Bar: Payment & CTA */}
+              <View style={styles.sheetBottomBar}>
+                <TouchableOpacity
+                  style={styles.paymentMethodPill}
+                  onPress={() => changeParcelPaymentTerms(booking.paymentMethod === 'CASH' ? 'MOMO' : 'CASH')}>
+                  <Text style={{ fontSize: 16 }}>{booking.paymentMethod === 'CASH' ? '💵' : '📱'}</Text>
+                  <Text style={styles.paymentMethodPillText}>{booking.paymentMethod === 'CASH' ? 'Cash' : 'Mobile Money'}</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.orderFormCtaButton}
+                  onPress={() => execute(step === 0 ? getParcelQuote : bookParcel)}>
+                  <Text style={styles.orderFormCtaText}>
+                    {step === 0 ? 'Go to order form' : `Book Courier • ${quoted ? ghc(quoted.amount_minor) : ''}`}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
           </View>
         )}
 
-        {/* ================================================================= */}
-        {/* TAB 2: FOOD MARKETPLACE */}
-        {/* ================================================================= */}
-        {tab === 'Food' && (
-          <View>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Restaurants Near You</Text>
-              {cartItems.length > 0 && (
-                <TouchableOpacity onPress={() => setCartModal(true)} style={styles.cartBadgeBtn}>
-                  <Text style={styles.cartBadgeText}>🛒 Cart ({cartItems.length})</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-
-            {foodRestaurants.map(r => (
-              <TouchableOpacity key={r.id} onPress={() => openRestaurant(r)} style={styles.restaurantCard}>
-                <View style={styles.restHeader}>
-                  <Text style={styles.restName}>{r.name}</Text>
-                  <View style={styles.restOpenBadge}>
-                    <Text style={styles.restOpenText}>{r.is_open ? 'OPEN' : 'CLOSED'}</Text>
+        {/* -------------------------------------------------------------------
+            TAB 3: CARGO BOOKING (Reference 2: Route/Hours, City-wide, Dimensions)
+        --------------------------------------------------------------------- */}
+        {tab === 'Cargo' && (
+          <ScrollView contentContainerStyle={styles.cargoScroll} showsVerticalScrollIndicator={false}>
+            {/* Cargo Header */}
+            <View style={styles.cargoHeaderCard}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <View style={styles.cargoIconBadge}><Text style={{ fontSize: 20 }}>🚚</Text></View>
+                  <View>
+                    <Text style={styles.cargoTitle}>Cargo</Text>
+                    <Text style={styles.cargoSubBreadcrumb}>
+                      {booking.pickup?.address || 'Kwame Nkrumah Ave F456 ›'}
+                    </Text>
                   </View>
                 </View>
-                <Text style={styles.restCuisine}>🍲 {r.cuisine_type || 'Ghanaian Cuisine'} • {r.address}</Text>
-                <Text style={styles.restDeliveryInfo}>🛵 Delivery radius: {Math.round(r.delivery_radius_m / 1000)} km</Text>
+                <TouchableOpacity onPress={() => setTab('Home')} style={styles.closeRoundButton}>
+                  <Text style={{ fontSize: 16, color: colors.textSecondary }}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* About Cargo Promo Box */}
+            <View style={styles.aboutCargoBox}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.aboutCargoTitle}>About Cargo</Text>
+                <Text style={styles.aboutCargoSub}>Click here to learn about freight capacity</Text>
+              </View>
+              <Text style={{ fontSize: 32 }}>📦🛋️</Text>
+            </View>
+
+            {/* Route Section */}
+            <View style={styles.cargoSectionCard}>
+              <Text style={styles.sectionHeaderTitle}>Route</Text>
+
+              {/* Segmented Tabs: Route vs Hours */}
+              <View style={styles.segmentedControl}>
+                <TouchableOpacity
+                  style={[styles.segmentBtn, cargoMode === 'Route' && styles.segmentBtnActive]}
+                  onPress={() => setCargoMode('Route')}>
+                  <Text style={[styles.segmentBtnText, cargoMode === 'Route' && styles.segmentBtnTextActive]}>Route</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.segmentBtn, cargoMode === 'Hours' && styles.segmentBtnActive]}
+                  onPress={() => setCargoMode('Hours')}>
+                  <Text style={[styles.segmentBtnText, cargoMode === 'Hours' && styles.segmentBtnTextActive]}>Hours</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Address Rows with "Details" buttons */}
+              <View style={styles.cargoAddressGroup}>
+                <View style={styles.cargoAddressRow}>
+                  <View style={styles.pickupSquareIcon}><Text style={{ color: '#FFF', fontSize: 12 }}>📦</Text></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cargoFieldLabel}>Where from</Text>
+                    <Text style={styles.cargoFieldValue} numberOfLines={1}>
+                      {booking.pickup?.address || 'Kwame Nkrumah Ave F456'}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.detailsPillButton}
+                    onPress={() => { setLocationTarget('pickup'); setAddressModalVisible(true); }}>
+                    <Text style={styles.detailsPillText}>Details</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.sheetInnerDivider} />
+
+                <View style={styles.cargoAddressRow}>
+                  <View style={styles.dropoffSquareIcon}><Text style={{ color: '#FFF', fontSize: 12 }}>🏁</Text></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cargoFieldLabel}>Where to</Text>
+                    <Text style={styles.cargoFieldValue} numberOfLines={1}>
+                      {booking.destination?.address || 'Select destination'}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.detailsPillButton}
+                    onPress={() => { setLocationTarget('destination'); setAddressModalVisible(true); }}>
+                    <Text style={styles.detailsPillText}>Details</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Paid Waiting Time Info Badge */}
+              <View style={styles.waitingTimeBadge}>
+                <Text style={styles.waitingTimeText}>Paid waiting time ⓘ</Text>
+              </View>
+            </View>
+
+            {/* City-wide vs City to City sub-tabs */}
+            <View style={styles.cargoSubTabs}>
+              <TouchableOpacity
+                style={[styles.cargoSubTab, cargoScope === 'City-wide' && styles.cargoSubTabActive]}
+                onPress={() => setCargoScope('City-wide')}>
+                <Text style={[styles.cargoSubTabText, cargoScope === 'City-wide' && styles.cargoSubTabTextActive]}>
+                  City-wide
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.cargoSubTab, cargoScope === 'City to City' && styles.cargoSubTabActive]}
+                onPress={() => setCargoScope('City to City')}>
+                <Text style={[styles.cargoSubTabText, cargoScope === 'City to City' && styles.cargoSubTabTextActive]}>
+                  City to City
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Vehicle Body Type Card with Dimension Visualizer */}
+            <View style={styles.cargoSectionCard}>
+              <Text style={styles.sectionHeaderTitle}>Vehicle body type</Text>
+
+              <View style={styles.dimensionCard}>
+                <View style={styles.dimensionDiagramBox}>
+                  <Text style={{ fontSize: 48 }}>🛺</Text>
+                  <View style={styles.dimensionPillsRow}>
+                    <Text style={styles.dimensionBadge}>↔ 170 cm</Text>
+                    <Text style={styles.dimensionBadge}>↕ 110 cm</Text>
+                  </View>
+                </View>
+                <Text style={styles.bodyTypeName}>Aboboyaa / Cargo Tricycle</Text>
+                <Text style={styles.bodyTypeCapacity}>Up to 500 kg • Heavy domestic goods & market supplies</Text>
+              </View>
+            </View>
+
+            {/* Cargo Floating Action Footer */}
+            <View style={styles.cargoBottomBar}>
+              <View style={styles.cargoPriceOverview}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={{ fontSize: 16 }}>💵</Text>
+                  <Text style={styles.cargoPaymentMethod}>Cash</Text>
+                </View>
+                <Text style={styles.cargoPriceValue}>from GH₵ 64</Text>
+              </View>
+
+              <TouchableOpacity
+                style={styles.cargoOrderButton}
+                onPress={() => {
+                  setBooking(b => ({ ...b, vehicle: 'van' }));
+                  setTab('Send');
+                }}>
+                <Text style={styles.cargoOrderButtonText}>Order</Text>
+                <Text style={styles.cargoOrderButtonSub}>Complete all of the order fields</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        )}
+
+        {/* -------------------------------------------------------------------
+            TAB 4: RESTAURANT FOOD MARKETPLACE
+        --------------------------------------------------------------------- */}
+        {tab === 'Food' && (
+          <ScrollView contentContainerStyle={styles.foodScroll} showsVerticalScrollIndicator={false}>
+            <View style={styles.foodMarketHeader}>
+              <Text style={styles.foodMarketTitle}>Accra Chop Bars & Eateries</Text>
+              <Text style={styles.foodMarketSubtitle}>Fresh local Ghanaian meals delivered upfront</Text>
+            </View>
+
+            {/* Restaurant Cards */}
+            {foodRestaurants.map(rest => (
+              <TouchableOpacity
+                key={rest.id}
+                style={styles.modernRestCard}
+                onPress={() => selectRestaurant(rest)}>
+                <View style={styles.restCardHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.restTitleText}>{rest.name}</Text>
+                    <Text style={styles.restAddressSub}>{rest.address}</Text>
+                    {Boolean(rest.primaryOfferBadge) && (
+                      <View style={{ backgroundColor: '#FEF2F2', borderColor: '#FCA5A5', borderWidth: 1, alignSelf: 'flex-start', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2, marginTop: 4 }}>
+                        <Text style={{ color: '#DC2626', fontSize: 11, fontWeight: '700' }}>🎁 {rest.primaryOfferBadge}</Text>
+                      </View>
+                    )}
+                  </View>
+                  <View style={styles.openPill}>
+                    <Text style={styles.openPillText}>OPEN</Text>
+                  </View>
+                </View>
+                {Boolean(rest.primaryOfferBanner) && (
+                  <Text style={{ fontSize: 12, color: '#059669', fontWeight: '600', marginTop: 4 }}>{rest.primaryOfferBanner}</Text>
+                )}
+                <Text style={styles.restDeliveryMeta}>
+                  ⏱ {rest.prep_time_minutes || 15} min prep • {ghc(1000)} base delivery
+                </Text>
               </TouchableOpacity>
             ))}
 
-            {/* Restaurant Menu Modal */}
-            <Modal visible={Boolean(selectedRest)} animationType="slide">
-              <View style={styles.modalScreen}>
-                <View style={styles.modalHeader}>
-                  <TouchableOpacity onPress={() => setSelectedRest(null)} style={styles.closeBtn}>
-                    <Text style={styles.closeBtnText}>✕ Close</Text>
-                  </TouchableOpacity>
-                  <Text style={styles.modalTitle}>{selectedRest?.name}</Text>
-                  {cartItems.length > 0 && (
-                    <TouchableOpacity onPress={() => setCartModal(true)} style={styles.cartBadgeBtn}>
-                      <Text style={styles.cartBadgeText}>🛒 ({cartItems.length})</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-
-                <ScrollView style={{ flex: 1, padding: 16 }}>
-                  {restMenu?.categories?.map(cat => (
-                    <View key={cat.id} style={{ marginBottom: 20 }}>
-                      <Text style={styles.menuCatTitle}>{cat.name}</Text>
-                      {cat.items?.map(item => (
-                        <TouchableOpacity
-                          key={item.id}
-                          onPress={() => openDishDetails(item)}
-                          style={styles.dishCard}>
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.dishName}>{item.name}</Text>
-                            <Text style={styles.dishPrice}>{ghc(item.price_minor)}</Text>
-                          </View>
-                          <View style={styles.addDishBtn}>
-                            <Text style={styles.addDishBtnText}>+ Add</Text>
-                          </View>
-                        </TouchableOpacity>
-                      ))}
+            {/* Selected Restaurant Menu View */}
+            {Boolean(selectedRest) && (
+              <View style={styles.restaurantDetailBox}>
+                <Text style={styles.menuSectionHeader}>{selectedRest.name} — Menu</Text>
+                {(restMenu?.items || []).map(dish => (
+                  <View key={dish.id} style={styles.dishRowCard}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.dishTitleText}>{dish.name}</Text>
+                      <Text style={styles.dishPriceText}>{ghc(dish.price_minor)}</Text>
+                      {Boolean(dish.itemOffer?.badgeText) && (
+                        <Text style={{ fontSize: 11, color: '#DC2626', fontWeight: '700', marginTop: 2 }}>
+                          🏷️ {dish.itemOffer.badgeText}
+                        </Text>
+                      )}
                     </View>
-                  ))}
-                </ScrollView>
-              </View>
-            </Modal>
-
-            {/* Dish Customizer Modal */}
-            <Modal visible={dishModal} animationType="fade" transparent>
-              <View style={styles.modalOverlay}>
-                <View style={styles.dishCustomizerCard}>
-                  <Text style={styles.dishModalTitle}>{selectedDish?.name}</Text>
-                  <Text style={styles.dishModalPrice}>{ghc(selectedDish?.price_minor)}</Text>
-
-                  {selectedDish?.modifiers?.map(mod => {
-                    const isSingle = mod.max_selections === 1;
-                    return (
-                      <View key={mod.id} style={{ marginTop: 12 }}>
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                          <Text style={styles.modifierTitle}>{mod.name} {mod.is_required ? '(Required)' : '(Optional)'}</Text>
-                          <Text style={{ fontSize: 11, color: colors.textMuted }}>{isSingle ? 'Choose 1' : 'Multi-select'}</Text>
-                        </View>
-                        {mod.options?.map(opt => {
-                          const isSelected = selectedOptions.includes(opt.id);
-                          return (
-                            <TouchableOpacity
-                              key={opt.id}
-                              accessibilityRole={isSingle ? 'radio' : 'checkbox'}
-                              accessibilityState={{ selected: isSelected }}
-                              onPress={() => toggleModifierOption(opt.id, mod)}
-                              style={[styles.modifierOptionRow, isSelected && styles.modifierOptionRowActive]}>
-                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
-                                <Text style={{ fontSize: 16, color: isSelected ? colors.primary : colors.textMuted }}>
-                                  {isSingle ? (isSelected ? '◉' : '○') : (isSelected ? '☑' : '☐')}
-                                </Text>
-                                <Text style={styles.optionName}>{opt.name}</Text>
-                              </View>
-                              <Text style={styles.optionPrice}>+{ghc(opt.price_minor)}</Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    );
-                  })}
-
-                  <View style={{ flexDirection: 'row', gap: 12, marginTop: 20 }}>
-                    <TouchableOpacity onPress={() => setDishModal(false)} style={[styles.secondaryBtn, { flex: 1 }]}>
-                      <Text style={styles.secondaryBtnText}>Cancel</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={addDishToCart} style={[styles.primaryBtn, { flex: 2 }]}>
-                      <Text style={styles.primaryBtnText}>Add to Cart</Text>
+                    <TouchableOpacity
+                      style={styles.addDishButton}
+                      onPress={() => openDishCustomizer(dish)}>
+                      <Text style={styles.addDishButtonText}>+ Add</Text>
                     </TouchableOpacity>
                   </View>
-                </View>
+                ))}
               </View>
-            </Modal>
+            )}
 
-            {/* Cart & Checkout Modal */}
-            <Modal visible={cartModal} animationType="slide">
-              <View style={styles.modalScreen}>
-                <View style={styles.modalHeader}>
-                  <TouchableOpacity onPress={() => setCartModal(false)} style={styles.closeBtn}>
-                    <Text style={styles.closeBtnText}>✕ Back</Text>
-                  </TouchableOpacity>
-                  <Text style={styles.modalTitle}>Your Cart</Text>
-                  <View style={{ width: 40 }} />
-                </View>
-
-                <ScrollView style={{ flex: 1, padding: 16 }}>
-                  {cartItems.map((item, idx) => (
-                    <View key={idx} style={styles.cartItemRow}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.cartItemName}>{item.name}</Text>
-                        <Text style={styles.cartItemPrice}>{ghc(item.priceMinor)}</Text>
-                      </View>
-                      <TouchableOpacity onPress={() => setCartItems(curr => curr.filter((_, i) => i !== idx))}>
-                        <Text style={{ color: colors.danger, fontWeight: 'bold' }}>Remove</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ))}
-
-                  <Text style={[styles.inputLabel, { marginTop: 16 }]}>Delivery Address</Text>
-                  <TextInput
-                    placeholder="Enter delivery address or landmark"
-                    placeholderTextColor={colors.textMuted}
-                    style={styles.input}
-                    value={foodDeliveryAddress}
-                    onChangeText={setFoodDeliveryAddress}
-                  />
-
-                  <TouchableOpacity
-                    onPress={() => execute(() => useCurrentLocation('food'))}
-                    style={[styles.gpsDetectBtn, { marginTop: 8 }]}>
-                    <Text style={styles.gpsDetectText}>📍 Use Current Location for Food</Text>
-                  </TouchableOpacity>
-
-                  <Text style={[styles.inputLabel, { marginTop: 12 }]}>Handover & Landmark Instructions (Optional)</Text>
-                  <TextInput
-                    placeholder="e.g. Behind the SDA School, blue gate, call on arrival"
-                    placeholderTextColor={colors.textMuted}
-                    style={styles.input}
-                    value={foodInstructions}
-                    onChangeText={setFoodInstructions}
-                  />
-
-                  {foodQuote ? (
-                    <View style={styles.foodQuoteBox}>
-                      <View style={styles.foodSummaryRow}>
-                        <Text style={styles.foodSummaryLabel}>Food Subtotal:</Text>
-                        <Text style={styles.foodSummaryVal}>{ghc(foodQuote.subtotalMinor ?? foodQuote.foodSubtotalMinor)}</Text>
-                      </View>
-                      <View style={styles.foodSummaryRow}>
-                        <Text style={styles.foodSummaryLabel}>Delivery Fee:</Text>
-                        <Text style={styles.foodSummaryVal}>{ghc(foodQuote.deliveryFeeMinor)}</Text>
-                      </View>
-                      <View style={[styles.foodSummaryRow, { borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 8, marginTop: 8 }]}>
-                        <Text style={[styles.foodSummaryLabel, { fontWeight: 'bold', fontSize: 16 }]}>Total Due:</Text>
-                        <Text style={[styles.foodSummaryVal, { fontWeight: 'bold', fontSize: 18, color: colors.primary }]}>{ghc(foodQuote.totalMinor ?? foodQuote.totalCustomerChargeMinor)}</Text>
-                      </View>
-
-                      <Text style={[styles.inputLabel, { marginTop: 16 }]}>Upfront Payment Method</Text>
-                      <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
-                        {['MOMO', 'CARD', 'QR'].map(m => (
-                          <TouchableOpacity
-                            key={m}
-                            onPress={() => setFoodPaymentMethod(m)}
-                            style={[styles.paymentMethodCard, foodPaymentMethod === m && styles.paymentMethodCardActive]}>
-                            <Text style={styles.paymentMethodText}>{m === 'MOMO' ? '📱 MoMo' : m === 'CARD' ? '💳 Card' : '🔳 QR'}</Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-
-                      <TouchableOpacity onPress={() => execute(submitFoodOrder)} style={[styles.primaryBtn, { marginTop: 20 }]} disabled={busy}>
-                        <Text style={styles.primaryBtnText}>Pay & Place Order ({ghc(foodQuote.totalMinor ?? foodQuote.totalCustomerChargeMinor)})</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ) : (
-                    <TouchableOpacity onPress={() => execute(calculateFoodQuote)} style={[styles.primaryBtn, { marginTop: 20 }]}>
-                      <Text style={styles.primaryBtnText}>Calculate Delivery Fee & Quote →</Text>
-                    </TouchableOpacity>
-                  )}
-                </ScrollView>
-              </View>
-            </Modal>
-          </View>
+            {/* Cart Floating Button */}
+            {cartItems.length > 0 && (
+              <TouchableOpacity
+                style={styles.floatingCartButton}
+                onPress={() => setCartModal(true)}>
+                <Text style={styles.floatingCartText}>
+                  🛒 View Cart ({cartItems.length} items)
+                </Text>
+              </TouchableOpacity>
+            )}
+          </ScrollView>
         )}
 
-        {/* ================================================================= */}
-        {/* TAB 3: ACTIVITY & LIVE TRACKING */}
-        {/* ================================================================= */}
+        {/* -------------------------------------------------------------------
+            TAB 5: ACTIVITY & DELIVERIES (Live Tracking, OTP Handover, History)
+        --------------------------------------------------------------------- */}
         {tab === 'Activity' && (
-          <View>
-            <Text style={styles.sectionTitle}>Your Active Deliveries</Text>
+          <ScrollView contentContainerStyle={styles.activityScroll} showsVerticalScrollIndicator={false}>
+            <Text style={styles.activitySectionTitle}>Your Active Deliveries</Text>
 
+            {/* Active Courier Shipments */}
             {myShipments.filter(s => !['COMPLETED', 'CANCELLED'].includes(s.state)).map(s => (
-              <View key={s.id} style={styles.activeOrderCard}>
+              <View key={s.id} style={styles.modernActiveOrderCard}>
                 <View style={styles.orderCardHeader}>
-                  <Text style={styles.orderId}>Parcel #{s.id.slice(0, 8)}</Text>
-                  <View style={styles.statusBadge}>
-                    <Text style={styles.statusBadgeText}>{s.state}</Text>
+                  <Text style={styles.orderIdText}>Parcel #{s.id.slice(0, 8)}</Text>
+                  <View style={styles.statusPillBadge}>
+                    <Text style={styles.statusPillText}>{s.state}</Text>
                   </View>
                 </View>
+                <Text style={styles.orderFareText}>{ghc(s.amount_minor)} • {s.payment_method}</Text>
 
-                <Text style={styles.orderAmount}>{ghc(s.amount_minor)} • {s.payment_method}</Text>
-                
-                {/* OTP Handover Display */}
+                {/* Handover OTP Display Banner */}
                 {s.state === 'AWAITING_DELIVERY_OTP' && (
-                  <View style={styles.otpBanner}>
-                    <Text style={styles.otpBannerTitle}>🔑 Handover Security OTP</Text>
-                    <Text style={styles.otpBannerCode}>{s.delivery_otp || '••••••'}</Text>
-                    <Text style={styles.otpBannerHelp}>Read this 6-digit code to the courier upon parcel arrival.</Text>
+                  <View style={styles.otpSecurityBanner}>
+                    <Text style={styles.otpSecurityHeader}>🔑 Handover Security OTP</Text>
+                    <Text style={styles.otpSecurityDigits}>{s.delivery_otp || '••••••'}</Text>
+                    <Text style={styles.otpSecurityCaption}>Read this 6-digit code to the courier upon parcel arrival.</Text>
                   </View>
                 )}
 
-                {s.state === 'AWAITING_PAYMENT' && s.payment_method !== 'CASH' && (
+                {/* Call Courier Button (Contract requirement: Linking.openURL('tel:...')) */}
+                {['RIDER_ASSIGNED', 'PICKUP_VERIFIED', 'IN_TRANSIT'].includes(s.state) && Boolean(s.rider_phone || s.riderPhone || s.details?.rider_phone) && (
                   <TouchableOpacity
-                    onPress={() => execute(() => startOrResumeCheckout(s.id, s.payment_method))}
-                    style={[styles.primaryBtn, { marginTop: 12 }]}>
-                    <Text style={styles.primaryBtnText}>Complete / Retry Payment</Text>
+                    style={styles.callCourierButton}
+                    onPress={() => Linking.openURL(`tel:${s.rider_phone || s.riderPhone || s.details?.rider_phone}`)}>
+                    <Text style={styles.callCourierText}>
+                      📞 Call Courier ({formatGhanaDisplayPhone(s.rider_phone || s.riderPhone || s.details?.rider_phone)})
+                    </Text>
                   </TouchableOpacity>
                 )}
 
-                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                <View style={styles.activeOrderActionsRow}>
                   <TouchableOpacity
-                    onPress={() => setTrackingShipment(s)}
-                    style={[styles.primaryBtn, { flex: 2 }]}>
-                    <Text style={styles.primaryBtnText}>Live Track Courier</Text>
+                    style={styles.liveTrackButton}
+                    onPress={() => setTrackingShipment(s)}>
+                    <Text style={styles.liveTrackText}>Live Track</Text>
+                  </TouchableOpacity>
+                  {['RIDER_ASSIGNED', 'PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(s.state) && (
+                    <TouchableOpacity
+                      style={[styles.liveTrackButton, { backgroundColor: '#0F172A', marginLeft: 6 }]}
+                      onPress={() => openOrderChat({ conversationType: 'CUSTOMER_RIDER', shipmentId: s.id })}>
+                      <Text style={styles.liveTrackText}>💬 Chat Courier</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    style={[styles.liveTrackButton, { backgroundColor: '#475569', marginLeft: 6 }]}
+                    onPress={() => openOrderChat({ conversationType: 'CUSTOMER_SUPPORT', shipmentId: s.id })}>
+                    <Text style={styles.liveTrackText}>🎧 Support</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    onPress={() => cancelOrder(s.id, false)}
-                    style={[styles.dangerBtn, { flex: 1 }]}>
-                    <Text style={styles.dangerBtnText}>Cancel</Text>
+                    style={styles.cancelSmallButton}
+                    onPress={() => cancelOrder(s.id, false)}>
+                    <Text style={styles.cancelSmallText}>Cancel</Text>
                   </TouchableOpacity>
                 </View>
               </View>
             ))}
 
-            {/* Food Orders */}
+            {/* Active Food Orders */}
             {myFoodOrders.filter(o => !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.state)).map(o => (
-              <View key={o.id} style={styles.activeOrderCard}>
+              <View key={o.id} style={styles.modernActiveOrderCard}>
                 <View style={styles.orderCardHeader}>
-                  <Text style={styles.orderId}>🍔 Food Order #{o.id.slice(0, 8)}</Text>
-                  <View style={styles.statusBadge}>
-                    <Text style={styles.statusBadgeText}>{o.state}{o.shipment_state ? ` • ${o.shipment_state}` : ''}</Text>
+                  <Text style={styles.orderIdText}>🍲 Food #{o.id.slice(0, 8)}</Text>
+                  <View style={styles.statusPillBadge}>
+                    <Text style={styles.statusPillText}>{o.state}</Text>
                   </View>
                 </View>
-                <Text style={styles.orderAmount}>{ghc(o.total_minor ?? o.total_customer_charge_minor)}</Text>
+                <Text style={styles.orderFareText}>{ghc(o.total_minor ?? o.total_customer_charge_minor)}</Text>
 
-                {o.shipment_id && (o.payment_status !== 'PAID' || o.shipment_state === 'AWAITING_PAYMENT') && (
+                {/* Call Courier for food order */}
+                {['RIDER_ASSIGNED', 'PICKUP_VERIFIED', 'IN_TRANSIT'].includes(o.shipment_state) && Boolean(o.rider_phone || o.riderPhone) && (
                   <TouchableOpacity
-                    onPress={() => execute(() => startOrResumeCheckout(o.shipment_id, o.payment_method || foodPaymentMethod))}
-                    style={[styles.primaryBtn, { marginTop: 12 }]}>
-                    <Text style={styles.primaryBtnText}>Complete / Retry Payment</Text>
+                    style={styles.callCourierButton}
+                    onPress={() => Linking.openURL(`tel:${o.rider_phone || o.riderPhone}`)}>
+                    <Text style={styles.callCourierText}>
+                      📞 Call Courier ({formatGhanaDisplayPhone(o.rider_phone || o.riderPhone)})
+                    </Text>
                   </TouchableOpacity>
                 )}
 
-                {(o.state === 'SUBMITTED' || ['FAILED', 'RETURN_REQUESTED', 'RETURNED'].includes(o.shipment_state)) && (
-                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                <View style={styles.activeOrderActionsRow}>
+                  <TouchableOpacity
+                    style={[styles.liveTrackButton, { backgroundColor: '#0F172A' }]}
+                    onPress={() => openOrderChat({ conversationType: 'CUSTOMER_RESTAURANT', foodOrderId: o.id })}>
+                    <Text style={styles.liveTrackText}>💬 Restaurant</Text>
+                  </TouchableOpacity>
+                  {Boolean(o.shipment_id) && ['RIDER_ASSIGNED', 'PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(o.shipment_state) && (
                     <TouchableOpacity
-                      onPress={() => cancelOrder(o.id, true, o.shipment_state, o.state)}
-                      style={[styles.dangerBtn, { flex: 1 }]}>
-                      <Text style={styles.dangerBtnText}>
-                        {o.shipment_state === 'RETURNED'
-                          ? 'Complete Refund'
-                          : ['FAILED', 'RETURN_REQUESTED'].includes(o.shipment_state)
-                            ? 'Request Return & Refund Review'
-                            : 'Cancel Order'}
-                      </Text>
+                      style={[styles.liveTrackButton, { backgroundColor: '#1E293B', marginLeft: 6 }]}
+                      onPress={() => openOrderChat({ conversationType: 'CUSTOMER_RIDER', foodOrderId: o.id, shipmentId: o.shipment_id })}>
+                      <Text style={styles.liveTrackText}>🛵 Chat Courier</Text>
                     </TouchableOpacity>
-                  </View>
-                )}
+                  )}
+                  <TouchableOpacity
+                    style={[styles.liveTrackButton, { backgroundColor: '#475569', marginLeft: 6 }]}
+                    onPress={() => openOrderChat({ conversationType: 'CUSTOMER_SUPPORT', foodOrderId: o.id, shipmentId: o.shipment_id })}>
+                    <Text style={styles.liveTrackText}>🎧 Support</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.cancelSmallButton}
+                    onPress={() => cancelOrder(o.id, true)}>
+                    <Text style={styles.cancelSmallText}>Cancel Order</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             ))}
 
             {myShipments.length === 0 && myFoodOrders.length === 0 && (
-              <View style={styles.emptyCard}>
-                <Text style={{ fontSize: 32, marginBottom: 8 }}>📦</Text>
-                <Text style={styles.emptyTitle}>No Active Deliveries</Text>
-                <Text style={styles.emptySub}>Book a parcel or order food to start tracking in real time.</Text>
+              <View style={styles.emptyStateBox}>
+                <Text style={{ fontSize: 40, marginBottom: 12 }}>📦</Text>
+                <Text style={styles.emptyStateTitle}>No Active Deliveries</Text>
+                <Text style={styles.emptyStateSub}>Book a parcel or cargo delivery to start tracking in real time.</Text>
+              </View>
+            )}
+          </ScrollView>
+        )}
+
+        {/* -------------------------------------------------------------------
+            TAB 6: CUSTOMER PROFILE (Reference 3: Avatar, Quick Actions, Settings)
+        --------------------------------------------------------------------- */}
+        {tab === 'Profile' && (
+          <ScrollView contentContainerStyle={styles.profileScroll} showsVerticalScrollIndicator={false}>
+            {/* Top Back Row */}
+            <TouchableOpacity style={styles.profileBackRow} onPress={() => setTab('Home')}>
+              <Text style={{ fontSize: 20, color: colors.textDark }}>←</Text>
+            </TouchableOpacity>
+
+            {/* Profile Avatar & Name Header */}
+            <View style={styles.profileHeaderBox}>
+              <View style={styles.profileAvatarLarge}>
+                <Text style={{ fontSize: 48 }}>🐳</Text>
+              </View>
+              <Text style={styles.profileNameBold}>
+                {(auth.name || 'CUSTOMER').toUpperCase()} ›
+              </Text>
+              <Text style={styles.profilePhoneSub}>{formatGhanaDisplayPhone(auth.phone)}</Text>
+            </View>
+
+            {/* 4-Column Quick Actions */}
+            <View style={styles.profileQuickActionsRow}>
+              <TouchableOpacity style={styles.quickActionCircle} onPress={() => setTab('Activity')}>
+                <View style={styles.circleIconBox}><Text style={{ fontSize: 18 }}>🕒</Text></View>
+                <Text style={styles.quickActionLabel}>Orders</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.quickActionCircle} onPress={() => Alert.alert('Customer Support', 'Reach ELESEND 24/7 Support via WhatsApp or Phone at +233 24 000 0000.')}>
+                <View style={styles.circleIconBox}><Text style={{ fontSize: 18 }}>🎧</Text></View>
+                <Text style={styles.quickActionLabel}>Support</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.quickActionCircle} onPress={() => { setLocationTarget('destination'); setAddressModalVisible(true); }}>
+                <View style={styles.circleIconBox}><Text style={{ fontSize: 18 }}>📍</Text></View>
+                <Text style={styles.quickActionLabel}>Addresses</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.quickActionCircle} onPress={() => Alert.alert('Settings', 'Notification preferences, language and cache management.')}>
+                <View style={styles.circleIconBox}><Text style={{ fontSize: 18 }}>⚙️</Text></View>
+                <Text style={styles.quickActionLabel}>Settings</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Task Card: "Add photo (1/2)" */}
+            <View style={styles.profileTaskBanner}>
+              <View style={styles.progressCircleBadge}>
+                <Text style={styles.progressCircleText}>1/2</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.profileTaskTitle}>Add photo</Text>
+                <Text style={styles.profileTaskSub}>Only visible to couriers during active deliveries</Text>
+              </View>
+            </View>
+
+            {/* Card Group 1: Discounts & Payment Methods */}
+            <View style={styles.profileGroupCard}>
+              <TouchableOpacity style={styles.profileMenuItem} onPress={() => Alert.alert('Discounts', 'Enter your ELESEND promo code to apply delivery discounts.')}>
+                <Text style={styles.menuItemIcon}>🎁</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.menuItemTitle}>Discounts</Text>
+                  <Text style={styles.menuItemSub}>Enter promo code</Text>
+                </View>
+                <Text style={styles.menuItemChevron}>›</Text>
+              </TouchableOpacity>
+
+              <View style={styles.profileItemDivider} />
+
+              <TouchableOpacity style={styles.profileMenuItem} onPress={() => Alert.alert('Payment Methods', 'Cash on delivery, Mobile Money (MTN, Telecel, AT) and Paystack.')}>
+                <Text style={styles.menuItemIcon}>💳</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.menuItemTitle}>Payment methods</Text>
+                  <Text style={styles.menuItemSub}>Cash • Mobile Money</Text>
+                </View>
+                <Text style={{ fontSize: 18, marginRight: 8 }}>💵</Text>
+                <Text style={styles.menuItemChevron}>›</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Card Group 2: Earn as driver, Improve maps, Rating */}
+            <View style={styles.profileGroupCard}>
+              <TouchableOpacity style={styles.profileMenuItem} onPress={() => Alert.alert('Earn as Courier', 'Download ELESEND Rider to start delivering and earning on your own motorcycle or van.')}>
+                <Text style={styles.menuItemIcon}>🏍️</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.menuItemTitle}>Earn as a driver</Text>
+                </View>
+                <Text style={styles.menuItemChevron}>›</Text>
+              </TouchableOpacity>
+
+              <View style={styles.profileItemDivider} />
+
+              <TouchableOpacity style={styles.profileMenuItem} onPress={() => Alert.alert('Improve Maps', 'Report unmapped landmarks or road closures to improve EGIA navigation across Ghana.')}>
+                <Text style={styles.menuItemIcon}>🔖</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.menuItemTitle}>Improve maps</Text>
+                  <Text style={styles.menuItemSub}>Add places, fix errors</Text>
+                </View>
+                <Text style={styles.menuItemChevron}>›</Text>
+              </TouchableOpacity>
+
+              <View style={styles.profileItemDivider} />
+
+              <View style={styles.profileMenuItem}>
+                <Text style={styles.menuItemIcon}>🟢</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.menuItemTitle}>Great! Few canceled rides</Text>
+                  <Text style={styles.menuItemSub}>This ensures high-priority courier matching</Text>
+                </View>
+                <Text style={styles.menuItemChevron}>›</Text>
+              </View>
+            </View>
+
+            {/* Card Group 3: Information & Logout */}
+            <View style={styles.profileGroupCard}>
+              <TouchableOpacity style={styles.profileMenuItem} onPress={() => Alert.alert('About ELESEND', 'ELESEND Logistics Platform v0.2.0 (Accra, Ghana). Built for reliable nationwide fulfillment.')}>
+                <Text style={styles.menuItemIcon}>ℹ️</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.menuItemTitle}>Information</Text>
+                </View>
+                <Text style={styles.menuItemChevron}>›</Text>
+              </TouchableOpacity>
+
+              <View style={styles.profileItemDivider} />
+
+              <TouchableOpacity style={styles.profileMenuItem} onPress={() => { clearToken(); setAuth(null); }}>
+                <Text style={styles.menuItemIcon}>🚪</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.menuItemTitle, { color: colors.danger }]}>Sign Out</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        )}
+      </View>
+
+      {/* =====================================================================
+          BOTTOM SHEET MODAL: ADDRESS SELECTION (3 MODES: Search, GPS, Manual)
+      ======================================================================= */}
+      <Modal visible={addressModalVisible} animationType="slide" transparent onRequestClose={() => setAddressModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.addressSheetCard}>
+            <View style={styles.sheetHandleBar} />
+
+            {/* Modal Header */}
+            <View style={styles.addressModalHeaderRow}>
+              <View>
+                <Text style={styles.addressModalHeaderTitle}>
+                  Select {locationTarget === 'pickup' ? 'Pickup' : 'Delivery'} Location
+                </Text>
+                <Text style={styles.addressModalHeaderSub}>
+                  Choose via search, GPS, or enter informal Ghanaian landmarks
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setAddressModalVisible(false)}
+                style={styles.closeRoundButton}>
+                <Text style={{ fontSize: 16, color: colors.textSecondary }}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Target Selector Pills (Required by contract: "Set Pickup" & "Set Destination") */}
+            <View style={styles.targetPillRow}>
+              <TouchableOpacity
+                style={[styles.targetPill, locationTarget === 'pickup' && styles.targetPillActive]}
+                onPress={() => setLocationTarget('pickup')}>
+                <Text style={[styles.targetPillText, locationTarget === 'pickup' && styles.targetPillTextActive]}>
+                  Set Pickup
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.targetPill, locationTarget === 'destination' && styles.targetPillActive]}
+                onPress={() => setLocationTarget('destination')}>
+                <Text style={[styles.targetPillText, locationTarget === 'destination' && styles.targetPillTextActive]}>
+                  Set Destination
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* 3 Location-Selection Mode Pills (Section 5.1 Requirement) */}
+            <View style={styles.modeSelectorRow}>
+              <TouchableOpacity
+                style={[styles.modeTabBtn, addressMode === 'search' && styles.modeTabBtnActive]}
+                onPress={() => setAddressMode('search')}>
+                <Text style={[styles.modeTabBtnText, addressMode === 'search' && styles.modeTabBtnTextActive]}>
+                  🔍 Search Places
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modeTabBtn, addressMode === 'gps' && styles.modeTabBtnActive]}
+                onPress={() => { setAddressMode('gps'); if (!detectedLocation) requestLocation(); }}>
+                <Text style={[styles.modeTabBtnText, addressMode === 'gps' && styles.modeTabBtnTextActive]}>
+                  📍 GPS Location
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modeTabBtn, addressMode === 'manual' && styles.modeTabBtnActive]}
+                onPress={() => setAddressMode('manual')}>
+                <Text style={[styles.modeTabBtnText, addressMode === 'manual' && styles.modeTabBtnTextActive]}>
+                  ✍️ Enter Manually
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* MODE 1: SEARCH PLACES (Intelligent EGIA + National Gazetteer) */}
+            {addressMode === 'search' && (
+              <View>
+                <View style={styles.searchInputContainer}>
+                  <Text style={{ fontSize: 16, marginRight: 8 }}>🔍</Text>
+                  <TextInput
+                    style={styles.searchInlineInput}
+                    placeholder="Search landmarks, chop bars, stations in Ghana..."
+                    placeholderTextColor={colors.textPlaceholder}
+                    value={placeQuery}
+                    onChangeText={v => searchLandmarks(v)}
+                    autoFocus={addressModalVisible}
+                  />
+                  {isSearching ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : placeQuery.length > 0 ? (
+                    <TouchableOpacity onPress={() => { setPlaceQuery(''); setPlacesList([]); }}>
+                      <Text style={{ fontSize: 16, color: colors.textSecondary }}>✕</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+
+                {/* Results List */}
+                <ScrollView style={{ maxHeight: 260 }} showsVerticalScrollIndicator={false}>
+                  {placesList.length > 0 ? (
+                    placesList.map((item, idx) => (
+                      <TouchableOpacity
+                        key={item.id || item.restaurant_id || idx}
+                        style={styles.landmarkListItem}
+                        onPress={() => selectAddressItem(item)}>
+                        <Text style={styles.landmarkItemIcon}>{item.icon || (item.candidateType === 'mapped_restaurant' ? '🍲' : '📍')}</Text>
+                        <View style={{ flex: 1 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Text style={styles.landmarkItemTitle}>{item.title || item.name || item.address}</Text>
+                            {item.is_registered_merchant ? (
+                              <View style={styles.partnerBadge}><Text style={styles.partnerBadgeText}>PARTNER</Text></View>
+                            ) : null}
+                          </View>
+                          <Text style={styles.landmarkItemSub}>
+                            {item.subtitle || item.explanation || `${item.locality || ''} ${item.region ? '(' + item.region + ')' : ''}`}
+                          </Text>
+                        </View>
+                        <Text style={styles.sheetChevron}>›</Text>
+                      </TouchableOpacity>
+                    ))
+                  ) : placeQuery.trim().length >= 2 ? (
+                    <View style={styles.emptySearchBox}>
+                      <Text style={styles.emptySearchTitle}>No matching landmarks found</Text>
+                      <Text style={styles.emptySearchSub}>
+                        Try searching with simpler terms or enter your address manually.
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.switchManualBtn}
+                        onPress={() => setAddressMode('manual')}>
+                        <Text style={styles.switchManualBtnText}>Switch to Manual Address Entry ›</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <View>
+                      {/* Shortcut 1: Your GPS Location */}
+                      <TouchableOpacity style={styles.addressActionRow} onPress={selectGpsLocation}>
+                        <Text style={{ fontSize: 18, color: colors.primary, marginRight: 12 }}>➤</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.addressActionTitle}>Use Current GPS Location</Text>
+                          <Text style={styles.addressActionSub}>
+                            {detectedLocation?.displayAddress || 'Acquire device GPS location'}
+                          </Text>
+                        </View>
+                        <Text style={styles.sheetChevron}>›</Text>
+                      </TouchableOpacity>
+
+                      {/* Shortcut 2: Switch to Manual */}
+                      <TouchableOpacity style={styles.addressActionRow} onPress={() => setAddressMode('manual')}>
+                        <Text style={{ fontSize: 18, color: colors.brandCoral, marginRight: 12 }}>✍️</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.addressActionTitle}>Enter Address Manually</Text>
+                          <Text style={styles.addressActionSub}>Community, landmark, building note, or GhanaPostGPS</Text>
+                        </View>
+                        <Text style={styles.sheetChevron}>›</Text>
+                      </TouchableOpacity>
+
+                      {/* Frequent Ghanaian Landmark Hubs */}
+                      <Text style={styles.shortcutSectionTag}>POPULAR GHANAIAN HUBS</Text>
+                      {defaultLandmarks.map((item, idx) => (
+                        <TouchableOpacity
+                          key={idx}
+                          style={styles.landmarkListItem}
+                          onPress={() => selectAddressItem(item)}>
+                          <Text style={styles.landmarkItemIcon}>{item.icon || '📍'}</Text>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.landmarkItemTitle}>{item.title || item.name}</Text>
+                            <Text style={styles.landmarkItemSub}>{item.subtitle || 'Greater Accra'}</Text>
+                          </View>
+                          <Text style={styles.sheetChevron}>›</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
+                </ScrollView>
               </View>
             )}
 
-            {/* Tracking Modal */}
-            <Modal visible={Boolean(trackingShipment)} animationType="slide">
-              <View style={styles.modalScreen}>
-                <View style={styles.modalHeader}>
-                  <TouchableOpacity onPress={() => setTrackingShipment(null)} style={styles.closeBtn}>
-                    <Text style={styles.closeBtnText}>✕ Close</Text>
-                  </TouchableOpacity>
-                  <Text style={styles.modalTitle}>Courier Live Tracking</Text>
-                  <View style={{ width: 40 }} />
+            {/* MODE 2: GPS CURRENT LOCATION */}
+            {addressMode === 'gps' && (
+              <View style={styles.gpsContainer}>
+                <View style={styles.gpsStatusCard}>
+                  <View style={styles.gpsRadarIconBox}>
+                    <Text style={{ fontSize: 28 }}>🎯</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.gpsStatusTitle}>GPS Location Status</Text>
+                    <Text style={styles.gpsStatusAccuracy}>
+                      {detectingGps ? 'Acquiring GPS fix...' : detectedLocation ? detectedLocation.accuracyLabel || '±12m (Good accuracy)' : 'GPS not acquired'}
+                    </Text>
+                    <Text style={styles.gpsAddressDisplay} numberOfLines={2}>
+                      {detectedLocation?.displayAddress || 'Tap refresh to acquire your current coordinates'}
+                    </Text>
+                  </View>
                 </View>
 
-                <View style={{ flex: 1 }}>
-                  <MapView
-                    initialRegion={{ latitude: 5.6037, longitude: -0.1870, longitudeDelta: 0.08 }}
-                    style={StyleSheet.absoluteFill}>
-                    {trackingShipment?.pickup && (
-                      <Marker coordinate={trackingShipment.pickup} pinColor={colors.primary} title="Pickup" />
-                    )}
-                    {trackingShipment?.destination && (
-                      <Marker coordinate={trackingShipment.destination} pinColor={colors.danger} title="Dropoff" />
-                    )}
-                  </MapView>
+                <View style={styles.gpsActionBtnRow}>
+                  <TouchableOpacity
+                    style={styles.gpsRefreshBtn}
+                    onPress={requestLocation}
+                    disabled={detectingGps}>
+                    <Text style={styles.gpsRefreshBtnText}>
+                      {detectingGps ? 'Detecting...' : '🔄 Refresh GPS'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.gpsConfirmBtn, !detectedLocation && { opacity: 0.5 }]}
+                    onPress={selectGpsLocation}
+                    disabled={!detectedLocation || detectingGps}>
+                    <Text style={styles.gpsConfirmBtnText}>Use This Location ›</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
-            </Modal>
+            )}
+
+            {/* MODE 3: MANUAL ADDRESS ENTRY (Ghanaian Informal Addressing) */}
+            {addressMode === 'manual' && (
+              <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
+                {/* Region Selector Chips */}
+                <Text style={styles.manualFieldTag}>1. REGION</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScrollRow}>
+                  {GHANA_REGIONS.map(reg => (
+                    <TouchableOpacity
+                      key={reg}
+                      style={[styles.regionPillChip, manualForm.region === reg && styles.regionPillChipActive]}
+                      onPress={() => {
+                        const towns = GHANA_REGIONAL_TOWNS[reg] || [];
+                        setManualForm(prev => ({ ...prev, region: reg, city: towns[0] || '' }));
+                      }}>
+                      <Text style={[styles.regionPillText, manualForm.region === reg && styles.regionPillTextActive]}>
+                        {reg}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+
+                {/* Town / City Chips + Input */}
+                <Text style={styles.manualFieldTag}>2. TOWN OR CITY</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipScrollRow}>
+                  {(GHANA_REGIONAL_TOWNS[manualForm.region] || []).map(town => (
+                    <TouchableOpacity
+                      key={town}
+                      style={[styles.townPillChip, manualForm.city === town && styles.townPillChipActive]}
+                      onPress={() => setManualForm(prev => ({ ...prev, city: town }))}>
+                      <Text style={[styles.townPillText, manualForm.city === town && styles.townPillTextActive]}>
+                        {town}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+
+                <TextInput
+                  style={styles.manualFormInput}
+                  placeholder="Or enter city/town name"
+                  placeholderTextColor={colors.textPlaceholder}
+                  value={manualForm.city}
+                  onChangeText={v => setManualForm(p => ({ ...p, city: v }))}
+                />
+
+                {/* Community / Neighbourhood */}
+                <Text style={styles.manualFieldTag}>3. COMMUNITY / AREA (MANDATORY)</Text>
+                <TextInput
+                  style={styles.manualFormInput}
+                  placeholder="e.g. Madina Zongo, Anaji, Adum, East Legon"
+                  placeholderTextColor={colors.textPlaceholder}
+                  value={manualForm.community}
+                  onChangeText={v => setManualForm(p => ({ ...p, community: v }))}
+                />
+
+                {/* Nearby Landmark */}
+                <Text style={styles.manualFieldTag}>4. NEARBY LANDMARK (RECOMMENDED)</Text>
+                <TextInput
+                  style={styles.manualFormInput}
+                  placeholder="e.g. Near Community Pharmacy, Near Zongo Junction"
+                  placeholderTextColor={colors.textPlaceholder}
+                  value={manualForm.landmark}
+                  onChangeText={v => setManualForm(p => ({ ...p, landmark: v }))}
+                />
+
+                {/* Building / House Description */}
+                <Text style={styles.manualFieldTag}>5. BUILDING / GATE DESCRIPTION</Text>
+                <TextInput
+                  style={styles.manualFormInput}
+                  placeholder="e.g. Blue gate, 2nd house after junction, Opposite filling station"
+                  placeholderTextColor={colors.textPlaceholder}
+                  value={manualForm.buildingDescription}
+                  onChangeText={v => setManualForm(p => ({ ...p, buildingDescription: v }))}
+                />
+
+                {/* GhanaPostGPS Digital Address (Optional) */}
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={styles.manualFieldTag}>6. GHANAPOSTGPS CODE (OPTIONAL)</Text>
+                  {manualForm.ghanaPostGps ? (
+                    <Text style={{ fontSize: 10, fontWeight: '700', color: isValidGhanaPostGps(manualForm.ghanaPostGps) ? colors.primary : colors.danger }}>
+                      {isValidGhanaPostGps(manualForm.ghanaPostGps) ? 'VALID FORMAT' : 'INVALID FORMAT'}
+                    </Text>
+                  ) : null}
+                </View>
+                <TextInput
+                  style={styles.manualFormInput}
+                  placeholder="e.g. GA-183-9022, AK-039-5028"
+                  placeholderTextColor={colors.textPlaceholder}
+                  autoCapitalize="characters"
+                  value={manualForm.ghanaPostGps}
+                  onChangeText={v => setManualForm(p => ({ ...p, ghanaPostGps: v }))}
+                />
+
+                {/* Additional Delivery Instructions */}
+                <Text style={styles.manualFieldTag}>7. COURIER INSTRUCTIONS (OPTIONAL)</Text>
+                <TextInput
+                  style={styles.manualFormInput}
+                  placeholder="e.g. Call upon arrival, knock on small gate"
+                  placeholderTextColor={colors.textPlaceholder}
+                  value={manualForm.deliveryInstructions}
+                  onChangeText={v => setManualForm(p => ({ ...p, deliveryInstructions: v }))}
+                />
+
+                {/* Action CTA */}
+                <TouchableOpacity
+                  style={styles.previewManualBtn}
+                  onPress={previewManualAddress}>
+                  <Text style={styles.previewManualBtnText}>Preview & Place Pin on Map ›</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            )}
+
+            <TouchableOpacity
+              style={styles.closeSheetButton}
+              onPress={() => setAddressModalVisible(false)}>
+              <Text style={styles.closeSheetText}>Close</Text>
+            </TouchableOpacity>
           </View>
-        )}
-      </ScrollView>
+        </View>
+      </Modal>
+
+      {/* =====================================================================
+          PHASE 6: ADDRESS CONFIRMATION PANEL (Interactive Map + Status Badges)
+      ======================================================================= */}
+      <Modal visible={addressConfirmModal} animationType="slide" transparent onRequestClose={() => setAddressConfirmModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.confirmSheetCard}>
+            <View style={styles.sheetHandleBar} />
+
+            {/* Header */}
+            <View style={styles.confirmHeaderRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.confirmHeaderTitle}>
+                  Confirm {confirmTarget === 'pickup' ? 'Pickup' : 'Delivery'} Location
+                </Text>
+                <Text style={styles.confirmHeaderSub} numberOfLines={2}>
+                  {pendingAddressRecord?.title || pendingAddressRecord?.address || 'Review selected location'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setAddressConfirmModal(false)}
+                style={styles.closeRoundButton}>
+                <Text style={{ fontSize: 16, color: colors.textSecondary }}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Badges: Status + Region/Locality */}
+            <View style={styles.confirmBadgeRow}>
+              {pendingAddressRecord?.resolutionStatus === RESOLUTION_STATUSES.VERIFIED ? (
+                <View style={[styles.statusBadge, { backgroundColor: '#DCFCE7', borderColor: '#86EFAC' }]}>
+                  <Text style={[styles.statusBadgeText, { color: '#166534' }]}>🟢 Verified Location</Text>
+                </View>
+              ) : pendingAddressRecord?.resolutionStatus === RESOLUTION_STATUSES.CUSTOMER_CONFIRMED ? (
+                <View style={[styles.statusBadge, { backgroundColor: '#DBEAFE', borderColor: '#93C5FD' }]}>
+                  <Text style={[styles.statusBadgeText, { color: '#1E40AF' }]}>🔵 Customer-Confirmed</Text>
+                </View>
+              ) : pendingAddressRecord?.resolutionStatus === RESOLUTION_STATUSES.APPROXIMATE ? (
+                <View style={[styles.statusBadge, { backgroundColor: '#FEF3C7', borderColor: '#FCD34D' }]}>
+                  <Text style={[styles.statusBadgeText, { color: '#92400E' }]}>🟡 Approximate Location</Text>
+                </View>
+              ) : (
+                <View style={[styles.statusBadge, { backgroundColor: '#F1F5F9', borderColor: '#CBD5E1' }]}>
+                  <Text style={[styles.statusBadgeText, { color: '#475569' }]}>⚪ Unresolved Coordinates</Text>
+                </View>
+              )}
+
+              {pendingAddressRecord?.manualComponents?.region ? (
+                <View style={[styles.statusBadge, { backgroundColor: '#F8FAFC', borderColor: '#E2E8F0' }]}>
+                  <Text style={[styles.statusBadgeText, { color: '#334155' }]}>
+                    📍 {pendingAddressRecord.manualComponents.region}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+
+            {/* Interactive Map Preview with Draggable Pin */}
+            <View style={styles.confirmMapContainer}>
+              <MapView
+                ref={confirmMapRef}
+                style={StyleSheet.absoluteFill}
+                accessibilityLabel="Location confirmation map. Tap to place or move the pin."
+                onPress={e => handleConfirmationPinDrag(e.nativeEvent.coordinate)}
+                initialRegion={{
+                  // Camera start point only (never stored as an address coordinate).
+                  latitude: pendingAddressRecord?.coordinates?.latitude ?? detectedLocation?.latitude ?? 5.6037,
+                  longitude: pendingAddressRecord?.coordinates?.longitude ?? detectedLocation?.longitude ?? -0.1870,
+                  longitudeDelta: pendingAddressRecord?.coordinates ? 0.03 : 0.12
+                }}>
+                {pendingAddressRecord?.coordinates && (
+                  <Marker
+                    coordinate={pendingAddressRecord.coordinates}
+                    pinColor={confirmTarget === 'pickup' ? colors.primary : colors.danger}
+                    draggable
+                    onDragEnd={e => handleConfirmationPinDrag(e.nativeEvent.coordinate)}
+                    title="Drag to exact gate"
+                  />
+                )}
+              </MapView>
+
+              {/* Floating Helper Banner */}
+              <View pointerEvents="none" style={styles.confirmMapTipBanner}>
+                <Text style={styles.confirmMapTipText}>
+                  {pendingAddressRecord?.coordinates
+                    ? '📍 Drag the pin to your exact building, gate, or junction'
+                    : '📍 Address not found on the map — tap the map to place your pin'}
+                </Text>
+              </View>
+            </View>
+            {pendingAddressRecord?.advisory ? (
+              <Text style={[styles.inputMicroLabel, { marginTop: 6, color: '#92400E' }]}>{pendingAddressRecord.advisory}</Text>
+            ) : null}
+
+            {/* Handover & Landmark Instructions (Required by contract) */}
+            <View style={{ marginTop: 10 }}>
+              <Text style={styles.inputMicroLabel}>Handover & Landmark Instructions (Optional)</Text>
+              <TextInput
+                style={styles.sheetNoteInput}
+                placeholder="e.g. Opposite blue water kiosk, call upon arrival"
+                placeholderTextColor={colors.textPlaceholder}
+                value={pendingAddressRecord?.deliveryInstructions || deliveryInstructions}
+                onChangeText={t => {
+                  setDeliveryInstructions(t);
+                  setPendingAddressRecord(prev => prev ? ({ ...prev, deliveryInstructions: t }) : null);
+                }}
+              />
+            </View>
+
+            {/* Action Buttons */}
+            <View style={styles.confirmActionRow}>
+              <TouchableOpacity
+                style={styles.confirmEditBtn}
+                onPress={() => setAddressConfirmModal(false)}>
+                <Text style={styles.confirmEditBtnText}>Edit Details</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.confirmCommitBtn}
+                onPress={confirmPendingAddress}>
+                <Text style={styles.confirmCommitBtnText}>Confirm Location ›</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* =====================================================================
+          MODAL: LIVE COURIER TRACKING (MapLibre with RiderMarker & Polyline)
+      ======================================================================= */}
+      <Modal visible={Boolean(trackingShipment)} animationType="slide" onRequestClose={() => setTrackingShipment(null)}>
+        <View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
+          <View style={styles.trackingModalHeader}>
+            <TouchableOpacity onPress={() => setTrackingShipment(null)} style={styles.trackingCloseButton}>
+              <Text style={{ fontSize: 16, fontWeight: '700', color: colors.textDark }}>✕ Close</Text>
+            </TouchableOpacity>
+            <Text style={styles.trackingHeaderTitle}>Live Courier Tracking</Text>
+            <View style={{ width: 40 }} />
+          </View>
+
+          {/* Call Courier Bar */}
+          {['RIDER_ASSIGNED', 'PICKUP_VERIFIED', 'IN_TRANSIT'].includes(trackingShipment?.state) && Boolean(trackingShipment?.rider_phone || trackingShipment?.riderPhone || trackingShipment?.details?.rider_phone) && (
+            <View style={{ paddingHorizontal: 16, paddingBottom: 10, flexDirection: 'row', gap: 8 }}>
+              <TouchableOpacity
+                style={[styles.callCourierButton, { flex: 1 }]}
+                onPress={() => Linking.openURL(`tel:${trackingShipment.rider_phone || trackingShipment.riderPhone || trackingShipment.details?.rider_phone}`)}>
+                <Text style={styles.callCourierText}>
+                  📞 Call Courier ({formatGhanaDisplayPhone(trackingShipment.rider_phone || trackingShipment.riderPhone || trackingShipment.details?.rider_phone)})
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.callCourierButton, { backgroundColor: '#0F172A', paddingHorizontal: 14 }]}
+                onPress={() => openOrderChat({ conversationType: 'CUSTOMER_RIDER', shipmentId: trackingShipment.id })}>
+                <Text style={styles.callCourierText}>💬 Chat Courier</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          <View style={{ flex: 1 }}>
+            <MapView
+              initialRegion={{ latitude: 5.6037, longitude: -0.1870, longitudeDelta: 0.08 }}
+              style={StyleSheet.absoluteFill}>
+              {trackingShipment?.pickup && (
+                <Marker coordinate={trackingShipment.pickup} pinColor={colors.primary} title="Pickup" />
+              )}
+              {trackingShipment?.destination && (
+                <Marker coordinate={trackingShipment.destination} pinColor={colors.danger} title="Dropoff" />
+              )}
+              {(liveCourier || trackingShipment?.courier) && (
+                <RiderMarker
+                  coordinate={{
+                    latitude: (liveCourier || trackingShipment.courier).latitude,
+                    longitude: (liveCourier || trackingShipment.courier).longitude
+                  }}
+                  heading={(liveCourier || trackingShipment.courier).heading || 0}
+                  vehicle={(liveCourier || trackingShipment.courier).vehicle || trackingShipment?.vehicle || 'motorcycle'}
+                  title="Courier"
+                />
+              )}
+              {(liveCourier || trackingShipment?.courier) && trackingShipment?.destination && (
+                <Polyline
+                  coordinates={[
+                    {
+                      latitude: (liveCourier || trackingShipment.courier).latitude,
+                      longitude: (liveCourier || trackingShipment.courier).longitude
+                    },
+                    {
+                      latitude: trackingShipment.destination.latitude,
+                      longitude: trackingShipment.destination.longitude
+                    }
+                  ]}
+                  strokeColor={colors.primary}
+                  strokeWidth={4}
+                />
+              )}
+            </MapView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* =====================================================================
+          MODAL: DISH CUSTOMIZER (Required modifier checks & Radio vs Checkbox)
+      ======================================================================= */}
+      <Modal visible={dishModal} animationType="slide" transparent onRequestClose={() => setDishModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.customizerCard}>
+            <Text style={styles.customizerTitle}>{selectedDish?.name}</Text>
+            <Text style={styles.customizerPrice}>{ghc(selectedDish?.price_minor)}</Text>
+
+            <ScrollView style={{ maxHeight: 260, marginVertical: 12 }}>
+              {(selectedDish?.modifiers || []).map(mod => {
+                const isSingle = mod.max_selection === 1;
+                return (
+                  <View key={mod.id} style={{ marginBottom: 12 }}>
+                    <Text style={styles.modifierGroupName}>{mod.name} {mod.min_selection > 0 ? '(Required)' : '(Optional)'}</Text>
+                    {(mod.options || []).map(opt => {
+                      const isSelected = selectedOptions.some(o => o.id === opt.id);
+                      return (
+                        <TouchableOpacity
+                          key={opt.id}
+                          style={styles.modifierOptionRow}
+                          onPress={() => toggleModifierOption(mod, opt)}>
+                          {/* Contract requirement: isSingle ? (isSelected ? '◉' : '○') : (isSelected ? '☑' : '☐') */}
+                          <Text style={{ fontSize: 16, marginRight: 8, color: colors.primary }}>
+                            {isSingle ? (isSelected ? '◉' : '○') : (isSelected ? '☑' : '☐')}
+                          </Text>
+                          <Text style={{ flex: 1, fontSize: 14, color: colors.textDark }}>{opt.name}</Text>
+                          <Text style={{ fontSize: 13, fontWeight: '600', color: colors.textSecondary }}>+{ghc(opt.extra_minor)}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                );
+              })}
+            </ScrollView>
+
+            <TouchableOpacity style={styles.primaryActionButton} onPress={addDishToCart}>
+              <Text style={styles.primaryActionText}>Add to Cart</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.closeSheetButton} onPress={() => setDishModal(false)}>
+              <Text style={styles.closeSheetText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* =====================================================================
+          MODAL: FOOD CART & CHECKOUT
+      ======================================================================= */}
+      <Modal visible={cartModal} animationType="slide" onRequestClose={() => setCartModal(false)}>
+        <View style={{ flex: 1, backgroundColor: '#FFFFFF', padding: 20, paddingTop: 48 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={styles.cartTitleBold}>Your Food Cart</Text>
+            <TouchableOpacity onPress={() => setCartModal(false)}>
+              <Text style={{ fontSize: 18, color: colors.textSecondary }}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={{ flex: 1, marginVertical: 16 }}>
+            {cartItems.map(item => (
+              <View key={item.cartId} style={styles.cartItemRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.cartItemName}>{item.name}</Text>
+                  {item.options.map(o => (
+                    <Text key={o.id} style={styles.cartItemOptionSub}>+ {o.name}</Text>
+                  ))}
+                </View>
+                <Text style={styles.cartItemPrice}>{ghc(item.priceMinor)}</Text>
+              </View>
+            ))}
+
+            {/* Food delivery address fields */}
+            <View style={{ marginTop: 14 }}>
+              <Text style={styles.inputMicroLabel}>Delivery Address</Text>
+              <TextInput
+                style={styles.sheetNoteInput}
+                placeholder="Dropoff address or landmark"
+                placeholderTextColor={colors.textPlaceholder}
+                value={foodDeliveryAddress}
+                onChangeText={setFoodDeliveryAddress}
+              />
+              <Text style={[styles.inputMicroLabel, { marginTop: 6 }]}>
+                {isConfirmedLocation(booking.destination)
+                  ? `Delivery pin: ${booking.destination.title || booking.destination.address}`
+                  : 'Delivery pin not set — confirm your delivery location on the map first.'}
+              </Text>
+              {!isConfirmedLocation(booking.destination) && (
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Set delivery location on map"
+                  style={[styles.primaryActionButton, { marginTop: 8, backgroundColor: colors.textDark }]}
+                  onPress={() => { setCartModal(false); setLocationTarget('destination'); setAddressModalVisible(true); }}>
+                  <Text style={styles.primaryActionText}>Set Delivery Location</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Promo Code Entry */}
+            <View style={{ marginTop: 14 }}>
+              <Text style={styles.inputMicroLabel}>Promo Code / Voucher</Text>
+              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                <TextInput
+                  style={[styles.sheetNoteInput, { flex: 1, marginBottom: 0 }]}
+                  placeholder="Enter promo code (e.g. WELCOME20)"
+                  placeholderTextColor={colors.textPlaceholder}
+                  autoCapitalize="characters"
+                  value={promoCodeInput}
+                  onChangeText={setPromoCodeInput}
+                />
+                {Boolean(appliedPromoCode) && (
+                  <TouchableOpacity
+                    style={{ backgroundColor: '#FEE2E2', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8 }}
+                    onPress={() => {
+                      setPromoCodeInput('');
+                      setAppliedPromoCode('');
+                      const confirmed = isConfirmedLocation(booking.destination) ? booking.destination : null;
+                      if (confirmed) execute(() => getFoodCheckoutQuote(confirmed, ''));
+                    }}>
+                    <Text style={{ color: '#DC2626', fontWeight: '700', fontSize: 12 }}>Remove</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.primaryActionButton, { marginTop: 14 }]}
+              onPress={() => {
+                const confirmed = isConfirmedLocation(booking.destination) ? booking.destination : null;
+                setFoodDeliveryCoords(confirmed);
+                execute(() => getFoodCheckoutQuote(confirmed, promoCodeInput));
+              }}>
+              <Text style={styles.primaryActionText}>Calculate Food Quote</Text>
+            </TouchableOpacity>
+
+            {/* Contract requirement: foodQuote.subtotalMinor & foodQuote.totalMinor */}
+            {Boolean(foodQuote) && (
+              <View style={styles.foodQuoteBox}>
+                <View style={styles.foodQuoteRow}>
+                  <Text style={styles.foodQuoteLabel}>Food Subtotal</Text>
+                  <Text style={styles.foodQuoteValue}>{ghc(foodQuote.subtotalMinor)}</Text>
+                </View>
+                {Number(foodQuote.foodDiscountMinor || 0) > 0 && (
+                  <View style={styles.foodQuoteRow}>
+                    <Text style={[styles.foodQuoteLabel, { color: '#059669' }]}>Food Promo Discount</Text>
+                    <Text style={[styles.foodQuoteValue, { color: '#059669' }]}>-{ghc(foodQuote.foodDiscountMinor)}</Text>
+                  </View>
+                )}
+                <View style={styles.foodQuoteRow}>
+                  <Text style={styles.foodQuoteLabel}>Delivery Fee</Text>
+                  <Text style={styles.foodQuoteValue}>{ghc(foodQuote.deliveryFeeMinor)}</Text>
+                </View>
+                {Number(foodQuote.deliveryDiscountMinor || 0) > 0 && (
+                  <View style={styles.foodQuoteRow}>
+                    <Text style={[styles.foodQuoteLabel, { color: '#059669' }]}>Delivery Promo Discount</Text>
+                    <Text style={[styles.foodQuoteValue, { color: '#059669' }]}>-{ghc(foodQuote.deliveryDiscountMinor)}</Text>
+                  </View>
+                )}
+                {(foodQuote.appliedPromotions || []).map(p => (
+                  <Text key={p.campaignId || p.title} style={{ fontSize: 11, color: '#059669', fontWeight: '600', marginTop: 2 }}>
+                    🎁 {p.badgeText || p.title} ({p.promoCode || 'Auto-applied'})
+                  </Text>
+                ))}
+                <View style={[styles.foodQuoteRow, { borderTopWidth: 1, borderTopColor: '#E2E8F0', paddingTop: 8, marginTop: 4 }]}>
+                  <Text style={[styles.foodQuoteLabel, { fontWeight: '800', color: colors.textDark }]}>Total</Text>
+                  <Text style={[styles.foodQuoteValue, { fontWeight: '800', color: colors.brandCoral }]}>{ghc(foodQuote.totalMinor)}</Text>
+                </View>
+              </View>
+            )}
+          </ScrollView>
+
+          {Boolean(foodQuote) && (
+            <TouchableOpacity style={styles.primaryActionButton} onPress={() => execute(submitFoodOrder)}>
+              <Text style={styles.primaryActionText}>Submit & Pay with Mobile Money</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </Modal>
+
+      {/* =====================================================================
+          MODAL: ORDER-SCOPED REAL-TIME CHAT (Rider / Restaurant / Support)
+      ======================================================================= */}
+      <Modal visible={chatModalVisible} animationType="slide" onRequestClose={() => setChatModalVisible(false)}>
+        <View style={{ flex: 1, backgroundColor: '#F8FAFC', paddingTop: 44 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: '#E2E8F0', backgroundColor: '#FFFFFF' }}>
+            <View>
+              <Text style={{ fontSize: 16, fontWeight: '800', color: colors.textDark }}>
+                💬 {activeChatConversation?.conversationType || 'Order Chat'}
+              </Text>
+              <Text style={{ fontSize: 11, color: colors.textSecondary }}>
+                State: {activeChatConversation?.state || 'ACTIVE'} • Epoch #{activeChatConversation?.assignmentEpoch || 1}
+              </Text>
+            </View>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <TouchableOpacity
+                style={{ backgroundColor: '#FEF3C7', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 }}
+                onPress={escalateCustomerChat}>
+                <Text style={{ fontSize: 11, fontWeight: '700', color: '#B45309' }}>🎧 Escalate</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{ backgroundColor: '#FEE2E2', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 }}
+                onPress={() => reportCustomerChatAbuse('inappropriate_behavior')}>
+                <Text style={{ fontSize: 11, fontWeight: '700', color: '#DC2626' }}>🚩 Report</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setChatModalVisible(false)} style={{ paddingHorizontal: 8, paddingVertical: 4 }}>
+                <Text style={{ fontSize: 18, color: colors.textSecondary }}>✕</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View style={{ backgroundColor: '#EFF6FF', paddingHorizontal: 14, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#BFDBFE' }}>
+            <Text style={{ fontSize: 11, color: '#1E40AF', fontWeight: '600' }}>
+              🔒 Security Notice: Never share your 6-digit delivery OTP in chat before the courier arrives in person. Chat messages cannot alter paid delivery addresses.
+            </Text>
+          </View>
+
+          <ScrollView style={{ flex: 1, padding: 14 }}>
+            {chatMessages.map(msg => {
+              const isMine = msg.senderRole === 'customer';
+              return (
+                <View
+                  key={msg.id}
+                  style={{
+                    alignSelf: isMine ? 'flex-end' : 'flex-start',
+                    backgroundColor: msg.senderRole === 'system' ? '#F1F5F9' : isMine ? '#0F172A' : '#FFFFFF',
+                    borderRadius: 12,
+                    padding: 10,
+                    marginBottom: 8,
+                    maxWidth: '82%',
+                    borderWidth: isMine ? 0 : 1,
+                    borderColor: '#E2E8F0'
+                  }}>
+                  <Text style={{ fontSize: 10, fontWeight: '700', color: isMine ? '#94A3B8' : '#64748B', marginBottom: 2 }}>
+                    {String(msg.senderRole || '').toUpperCase()} • #{msg.seq}
+                  </Text>
+                  <Text style={{ fontSize: 13, color: isMine ? '#FFFFFF' : '#0F172A' }}>
+                    {msg.bodyText || (msg.messageType === 'location_pin' ? `📍 Pin: ${msg.locationPin?.label || ''}` : '')}
+                  </Text>
+                  <Text style={{ fontSize: 10, color: isMine ? '#CBD5E1' : '#94A3B8', marginTop: 4, textAlign: 'right' }}>
+                    {msg.deliveryStatus || 'SENT'}
+                  </Text>
+                </View>
+              );
+            })}
+            {Boolean(chatTypingPeer) && (
+              <Text style={{ fontSize: 11, color: '#64748B', fontStyle: 'italic' }}>{chatTypingPeer}</Text>
+            )}
+          </ScrollView>
+
+          {/* Customer Quick Replies & Confirmed Location Pin Share */}
+          <View style={{ backgroundColor: '#FFFFFF', paddingHorizontal: 12, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#E2E8F0' }}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
+              {[
+                { key: 'cust_gate_code', label: 'Here is the gate landmark.' },
+                { key: 'cust_call_arrival', label: 'Please call when you arrive.' },
+                { key: 'cust_coming_out', label: "I'm coming out now." },
+                { key: 'cust_leave_reception', label: 'Please meet me at reception.' }
+              ].map(preset => (
+                <TouchableOpacity
+                  key={preset.key}
+                  style={{ backgroundColor: '#F1F5F9', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 6, marginRight: 6 }}
+                  onPress={() => sendCustomerChatMessage({ messageType: 'quick_reply', quickReplyKey: preset.key, bodyText: preset.label })}>
+                  <Text style={{ fontSize: 11, color: '#0F172A', fontWeight: '600' }}>{preset.label}</Text>
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity
+                style={{ backgroundColor: '#ECFDF5', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 6, marginRight: 6 }}
+                onPress={shareConfirmedLocationPinInChat}>
+                <Text style={{ fontSize: 11, color: '#059669', fontWeight: '700' }}>📍 Share Confirmed Pin</Text>
+              </TouchableOpacity>
+            </ScrollView>
+
+            <View style={{ flexDirection: 'row', gap: 8, paddingBottom: 16, alignItems: 'center' }}>
+              <TextInput
+                style={[styles.sheetNoteInput, { flex: 1, marginBottom: 0 }]}
+                placeholder="Type an order message..."
+                placeholderTextColor={colors.textPlaceholder}
+                value={chatInputText}
+                onChangeText={setChatInputText}
+              />
+              <TouchableOpacity
+                style={{ backgroundColor: colors.brandCoral, paddingHorizontal: 16, paddingVertical: 11, borderRadius: 10 }}
+                onPress={() => sendCustomerChatMessage({ messageType: 'text', bodyText: chatInputText })}>
+                <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 13 }}>Send</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Bottom Global App Navigation Tabs */}
+      <View style={styles.bottomNavTabBar}>
+        <TouchableOpacity style={styles.navTabItem} onPress={() => setTab('Home')}>
+          <Text style={[styles.navTabIcon, tab === 'Home' && styles.navTabIconActive]}>🏠</Text>
+          <Text style={[styles.navTabLabel, tab === 'Home' && styles.navTabLabelActive]}>Home</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.navTabItem} onPress={() => setTab('Send')}>
+          <Text style={[styles.navTabIcon, tab === 'Send' && styles.navTabIconActive]}>📦</Text>
+          <Text style={[styles.navTabLabel, tab === 'Send' && styles.navTabLabelActive]}>Delivery</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.navTabItem} onPress={() => setTab('Cargo')}>
+          <Text style={[styles.navTabIcon, tab === 'Cargo' && styles.navTabIconActive]}>🚚</Text>
+          <Text style={[styles.navTabLabel, tab === 'Cargo' && styles.navTabLabelActive]}>Cargo</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.navTabItem} onPress={() => setTab('Food')}>
+          <Text style={[styles.navTabIcon, tab === 'Food' && styles.navTabIconActive]}>🍲</Text>
+          <Text style={[styles.navTabLabel, tab === 'Food' && styles.navTabLabelActive]}>Food</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.navTabItem} onPress={() => setTab('Activity')}>
+          <Text style={[styles.navTabIcon, tab === 'Activity' && styles.navTabIconActive]}>📋</Text>
+          <Text style={[styles.navTabLabel, tab === 'Activity' && styles.navTabLabelActive]}>Activity</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
-  center: { alignItems: 'center', justifyContent: 'center' },
-  splashTitle: { fontSize: 28, fontWeight: '800', color: colors.text, marginTop: 16 },
-  splashSubtitle: { fontSize: 13, color: colors.primary, letterSpacing: 2, marginTop: 4 },
-  brandIconBox: { width: 56, height: 56, borderRadius: 16, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
-  brandIconText: { fontSize: 32, fontWeight: '900', color: colors.bg },
+  // Global Canvas (Modern Light Theme)
+  mainCanvas: { flex: 1, backgroundColor: '#F8FAFC' },
+  topHeaderBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'android' ? 44 : 52,
+    paddingBottom: 12,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9'
+  },
+  menuIconCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  locationBreadcrumb: { alignItems: 'center' },
+  brandTitleText: { fontSize: 17, fontWeight: '900', color: '#0F172A', letterSpacing: 0.5 },
+  locationSubtitleText: { fontSize: 12, fontWeight: '500', color: '#475569', maxWidth: 180 },
+  profileAvatarCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+
+  // Auth & Onboarding
+  authContainer: { flex: 1, backgroundColor: '#FFFFFF' },
   authScroll: { padding: 24, paddingTop: 60 },
-  authHeader: { marginBottom: 28 },
-  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 12 },
-  brandTitle: { fontSize: 24, fontWeight: '800', color: colors.text },
-  brandTagline: { fontSize: 11, fontWeight: '700', color: colors.primary, letterSpacing: 1.5 },
-  authSubtitle: { fontSize: 14, color: colors.textMuted, lineHeight: 20 },
-  authCard: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: 20, borderWidth: 1, borderColor: colors.cardBorder },
-  authCardTitle: { fontSize: 20, fontWeight: '700', color: colors.text, marginBottom: 4 },
-  authCardSubtitle: { fontSize: 13, color: colors.textMuted, marginBottom: 20 },
-  inputGroup: { marginBottom: 14 },
-  inputLabel: { fontSize: 13, fontWeight: '600', color: colors.textMuted, marginBottom: 6 },
-  input: { backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1, borderColor: colors.cardBorder, padding: 12, color: colors.text, fontSize: 14 },
+  authHeader: { alignItems: 'center', marginBottom: 28 },
+  logoBadge: { width: 56, height: 56, borderRadius: 16, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
+  logoBadgeText: { fontSize: 32, fontWeight: '900', color: '#0F172A' },
+  authBrandTitle: { fontSize: 24, fontWeight: '900', color: '#0F172A' },
+  authTagline: { fontSize: 11, fontWeight: '700', color: colors.primary, letterSpacing: 1.5, marginTop: 2 },
+  authCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 22, borderWidth: 1, borderColor: '#E2E8F0', ...shadows.card },
+  authCardTitle: { fontSize: 22, fontWeight: '800', color: '#0F172A', marginBottom: 4 },
+  authCardSubtitle: { fontSize: 13, color: '#64748B', marginBottom: 20 },
+  errorBanner: { backgroundColor: '#FEF2F2', padding: 10, borderRadius: 10, borderWidth: 1, borderColor: '#FCA5A5', marginBottom: 14 },
+  errorBannerText: { color: '#B91C1C', fontSize: 12, fontWeight: '600' },
+  formGroup: { marginBottom: 14 },
+  formLabel: { fontSize: 12, fontWeight: '700', color: '#334155', marginBottom: 6, textTransform: 'uppercase' },
+  formInput: { backgroundColor: '#F8FAFC', borderRadius: 12, borderWidth: 1, borderColor: '#CBD5E1', padding: 12, fontSize: 14, color: '#0F172A' },
   phoneInputRow: { flexDirection: 'row', gap: 8 },
-  countryBadge: { backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1, borderColor: colors.cardBorder, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  flag: { fontSize: 16 },
-  countryCode: { color: colors.text, fontWeight: '600', fontSize: 14 },
-  phoneInput: { flex: 1, backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1, borderColor: colors.cardBorder, padding: 12, color: colors.text, fontSize: 14 },
-  primaryBtn: { backgroundColor: colors.primary, borderRadius: radii.md, padding: 14, alignItems: 'center', justifyContent: 'center' },
-  primaryBtnText: { color: colors.bg, fontSize: 15, fontWeight: '700' },
-  secondaryBtn: { backgroundColor: colors.card, borderRadius: radii.md, padding: 14, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.cardBorder },
-  secondaryBtnText: { color: colors.text, fontSize: 14, fontWeight: '600' },
-  dangerBtn: { backgroundColor: '#7F1D1D', borderRadius: radii.md, padding: 12, alignItems: 'center', justifyContent: 'center' },
-  dangerBtnText: { color: '#FCA5A5', fontSize: 13, fontWeight: '700' },
-  switchAuthBtn: { marginTop: 16, alignItems: 'center', padding: 8 },
-  switchAuthText: { color: colors.primary, fontSize: 13, fontWeight: '600' },
-  errorBox: { backgroundColor: '#450A0A', padding: 12, borderRadius: radii.md, marginHorizontal: 16, marginTop: 8, borderWidth: 1, borderColor: colors.danger },
-  errorText: { color: '#F87171', fontSize: 13, fontWeight: '600' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 48, paddingBottom: 14, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.cardBorder },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  headerBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
-  headerBadgeText: { fontSize: 18, fontWeight: '900', color: colors.bg },
-  headerTitle: { fontSize: 16, fontWeight: '800', color: colors.text },
-  headerSubtitle: { fontSize: 12, color: colors.textMuted },
-  logoutBtn: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: radii.sm, backgroundColor: colors.card },
-  logoutBtnText: { fontSize: 12, fontWeight: '600', color: colors.textMuted },
-  tabBar: { flexDirection: 'row', backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.cardBorder },
-  tabItem: { flex: 1, paddingVertical: 12, alignItems: 'center' },
-  tabItemActive: { borderBottomWidth: 2, borderBottomColor: colors.primary },
-  tabText: { fontSize: 13, fontWeight: '600', color: colors.textMuted },
-  tabTextActive: { color: colors.primary, fontWeight: '700' },
-  scrollContent: { padding: 16 },
-  stepperRow: { flexDirection: 'row', gap: 8, marginBottom: 14 },
-  stepBadge: { flex: 1, paddingVertical: 8, backgroundColor: colors.card, borderRadius: radii.sm, alignItems: 'center' },
-  stepBadgeActive: { backgroundColor: colors.cardBorder, borderWidth: 1, borderColor: colors.primary },
-  stepBadgeComplete: { backgroundColor: colors.primaryDark },
-  stepBadgeText: { fontSize: 12, fontWeight: '600', color: colors.textMuted },
-  stepBadgeTextActive: { color: colors.primary, fontWeight: '700' },
-  card: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: 16, borderWidth: 1, borderColor: colors.cardBorder, marginBottom: 16 },
-  cardHeading: { fontSize: 18, fontWeight: '700', color: colors.text, marginBottom: 4 },
-  cardSubheading: { fontSize: 13, color: colors.textMuted, marginBottom: 14 },
-  gpsDetectBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.card, padding: 12, borderRadius: radii.md, marginBottom: 12, borderWidth: 1, borderColor: colors.cardBorder },
-  gpsDetectText: { color: colors.primary, fontWeight: '600', fontSize: 13 },
-  searchRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
-  searchActionBtn: { backgroundColor: colors.card, borderRadius: radii.md, paddingHorizontal: 16, justifyContent: 'center', borderWidth: 1, borderColor: colors.cardBorder },
-  searchActionText: { color: colors.primary, fontWeight: '700', fontSize: 13 },
-  dropdownList: { backgroundColor: colors.card, borderRadius: radii.md, marginBottom: 12, borderWidth: 1, borderColor: colors.cardBorder, overflow: 'hidden' },
-  dropdownItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: colors.line },
-  placeTitle: { fontSize: 14, fontWeight: '600', color: colors.text },
-  placeSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
-  chipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 14 },
-  chip: { backgroundColor: colors.card, paddingVertical: 6, paddingHorizontal: 10, borderRadius: radii.full, borderWidth: 1, borderColor: colors.cardBorder },
-  chipText: { fontSize: 12, color: colors.textMuted, fontWeight: '500' },
-  addressSummaryCard: { backgroundColor: colors.card, borderRadius: radii.md, padding: 12, marginBottom: 14, borderWidth: 1, borderColor: colors.cardBorder },
-  addressRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
-  addressIcon: { fontSize: 14 },
-  addressType: { fontSize: 11, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase' },
-  addressText: { fontSize: 13, color: colors.text, marginTop: 2 },
-  addressDivider: { height: 1, backgroundColor: colors.line, marginVertical: 8 },
-  mapContainer: { height: 220, borderRadius: radii.md, overflow: 'hidden', borderWidth: 1, borderColor: colors.cardBorder },
-  vehicleRow: { flexDirection: 'row', gap: 8, marginTop: 6 },
-  vehicleCard: { flex: 1, backgroundColor: colors.card, borderRadius: radii.md, padding: 10, alignItems: 'center', borderWidth: 1, borderColor: colors.cardBorder },
-  vehicleCardActive: { borderColor: colors.primary, backgroundColor: colors.cardBorder },
-  vehicleLabel: { fontSize: 13, fontWeight: '700', color: colors.text },
-  vehicleCap: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
-  quoteSummaryBox: { backgroundColor: colors.card, borderRadius: radii.md, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: colors.cardBorder, marginTop: 10 },
-  quoteAmount: { fontSize: 28, fontWeight: '800', color: colors.primary },
-  quoteDetails: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
-  paymentMethodRow: { flexDirection: 'row', gap: 8, marginTop: 6 },
-  paymentMethodCard: { flex: 1, backgroundColor: colors.card, borderRadius: radii.md, padding: 10, alignItems: 'center', borderWidth: 1, borderColor: colors.cardBorder },
-  paymentMethodCardActive: { borderColor: colors.primary, backgroundColor: colors.cardBorder },
-  paymentMethodText: { fontSize: 13, fontWeight: '700', color: colors.text },
-  cashPayerRow: { marginTop: 14 },
-  pillBtn: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: radii.full, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.cardBorder },
-  pillBtnActive: { backgroundColor: colors.primaryDark, borderColor: colors.primary },
-  pillBtnText: { fontSize: 13, color: colors.text, fontWeight: '600' },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  sectionTitle: { fontSize: 18, fontWeight: '700', color: colors.text },
-  cartBadgeBtn: { backgroundColor: colors.primary, paddingVertical: 6, paddingHorizontal: 12, borderRadius: radii.full },
-  cartBadgeText: { color: colors.bg, fontSize: 12, fontWeight: '700' },
-  restaurantCard: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: colors.cardBorder },
-  restHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  restName: { fontSize: 16, fontWeight: '700', color: colors.text },
-  restOpenBadge: { backgroundColor: '#064E3B', paddingVertical: 3, paddingHorizontal: 8, borderRadius: radii.sm },
-  restOpenText: { color: '#6EE7B7', fontSize: 10, fontWeight: '800' },
-  restCuisine: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
-  restDeliveryInfo: { fontSize: 12, color: colors.primary, marginTop: 6 },
-  modalScreen: { flex: 1, backgroundColor: colors.bg },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 48, paddingBottom: 12, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.cardBorder },
-  modalTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
-  closeBtn: { padding: 8 },
-  closeBtnText: { color: colors.primary, fontWeight: '700', fontSize: 14 },
-  menuCatTitle: { fontSize: 16, fontWeight: '800', color: colors.primary, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 },
-  dishCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, padding: 12, borderRadius: radii.md, marginBottom: 8, borderWidth: 1, borderColor: colors.cardBorder },
-  dishName: { fontSize: 14, fontWeight: '700', color: colors.text },
-  dishPrice: { fontSize: 13, color: colors.primary, fontWeight: '600', marginTop: 2 },
-  addDishBtn: { backgroundColor: colors.card, paddingVertical: 6, paddingHorizontal: 12, borderRadius: radii.md, borderWidth: 1, borderColor: colors.primary },
-  addDishBtnText: { color: colors.primary, fontSize: 12, fontWeight: '700' },
-  modalOverlay: { flex: 1, backgroundColor: '#000000AA', justifyContent: 'center', padding: 20 },
-  dishCustomizerCard: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: 20, borderWidth: 1, borderColor: colors.cardBorder },
-  dishModalTitle: { fontSize: 18, fontWeight: '700', color: colors.text },
-  dishModalPrice: { fontSize: 16, fontWeight: '800', color: colors.primary, marginTop: 4 },
-  modifierTitle: { fontSize: 13, fontWeight: '700', color: colors.textMuted, marginBottom: 6 },
-  modifierOptionRow: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: colors.card, padding: 10, borderRadius: radii.sm, marginBottom: 6, borderWidth: 1, borderColor: colors.cardBorder },
-  modifierOptionRowActive: { borderColor: colors.primary, backgroundColor: colors.cardBorder },
-  optionName: { fontSize: 13, color: colors.text },
-  optionPrice: { fontSize: 13, color: colors.primary, fontWeight: '600' },
-  cartItemRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, padding: 12, borderRadius: radii.md, marginBottom: 8 },
-  cartItemName: { fontSize: 14, fontWeight: '700', color: colors.text },
-  cartItemPrice: { fontSize: 13, color: colors.primary, marginTop: 2 },
-  foodQuoteBox: { backgroundColor: colors.surface, borderRadius: radii.md, padding: 14, marginTop: 16, borderWidth: 1, borderColor: colors.cardBorder },
-  foodSummaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
-  foodSummaryLabel: { fontSize: 14, color: colors.textMuted },
-  foodSummaryVal: { fontSize: 14, color: colors.text, fontWeight: '600' },
-  activeOrderCard: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: colors.cardBorder },
+  ghanaBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#F1F5F9', borderRadius: 12, borderWidth: 1, borderColor: '#CBD5E1', paddingHorizontal: 12 },
+  ghanaCode: { fontSize: 14, fontWeight: '700', color: '#0F172A' },
+  phoneInput: { flex: 1, backgroundColor: '#F8FAFC', borderRadius: 12, borderWidth: 1, borderColor: '#CBD5E1', padding: 12, fontSize: 14, color: '#0F172A' },
+  primaryActionButton: { backgroundColor: colors.brandCoral, borderRadius: 14, padding: 15, alignItems: 'center', justifyContent: 'center', marginTop: 10 },
+  primaryActionText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
+  switchAuthTouch: { marginTop: 16, alignItems: 'center', padding: 6 },
+  switchAuthText: { color: colors.primary, fontSize: 13, fontWeight: '700' },
+
+  // Homepage Styles (Reference 5)
+  homeScroll: { padding: 16, paddingBottom: 100 },
+  serviceCardsGrid: { flexDirection: 'row', gap: 10, marginBottom: 16 },
+  serviceCard: { flex: 1, backgroundColor: '#FFFFFF', borderRadius: 18, padding: 12, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0', ...shadows.card },
+  serviceIllustrationBox: { width: 64, height: 64, borderRadius: 14, backgroundColor: '#F8FAFC', alignItems: 'center', justifyContent: 'center', marginBottom: 8, position: 'relative' },
+  parcelBoxBadge: { position: 'absolute', bottom: -2, right: -2, backgroundColor: '#FFFFFF', borderRadius: 6, padding: 2 },
+  cargoBoxBadge: { position: 'absolute', bottom: -2, right: -2, backgroundColor: '#FFFFFF', borderRadius: 6, padding: 2 },
+  foodBowlBadge: { position: 'absolute', bottom: -2, right: -2, backgroundColor: '#FFFFFF', borderRadius: 6, padding: 2 },
+  serviceCardLabel: { fontSize: 14, fontWeight: '800', color: '#0F172A' },
+  serviceCardSub: { fontSize: 11, color: '#64748B', marginTop: 2 },
+  whereToSearchPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 28, padding: 14, paddingHorizontal: 16, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16, ...shadows.card },
+  carIconBox: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  whereToPlaceholder: { flex: 1, fontSize: 16, fontWeight: '700', color: '#0F172A' },
+  whereToChevron: { fontSize: 20, fontWeight: '700', color: '#94A3B8' },
+  recentDestinationsGroup: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 8, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16, ...shadows.card },
+  recentDestinationRow: { flexDirection: 'row', alignItems: 'center', padding: 12, borderBottomWidth: 1, borderBottomColor: '#F8FAFC' },
+  landmarkIconBox: { width: 36, height: 36, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  landmarkTitle: { fontSize: 14, fontWeight: '700', color: '#0F172A' },
+  landmarkSub: { fontSize: 12, color: '#64748B', marginTop: 2 },
+  landmarkDistanceBadge: { fontSize: 11, fontWeight: '600', color: colors.primary, backgroundColor: '#E6FAF5', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  promoCardsSection: { gap: 12 },
+  promoBannerCard: { borderRadius: 20, padding: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', ...shadows.card },
+  promoTagBadge: { fontSize: 10, fontWeight: '800', color: '#FEF08A', letterSpacing: 1, marginBottom: 4 },
+  promoHeadline: { fontSize: 18, fontWeight: '900', color: '#FFFFFF', letterSpacing: 0.5 },
+  promoBody: { fontSize: 12, color: '#E2E8F0', marginTop: 4, lineHeight: 17 },
+  promoActionButton: { marginTop: 10, alignSelf: 'flex-start', backgroundColor: '#FFFFFF', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
+  promoActionText: { color: '#0F172A', fontSize: 12, fontWeight: '800' },
+
+  // Parcel Screen Styles (Reference 4)
+  mapScreenContainer: { flex: 1 },
+  floatingTopControls: { position: 'absolute', top: 50, left: 16, right: 16, flexDirection: 'row', justifyContent: 'space-between', zIndex: 10 },
+  floatingBackCircle: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', ...shadows.floating },
+  floatingGpsButton: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', ...shadows.floating },
+  floatingBottomSheet: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    padding: 18,
+    paddingBottom: 28,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    ...shadows.bottomSheet
+  },
+  sheetHandleBar: { width: 40, height: 4, borderRadius: 2, backgroundColor: '#CBD5E1', alignSelf: 'center', marginBottom: 12 },
+  sheetDisplayTitle: { fontSize: 18, fontWeight: '900', color: '#0F172A', letterSpacing: 0.5, marginBottom: 12 },
+  sheetRouteBox: { backgroundColor: '#F8FAFC', borderRadius: 16, padding: 10, borderWidth: 1, borderColor: '#E2E8F0' },
+  sheetAddressRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6 },
+  pickupSquareIcon: { width: 28, height: 28, borderRadius: 8, backgroundColor: '#0F172A', alignItems: 'center', justifyContent: 'center', marginRight: 10 },
+  dropoffSquareIcon: { width: 28, height: 28, borderRadius: 8, backgroundColor: colors.brandCoral, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
+  sheetAddressLabel: { fontSize: 10, fontWeight: '700', color: '#64748B', textTransform: 'uppercase' },
+  sheetAddressText: { fontSize: 13, fontWeight: '600', color: '#0F172A', marginTop: 1 },
+  sheetInnerDivider: { height: 1, backgroundColor: '#E2E8F0', marginVertical: 6 },
+  sheetChevron: { fontSize: 16, color: '#94A3B8' },
+  targetPillRow: { flexDirection: 'row', gap: 8, marginVertical: 10 },
+  targetPill: { flex: 1, paddingVertical: 8, borderRadius: 20, backgroundColor: '#F1F5F9', alignItems: 'center' },
+  targetPillActive: { backgroundColor: '#0F172A' },
+  targetPillText: { fontSize: 12, fontWeight: '700', color: '#475569' },
+  targetPillTextActive: { color: '#FFFFFF' },
+  vehicleCarousel: { flexDirection: 'row', gap: 10, paddingVertical: 4 },
+  vehicleOptionCard: { width: 112, backgroundColor: '#F8FAFC', borderRadius: 16, padding: 10, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
+  vehicleOptionCardActive: { borderColor: colors.brandCoral, backgroundColor: '#FFF5F3' },
+  vehicleEtaBadge: { fontSize: 10, fontWeight: '700', color: '#64748B' },
+  vehicleOptionName: { fontSize: 12, fontWeight: '800', color: '#0F172A', marginTop: 2 },
+  vehicleOptionPrice: { fontSize: 11, fontWeight: '700', color: colors.brandCoral, marginTop: 1 },
+  inputMicroLabel: { fontSize: 11, fontWeight: '700', color: '#64748B', textTransform: 'uppercase', marginBottom: 4 },
+  sheetNoteInput: { backgroundColor: '#F8FAFC', borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', padding: 10, fontSize: 13, color: '#0F172A' },
+  sheetBottomBar: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14 },
+  paymentMethodPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#F1F5F9', paddingVertical: 14, paddingHorizontal: 14, borderRadius: 16, borderWidth: 1, borderColor: '#E2E8F0' },
+  paymentMethodPillText: { fontSize: 13, fontWeight: '700', color: '#0F172A' },
+  orderFormCtaButton: { flex: 1, backgroundColor: colors.brandCoral, borderRadius: 16, paddingVertical: 14, alignItems: 'center', justifyContent: 'center' },
+  orderFormCtaText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
+
+  // Cargo Screen Styles (Reference 2)
+  cargoScroll: { padding: 16, paddingBottom: 100 },
+  cargoHeaderCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 12, ...shadows.card },
+  cargoIconBadge: { width: 38, height: 38, borderRadius: 10, backgroundColor: '#FEE2E2', alignItems: 'center', justifyContent: 'center' },
+  cargoTitle: { fontSize: 18, fontWeight: '900', color: '#0F172A' },
+  cargoSubBreadcrumb: { fontSize: 12, color: '#64748B' },
+  closeRoundButton: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' },
+  aboutCargoBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 12, ...shadows.card },
+  aboutCargoTitle: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
+  aboutCargoSub: { fontSize: 12, color: '#64748B', marginTop: 2 },
+  cargoSectionCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 12, ...shadows.card },
+  sectionHeaderTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A', marginBottom: 12 },
+  segmentedControl: { flexDirection: 'row', backgroundColor: '#F1F5F9', borderRadius: 12, padding: 3, marginBottom: 14 },
+  segmentBtn: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 10 },
+  segmentBtnActive: { backgroundColor: '#FFFFFF', ...shadows.card },
+  segmentBtnText: { fontSize: 13, fontWeight: '600', color: '#64748B' },
+  segmentBtnTextActive: { fontWeight: '800', color: '#0F172A' },
+  cargoAddressGroup: { backgroundColor: '#F8FAFC', borderRadius: 14, padding: 10, borderWidth: 1, borderColor: '#E2E8F0' },
+  cargoAddressRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
+  cargoFieldLabel: { fontSize: 10, fontWeight: '700', color: '#64748B', textTransform: 'uppercase' },
+  cargoFieldValue: { fontSize: 13, fontWeight: '600', color: '#0F172A' },
+  detailsPillButton: { backgroundColor: '#FFFFFF', borderRadius: 14, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: '#E2E8F0' },
+  detailsPillText: { fontSize: 12, fontWeight: '700', color: '#0F172A' },
+  waitingTimeBadge: { marginTop: 12, alignSelf: 'flex-start', backgroundColor: '#F1F5F9', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
+  waitingTimeText: { fontSize: 11, fontWeight: '600', color: '#475569' },
+  cargoSubTabs: { flexDirection: 'row', gap: 20, marginVertical: 8, paddingHorizontal: 4 },
+  cargoSubTab: { paddingBottom: 6 },
+  cargoSubTabActive: { borderBottomWidth: 3, borderBottomColor: '#0F172A' },
+  cargoSubTabText: { fontSize: 14, fontWeight: '600', color: '#64748B' },
+  cargoSubTabTextActive: { fontWeight: '800', color: '#0F172A' },
+  dimensionCard: { backgroundColor: '#F8FAFC', borderRadius: 16, padding: 16, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
+  dimensionDiagramBox: { alignItems: 'center', marginBottom: 10 },
+  dimensionPillsRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  dimensionBadge: { backgroundColor: '#E2E8F0', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, fontSize: 11, fontWeight: '700', color: '#334155' },
+  bodyTypeName: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
+  bodyTypeCapacity: { fontSize: 12, color: '#64748B', marginTop: 2, textAlign: 'center' },
+  cargoBottomBar: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', ...shadows.card },
+  cargoPriceOverview: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  cargoPaymentMethod: { fontSize: 14, fontWeight: '700', color: '#0F172A' },
+  cargoPriceValue: { fontSize: 18, fontWeight: '900', color: '#0F172A' },
+  cargoOrderButton: { backgroundColor: '#F1F5F9', borderRadius: 16, paddingVertical: 14, alignItems: 'center' },
+  cargoOrderButtonText: { fontSize: 16, fontWeight: '800', color: '#64748B' },
+  cargoOrderButtonSub: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
+
+  // Food Screen Styles
+  foodScroll: { padding: 16, paddingBottom: 100 },
+  foodMarketHeader: { marginBottom: 14 },
+  foodMarketTitle: { fontSize: 20, fontWeight: '900', color: '#0F172A' },
+  foodMarketSubtitle: { fontSize: 13, color: '#64748B', marginTop: 2 },
+  modernRestCard: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 12, ...shadows.card },
+  restCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  restTitleText: { fontSize: 16, fontWeight: '800', color: '#0F172A' },
+  restAddressSub: { fontSize: 12, color: '#64748B', marginTop: 2 },
+  openPill: { backgroundColor: '#DCFCE7', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  openPillText: { fontSize: 10, fontWeight: '800', color: '#15803D' },
+  restDeliveryMeta: { fontSize: 12, fontWeight: '600', color: colors.primary, marginTop: 8 },
+  restaurantDetailBox: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', marginVertical: 14 },
+  menuSectionHeader: { fontSize: 16, fontWeight: '800', color: '#0F172A', marginBottom: 12 },
+  dishRowCard: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  dishTitleText: { fontSize: 14, fontWeight: '700', color: '#0F172A' },
+  dishPriceText: { fontSize: 13, fontWeight: '800', color: colors.primary, marginTop: 2 },
+  addDishButton: { backgroundColor: '#F1F5F9', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: '#E2E8F0' },
+  addDishButtonText: { fontSize: 12, fontWeight: '800', color: '#0F172A' },
+  floatingCartButton: { position: 'absolute', bottom: 80, left: 20, right: 20, backgroundColor: colors.brandCoral, borderRadius: 24, paddingVertical: 14, alignItems: 'center', ...shadows.floating },
+  floatingCartText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
+
+  // Activity Screen Styles
+  activityScroll: { padding: 16, paddingBottom: 100 },
+  activitySectionTitle: { fontSize: 20, fontWeight: '900', color: '#0F172A', marginBottom: 14 },
+  modernActiveOrderCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 12, ...shadows.card },
   orderCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  orderId: { fontSize: 15, fontWeight: '700', color: colors.text },
-  statusBadge: { backgroundColor: colors.card, paddingVertical: 4, paddingHorizontal: 10, borderRadius: radii.full, borderWidth: 1, borderColor: colors.primary },
-  statusBadgeText: { fontSize: 11, fontWeight: '700', color: colors.primary },
-  orderAmount: { fontSize: 14, color: colors.textMuted, marginTop: 6 },
-  otpBanner: { backgroundColor: colors.card, borderRadius: radii.md, padding: 14, marginTop: 12, alignItems: 'center', borderWidth: 1, borderColor: colors.primary },
-  otpBannerTitle: { fontSize: 12, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase' },
-  otpBannerCode: { fontSize: 32, fontWeight: '900', color: colors.primary, letterSpacing: 8, marginVertical: 4 },
-  otpBannerHelp: { fontSize: 11, color: colors.textMuted, textAlign: 'center' },
-  emptyCard: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: 32, alignItems: 'center', marginTop: 20 },
-  emptyTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
-  emptySub: { fontSize: 13, color: colors.textMuted, textAlign: 'center', marginTop: 4 }
+  orderIdText: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
+  statusPillBadge: { backgroundColor: '#F1F5F9', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  statusPillText: { fontSize: 11, fontWeight: '800', color: colors.primary },
+  orderFareText: { fontSize: 13, color: '#64748B', marginTop: 4 },
+  otpSecurityBanner: { backgroundColor: '#FEF3C7', borderRadius: 12, padding: 12, marginTop: 12, alignItems: 'center', borderWidth: 1, borderColor: '#FDE68A' },
+  otpSecurityHeader: { fontSize: 11, fontWeight: '800', color: '#92400E', textTransform: 'uppercase' },
+  otpSecurityDigits: { fontSize: 28, fontWeight: '900', color: '#92400E', letterSpacing: 6, marginVertical: 4 },
+  otpSecurityCaption: { fontSize: 11, color: '#B45309', textAlign: 'center' },
+  callCourierButton: { marginTop: 10, backgroundColor: '#F1F5F9', borderRadius: 12, padding: 10, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
+  callCourierText: { fontSize: 13, fontWeight: '700', color: '#0F172A' },
+  activeOrderActionsRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  liveTrackButton: { flex: 2, backgroundColor: colors.brandCoral, borderRadius: 12, padding: 12, alignItems: 'center' },
+  liveTrackText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
+  cancelSmallButton: { flex: 1, backgroundColor: '#FEE2E2', borderRadius: 12, padding: 12, alignItems: 'center' },
+  cancelSmallText: { color: '#B91C1C', fontSize: 13, fontWeight: '800' },
+  emptyStateBox: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 32, alignItems: 'center', marginTop: 24, borderWidth: 1, borderColor: '#E2E8F0' },
+  emptyStateTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A' },
+  emptyStateSub: { fontSize: 13, color: '#64748B', textAlign: 'center', marginTop: 4 },
+
+  // Profile Screen Styles (Reference 3)
+  profileScroll: { padding: 16, paddingBottom: 100 },
+  profileBackRow: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', marginBottom: 12, borderWidth: 1, borderColor: '#E2E8F0' },
+  profileHeaderBox: { alignItems: 'center', marginBottom: 20 },
+  profileAvatarLarge: { width: 84, height: 84, borderRadius: 42, backgroundColor: '#E0F2FE', alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
+  profileNameBold: { fontSize: 20, fontWeight: '900', color: '#0F172A', letterSpacing: 0.5 },
+  profilePhoneSub: { fontSize: 13, color: '#64748B', marginTop: 2 },
+  profileQuickActionsRow: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 16 },
+  quickActionCircle: { alignItems: 'center' },
+  circleIconBox: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
+  quickActionLabel: { fontSize: 12, fontWeight: '700', color: '#0F172A' },
+  profileTaskBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EFF6FF', borderRadius: 16, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: '#DBEAFE' },
+  progressCircleBadge: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#BFDBFE', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  progressCircleText: { fontSize: 12, fontWeight: '800', color: '#1E40AF' },
+  profileTaskTitle: { fontSize: 14, fontWeight: '800', color: '#1E3A8A' },
+  profileTaskSub: { fontSize: 11, color: '#3B82F6', marginTop: 1 },
+  profileGroupCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 6, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 14, ...shadows.card },
+  profileMenuItem: { flexDirection: 'row', alignItems: 'center', padding: 14 },
+  menuItemIcon: { fontSize: 18, marginRight: 14 },
+  menuItemTitle: { fontSize: 14, fontWeight: '700', color: '#0F172A' },
+  menuItemSub: { fontSize: 11, color: '#64748B', marginTop: 2 },
+  menuItemChevron: { fontSize: 18, color: '#94A3B8' },
+  profileItemDivider: { height: 1, backgroundColor: '#F8FAFC', marginHorizontal: 14 },
+
+  // Address Selection Bottom Sheet Modal (Reference 1)
+  modalOverlay: { flex: 1, backgroundColor: '#00000066', justifyContent: 'flex-end' },
+  addressSheetCard: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 26, borderTopRightRadius: 26, padding: 18, paddingBottom: 32 },
+  addressModalHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
+  addressModalHeaderTitle: { fontSize: 18, fontWeight: '900', color: '#0F172A' },
+  addressModalHeaderSub: { fontSize: 12, color: '#64748B', marginTop: 2 },
+  addressTopCard: { backgroundColor: '#F8FAFC', borderRadius: 16, padding: 12, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 12 },
+  addressTopRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
+  addressInputTag: { fontSize: 10, fontWeight: '700', color: '#64748B', textTransform: 'uppercase' },
+  addressInlineInput: { fontSize: 14, fontWeight: '600', color: '#0F172A', paddingVertical: 2 },
+  addressActionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  addressActionTitle: { fontSize: 14, fontWeight: '800', color: '#0F172A' },
+  addressActionSub: { fontSize: 11, color: '#64748B', marginTop: 1 },
+  landmarkListItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  landmarkItemIcon: { fontSize: 18, marginRight: 12 },
+  landmarkItemTitle: { fontSize: 14, fontWeight: '700', color: '#0F172A' },
+  landmarkItemSub: { fontSize: 11, color: '#64748B', marginTop: 2 },
+  closeSheetButton: { marginTop: 14, backgroundColor: '#F1F5F9', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  closeSheetText: { fontSize: 13, fontWeight: '700', color: '#475569' },
+
+  // Mode Selection Row
+  modeSelectorRow: { flexDirection: 'row', backgroundColor: '#F1F5F9', borderRadius: 14, padding: 4, marginBottom: 12, gap: 4 },
+  modeTabBtn: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 10 },
+  modeTabBtnActive: { backgroundColor: '#FFFFFF', ...shadows.sm },
+  modeTabBtnText: { fontSize: 12, fontWeight: '600', color: '#64748B' },
+  modeTabBtnTextActive: { color: '#0F172A', fontWeight: '800' },
+
+  // Search Input
+  searchInputContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F8FAFC', borderRadius: 14, borderWidth: 1, borderColor: '#E2E8F0', paddingHorizontal: 12, paddingVertical: 8, marginBottom: 10 },
+  searchInlineInput: { flex: 1, fontSize: 14, color: '#0F172A', fontWeight: '500' },
+  partnerBadge: { backgroundColor: '#FEF3C7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, borderWidth: 1, borderColor: '#FCD34D' },
+  partnerBadgeText: { fontSize: 9, fontWeight: '800', color: '#92400E' },
+  shortcutSectionTag: { fontSize: 11, fontWeight: '800', color: '#94A3B8', letterSpacing: 0.5, marginTop: 12, marginBottom: 6, textTransform: 'uppercase' },
+  emptySearchBox: { padding: 24, alignItems: 'center' },
+  emptySearchTitle: { fontSize: 15, fontWeight: '800', color: '#0F172A', marginBottom: 4 },
+  emptySearchSub: { fontSize: 12, color: '#64748B', textAlign: 'center', marginBottom: 14 },
+  switchManualBtn: { backgroundColor: '#EFF6FF', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: '#BFDBFE' },
+  switchManualBtnText: { fontSize: 13, fontWeight: '700', color: '#1E40AF' },
+
+  // GPS Mode Styles
+  gpsContainer: { paddingVertical: 8 },
+  gpsStatusCard: { flexDirection: 'row', backgroundColor: '#F0FDF4', borderRadius: 18, padding: 16, borderWidth: 1, borderColor: '#BBF7D0', marginBottom: 14 },
+  gpsRadarIconBox: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#DCFCE7', alignItems: 'center', justifyContent: 'center', marginRight: 14 },
+  gpsStatusTitle: { fontSize: 15, fontWeight: '800', color: '#14532D' },
+  gpsStatusAccuracy: { fontSize: 12, fontWeight: '700', color: '#15803D', marginTop: 2 },
+  gpsAddressDisplay: { fontSize: 13, color: '#166534', marginTop: 6, lineHeight: 18 },
+  gpsActionBtnRow: { flexDirection: 'row', gap: 10 },
+  gpsRefreshBtn: { flex: 1, backgroundColor: '#F1F5F9', borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
+  gpsRefreshBtnText: { fontSize: 13, fontWeight: '700', color: '#334155' },
+  gpsConfirmBtn: { flex: 1.5, backgroundColor: colors.primary, borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
+  gpsConfirmBtnText: { fontSize: 13, fontWeight: '800', color: '#0F172A' },
+
+  // Manual Address Form Styles
+  manualFieldTag: { fontSize: 11, fontWeight: '800', color: '#475569', letterSpacing: 0.5, marginTop: 10, marginBottom: 4, textTransform: 'uppercase' },
+  chipScrollRow: { gap: 6, paddingVertical: 4, marginBottom: 6 },
+  regionPillChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#E2E8F0' },
+  regionPillChipActive: { backgroundColor: '#101827', borderColor: '#101827' },
+  regionPillText: { fontSize: 12, fontWeight: '600', color: '#475569' },
+  regionPillTextActive: { color: '#FFFFFF', fontWeight: '800' },
+  townPillChip: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#CBD5E1' },
+  townPillChipActive: { backgroundColor: colors.brandCoral, borderColor: colors.brandCoral },
+  townPillText: { fontSize: 11, fontWeight: '600', color: '#334155' },
+  townPillTextActive: { color: '#FFFFFF', fontWeight: '800' },
+  manualFormInput: { backgroundColor: '#F8FAFC', borderRadius: 12, borderWidth: 1, borderColor: '#CBD5E1', padding: 10, fontSize: 13, color: '#0F172A', marginBottom: 4 },
+  previewManualBtn: { marginTop: 14, backgroundColor: colors.brandCoral, borderRadius: 14, paddingVertical: 14, alignItems: 'center', ...shadows.sm },
+  previewManualBtnText: { fontSize: 14, fontWeight: '800', color: '#FFFFFF' },
+
+  // Address Confirmation Sheet Modal (Phase 6)
+  confirmSheetCard: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 26, borderTopRightRadius: 26, padding: 18, paddingBottom: 28 },
+  confirmHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
+  confirmHeaderTitle: { fontSize: 18, fontWeight: '900', color: '#0F172A' },
+  confirmHeaderSub: { fontSize: 12, color: '#64748B', marginTop: 2 },
+  confirmBadgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 },
+  statusBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1 },
+  statusBadgeText: { fontSize: 11, fontWeight: '700' },
+  confirmMapContainer: { height: 210, borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 8 },
+  confirmMapTipBanner: { position: 'absolute', bottom: 8, left: 8, right: 8, backgroundColor: 'rgba(15, 23, 42, 0.88)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, alignItems: 'center' },
+  confirmMapTipText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
+  confirmActionRow: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  confirmEditBtn: { flex: 1, backgroundColor: '#F1F5F9', borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
+  confirmEditBtnText: { fontSize: 13, fontWeight: '700', color: '#475569' },
+  confirmCommitBtn: { flex: 1.6, backgroundColor: colors.brandCoral, borderRadius: 14, paddingVertical: 14, alignItems: 'center', ...shadows.sm },
+  confirmCommitBtnText: { fontSize: 13, fontWeight: '800', color: '#FFFFFF' },
+
+  // Tracking Modal
+  trackingModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 48, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
+  trackingCloseButton: { padding: 6 },
+  trackingHeaderTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A' },
+
+  // Customizer Modal
+  customizerCard: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 32 },
+  customizerTitle: { fontSize: 18, fontWeight: '800', color: '#0F172A' },
+  customizerPrice: { fontSize: 16, fontWeight: '800', color: colors.primary, marginTop: 2 },
+  modifierGroupName: { fontSize: 12, fontWeight: '800', color: '#334155', textTransform: 'uppercase', marginBottom: 6 },
+  modifierOptionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#F8FAFC' },
+
+  // Food Cart Modal
+  cartTitleBold: { fontSize: 20, fontWeight: '900', color: '#0F172A' },
+  cartItemRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  cartItemName: { fontSize: 14, fontWeight: '700', color: '#0F172A' },
+  cartItemOptionSub: { fontSize: 11, color: '#64748B', marginTop: 1 },
+  cartItemPrice: { fontSize: 14, fontWeight: '800', color: colors.primary },
+  foodQuoteBox: { backgroundColor: '#F8FAFC', borderRadius: 14, padding: 12, marginTop: 14, borderWidth: 1, borderColor: '#E2E8F0' },
+  foodQuoteRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
+  foodQuoteLabel: { fontSize: 13, color: '#475569' },
+  foodQuoteValue: { fontSize: 13, fontWeight: '700', color: '#0F172A' },
+
+  // Bottom Universal Navigation Tab Bar
+  bottomNavTabBar: {
+    flexDirection: 'row',
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+    paddingVertical: 8,
+    paddingBottom: Platform.OS === 'android' ? 12 : 24
+  },
+  navTabItem: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  navTabIcon: { fontSize: 20, color: '#94A3B8', marginBottom: 2 },
+  navTabIconActive: { color: colors.brandCoral },
+  navTabLabel: { fontSize: 11, fontWeight: '600', color: '#94A3B8' },
+  navTabLabelActive: { color: '#0F172A', fontWeight: '800' }
 });

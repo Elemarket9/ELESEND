@@ -187,6 +187,12 @@
         <button class="nav-tab" id="tabMenuBtn" onclick="switchTab('menu')">
           Menu & 86 Inventory
         </button>
+        <button class="nav-tab" id="tabPromotionsBtn" onclick="switchTab('promotions')">
+          🎁 Promotions & Campaigns
+        </button>
+        <button class="nav-tab" id="tabChatBtn" onclick="switchTab('chat')">
+          💬 Order Messages <span class="tab-badge" id="chatUnreadBadge" style="display:none;">0</span>
+        </button>
         <button class="nav-tab" id="tabSettlementsBtn" onclick="switchTab('settlements')">
           Financial Settlements
         </button>
@@ -237,12 +243,146 @@
         <div id="menuCategoriesContainer">Loading menu...</div>
       </div>
 
-      <!-- Tab 3: Financial Settlements -->
+      <!-- Tab 3: Promotions & Campaigns -->
+      <div id="tabPromotions" style="display: none;">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Promoted Orders</div>
+            <div class="stat-value primary" id="promoStatOrders">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Promo Gross Revenue</div>
+            <div class="stat-value" id="promoStatGross">GH₵ 0.00</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Restaurant Discount Cost</div>
+            <div class="stat-value" id="promoStatRestDiscount">GH₵ 0.00</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">ELESEND Co-Funded Subsidy</div>
+            <div class="stat-value primary" id="promoStatElesendSubsidy">GH₵ 0.00</div>
+          </div>
+        </div>
+
+        <div class="kitchen-grid" style="margin-bottom: 20px;">
+          <div class="menu-cat-card" style="margin-bottom:0;">
+            <div class="menu-cat-title">
+              <span>🎁 Launch Self-Service Restaurant Promotion</span>
+            </div>
+            <p style="font-size:12px; color:var(--text-muted); margin-bottom:14px;">Create item/menu discounts or delivery offers for your customers. Preview exact commission & net payout impact before launching.</p>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+              <div class="field" style="margin-bottom:10px;">
+                <label>Promotion Name</label>
+                <input type="text" id="restPromoName" class="input" placeholder="e.g. Weekend Jollof 15% Off">
+              </div>
+              <div class="field" style="margin-bottom:10px;">
+                <label>Discount Type</label>
+                <select id="restPromoType" class="input" onchange="previewRestaurantPromo()">
+                  <option value="percentage_off">Percentage Off (%)</option>
+                  <option value="fixed_amount_off">Fixed Amount Off (GH₵)</option>
+                  <option value="free_delivery">Free Delivery (Merchant Funded)</option>
+                  <option value="discounted_delivery">Discounted Delivery (GH₵)</option>
+                </select>
+              </div>
+              <div class="field" style="margin-bottom:10px;">
+                <label>Value (% or GH₵)</label>
+                <input type="number" id="restPromoValue" class="input" value="10" step="0.5" min="0" oninput="previewRestaurantPromo()">
+              </div>
+              <div class="field" style="margin-bottom:10px;">
+                <label>Min Order Subtotal (GH₵)</label>
+                <input type="number" id="restPromoMinOrder" class="input" value="50" step="5" min="0" oninput="previewRestaurantPromo()">
+              </div>
+              <div class="field" style="margin-bottom:10px;">
+                <label>Promo Code (blank = auto-apply)</label>
+                <input type="text" id="restPromoCode" class="input" placeholder="e.g. JOLLOF10">
+              </div>
+              <div class="field" style="margin-bottom:10px;">
+                <label>Total Budget Cap (GH₵)</label>
+                <input type="number" id="restPromoBudget" class="input" value="500" step="10" min="1">
+              </div>
+            </div>
+            <div id="restPromoPreviewBox" style="background:var(--card); border:1px solid var(--card-border); border-radius:10px; padding:12px; margin:10px 0; font-size:12px;">
+              <strong>Financial Settlement Preview (Sample GH₵ 100.00 Order):</strong>
+              <div id="restPromoPreviewDetails" style="margin-top:6px; color:var(--text-muted);">Adjust parameters above to preview net payout impact.</div>
+            </div>
+            <div style="display:flex; gap:10px;">
+              <button class="btn btn-secondary" style="flex:1;" onclick="previewRestaurantPromo()">Preview Payout Impact</button>
+              <button class="btn" style="flex:2;" onclick="createRestaurantPromo()">Activate Promotion</button>
+            </div>
+          </div>
+
+          <div class="menu-cat-card" style="margin-bottom:0;">
+            <div class="menu-cat-title">
+              <span>🤝 Joint Co-Funded Campaign Invitations</span>
+              <button class="btn btn-secondary" style="width:auto; padding:6px 12px; font-size:12px;" onclick="loadPromotions()">Refresh</button>
+            </div>
+            <p style="font-size:12px; color:var(--text-muted); margin-bottom:14px;">ELESEND never deducts co-funded discounts from your payout without your explicit opt-in consent. Review funding split & commission concessions below.</p>
+            <div id="jointInvitesContainer" style="display:flex; flex-direction:column; gap:10px;">
+              <div style="color:var(--text-muted); font-size:13px;">Loading invitations...</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="menu-cat-card">
+          <div class="menu-cat-title">
+            <span>Active & Historical Restaurant Promotions</span>
+          </div>
+          <div id="restPromosListContainer">Loading promotions...</div>
+        </div>
+      </div>
+
+      <!-- Tab 4: Order-Scoped Real-Time Chat Inbox -->
+      <div id="tabChat" style="display: none;">
+        <div class="kitchen-grid">
+          <div class="kitchen-col" style="max-width:420px;">
+            <div class="col-header">
+              <span>Active Order Conversations</span>
+              <button class="btn btn-secondary" style="width:auto; padding:4px 10px; font-size:12px;" onclick="loadMerchantConversations()">Refresh</button>
+            </div>
+            <div class="col-orders" id="merchantChatThreadsList">
+              <div style="color:var(--text-muted); text-align:center; padding:30px 10px; font-size:13px;">Select an order or wait for customer/courier messages.</div>
+            </div>
+          </div>
+
+          <div class="kitchen-col" style="flex:2;">
+            <div class="col-header">
+              <span id="merchantActiveChatHeader">Select an order conversation</span>
+              <div style="display:flex; gap:6px;" id="merchantChatActions" style="display:none;">
+                <button class="btn btn-secondary" style="width:auto; padding:4px 10px; font-size:11px;" onclick="escalateMerchantChat()">Escalate to Support</button>
+                <button class="btn btn-danger" style="width:auto; padding:4px 10px; font-size:11px;" onclick="reportMerchantChatAbuse()">Report Abuse</button>
+              </div>
+            </div>
+            <div id="merchantChatMessagesBox" style="padding:14px; flex:1; overflow-y:auto; min-height:280px; max-height:420px; display:flex; flex-direction:column; gap:8px;">
+              <div style="color:var(--text-muted); text-align:center; padding:40px 10px; font-size:13px;">Order-scoped messages with Customers and Assigned Couriers appear here in real time.</div>
+            </div>
+            <div id="merchantQuickRepliesRow" style="padding:8px 14px; border-top:1px solid var(--card-border); display:flex; gap:6px; overflow-x:auto;">
+              <button class="prep-btn" style="white-space:nowrap; padding:6px 10px;" onclick="sendMerchantQuickReply('rest_preparing', 'Your order is being prepared.')">🍲 Order being prepared</button>
+              <button class="prep-btn" style="white-space:nowrap; padding:6px 10px;" onclick="sendMerchantQuickReply('rest_ready_pickup', 'Your food is ready for pickup.')">✅ Ready for pickup</button>
+              <button class="prep-btn" style="white-space:nowrap; padding:6px 10px;" onclick="sendMerchantQuickReply('rest_clarify_instructions', 'Please clarify your special instructions.')">❓ Clarify instructions</button>
+              <button class="prep-btn" style="white-space:nowrap; padding:6px 10px;" onclick="sendMerchantQuickReply('rest_prep_delay', 'We are experiencing a short preparation delay.')">⏳ Short prep delay</button>
+            </div>
+            <div style="padding:12px 14px; border-top:1px solid var(--card-border); display:flex; gap:8px;">
+              <input type="text" id="merchantChatInput" class="input" placeholder="Type message regarding this order..." onkeydown="if(event.key==='Enter')sendMerchantChatMessage()">
+              <button class="btn" style="width:auto; padding:10px 20px;" onclick="sendMerchantChatMessage()">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 5: Financial Settlements -->
       <div id="tabSettlements" style="display: none;">
         <div class="stats-grid">
           <div class="stat-card">
             <div class="stat-label">Gross Food Sales</div>
             <div class="stat-value primary" id="statGrossSales">GH₵ 0.00</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Restaurant Promo Discounts</div>
+            <div class="stat-value" id="statRestaurantDiscounts">GH₵ 0.00</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">ELESEND Promo Subsidies</div>
+            <div class="stat-value primary" id="statElesendSubsidies">GH₵ 0.00</div>
           </div>
           <div class="stat-card">
             <div class="stat-label" id="statCommissionLabel">Platform Fee (10%)</div>
@@ -271,12 +411,14 @@
                   <th style="padding: 10px;">Order ID</th>
                   <th style="padding: 10px;">Payment Method</th>
                   <th style="padding: 10px;">Gross</th>
-                  <th style="padding: 10px;">Commission (15%)</th>
+                  <th style="padding: 10px;">Rest. Promo</th>
+                  <th style="padding: 10px;">ELESEND Subsidy</th>
+                  <th style="padding: 10px;" id="tableCommissionHeader">Commission (10%)</th>
                   <th style="padding: 10px;">Net Payable</th>
                 </tr>
               </thead>
               <tbody id="settlementsTableBody">
-                <tr><td colspan="6" style="padding: 20px; text-align: center; color: var(--text-muted);">No settlement records found.</td></tr>
+                <tr><td colspan="8" style="padding: 20px; text-align: center; color: var(--text-muted);">No settlement records found.</td></tr>
               </tbody>
             </table>
           </div>
@@ -315,6 +457,7 @@
     let pollInterval = null;
     let audioCtx = null;
     let rawSettlementsData = [];
+    let activeMerchantChatConvId = null;
 
     function playKitchenChime() {
       try {
@@ -358,20 +501,33 @@
     function switchTab(tab) {
       document.getElementById('tabOrdersBtn').classList.toggle('active', tab === 'orders');
       document.getElementById('tabMenuBtn').classList.toggle('active', tab === 'menu');
+      document.getElementById('tabPromotionsBtn').classList.toggle('active', tab === 'promotions');
+      document.getElementById('tabChatBtn').classList.toggle('active', tab === 'chat');
       document.getElementById('tabSettlementsBtn').classList.toggle('active', tab === 'settlements');
 
       document.getElementById('tabOrders').style.display = tab === 'orders' ? 'grid' : 'none';
       document.getElementById('tabMenu').style.display = tab === 'menu' ? 'block' : 'none';
+      document.getElementById('tabPromotions').style.display = tab === 'promotions' ? 'block' : 'none';
+      document.getElementById('tabChat').style.display = tab === 'chat' ? 'block' : 'none';
       document.getElementById('tabSettlements').style.display = tab === 'settlements' ? 'block' : 'none';
 
       if (tab === 'menu') loadMenu();
+      if (tab === 'promotions') { loadPromotions(); previewRestaurantPromo(); }
+      if (tab === 'chat') loadMerchantConversations();
       if (tab === 'settlements') loadSettlements();
     }
+
+    let serverTimeOffset = 0;
 
     async function apiRequest(path, options = {}) {
       const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
       if (activeToken) headers['Authorization'] = 'Bearer ' + activeToken;
       const res = await fetch(path, { ...options, headers });
+      const dateHeader = res.headers.get('Date');
+      if (dateHeader) {
+        const sTime = new Date(dateHeader).getTime();
+        if (Number.isFinite(sTime)) serverTimeOffset = sTime - Date.now();
+      }
       if (res.status === 401 || res.status === 403) {
         if (!activeToken) {
           showAuthView();
@@ -573,6 +729,9 @@
                 ? `<button class="btn" style="flex: 2; padding: 10px;" onclick="acceptOrder('${o.id}')">Accept Order (${selPrep}m)</button>`
                 : `<button class="btn btn-secondary" style="flex: 2; padding: 10px; opacity: 0.6; cursor: not-allowed;" disabled title="Verified upfront payment required before kitchen acceptance">Awaiting Payment</button>`}
             </div>
+            <div style="display: flex; gap: 6px; margin-top: 6px;">
+              <button class="btn btn-secondary" style="flex: 1; padding: 6px; font-size: 11px;" onclick="openOrderChat('${o.id}', '${o.shipment_id || ''}', 'CUSTOMER_RESTAURANT')">💬 Message Customer</button>
+            </div>
           </div>
         `;
       }).join('');
@@ -610,6 +769,10 @@
             <span>🛵 Dispatch: ${escapeHtml(o.shipment_state || 'Searching / Assigned Courier')}</span>
           </div>
           <button class="btn" style="margin-top: 10px; background: #087F69; color: #fff;" onclick="markReady('${o.id}')">Mark Ready for Pickup</button>
+          <div style="display: flex; gap: 6px; margin-top: 8px;">
+            <button class="btn btn-secondary" style="flex: 1; padding: 6px; font-size: 11px;" onclick="openOrderChat('${o.id}', '${o.shipment_id || ''}', 'CUSTOMER_RESTAURANT')">💬 Customer</button>
+            <button class="btn btn-secondary" style="flex: 1; padding: 6px; font-size: 11px;" onclick="openOrderChat('${o.id}', '${o.shipment_id || ''}', 'RIDER_RESTAURANT')">🛵 Courier</button>
+          </div>
           ${['RIDER_ASSIGNED', 'FAILED'].includes(o.shipment_state) ? `
             <div style="display: flex; gap: 8px; margin-top: 8px;">
               <button class="btn btn-secondary" style="flex: 1; padding: 8px; font-size: 12px;" onclick="resolveFoodOrder('${o.id}', 'reassign')">Reassign Courier</button>
@@ -645,6 +808,10 @@
           </div>
           <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">
             Verify courier identity before release. Challenge OTP applies at recipient handover.
+          </div>
+          <div style="display: flex; gap: 6px; margin-top: 8px;">
+            <button class="btn btn-secondary" style="flex: 1; padding: 6px; font-size: 11px;" onclick="openOrderChat('${o.id}', '${o.shipment_id || ''}', 'CUSTOMER_RESTAURANT')">💬 Customer</button>
+            <button class="btn btn-secondary" style="flex: 1; padding: 6px; font-size: 11px;" onclick="openOrderChat('${o.id}', '${o.shipment_id || ''}', 'RIDER_RESTAURANT')">🛵 Courier</button>
           </div>
           ${o.state === 'READY_FOR_PICKUP' && ['RIDER_ASSIGNED', 'FAILED'].includes(o.shipment_state) ? `
             <div style="display: flex; gap: 8px; margin-top: 10px;">
@@ -805,16 +972,22 @@
         const totals = data.totals || {};
 
         document.getElementById('statGrossSales').textContent = 'GH₵ ' + (Number(totals.grossSalesMinor ?? totals.gross_sales_minor ?? 0) / 100).toFixed(2);
+        const restDiscEl = document.getElementById('statRestaurantDiscounts');
+        if (restDiscEl) restDiscEl.textContent = 'GH₵ ' + (Number(totals.restaurantDiscountMinor ?? totals.restaurant_discount_minor ?? 0) / 100).toFixed(2);
+        const elesendSubEl = document.getElementById('statElesendSubsidies');
+        if (elesendSubEl) elesendSubEl.textContent = 'GH₵ ' + (Number(totals.elesendSubsidyMinor ?? totals.elesend_subsidy_minor ?? 0) / 100).toFixed(2);
         const commRate = currentRestaurant?.food_commission_bps ? (currentRestaurant.food_commission_bps / 100) : 10;
         const commLabel = document.getElementById('statCommissionLabel');
         if (commLabel) commLabel.textContent = 'Platform Fee (' + commRate + '%)';
+        const tblCommHeader = document.getElementById('tableCommissionHeader');
+        if (tblCommHeader) tblCommHeader.textContent = 'Commission (' + commRate + '%)';
         document.getElementById('statCommission').textContent = 'GH₵ ' + (Number(totals.commissionMinor ?? totals.commission_minor ?? 0) / 100).toFixed(2);
         document.getElementById('statNetPayable').textContent = 'GH₵ ' + (Number(totals.netPayableMinor ?? totals.net_payable_minor ?? 0) / 100).toFixed(2);
         document.getElementById('statOrderCount').textContent = totals.totalOrders ?? totals.count ?? 0;
 
         const tbody = document.getElementById('settlementsTableBody');
         if (rawSettlementsData.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="6" style="padding: 20px; text-align: center; color: var(--text-muted);">No settlement transactions recorded yet.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="8" style="padding: 20px; text-align: center; color: var(--text-muted);">No settlement transactions recorded yet.</td></tr>';
           return;
         }
         tbody.innerHTML = rawSettlementsData.map(s => `
@@ -823,6 +996,8 @@
             <td style="padding: 10px; font-family: var(--mono);">${s.order_id.slice(0, 8).toUpperCase()}</td>
             <td style="padding: 10px; text-transform: uppercase;">${escapeHtml(s.payment_method || 'DIGITAL')}</td>
             <td style="padding: 10px; font-weight: 700;">GH₵ ${(Number(s.gross_sales_minor) / 100).toFixed(2)}</td>
+            <td style="padding: 10px; color: var(--warning);">-GH₵ ${(Number(s.restaurant_discount_minor || 0) / 100).toFixed(2)}</td>
+            <td style="padding: 10px; color: var(--primary);">+GH₵ ${(Number(s.elesend_subsidy_minor || 0) / 100).toFixed(2)}</td>
             <td style="padding: 10px; color: var(--danger);">GH₵ ${(Number(s.commission_minor) / 100).toFixed(2)}</td>
             <td style="padding: 10px; color: var(--primary); font-weight: 700;">GH₵ ${(Number(s.net_payable_minor) / 100).toFixed(2)}</td>
           </tr>
@@ -832,12 +1007,20 @@
       }
     }
 
+    function sanitizeCsvCell(val) {
+      const str = String(val ?? '').replace(/"/g, '""');
+      if (/^[=+\-@\t\r]/.test(str)) {
+        return `"'${str}"`;
+      }
+      return `"${str}"`;
+    }
+
     function downloadSettlementsCsv() {
       if (rawSettlementsData.length === 0) return alert('No settlement data to export.');
       const commRate = currentRestaurant?.food_commission_bps ? (currentRestaurant.food_commission_bps / 100) : 10;
-      let csv = 'Order Date,Order ID,Payment Method,Gross Sales (GHS),Commission ' + commRate + '% (GHS),Net Payable (GHS)\\n';
+      let csv = 'Order Date,Order ID,Payment Method,Gross Sales (GHS),Restaurant Discount (GHS),ELESEND Subsidy (GHS),Commission ' + commRate + '% (GHS),Net Payable (GHS)\r\n';
       rawSettlementsData.forEach(s => {
-        csv += `"${new Date(s.order_date || s.created_at).toISOString()}","${s.order_id}","${s.payment_method || 'DIGITAL'}",${(Number(s.gross_sales_minor)/100).toFixed(2)},${(Number(s.commission_minor)/100).toFixed(2)},${(Number(s.net_payable_minor)/100).toFixed(2)}\\n`;
+        csv += `${sanitizeCsvCell(new Date(s.order_date || s.created_at).toISOString())},${sanitizeCsvCell(s.order_id)},${sanitizeCsvCell(s.payment_method || 'DIGITAL')},${(Number(s.gross_sales_minor)/100).toFixed(2)},${(Number(s.restaurant_discount_minor||0)/100).toFixed(2)},${(Number(s.elesend_subsidy_minor||0)/100).toFixed(2)},${(Number(s.commission_minor)/100).toFixed(2)},${(Number(s.net_payable_minor)/100).toFixed(2)}\r\n`;
       });
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
@@ -847,6 +1030,295 @@
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+    }
+
+    async function previewRestaurantPromo() {
+      if (!currentRestaurant) return;
+      const discountType = document.getElementById('restPromoType').value;
+      const val = parseFloat(document.getElementById('restPromoValue').value || '0');
+      const box = document.getElementById('restPromoPreviewDetails');
+      try {
+        const prev = await apiRequest('/api/v1/restaurants/' + currentRestaurant.id + '/promotions/preview', {
+          method: 'POST',
+          body: JSON.stringify({
+            sampleSubtotalMinor: 10000,
+            sampleDeliveryFeeMinor: 1500,
+            discountType,
+            discountBps: discountType === 'percentage_off' ? Math.round(val * 100) : null,
+            discountAmountMinor: discountType !== 'percentage_off' && discountType !== 'free_delivery' ? Math.round(val * 100) : null,
+            restaurantFundingBps: 10000
+          })
+        });
+        box.innerHTML = `
+          <div>Gross Food Subtotal: <strong>GH₵ ${(prev.sampleSubtotalMinor/100).toFixed(2)}</strong> • Customer Savings: <strong style="color:var(--primary);">GH₵ ${(prev.customerTotalDiscountMinor/100).toFixed(2)}</strong></div>
+          <div>Merchant Promo Share: <strong style="color:var(--warning);">GH₵ ${(prev.restaurantFundedDiscountMinor/100).toFixed(2)}</strong> • Commission (${escapeHtml(prev.commissionRatePercent)}): <strong>GH₵ ${(prev.commissionMinor/100).toFixed(2)}</strong></div>
+          <div>Estimated Net Merchant Payout: <strong style="color:var(--primary);">GH₵ ${(prev.netRestaurantPayoutMinor/100).toFixed(2)}</strong> (vs GH₵ ${(prev.baselineNetPayoutMinor/100).toFixed(2)} without promo)</div>
+        `;
+      } catch (e) {
+        box.textContent = e.message;
+      }
+    }
+
+    async function createRestaurantPromo() {
+      if (!currentRestaurant) return;
+      const name = document.getElementById('restPromoName').value.trim();
+      const discountType = document.getElementById('restPromoType').value;
+      const val = parseFloat(document.getElementById('restPromoValue').value || '0');
+      const minOrder = parseFloat(document.getElementById('restPromoMinOrder').value || '0');
+      const promoCode = document.getElementById('restPromoCode').value.trim() || null;
+      const budget = parseFloat(document.getElementById('restPromoBudget').value || '0');
+      if (!name) return alert('Enter a promotion name');
+      try {
+        await apiRequest('/api/v1/restaurants/' + currentRestaurant.id + '/promotions', {
+          method: 'POST',
+          body: JSON.stringify({
+            name,
+            discountType,
+            discountBps: discountType === 'percentage_off' ? Math.round(val * 100) : null,
+            discountAmountMinor: discountType !== 'percentage_off' && discountType !== 'free_delivery' ? Math.round(val * 100) : null,
+            minOrderSubtotalMinor: Math.round(minOrder * 100),
+            promoCode,
+            budgetCapMinor: budget > 0 ? Math.round(budget * 100) : null,
+            status: 'active'
+          })
+        });
+        document.getElementById('restPromoName').value = '';
+        document.getElementById('restPromoCode').value = '';
+        loadPromotions();
+      } catch (err) {
+        alert('Failed to launch promotion: ' + err.message);
+      }
+    }
+
+    async function loadPromotions() {
+      if (!currentRestaurant) return;
+      try {
+        const analytics = await apiRequest('/api/v1/restaurants/' + currentRestaurant.id + '/promotions/analytics');
+        if (analytics && analytics.summary) {
+          document.getElementById('promoStatOrders').textContent = analytics.summary.promotedOrdersCount || 0;
+          document.getElementById('promoStatGross').textContent = 'GH₵ ' + ((analytics.summary.promotedGrossSalesMinor || 0) / 100).toFixed(2);
+          document.getElementById('promoStatRestDiscount').textContent = 'GH₵ ' + ((analytics.summary.totalRestaurantFundedDiscountMinor || 0) / 100).toFixed(2);
+          document.getElementById('promoStatElesendSubsidy').textContent = 'GH₵ ' + ((analytics.summary.totalElesendSubsidyMinor || 0) / 100).toFixed(2);
+        }
+      } catch (e) { console.error(e); }
+
+      try {
+        const data = await apiRequest('/api/v1/restaurants/' + currentRestaurant.id + '/promotions');
+        const invites = data.jointInvitations || [];
+        const invBox = document.getElementById('jointInvitesContainer');
+        if (!invites.length) {
+          invBox.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">No joint co-funded campaign invitations pending.</div>';
+        } else {
+          invBox.innerHTML = invites.map(inv => `
+            <div style="background:var(--card); border:1px solid var(--card-border); border-radius:10px; padding:12px;">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <strong>${escapeHtml(inv.name)}</strong>
+                <span class="prep-timer-pill">${escapeHtml(inv.consentStatus.toUpperCase())}</span>
+              </div>
+              <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+                Split: ELESEND ${(inv.elesendFundingBps/100).toFixed(0)}% / Your Restaurant ${(inv.restaurantFundingBps/100).toFixed(0)}%
+                ${inv.commissionConcessionBps > 0 ? ' • Commission Reduced by ' + (inv.commissionConcessionBps/100).toFixed(1) + '%' : ''}
+              </div>
+              ${inv.consentStatus === 'pending' ? `
+                <div style="display:flex; gap:8px; margin-top:8px;">
+                  <button class="btn" style="padding:8px; font-size:12px;" onclick="respondToJointInvite('${escapeHtml(inv.id)}', 'accepted')">Accept & Opt-In</button>
+                  <button class="btn btn-danger" style="padding:8px; font-size:12px;" onclick="respondToJointInvite('${escapeHtml(inv.id)}', 'rejected')">Decline</button>
+                </div>
+              ` : ''}
+            </div>
+          `).join('');
+        }
+
+        const selfList = data.selfServicePromotions || [];
+        const listBox = document.getElementById('restPromosListContainer');
+        if (!selfList.length) {
+          listBox.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">No self-service promotions created yet.</div>';
+        } else {
+          listBox.innerHTML = selfList.map(p => `
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:10px; border-bottom:1px solid var(--line);">
+              <div>
+                <strong>${escapeHtml(p.name)}</strong> ${p.promoCode ? '<code>(' + escapeHtml(p.promoCode) + ')</code>' : '(Auto-Applied)'}
+                <div style="font-size:12px; color:var(--text-muted);">
+                  Redemptions: ${Number(p.redemptionsUsed || 0)} • Budget Spent: GH₵ ${(p.spentBudgetMinor/100).toFixed(2)} • Status: <strong>${escapeHtml(p.status.toUpperCase())}</strong>
+                </div>
+              </div>
+              <div style="display:flex; gap:6px;">
+                ${p.status === 'active' ? `<button class="btn btn-secondary" style="width:auto; padding:6px 12px; font-size:12px;" onclick="setMerchantPromoStatus('${escapeHtml(p.id)}', 'paused')">Pause</button>` : ''}
+                ${p.status === 'paused' ? `<button class="btn" style="width:auto; padding:6px 12px; font-size:12px;" onclick="setMerchantPromoStatus('${escapeHtml(p.id)}', 'active')">Resume</button>` : ''}
+                ${p.status !== 'ended' ? `<button class="btn btn-danger" style="width:auto; padding:6px 12px; font-size:12px;" onclick="setMerchantPromoStatus('${escapeHtml(p.id)}', 'ended')">End</button>` : ''}
+              </div>
+            </div>
+          `).join('');
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    async function respondToJointInvite(campaignId, decision) {
+      if (!currentRestaurant) return;
+      const notes = decision === 'accepted' ? 'Merchant explicitly consented in Kitchen Portal' : 'Merchant declined co-funded campaign';
+      try {
+        await apiRequest('/api/v1/restaurants/' + currentRestaurant.id + '/promotions/' + campaignId + '/consent', {
+          method: 'POST',
+          body: JSON.stringify({ decision, notes })
+        });
+        loadPromotions();
+      } catch (err) { alert(err.message); }
+    }
+
+    async function setMerchantPromoStatus(campaignId, status) {
+      if (!currentRestaurant) return;
+      try {
+        await apiRequest('/api/v1/restaurants/' + currentRestaurant.id + '/promotions/' + campaignId + '/status', {
+          method: 'POST',
+          body: JSON.stringify({ status, reason: 'Merchant updated status in portal' })
+        });
+        loadPromotions();
+      } catch (err) { alert(err.message); }
+    }
+
+    async function openOrderChat(foodOrderId, shipmentId, conversationType) {
+      try {
+        const conv = await apiRequest('/api/v1/chat/conversations', {
+          method: 'POST',
+          body: JSON.stringify({
+            conversationType,
+            foodOrderId,
+            shipmentId: shipmentId || undefined
+          })
+        });
+        switchTab('chat');
+        await selectMerchantConversation(conv.id);
+      } catch (err) {
+        alert('Cannot open chat: ' + err.message);
+      }
+    }
+
+    async function loadMerchantConversations() {
+      if (!currentRestaurant) return;
+      try {
+        const convs = await apiRequest('/api/v1/chat/conversations?restaurantId=' + currentRestaurant.id + '&includeClosed=true');
+        const totalUnread = (convs || []).reduce((acc, c) => acc + Number(c.unreadCount || 0), 0);
+        const badge = document.getElementById('chatUnreadBadge');
+        if (badge) {
+          badge.style.display = totalUnread > 0 ? 'inline-block' : 'none';
+          badge.textContent = String(totalUnread);
+        }
+        const listEl = document.getElementById('merchantChatThreadsList');
+        if (!convs || convs.length === 0) {
+          listEl.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding:30px 10px; font-size:13px;">No order conversations yet. Click 💬 on any active order card to message the customer or courier.</div>';
+          return;
+        }
+        listEl.innerHTML = convs.map(c => `
+          <div class="order-card" style="cursor:pointer; border-color:${c.id === activeMerchantChatConvId ? 'var(--primary)' : 'var(--card-border)'};" onclick="selectMerchantConversation('${escapeHtml(c.id)}')">
+            <div class="order-header">
+              <span class="order-num">#${escapeHtml((c.foodOrderId || c.shipmentId || c.id).slice(0, 8).toUpperCase())}</span>
+              <span class="order-time">${escapeHtml(c.conversationType.replace('_', ' ↔ '))}</span>
+            </div>
+            <div style="font-size:12px; color:var(--text-muted);">${escapeHtml(c.lastMessagePreview || 'No messages yet')}</div>
+            <div style="display:flex; justify-content:space-between; align-items:center; font-size:11px;">
+              <span>State: <strong>${escapeHtml(c.state)}</strong></span>
+              ${c.unreadCount > 0 ? `<span class="tab-badge">${Number(c.unreadCount)} new</span>` : ''}
+            </div>
+          </div>
+        `).join('');
+      } catch (e) { console.error(e); }
+    }
+
+    async function selectMerchantConversation(convId) {
+      activeMerchantChatConvId = convId;
+      try {
+        const data = await apiRequest('/api/v1/chat/conversations/' + convId + '/messages');
+        await apiRequest('/api/v1/chat/conversations/' + convId + '/read', { method: 'POST', body: '{}' }).catch(() => {});
+        document.getElementById('merchantActiveChatHeader').textContent =
+          (data.conversation.conversationType === 'CUSTOMER_RESTAURANT' ? '👤 Customer Chat' : '🛵 Courier Chat') +
+          ' • Order #' + (data.conversation.foodOrderId || data.conversation.id).slice(0, 8).toUpperCase() +
+          ' (' + data.conversation.state + ')';
+        const box = document.getElementById('merchantChatMessagesBox');
+        const msgs = data.messages || [];
+        if (!msgs.length) {
+          box.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding:30px;">Start the order conversation using a quick reply or message below.</div>';
+        } else {
+          box.innerHTML = msgs.map(m => `
+            <div style="align-self:${m.senderRole === 'restaurant' ? 'flex-end' : 'flex-start'}; max-width:80%; background:${m.senderRole === 'restaurant' ? 'rgba(24,198,165,0.18)' : 'var(--card)'}; border:1px solid var(--card-border); border-radius:10px; padding:8px 12px;">
+              <div style="font-size:10px; color:var(--text-muted); font-weight:700;">${escapeHtml(m.senderRole.toUpperCase())} • ${escapeHtml(m.deliveryStatus)}</div>
+              <div style="font-size:13px; margin-top:2px;">${escapeHtml(m.body)}</div>
+              ${m.safetyNotice ? `<div style="font-size:11px; color:var(--accent); margin-top:4px;">⚠️ ${escapeHtml(m.safetyNotice)}</div>` : ''}
+            </div>
+          `).join('');
+          box.scrollTop = box.scrollHeight;
+        }
+        loadMerchantConversations();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function sendMerchantChatMessage() {
+      if (!activeMerchantChatConvId) return alert('Select an order conversation first');
+      const input = document.getElementById('merchantChatInput');
+      const body = input.value.trim();
+      if (!body) return;
+      try {
+        await apiRequest('/api/v1/chat/conversations/' + activeMerchantChatConvId + '/messages', {
+          method: 'POST',
+          body: JSON.stringify({
+            clientMessageId: 'rest-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+            messageType: 'text',
+            body
+          })
+        });
+        input.value = '';
+        await selectMerchantConversation(activeMerchantChatConvId);
+      } catch (err) { alert(err.message); }
+    }
+
+    async function sendMerchantQuickReply(key, text) {
+      if (!activeMerchantChatConvId) return alert('Select an order conversation first');
+      try {
+        await apiRequest('/api/v1/chat/conversations/' + activeMerchantChatConvId + '/messages', {
+          method: 'POST',
+          body: JSON.stringify({
+            clientMessageId: 'rest-qr-' + Date.now(),
+            messageType: 'quick_reply',
+            quickReplyKey: key,
+            body: text
+          })
+        });
+        await selectMerchantConversation(activeMerchantChatConvId);
+      } catch (err) { alert(err.message); }
+    }
+
+    async function reportMerchantChatAbuse() {
+      if (!activeMerchantChatConvId) return;
+      const details = prompt('Describe the abusive or inappropriate behavior (minimum 5 characters):');
+      if (!details || details.trim().length < 5) return;
+      try {
+        await apiRequest('/api/v1/chat/conversations/' + activeMerchantChatConvId + '/report', {
+          method: 'POST',
+          body: JSON.stringify({
+            category: 'inappropriate_messages',
+            details: details.trim()
+          })
+        });
+        alert('Report submitted to ELESEND Trust & Safety.');
+      } catch (err) { alert(err.message); }
+    }
+
+    async function escalateMerchantChat() {
+      if (!activeMerchantChatConvId) return;
+      const summary = prompt('Describe the order issue to escalate to ELESEND Support:');
+      if (!summary || summary.trim().length < 5) return;
+      try {
+        await apiRequest('/api/v1/chat/conversations/' + activeMerchantChatConvId + '/escalate', {
+          method: 'POST',
+          body: JSON.stringify({
+            supportCategory: 'order_issue',
+            summary: summary.trim()
+          })
+        });
+        alert('Escalated to ELESEND Support.');
+        loadMerchantConversations();
+      } catch (err) { alert(err.message); }
     }
 
     function toggleFullscreen() {
@@ -867,7 +1339,7 @@
 
     function updatePrepTimers() {
       const cards = document.querySelectorAll('.order-card[data-accepted-at]');
-      const now = Date.now();
+      const now = Date.now() + serverTimeOffset;
       cards.forEach(card => {
         const id = card.getAttribute('data-order-id');
         const acceptedAt = new Date(card.getAttribute('data-accepted-at')).getTime();
@@ -936,6 +1408,16 @@
         pollOrders();
       }
     }
+
+    window.addEventListener('online', () => {
+      const b = document.getElementById('offlineBanner');
+      if (b) b.style.display = 'none';
+      pollOrders();
+    });
+    window.addEventListener('offline', () => {
+      const b = document.getElementById('offlineBanner');
+      if (b) b.style.display = 'block';
+    });
 
     init();
   </script>
