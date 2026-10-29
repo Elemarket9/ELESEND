@@ -1,9 +1,9 @@
 {
  "expo":{
   "name":"ELESEND","slug":"elesend-native","scheme":"elesend","version":"0.2.0","orientation":"portrait",
-  "android":{"package":"com.elesend.logistics","permissions":["ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","FOREGROUND_SERVICE","FOREGROUND_SERVICE_LOCATION","ACCESS_BACKGROUND_LOCATION"]},
-  "ios":{"bundleIdentifier":"com.elesend.logistics","infoPlist":{"UIBackgroundModes":["location"],"NSLocationWhenInUseUsageDescription":"ELESEND uses your position for nearby pickup estimates when you go online.","NSLocationAlwaysAndWhenInUseUsageDescription":"Background location is used only during your opted-in delivery shifts."}},
-  "plugins":[["expo-location",{"locationAlwaysAndWhenInUsePermission":"Allow ELESEND to locate you when you're online as a delivery driver.","locationWhenInUsePermission":"Allow ELESEND to locate pickup points.","isAndroidBackgroundLocationEnabled":true,"isAndroidForegroundServiceEnabled":true,"isIosBackgroundLocationEnabled":true}],"expo-secure-store","@maplibre/maplibre-react-native"],
-  "extra":{"buildFlavor":"pilot"}
+  "android":{"package":"com.elesend.logistics","permissions":["ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","FOREGROUND_SERVICE","FOREGROUND_SERVICE_LOCATION","ACCESS_BACKGROUND_LOCATION","POST_NOTIFICATIONS","VIBRATE","WAKE_LOCK","RECEIVE_BOOT_COMPLETED"]},
+  "ios":{"bundleIdentifier":"com.elesend.logistics","infoPlist":{"UIBackgroundModes":["location","fetch","remote-notification"],"NSLocationWhenInUseUsageDescription":"ELESEND uses your position for nearby pickup estimates when you go online.","NSLocationAlwaysAndWhenInUseUsageDescription":"Background location is used only during your opted-in delivery shifts."}},
+  "plugins":[["expo-location",{"locationAlwaysAndWhenInUsePermission":"Allow ELESEND to locate you when you're online as a delivery driver.","locationWhenInUsePermission":"Allow ELESEND to locate pickup points.","isAndroidBackgroundLocationEnabled":true,"isAndroidForegroundServiceEnabled":true,"isIosBackgroundLocationEnabled":true}],["expo-notifications",{"mode":"production"}],"expo-secure-store","@maplibre/maplibre-react-native"],
+  "extra":{"buildFlavor":"pilot","offerAlertChannelId":"elesend-rider-offers"}
  }
 }

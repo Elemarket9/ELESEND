@@ -142,6 +142,14 @@ test('Mobile onboarding, customer booking, restaurant portal and admin portal co
   assert.ok(customerAppSrc.includes('foodQuote.subtotalMinor'), 'CustomerApp reads foodQuote.subtotalMinor');
   assert.ok(customerAppSrc.includes('foodQuote.totalMinor'), 'CustomerApp reads foodQuote.totalMinor');
   assert.ok(customerAppSrc.includes('startOrResumeCheckout'), 'CustomerApp supports safe payment resumption without creating duplicate orders');
+  assert.ok(customerAppSrc.includes('await startOrResumeCheckout(order.shipment_id'), 'CustomerApp initiates payment checkout immediately after creating a food order');
+  assert.ok(customerAppSrc.includes('💳 Pay Now'), 'CustomerApp renders Pay Now button on unpaid food orders in Activity tab');
+  assert.ok(!customerAppSrc.includes('activeChatConversation'), 'CustomerApp chat modal uses defined activeConversation state');
+  assert.ok(!customerAppSrc.includes('chatTypingPeer'), 'CustomerApp chat modal uses defined chatTyping state');
+  assert.ok(!customerAppSrc.includes('chatInputText'), 'CustomerApp chat modal uses defined chatText state');
+  assert.ok(customerAppSrc.includes("key: 'cust_landmark_shop'") && customerAppSrc.includes("key: 'cust_coming_outside'"), 'CustomerApp uses backend-registered customer quick reply keys');
+  assert.ok(riderAppSrc.includes('o.entitlement_minor ?? o.amount_minor'), 'RiderApp offer card displays rider net entitlement');
+  assert.ok(riderAppSrc.includes('o.pickupRoadMeters ?? o.distance_m'), 'RiderApp offer card displays pickupRoadMeters');
   assert.ok(!customerAppSrc.includes("'/api/v1/restaurants?lat=5.6037&lon=-0.1870'"), 'CustomerApp does not hardcode restaurant discovery coordinates');
 
   // 3. Restaurant portal: estimatedPrepMinutes, subtotal_minor/total_price_minor, payment_status check, and camelCase settlement totals

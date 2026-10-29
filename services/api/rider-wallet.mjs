@@ -335,7 +335,7 @@ export async function adminWalletOverview(db,actor){
  const unreconciled=await q(`SELECT
    (SELECT count(*) FROM settlement_intents WHERE provider_terminal_at IS NULL AND status IN ('initiating','pending','expired','failed') AND created_at<now()-interval '1 hour')::int AS settlement,
    (SELECT count(*) FROM shipment_checkout_intents WHERE provider_terminal_at IS NULL AND status IN ('initiating','pending','expired','failed') AND created_at<now()-interval '1 hour')::int AS checkout,
-   (SELECT count(*) FROM checkout_unapplied_payments)::int AS unapplied_checkout,
+   (SELECT count(*) FROM checkout_unapplied_payments p WHERE NOT EXISTS (SELECT 1 FROM refund_operations r WHERE r.source_key='unapplied:'||p.provider||':'||p.event_id AND r.status='refunded'))::int AS unapplied_checkout,
    (SELECT count(*) FROM refund_operations WHERE status IN ('needs_review','failed'))::int AS refunds,
    (SELECT count(*) FROM payout_operations WHERE status IN ('needs_review','failed'))::int AS payouts`);
  const policy=await getWalletPolicy(db);
@@ -412,12 +412,22 @@ export async function walletReconciliation(c){
  }
  add('UNVERIFIED_PAYMENTS_OVER_1H','medium',(await c.query(`SELECT 'settlement' AS kind,id,status,created_at FROM settlement_intents WHERE provider_terminal_at IS NULL AND status IN ('initiating','pending','expired','failed') AND created_at<now()-interval '1 hour'
    UNION ALL SELECT 'checkout',id,status,created_at FROM shipment_checkout_intents WHERE provider_terminal_at IS NULL AND status IN ('initiating','pending','expired','failed') AND created_at<now()-interval '1 hour' LIMIT 50`)).rows);
- add('UNAPPLIED_CUSTOMER_PAYMENTS','medium',(await c.query('SELECT provider,event_id,shipment_id,amount_minor,reason FROM checkout_unapplied_payments ORDER BY created_at LIMIT 50')).rows);
+ add('UNAPPLIED_CUSTOMER_PAYMENTS','medium',(await c.query("SELECT p.provider,p.event_id,p.shipment_id,p.amount_minor,p.reason FROM checkout_unapplied_payments p WHERE NOT EXISTS (SELECT 1 FROM refund_operations r WHERE r.source_key='unapplied:'||p.provider||':'||p.event_id AND r.status='refunded') ORDER BY p.created_at LIMIT 50")).rows);
  const rank={critical:0,high:1,medium:2,low:3};
  anomalies.sort((a,b)=>rank[a.severity]-rank[b.severity]);
  return {ok:!anomalies.some(a=>a.severity==='critical'||a.severity==='high'),checkedAt:new Date().toISOString(),anomalies};
 }
-export async function adminWalletReconciliation(db,actor){await permit(db,actor);return walletReconciliation(db);}
+export async function adminWalletReconciliation(db,actor,{repair=false}={}){
+ await permit(db,actor);
+ if(repair){
+  const {results}=await runScheduledRecovery(db);
+  const refreshed=await walletReconciliation(db);
+  const repairRecoveries=results.filter(r=>r.recoveredMinor>0);
+  return {...refreshed,results,repairRecoveries};
+ }
+ const report=await walletReconciliation(db);
+ return {...report,repairRecoveries:[]};
+}
 
 /** Scheduled, idempotent catch-up for recoveries that a crashed or legacy path missed. */
 export async function runScheduledRecovery(db,{limit=50}={}){

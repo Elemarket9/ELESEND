@@ -24,7 +24,7 @@ export async function call(method, path, body = null, {token = null, idempotency
       signal: controller.signal
     });
     const data = await response.json();
-    if (!response.ok) throw Error(data.error || `Request failed: ${response.status}`);
+    if (!response.ok) throw Object.assign(Error(data.error || `Request failed: ${response.status}`), {status: response.status});
     return data;
   } finally {
     clearTimeout(timeout);

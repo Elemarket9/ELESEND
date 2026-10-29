@@ -87,3 +87,11 @@ export async function cacheJobs(actorId, data, store) {
 export async function readCachedJobs(actorId, store, now) {
   return store ? createOfflineCache(store).readCachedJobs(actorId, now) : defaultCache.readCachedJobs(actorId);
 }
+
+// Only call after finding a locally saved session; this grants no network authority.
+export async function readLastCachedJobs() {
+  const raw=await nativeStore.getItemAsync(`${KEY}.meta`);
+  if(!raw)return null;
+  const meta=JSON.parse(raw);
+  return defaultCache.readCachedJobs(meta.actorId);
+}

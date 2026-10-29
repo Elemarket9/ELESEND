@@ -137,7 +137,7 @@ export NODE_ENV=production
 mkdir -p "${BACKUP_DIR}"
 if docker compose -f "${COMPOSE_FILE}" ps db 2>/dev/null | grep -q "Up"; then
   echo "Creating pre-deployment database snapshot..."
-  docker compose -f "${COMPOSE_FILE}" exec -T db pg_dump -U elesend elesend > "${BACKUP_DIR}/pre-deploy-snapshot.sql.tmp"
+  docker compose -f "${COMPOSE_FILE}" exec -T db pg_dump -U "${POSTGRES_USER:-elesend}" "${POSTGRES_DB:-elesend}" > "${BACKUP_DIR}/pre-deploy-snapshot.sql.tmp"
   test -s "${BACKUP_DIR}/pre-deploy-snapshot.sql.tmp"
   mv "${BACKUP_DIR}/pre-deploy-snapshot.sql.tmp" "${BACKUP_DIR}/pre-deploy-snapshot.sql"
 fi
@@ -231,7 +231,7 @@ if [ "$HEALTH_VERIFIED" != "true" ]; then
 fi
 
 echo "Pre-warming PostgreSQL Geospatial Indexes..."
-docker compose -f "${COMPOSE_FILE}" exec -T db psql -U elesend -d elesend -c "
+docker compose -f "${COMPOSE_FILE}" exec -T db psql -U "${POSTGRES_USER:-elesend}" -d "${POSTGRES_DB:-elesend}" -c "
   VACUUM ANALYZE spatial_landmarks;
   VACUUM ANALYZE national_businesses;
   VACUUM ANALYZE candidate_roads;

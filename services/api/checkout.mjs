@@ -25,7 +25,11 @@ async function pool(items,limit,fn){
 /** A shipment payment is confirmed ONLY by independently verified provider evidence.
  * The local app never gets to choose amount, currency, provider reference or success.
  */
-export function checkoutService(db,{provider=null,verifyTimeoutMs=10000,concurrency=4,leaseSeconds=120,submissionLeaseSeconds=60,checkoutExpirySeconds=3600,maxVerifyBackoffSeconds=21600}={}){
+export function checkoutService(db,options={}){
+ const {provider=null,sms=undefined,dispatch=undefined,routing=undefined,verifyTimeoutMs=10000,concurrency=4,leaseSeconds=120,submissionLeaseSeconds=60,checkoutExpirySeconds=3600,maxVerifyBackoffSeconds=21600}=options;
+ const enforceSmsCapability=process.env.NODE_ENV==='production'||'sms' in options;
+ const enforceDispatchCapability=process.env.NODE_ENV==='production'||'dispatch' in options;
+ const enforceRoutingCapability=process.env.NODE_ENV==='production'||'routing' in options;
  const cap=method=>!!provider&&DIGITAL_METHODS.includes(method)&&provider.methods?.includes(method)&&typeof provider.createCheckout==='function'&&typeof provider.verifyPayment==='function';
  const inFlightInitiations=new Map();
  const shipmentLocks=new Map();
@@ -198,6 +202,9 @@ export function checkoutService(db,{provider=null,verifyTimeoutMs=10000,concurre
       return {...old,wasExisting:true};
      }
      check(!s.paid&&s.state==='AWAITING_PAYMENT',409,'Shipment no longer awaits payment');
+     if(enforceSmsCapability)check(sms&&typeof sms.send==='function',503,'Payment initiation paused: custody-verification SMS unavailable');
+     if(enforceDispatchCapability)check(Boolean(dispatch),503,'Payment initiation paused: dispatch engine unavailable');
+     if(enforceRoutingCapability)check(routing&&typeof routing.route==='function',503,'Payment initiation paused: road routing service unavailable');
      check(cap(s.payment_method),503,'Authorized payment channel unavailable');
      validatePayer(provider,v);
      const active=(await c.query("SELECT * FROM shipment_checkout_intents WHERE shipment_id=$1 AND status IN ('initiating','pending') LIMIT 1",[shipmentId])).rows[0];
@@ -478,7 +485,7 @@ export function checkoutService(db,{provider=null,verifyTimeoutMs=10000,concurre
     return {status:'unverified_or_pending',intentStatus:locked.status,providerStatus,submissionInProgress:creationActive,verificationContinues:true,intentId:locked.id,reference:locked.reference};
    });
   },
-  async exceptionQueue(actor){check(actor?.kind==='admin',403);check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])",[actor.id,['payments:configure','finance:read','finance:approve','finance:configure']])).rowCount,403);return (await db.query(`SELECT provider,event_id,shipment_id,amount_minor,currency,reason,created_at FROM checkout_unapplied_payments UNION ALL SELECT i.provider,'refund:'||r.shipment_id::text,r.shipment_id,r.amount_minor,i.currency,r.reason,r.created_at FROM checkout_refund_requests r JOIN shipment_checkout_intents i ON i.id=r.intent_id WHERE r.status<>'refunded' ORDER BY created_at DESC LIMIT 100`)).rows;},
+  async exceptionQueue(actor){check(actor?.kind==='admin',403);check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])",[actor.id,['payments:configure','finance:read','finance:approve','finance:configure']])).rowCount,403);return (await db.query(`SELECT u.provider,u.event_id,u.shipment_id,u.amount_minor,u.currency,u.reason,u.created_at FROM checkout_unapplied_payments u WHERE NOT EXISTS (SELECT 1 FROM refund_operations ro WHERE (ro.source_key='unapplied:'||u.provider||':'||u.event_id OR ro.source_key LIKE 'unapplied:'||u.provider||':'||u.event_id||':retry:%') AND ro.status='refunded') UNION ALL SELECT i.provider,'refund:'||r.shipment_id::text,r.shipment_id,r.amount_minor,i.currency,r.reason,r.created_at FROM checkout_refund_requests r JOIN shipment_checkout_intents i ON i.id=r.intent_id WHERE r.status<>'refunded' ORDER BY created_at DESC LIMIT 100`)).rows;},
   async reconcileDue({olderThanMinutes,olderThanSeconds,limit=25}={}){
    const minSec=olderThanSeconds!==undefined?olderThanSeconds:(olderThanMinutes!==undefined?olderThanMinutes*60:2);
    check(Number.isInteger(minSec)&&minSec>=0&&Number.isInteger(limit)&&limit>0&&limit<=100,400);

@@ -1200,7 +1200,10 @@ export function renderAdminPortalHtml() {
       const notice = document.getElementById('reconciliationNotice');
       if (notice) notice.textContent = 'Running reconciliation...';
       try {
-        const res = await api('/api/v1/admin/finance/reconciliation');
+        const res = await api('/api/v1/admin/finance/reconciliation', {
+          method: 'POST',
+          body: JSON.stringify({ repair: true })
+        });
         if (notice) {
           const recCount = res.repairRecoveries?.length || 0;
           notice.textContent = 'Completed: ' + recCount + ' auto-recoveries executed.';

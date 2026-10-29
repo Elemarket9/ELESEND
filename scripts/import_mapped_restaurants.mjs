@@ -286,10 +286,13 @@ async function insertBatch(client, batch) {
 }
 
 async function main() {
-  const devUrl = process.env.DATABASE_URL || 'postgres://elesend@127.0.0.1:5433/elesend';
-  const testUrl = process.env.TEST_DATABASE_URL || 'postgres://elesend@127.0.0.1:5433/elesend_test';
-  await importToDb(devUrl, 'elesend (dev)');
-  await importToDb(testUrl, 'elesend_test (test)');
+  const devUrl = process.env.DATABASE_URL;
+  const testUrl = process.env.TEST_DATABASE_URL;
+  if (!devUrl && !testUrl) {
+    throw new Error('Set DATABASE_URL and/or TEST_DATABASE_URL before importing mapped restaurants.');
+  }
+  if (devUrl) await importToDb(devUrl, 'elesend (dev)');
+  if (testUrl) await importToDb(testUrl, 'elesend_test (test)');
 }
 
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)main().catch(err => {

@@ -39,13 +39,14 @@ const routing = (config.routing.vehicleRoutes || config.routing.osrmUrl)
 
 // Routing absence disables quote and dispatch, not authentication/history.
 const dispatch = routing ? dispatchEngine(db, {routing}) : null;
-const notifications=notificationWorker(db,{transport:config.notifications.endpoint?notificationGateway(config.notifications):null});
 
 const sms = config.sms.provider === 'hubtel' && config.sms.hubtel
   ? hubtelSmsGateway(config.sms.hubtel)
   : config.sms.provider === 'https_gateway' && config.sms.httpsGateway
   ? httpsSmsGateway(config.sms.httpsGateway)
   : null;
+
+const notifications=notificationWorker(db,{transport:config.notifications.endpoint?notificationGateway(config.notifications):null,sms});
 
 const app = platform(db, {
   otpKey: config.security.otpKey,
@@ -57,9 +58,9 @@ const app = platform(db, {
 const paymentProvider=createPaymentProvider(config.payment);
 assertPaymentOperations(paymentProvider,{production:config.isProduction});
 const finance=financeService(db,{provider:paymentProvider});
-const checkout=checkoutService(db,{provider:paymentProvider});
+const checkout=checkoutService(db,{provider:paymentProvider,sms,dispatch,routing});
 const money=moneyOperations(db,{provider:paymentProvider});
-const restOrders = restaurantOrderService(db, {platform: app, dispatcher: dispatch, routing,...config.food});
+const restOrders = restaurantOrderService(db, {platform: app, dispatcher: dispatch, routing, sms, ...config.food});
 
 const scheduler = config.server.backgroundJobsEnabled
   ? backgroundJobs({db,dispatch,notifications,restOrders,money,checkout,finance,paymentProvider}).start({unref:true})

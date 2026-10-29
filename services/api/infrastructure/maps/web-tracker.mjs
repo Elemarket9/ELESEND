@@ -85,11 +85,12 @@ export async function getPublicTracking(db, token, {actor=null, secret=null}={})
   SELECT s.id, s.customer_id, s.rider_id, s.state, s.amount_minor, s.created_at, s.completed_at,
          q.request,
          l.latitude AS courier_lat, l.longitude AS courier_lon, l.updated_at AS courier_time,
-         r.vehicle AS rider_vehicle,
-         u.phone AS rider_phone
+         r.vehicle AS rider_vehicle, r.online AS rider_online,
+         u.phone AS rider_phone,
+         (SELECT fresh_seconds FROM dispatch_policy WHERE id=1) AS fresh_seconds
   FROM shipments s
   JOIN quotes q ON q.id=s.quote_id
-  LEFT JOIN locations l ON l.shipment_id=s.id
+  LEFT JOIN locations l ON l.shipment_id=s.id AND l.rider_id=s.rider_id
   LEFT JOIN riders r ON r.id=s.rider_id
   LEFT JOIN users u ON u.id=r.id
   WHERE s.id=$1
@@ -121,22 +122,29 @@ export async function getPublicTracking(db, token, {actor=null, secret=null}={})
 
  const req=row.request||{};
 
- // Courier coordinates should only be revealed while courier is actively en route
+ // Courier coordinates should only be revealed while courier is actively en route and GPS sample is fresh
  const isCourierActive = ['RIDER_ASSIGNED', 'PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(row.state);
- const courier=isCourierActive && Number.isFinite(row.courier_lat)&&Number.isFinite(row.courier_lon)?{
+ const freshWindowMs = Math.max(Number(row.fresh_seconds || 180) * 1000, 10_000);
+ const courierAgeMs = row.courier_time ? (now - new Date(row.courier_time).getTime()) : Infinity;
+ const isCourierFresh = Number.isFinite(courierAgeMs) && courierAgeMs >= -15_000 && courierAgeMs <= freshWindowMs;
+ const courier=isCourierActive && isCourierFresh && Number.isFinite(row.courier_lat)&&Number.isFinite(row.courier_lon)?{
   latitude:row.courier_lat,
   longitude:row.courier_lon,
   updatedAt:row.courier_time,
-  vehicle:row.rider_vehicle||req.vehicle||'motorcycle'
+  vehicle:row.rider_vehicle||req.vehicle||'motorcycle',
+  fresh:true
  }:null;
 
  let etaEstimate=null;
  if(courier&&req.destination&&['IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(row.state)){
   const distMeters=haversine(courier,req.destination);
   const mins=Math.max(1,Math.round((distMeters/1000)/(courier.vehicle==='motorcycle'?28:22)*60));
+  const remKm=Math.round(distMeters/100)/10;
   etaEstimate={
-   remainingDistanceKm:Math.round(distMeters/100)/10,
+   remainingDistanceKm:remKm,
+   distanceKm:remKm,
    estimatedMinutes:mins,
+   minutes:mins,
    estimateType:'straight_line_approximation',
    isRoadVerified:false
   };
@@ -166,6 +174,7 @@ export async function getPublicTracking(db, token, {actor=null, secret=null}={})
    longitude: isPrivilegedView ? (req.destination.longitude ?? null) : null
   } : null,
   courier: isPrivilegedView ? courier : null,
+  courierStale: isPrivilegedView ? Boolean(isCourierActive && (!row.courier_time || !isCourierFresh)) : undefined,
   // Raw riderPhone PII is only exposed to authenticated shipment participants or verified signed tracking tokens
   riderPhone: (isCourierActive && isPrivilegedView) ? (row.rider_phone || null) : null,
   eta:etaEstimate,
@@ -274,14 +283,13 @@ export function renderTrackingHtml(data, trackingTokenOverride = null){
     </div>
    </div>
 
-   ${data.eta?`
-   <div class="eta-card" id="eta-box">
+   <div class="eta-card" id="eta-box" style="${data.eta?'':'display:none;'}">
     <div>
      <div class="eta-label">APPROXIMATE ARRIVAL (STRAIGHT-LINE ESTIMATE)</div>
-     <div class="status-subtitle">~${escapeHtml(data.eta.remainingDistanceKm)} km direct distance</div>
+     <div class="status-subtitle">~${data.eta?escapeHtml(data.eta.remainingDistanceKm):0} km direct distance</div>
     </div>
-    <div class="eta-time">~${escapeHtml(data.eta.estimatedMinutes)} mins</div>
-   </div>`:''}
+    <div class="eta-time">~${data.eta?escapeHtml(data.eta.estimatedMinutes):0} mins</div>
+   </div>
   </div>
 
   <div class="card" style="padding: 10px;">
@@ -346,7 +354,10 @@ export function renderTrackingHtml(data, trackingTokenOverride = null){
     document.getElementById('state-badge').innerText = (fresh.state || '').replace(/_/g, ' ');
     document.getElementById('status-label').innerText = fresh.statusLabel || '';
     if (fresh.eta && document.getElementById('eta-box')) {
+     document.getElementById('eta-box').style.display = 'flex';
      document.getElementById('eta-box').innerHTML = '<div><div class="eta-label">APPROXIMATE ARRIVAL (STRAIGHT-LINE ESTIMATE)</div><div class="status-subtitle">~' + Number(fresh.eta.remainingDistanceKm) + ' km direct distance</div></div><div class="eta-time">~' + Number(fresh.eta.estimatedMinutes) + ' mins</div>';
+    } else if (document.getElementById('eta-box')) {
+     document.getElementById('eta-box').style.display = 'none';
     }
    } catch(e) {}
   }

@@ -26,13 +26,21 @@ export function clientIp(req,trustedCidrs=process.env.TRUSTED_PROXY_CIDRS??''){
  const peer=normalizedIp(req.socket?.remoteAddress)||'unknown';
  const entries=trustedCidrs.split(',').map(s=>s.trim()).filter(Boolean);
  if(!trusted(peer,entries))return peer;
- const h=req.headers?.['x-forwarded-for'];
+ const rawHeader=req.headers?.['x-forwarded-for'];
+ const h=Array.isArray(rawHeader)?rawHeader.join(','):rawHeader;
  if(typeof h!=='string'||h.length>512)return peer;
- const forwarded=h.split(',').map(s=>normalizedIp(s.trim()));
- if(forwarded.length<1||forwarded.length>12||forwarded.some(x=>!x))return peer;
- // Work from right to left; rightmost untrusted hop is the real client.
- for(const ip of [...forwarded,peer].reverse())if(!trusted(ip,entries))return ip;
- return forwarded[0];
+ const rawHops=h.split(',').map(s=>s.trim()).filter(Boolean);
+ if(rawHops.length<1||rawHops.length>12)return peer;
+ // Work from right to left; rightmost untrusted valid hop is the real client.
+ // Ignore any spoofed or malformed entries further to the left.
+ let lastTrustedHop=null;
+ for(let i=rawHops.length-1;i>=0;i--){
+  const ip=normalizedIp(rawHops[i]);
+  if(!ip)return lastTrustedHop||peer;
+  if(!trusted(ip,entries))return ip;
+  lastTrustedHop=ip;
+ }
+ return lastTrustedHop||peer;
 }
 
 export function resolveVerifiedHost(req, trustedCidrs = process.env.TRUSTED_PROXY_CIDRS ?? (process.env.NODE_ENV === 'production' ? '' : '127.0.0.1,::1')) {

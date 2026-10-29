@@ -89,6 +89,171 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   });
   check(!result.invalid,400,'Incorrect verification code');return result;
  },
+ async passwordRecoveryChallenge(input){
+  check(sms&&typeof sms.send==='function',503,'Password recovery SMS unavailable');
+  const v=z.object({phone:z.string().max(30)}).strict().parse(input);
+  const p=phone(v.phone);
+  await limit(db,'pw-recovery:'+hash(p),3,900);
+  const cid=id(),code=newCode();
+  const target=await db.tx(async c=>{
+   const u=(await c.query('SELECT id,phone,kind FROM users WHERE phone=$1 FOR UPDATE',[p])).rows[0];
+   if(!u||u.kind==='admin'){
+    mac(otpKey,['account-recovery-v1',cid,u?.id||'00000000-0000-0000-0000-000000000000',p,code]);
+    if(u?.kind==='admin')await audit(c,u.id,'auth.password_recovery_blocked_admin',u.id);
+    return null;
+   }
+   await limit(c,'pw-recovery-user:'+u.id,3,900);
+   await c.query('UPDATE account_recovery_challenges SET expires_at=now() WHERE user_id=$1 AND consumed_at IS NULL AND expires_at>now()',[u.id]);
+   const digest=mac(otpKey,['account-recovery-v1',cid,u.id,u.phone,code]);
+   await c.query("INSERT INTO account_recovery_challenges(id,user_id,phone,digest,expires_at) VALUES($1,$2,$3,$4,now()+interval '5 minutes')",[cid,u.id,u.phone,digest]);
+   await audit(c,u.id,'auth.password_recovery_requested',u.id);
+   return {userId:u.id,phone:u.phone};
+  });
+  if(target){
+   try{
+    await sms.send({phone:target.phone,code,purpose:'account_recovery',challengeId:cid});
+    await db.tx(async c=>{
+     check((await c.query('UPDATE account_recovery_challenges SET sent=true WHERE id=$1 AND user_id=$2 AND expires_at>now() AND consumed_at IS NULL RETURNING id',[cid,target.userId])).rowCount,409,'Recovery challenge expired before SMS acceptance');
+    });
+   }catch{
+    // Keep public response uniform during SMS transport failures; expire unsent challenge and record privately.
+    await db.tx(async c=>{
+     await c.query('UPDATE account_recovery_challenges SET expires_at=now() WHERE id=$1 AND sent=false',[cid]);
+     await c.query("INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,'account_recovery_sms_failed',$3) ON CONFLICT(id) DO NOTHING",['pw-rec-fail:'+cid,target.userId,JSON.stringify({challengeId:cid,purpose:'account_recovery'})]);
+     await audit(c,target.userId,'auth.password_recovery_sms_failed',cid);
+    }).catch(()=>{});
+   }
+  }
+  return {challengeId:cid,expiresInSeconds:300};
+ },
+ async resetPassword(input){
+  const v=z.object({phone:z.string().max(30),challengeId:uuid,code:z.string().regex(/^\d{6}$/),newPassword:z.string().min(12).max(128)}).strict().parse(input);
+  const p=phone(v.phone);
+  await limit(db,'pw-reset:'+hash(p),10,900);
+  const pw=await passwordHash(v.newPassword);
+  const result=await db.tx(async c=>{
+   const u=(await c.query('SELECT id,phone,kind FROM users WHERE phone=$1 FOR UPDATE',[p])).rows[0];
+   const ch=u&&u.kind!=='admin'
+    ?(await c.query('SELECT *,expires_at>now() AS live FROM account_recovery_challenges WHERE id=$1 AND user_id=$2 FOR UPDATE',[v.challengeId,u.id])).rows[0]
+    :null;
+   const dummyDigest=mac(otpKey,['account-recovery-v1',v.challengeId,u?.id||'00000000-0000-0000-0000-000000000000',p,'000000']);
+   const candidateDigest=mac(otpKey,['account-recovery-v1',ch?.id||v.challengeId,u?.id||'00000000-0000-0000-0000-000000000000',u?.phone||p,v.code]);
+   const codeMatches=equal(ch?.digest||dummyDigest,candidateDigest);
+   if(!u||u.kind==='admin'){
+    if(u?.kind==='admin')await audit(c,u.id,'auth.password_reset_blocked_admin',u.id);
+    return {invalid:true};
+   }
+   if(!ch||!ch.sent||!ch.live||ch.consumed_at||ch.attempts>=5||ch.phone!==u.phone){
+    await audit(c,u.id,'auth.password_recovery_rejected',u.id);
+    return {invalid:true};
+   }
+   if(!codeMatches){
+    const nextAttempts=ch.attempts+1;
+    await c.query('UPDATE account_recovery_challenges SET attempts=$2,expires_at=CASE WHEN $2>=5 THEN now() ELSE expires_at END WHERE id=$1',[ch.id,nextAttempts]);
+    await audit(c,u.id,'auth.password_recovery_rejected',u.id);
+    return {invalid:true};
+   }
+   await c.query('UPDATE account_recovery_challenges SET consumed_at=now() WHERE id=$1',[ch.id]);
+   await c.query('UPDATE users SET password_hash=$2,phone_verified_at=COALESCE(phone_verified_at,now()) WHERE id=$1',[u.id,pw]);
+   const revoked=await c.query('DELETE FROM sessions WHERE user_id=$1',[u.id]);
+   await c.query('UPDATE user_push_tokens SET active=false,session_token_hash=NULL,updated_at=now() WHERE user_id=$1 AND active=true',[u.id]);
+   disconnectRealtimeUser(u.id,'password_reset');
+   await audit(c,u.id,'auth.password_reset_completed',u.id);
+   return {ok:true,revokedSessions:revoked.rowCount};
+  });
+  check(!result.invalid,400,'Incorrect or expired recovery code');
+  return result;
+ },
+ async registerPushToken(actor,input,{sessionToken=null}={}){
+  check(actor?.id,401,'Authentication required');
+  const v=z.object({
+   token:z.string().trim().min(8).max(512).optional(),
+   pushToken:z.string().trim().min(8).max(512).optional(),
+   platform:z.enum(['android','ios','expo','fcm','apns','web']).default('android'),
+   appScope:z.enum(['rider','customer','restaurant']).optional(),
+   channelId:z.string().trim().min(2).max(120).default('elesend-rider-offers'),
+   deviceId:z.string().trim().max(160).optional(),
+   installationId:z.string().trim().max(160).optional(),
+   appState:z.enum(['active','background','inactive']).default('active'),
+   batterySaverEnabled:z.boolean().default(false),
+   backgroundLocationEnabled:z.boolean().default(true)
+  }).strict().parse(input);
+  const rawToken=v.token||v.pushToken;
+  check(rawToken,400,'Push token is required');
+  const scope=v.appScope||(actor.kind==='rider'?'rider':actor.kind==='business'?'restaurant':'customer');
+  const installationId=v.deviceId||v.installationId||null;
+  const sessionTokenHash=typeof sessionToken==='string'&&sessionToken.length===64
+   ?hash(sessionToken)
+   :(actor.sessionTokenHash??null);
+  return db.tx(async c=>{
+   // Serialize concurrent registrations for the same push token or installation and
+   // atomically transfer ownership in a single UNIQUE(push_token) upsert so one device
+   // can never be linked to two accounts simultaneously.
+   const lockKeys=[`push-token:${rawToken}`];
+   if(installationId)lockKeys.push(`push-device:${scope}:${installationId}`);
+   lockKeys.sort();
+   for(const key of lockKeys){
+    await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[key]);
+   }
+   if(installationId){
+    await c.query(
+     `DELETE FROM user_push_tokens
+       WHERE app_scope = $1
+         AND device_id = $2
+         AND push_token <> $3`,
+     [scope,installationId,rawToken]
+    );
+   }
+   const row=(await c.query(
+    `INSERT INTO user_push_tokens(id,user_id,platform,app_scope,push_token,channel_id,device_id,session_token_hash,app_state,battery_saver_enabled,background_location_enabled,active,last_seen_at,updated_at)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true,now(),now())
+     ON CONFLICT(push_token) DO UPDATE
+     SET user_id=EXCLUDED.user_id,
+         platform=EXCLUDED.platform,
+         app_scope=EXCLUDED.app_scope,
+         channel_id=EXCLUDED.channel_id,
+         device_id=CASE
+           WHEN user_push_tokens.user_id=EXCLUDED.user_id
+           THEN COALESCE(EXCLUDED.device_id,user_push_tokens.device_id)
+           ELSE EXCLUDED.device_id
+         END,
+         session_token_hash=CASE
+           WHEN user_push_tokens.user_id=EXCLUDED.user_id
+           THEN COALESCE(EXCLUDED.session_token_hash,user_push_tokens.session_token_hash)
+           ELSE EXCLUDED.session_token_hash
+         END,
+         app_state=EXCLUDED.app_state,
+         battery_saver_enabled=EXCLUDED.battery_saver_enabled,
+         background_location_enabled=EXCLUDED.background_location_enabled,
+         active=true,
+         last_seen_at=now(),
+         updated_at=now()
+     RETURNING id,user_id,platform,app_scope,push_token,channel_id,device_id,session_token_hash,app_state,battery_saver_enabled,background_location_enabled,active,last_seen_at`,
+    [id(),actor.id,v.platform,scope,rawToken,v.channelId,installationId,sessionTokenHash,v.appState,v.batterySaverEnabled,v.backgroundLocationEnabled]
+   )).rows[0];
+   return {ok:true,registration:row};
+  });
+ },
+ async listPushTokens(actor){
+  check(actor?.id,401,'Authentication required');
+  return (await db.query(
+   `SELECT id,platform,app_scope,push_token,channel_id,device_id,app_state,battery_saver_enabled,background_location_enabled,active,last_seen_at
+      FROM user_push_tokens t
+     WHERE t.user_id=$1
+       AND t.active=true
+       AND (
+         t.session_token_hash IS NULL
+         OR EXISTS (
+           SELECT 1 FROM sessions s
+            WHERE s.token_hash=t.session_token_hash
+              AND s.user_id=t.user_id
+              AND s.expires_at>now()
+         )
+       )
+     ORDER BY t.updated_at DESC`,
+   [actor.id]
+  )).rows;
+ },
  async register(input){const v=registration.parse(input);const uid=id(),p=phone(v.phone),pw=await passwordHash(v.password);
   await db.tx(async c=>{await c.query('INSERT INTO users(id,phone,password_hash,kind) VALUES($1,$2,$3,$4)',[uid,p,pw,v.kind]);
    if(v.kind==='rider'){
@@ -106,25 +271,59 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   // Spend equivalent password derivation work for unknown identities.
   const ok=await passwordMatches(v.password,u?.password_hash??('0'.repeat(32)+':'+ '0'.repeat(128)));check(u&&ok,401,'Invalid credentials');
   const token=newToken();
-  if(u.kind==='admin'){
-   check(v.totpCode,401,'Administrator authenticator code required');
-   return db.tx(async c=>{
+  return db.tx(async c=>{
+   const current=(await c.query('SELECT * FROM users WHERE phone=$1 FOR UPDATE',[p])).rows[0];
+   const stillValid=Boolean(current&&current.id===u.id&&current.password_hash===u.password_hash&&(await passwordMatches(v.password,current.password_hash)));
+   check(stillValid,401,'Invalid credentials');
+   if(current.kind==='admin'){
+    check(v.totpCode,401,'Administrator authenticator code required');
     // FOR UPDATE serializes counter consumption across concurrent mobile logins.
-    const factor=(await c.query('SELECT * FROM admin_mfa_credentials WHERE user_id=$1 FOR UPDATE',[u.id])).rows[0];
+    const factor=(await c.query('SELECT * FROM admin_mfa_credentials WHERE user_id=$1 FOR UPDATE',[current.id])).rows[0];
     check(factor,403,'Administrator MFA provisioning required');
-    const secret=decryptAdminSecret(factor.secret_encrypted,u.id,adminMfaKey);
+    const secret=decryptAdminSecret(factor.secret_encrypted,current.id,adminMfaKey);
     const step=verifyAdminTotp(secret,v.totpCode,{lastUsedStep:factor.last_used_step});
     check(step!==null,401,'Invalid or reused authenticator code');
-    await c.query('UPDATE admin_mfa_credentials SET last_used_step=$2 WHERE user_id=$1',[u.id,step]);
-    await c.query("INSERT INTO sessions(token_hash,user_id,expires_at,admin_mfa_verified) VALUES($1,$2,now()+interval '4 hours',true)",[hash(token),u.id]);
-    await audit(c,u.id,'auth.admin_mfa_login',u.id);
-    return {token,user:{id:u.id,kind:u.kind}};
-   });
-  }
-  await db.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '12 hours')",[hash(token),u.id]);return {token,user:{id:u.id,kind:u.kind}};
+    await c.query('UPDATE admin_mfa_credentials SET last_used_step=$2 WHERE user_id=$1',[current.id,step]);
+    await c.query("INSERT INTO sessions(token_hash,user_id,expires_at,admin_mfa_verified) VALUES($1,$2,now()+interval '4 hours',true)",[hash(token),current.id]);
+    await audit(c,current.id,'auth.admin_mfa_login',current.id);
+    return {token,user:{id:current.id,kind:current.kind}};
+   }
+   await c.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '12 hours')",[hash(token),current.id]);
+   return {token,user:{id:current.id,kind:current.kind}};
+  });
  },
- async authenticate(token){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const u=(await db.query("SELECT u.id,u.kind,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR s.admin_mfa_verified=true)",[hash(token)])).rows[0];check(u,401,'Session expired or administrator MFA required');if(u.kind==='rider'){const r=(await db.query("SELECT r.status, c.status AS company_status, r.company_id FROM riders r LEFT JOIN companies c ON c.id=r.company_id WHERE r.id=$1",[u.id])).rows[0];check(r&&r.status==='approved'&&(!r.company_id||r.company_status==='approved'),403,'Rider account suspended or not approved');}if(u.kind==='company'){const c=(await db.query("SELECT status FROM companies WHERE owner_id=$1",[u.id])).rows[0];check(c&&c.status==='approved',403,'Company suspended or not approved');}return u;},
- async logout(token){await db.query('DELETE FROM sessions WHERE token_hash=$1',[hash(token)]);return {ok:true};},
+ async authenticate(token){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const tokenHash=hash(token);const u=(await db.query("SELECT u.id,u.kind,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR s.admin_mfa_verified=true)",[tokenHash])).rows[0];check(u,401,'Session expired or administrator MFA required');if(u.kind==='rider'){const r=(await db.query("SELECT r.status, c.status AS company_status, r.company_id FROM riders r LEFT JOIN companies c ON c.id=r.company_id WHERE r.id=$1",[u.id])).rows[0];check(r&&r.status==='approved'&&(!r.company_id||r.company_status==='approved'),403,'Rider account suspended or not approved');}if(u.kind==='company'){const c=(await db.query("SELECT status FROM companies WHERE owner_id=$1",[u.id])).rows[0];check(c&&c.status==='approved',403,'Company suspended or not approved');}return {...u,sessionTokenHash:tokenHash};},
+ async logout(token,input={},actor=null){
+  const tokenHash=typeof token==='string'&&token.length>0?hash(token):(actor?.sessionTokenHash??null);
+  const deviceId=typeof input?.deviceId==='string'&&input.deviceId.trim().length>0
+   ?input.deviceId.trim()
+   :(typeof input?.installationId==='string'&&input.installationId.trim().length>0?input.installationId.trim():null);
+  const pushToken=typeof input?.pushToken==='string'&&input.pushToken.trim().length>0
+   ?input.pushToken.trim()
+   :(typeof input?.token==='string'&&input.token.trim().length>0?input.token.trim():null);
+  return db.tx(async c=>{
+   const deleted=tokenHash?(await c.query('DELETE FROM sessions WHERE token_hash=$1 RETURNING user_id',[tokenHash])).rows[0]:null;
+   const uid=deleted?.user_id||actor?.id||null;
+   await c.query(
+    `UPDATE user_push_tokens
+        SET active = false,
+            session_token_hash = NULL,
+            updated_at = now()
+      WHERE active = true
+        AND (
+          ($1::text IS NOT NULL AND session_token_hash = $1)
+          OR ($2::uuid IS NOT NULL AND user_id = $2 AND (
+               session_token_hash IS NULL
+               OR ($3::text IS NOT NULL AND device_id = $3)
+               OR ($4::text IS NOT NULL AND push_token = $4)
+               OR NOT EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = $2 AND s.expires_at > now())
+             ))
+        )`,
+    [tokenHash,uid,deviceId,pushToken]
+   );
+   return {ok:true};
+  });
+ },
  async setPricing(actor,input){const v=z.object({baseMinor:z.number().int().min(1).max(1000000),perKmMinor:z.number().int().min(1).max(100000),commissionBps:z.number().int().min(0).max(10000).default(1300),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null),perMinuteMinor:z.number().int().min(0).max(100000).default(0),waitPerMinuteMinor:z.number().int().min(0).max(100000).default(0),perExtraStopMinor:z.number().int().min(0).max(1000000).default(0)}).strict().parse(input);
   return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');await c.query('UPDATE pricing_policies SET active=false WHERE active AND vehicle IS NULL');const pid=id();await c.query('INSERT INTO pricing_policies(id,base_minor,per_km_minor,commission_bps,commission_mode,commission_fixed_minor,commission_cap_minor,per_minute_minor,wait_per_minute_minor,per_extra_stop_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[pid,v.baseMinor,v.perKmMinor,v.commissionBps,v.commissionMode,v.commissionFixedMinor,v.commissionCapMinor,v.perMinuteMinor,v.waitPerMinuteMinor,v.perExtraStopMinor]);await audit(c,actor.id,'pricing.created',pid);return {id:pid};});
  },
@@ -225,6 +424,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   return {...r.rows[0],currency:'GHS',vehicle:v.vehicle??null,pricingEvidence:evidence,surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
  },
  async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business'].includes(actor.kind),403);
+  if(process.env.NODE_ENV==='production')check(sms&&typeof sms.send==='function'&&dispatch,503,'Delivery booking paused: dispatch or SMS verification unavailable');
   return db.tx(async c=>{if(process.env.NODE_ENV==='production')await requireVerifiedPhone(c,actor);await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[actor.id+key]);
    const old=(await c.query('SELECT * FROM shipments WHERE customer_id=$1 AND idempotency_key=$2',[actor.id,key])).rows[0];if(old){check(old.quote_id===v.quoteId,409,'Idempotency key reused with different request');return old;}
    const q=(await c.query('SELECT * FROM quotes WHERE id=$1 AND customer_id=$2 AND expires_at>now() FOR UPDATE',[v.quoteId,actor.id])).rows[0];check(q,409,'Quote unavailable or expired');
@@ -268,14 +468,14 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    return {s,destination:cust.phone};
   };
   const target=await db.tx(async c=>{await rider(c,actor);const {s,destination}=await resolveChallengeRecipient(c);check(s.rider_id===actor.id,403,'Assigned rider required');check(s.verification_authority==='elesend',409,'External verification not enabled');
-   check((purpose==='pickup'?['RIDER_ASSIGNED']:['IN_TRANSIT','AWAITING_DELIVERY_OTP']).includes(s.state),409,'Shipment not eligible for challenge');
+   check((purpose==='pickup'?['RIDER_ASSIGNED']:['PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP']).includes(s.state),409,'Shipment not eligible for challenge');
    const manifest=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
    if(manifest?.stops.length)check(manifest.stops[0].shipmentId===sid&&manifest.stops[0].kind===(purpose==='pickup'?'pickup':'dropoff'),409,'Complete the next verified route stop first');
    await limit(c,'otp:'+sid+':'+purpose,3,900);
-   check(!(await c.query('SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose=$2 AND expires_at>now() AND consumed_at IS NULL',[sid,purpose])).rowCount,409,'Challenge still active');
+   check(!(await c.query('SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose=$2 AND expires_at>now() AND consumed_at IS NULL AND attempts<5',[sid,purpose])).rowCount,409,'Challenge still active');
    const digest=mac(otpKey,[purpose,cid,sid,actor.id,destination,code]);
    await c.query("INSERT INTO challenges(id,shipment_id,rider_id,purpose,phone,digest,expires_at) VALUES($1,$2,$3,$4,$5,$6,now()+interval '5 minutes')",[cid,sid,actor.id,purpose,destination,digest]);
-   if(purpose==='delivery')await c.query("UPDATE shipments SET state='AWAITING_DELIVERY_OTP' WHERE id=$1",[sid]);await audit(c,actor.id,purpose+'.challenge_requested',sid);return destination;
+   if(purpose==='delivery'){if(s.state==='PICKUP_VERIFIED')await c.query("UPDATE shipments SET state='IN_TRANSIT' WHERE id=$1",[sid]);await c.query("UPDATE shipments SET state='AWAITING_DELIVERY_OTP' WHERE id=$1",[sid]);await c.query("UPDATE food_orders SET state='IN_TRANSIT',updated_at=now() WHERE shipment_id=$1 AND state IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')",[sid]);}await audit(c,actor.id,purpose+'.challenge_requested',sid);return destination;
   });
   try{await sms.send({phone:target,code,purpose,challengeId:cid});await db.tx(async c=>{
     const current=await locked(c,sid);
@@ -288,9 +488,9 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    }});check(false,503,'SMS delivery unavailable; shipment requires recovery');}
   return {challengeId:cid,expiresInSeconds:300};
  },
- async verify(actor,sid,input){const v=z.object({challengeId:uuid,code:z.string().regex(/^\d{6}$/)}).strict().parse(input);
+ async verify(actor,sid,input){const v=z.object({challengeId:uuid.optional(),code:z.string().regex(/^\d{6}$/)}).strict().parse(input);
   const result=await db.tx(async c=>{await rider(c,actor);const s=await locked(c,sid);check(s.rider_id===actor.id,403,'Assigned rider required');
-   const ch=(await c.query('SELECT *,expires_at>now() AS live FROM challenges WHERE id=$1 AND shipment_id=$2 AND rider_id=$3 FOR UPDATE',[v.challengeId,sid,actor.id])).rows[0];
+   const ch=(v.challengeId?await c.query('SELECT *,expires_at>now() AS live FROM challenges WHERE id=$1 AND shipment_id=$2 AND rider_id=$3 FOR UPDATE',[v.challengeId,sid,actor.id]):await c.query('SELECT *,expires_at>now() AS live FROM challenges WHERE shipment_id=$1 AND rider_id=$2 AND sent=true AND consumed_at IS NULL AND expires_at>now() AND attempts<5 ORDER BY created_at DESC LIMIT 1 FOR UPDATE',[sid,actor.id])).rows[0];
    check(ch&&ch.sent&&ch.live&&!ch.consumed_at&&ch.attempts<5,409,'Challenge unavailable');
    check(s.state===(ch.purpose==='pickup'?'RIDER_ASSIGNED':'AWAITING_DELIVERY_OTP'),409,'Wrong delivery state');
    const pending=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
@@ -301,7 +501,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     expectedPhone=fo?(fo.restaurant_phone||fo.owner_phone):(await c.query('SELECT phone FROM users WHERE id=$1',[s.customer_id])).rows[0]?.phone;
    }
    check(Boolean(expectedPhone)&&ch.phone===expectedPhone,409,'Challenge recipient mismatch');
-   if(!equal(ch.digest,mac(otpKey,[ch.purpose,ch.id,sid,actor.id,expectedPhone,v.code]))){await c.query('UPDATE challenges SET attempts=attempts+1 WHERE id=$1',[ch.id]);await audit(c,actor.id,'otp.rejected',sid);
+   if(!equal(ch.digest,mac(otpKey,[ch.purpose,ch.id,sid,actor.id,expectedPhone,v.code]))){await c.query('UPDATE challenges SET attempts=attempts+1,expires_at=CASE WHEN attempts+1>=5 THEN now() ELSE expires_at END WHERE id=$1',[ch.id]);await audit(c,actor.id,'otp.rejected',sid);
     if(ch.attempts+1>=5&&await featureService(c).enabled('fraud_signals')){
      const signals=detectFraudSignals({otpFailures:ch.attempts+1});
      for(const risk of signals.signals)await c.query('INSERT INTO operational_risk_signals(rider_id,shipment_id,signal_code,severity,evidence) VALUES($1,$2,$3,$4,$5)',[actor.id,sid,risk.code,risk.severity,JSON.stringify({challengeId:ch.id,attempts:ch.attempts+1})]);
@@ -317,6 +517,13 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     if(s.payment_method==='CASH'&&s.cash_payer==='sender')check((await c.query("SELECT 1 FROM cash_collections WHERE shipment_id=$1 AND cash_payer='sender' AND reported_status='reported_full' AND reported_minor=$2",[sid,s.amount_minor])).rowCount,409,'Full sender cash collection required before normal pickup; report shortfall and use dispute/exception flow');
     await c.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[sid]);
     await c.query("UPDATE food_orders SET state='IN_TRANSIT', updated_at=now() WHERE shipment_id=$1 AND state IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')",[sid]);
+    await c.query(
+     `INSERT INTO locations(shipment_id,rider_id,latitude,longitude,updated_at)
+      SELECT $1,$2,ST_Y(current_position::geometry),ST_X(current_position::geometry),COALESCE(position_at,now())
+      FROM riders WHERE id=$2 AND current_position IS NOT NULL
+      ON CONFLICT(shipment_id) DO UPDATE SET rider_id=EXCLUDED.rider_id,latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,updated_at=EXCLUDED.updated_at`,
+     [sid,actor.id]
+    );
    }
    else {
     if(s.payment_method==='CASH'){
@@ -324,6 +531,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
      check(collection&&collection.reported_status==='reported_full'&&Number(collection.reported_minor)===Number(s.amount_minor),409,'Full cash collection report required for normal handover. Open a payment dispute or exception/return flow for unpaid or partial cash.');
     }else check(s.paid,409,'Digital payment must be verified');
     await c.query("UPDATE shipments SET state='COMPLETED',completed_at=now() WHERE id=$1",[sid]);
+    await c.query('DELETE FROM locations WHERE shipment_id=$1',[sid]);
     const fo=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[sid])).rows[0];
     if(fo){
      const food=fo;
@@ -369,6 +577,9 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    }else check(s.rider_id===actor.id,403,'Assigned rider required');
    if(v.action!=='start')check(v.reason,400,'Reason required');
    await c.query('UPDATE shipments SET state=$2 WHERE id=$1',[sid,to]);
+   if(['cancel','returned','fail'].includes(v.action)){
+    await c.query('DELETE FROM locations WHERE shipment_id=$1',[sid]);
+   }
    if(v.action==='returned'){
     const plan=s.rider_id?(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[s.rider_id])).rows[0]:null;
     if(plan)await c.query('UPDATE rider_dispatch_plans SET stops=$2,revision=revision+1,updated_at=now() WHERE rider_id=$1',[s.rider_id,JSON.stringify(removeShipment(plan.stops,sid))]);
@@ -409,15 +620,52 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
      check(distMeters/Math.max(dtSeconds,5)<=60,422,'Impossible GPS velocity leap rejected');
     }
    }
-   await c.query('INSERT INTO locations(shipment_id,rider_id,latitude,longitude) VALUES($1,$2,$3,$4) ON CONFLICT(shipment_id) DO UPDATE SET latitude=$3,longitude=$4,updated_at=now()',[sid,actor.id,v.latitude,v.longitude]);
+   await c.query('INSERT INTO locations(shipment_id,rider_id,latitude,longitude) VALUES($1,$2,$3,$4) ON CONFLICT(shipment_id) DO UPDATE SET rider_id=$2,latitude=$3,longitude=$4,updated_at=now()',[sid,actor.id,v.latitude,v.longitude]);
    return {ok:true};
   });
  },
- async tracking(actor,sid){await this.get(actor,sid);return (await db.query("SELECT latitude,longitude,updated_at FROM locations WHERE shipment_id=$1 AND updated_at>now()-interval '24 hours'",[sid])).rows[0]??null;},
- async dispute(actor,sid,input){const v=z.object({category:z.enum(['lost','damaged','payment','misconduct','address','other']),detail:z.string().min(5).max(2000)}).strict().parse(input);await this.get(actor,sid);return db.tx(async c=>{await locked(c,sid);const did=id();await c.query('INSERT INTO disputes(id,shipment_id,reporter_id,category,detail) VALUES($1,$2,$3,$4,$5)',[did,sid,actor.id,v.category,v.detail]);await audit(c,actor.id,'dispute.opened',sid);return {id:did};});},
+ async tracking(actor,sid){
+  const s=await this.get(actor,sid);
+  if(!s.rider_id||!['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state))return null;
+  return (await db.query(
+   `SELECT l.latitude,l.longitude,l.updated_at
+    FROM locations l
+    WHERE l.shipment_id=$1
+      AND l.rider_id=$2
+      AND l.updated_at >= now() - make_interval(secs => COALESCE((SELECT fresh_seconds FROM dispatch_policy WHERE id=1), 180))`,
+   [sid,s.rider_id]
+  )).rows[0]??null;
+ },
+ async dispute(actor,sid,input){
+  const v=z.object({
+   category:z.enum(['lost','damaged','missing_items','quality','payment','misconduct','address','other']),
+   detail:z.string().min(5).max(2000),
+   items:z.array(z.object({
+    foodOrderItemId:uuid.optional(),
+    menuItemId:uuid.optional(),
+    name:z.string().max(200).optional(),
+    quantity:z.number().int().min(1).max(100),
+    amountMinor:z.number().int().min(1).max(100000000).optional()
+   }).strict()).max(50).optional(),
+   requestedRefundMinor:z.number().int().min(1).max(100000000).optional()
+  }).strict().parse(input);
+  await this.get(actor,sid);
+  return db.tx(async c=>{
+   await locked(c,sid);
+   const did=id();
+   await c.query(
+    'INSERT INTO disputes(id,shipment_id,reporter_id,category,detail,items_json,requested_refund_minor) VALUES($1,$2,$3,$4,$5,$6,$7)',
+    [did,sid,actor.id,v.category,v.detail,JSON.stringify(v.items||[]),v.requestedRefundMinor??null]
+   );
+   await audit(c,actor.id,'dispute.opened',sid);
+   return {id:did};
+  });
+ },
  async earnings(actor){return (await db.query('SELECT f.* FROM financial_entries f WHERE f.beneficiary_id=$1 OR f.beneficiary_id IN (SELECT id FROM companies WHERE owner_id=$1) ORDER BY f.created_at DESC LIMIT 100',[actor.id])).rows;},
  async reviewQueue(actor){await permission(db,actor,'verification:write');return {riders:(await db.query('SELECT r.id,u.phone,r.company_id,r.status,r.vehicle,r.max_weight_g FROM riders r LEFT JOIN users u ON u.id=r.id ORDER BY r.id LIMIT 100')).rows,companies:(await db.query('SELECT id,name,status FROM companies ORDER BY name LIMIT 100')).rows,vehicles:(await db.query('SELECT * FROM rider_vehicle_registrations ORDER BY submitted_at DESC LIMIT 100')).rows};}
  ,
-  routing
+  routing,
+  dispatch,
+  sms
  };
 }

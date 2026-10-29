@@ -48,17 +48,20 @@ export async function digitalDeliveryCompleted(c,shipment){
  const food=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1',[shipment.id])).rows[0];
  if(food&&Number(food.subtotal_minor)>0){
   const subtotal=Number(food.subtotal_minor),commission=Number(food.food_commission_minor);
-  const restDiscount=Number(food.restaurant_funded_discount_minor||0);
+  const rawRestDiscount=Number(food.restaurant_funded_discount_minor||0);
   const elesendSubsidy=Number(food.elesend_funded_discount_minor||0);
+  const restDiscount=Math.min(rawRestDiscount,Math.max(0,subtotal-commission));
+  const restDeliveryDiscountExcess=Math.max(0,rawRestDiscount-restDiscount);
   check(
    Number.isSafeInteger(subtotal)&&Number.isSafeInteger(commission)&&
-   Number.isSafeInteger(restDiscount)&&Number.isSafeInteger(elesendSubsidy)&&
-   restDiscount>=0&&elesendSubsidy>=0&&commission>=0&&
+   Number.isSafeInteger(rawRestDiscount)&&Number.isSafeInteger(elesendSubsidy)&&
+   rawRestDiscount>=0&&elesendSubsidy>=0&&commission>=0&&
    restDiscount+commission<=subtotal,
    409,'Invalid food settlement amounts'
   );
-  entries[0][2]+=subtotal-restDiscount-elesendSubsidy;
+  entries[0][2]+=subtotal-rawRestDiscount-elesendSubsidy;
   if(elesendSubsidy>0)entries.push(['platform_promotion_subsidy_expense','debit',elesendSubsidy]);
+  if(restDeliveryDiscountExcess>0)entries.push(['platform_promotion_subsidy_expense','debit',restDeliveryDiscountExcess]);
   const restPayable=subtotal-restDiscount-commission;
   if(restPayable>0)entries.push(['restaurant_payable','credit',restPayable]);
   if(commission>0)entries.push(['platform_food_commission_revenue','credit',commission]);

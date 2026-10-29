@@ -21,7 +21,7 @@ checksum_file="${file}.sha256"
 
 # 1. Generate encrypted custom-format PostgreSQL dump
 docker compose -f deploy/runtime/compose.yaml --env-file "$ELESEND_ENV_FILE" exec -T db sh -c \
-  'export PGPASSWORD="$POSTGRES_PASSWORD"; pg_dump --host=127.0.0.1 --username=elesend --dbname=elesend --format=custom --no-owner' \
+  'export PGPASSWORD="$POSTGRES_PASSWORD"; pg_dump --host=127.0.0.1 --username="${POSTGRES_USER:-elesend}" --dbname="${POSTGRES_DB:-elesend}" --format=custom --no-owner' \
   | gpg --batch --yes --pinentry-mode loopback --symmetric --cipher-algo AES256 --passphrase-file "$GPG_PASSPHRASE_FILE" --output "$work/$file"
 
 test -s "$work/$file"

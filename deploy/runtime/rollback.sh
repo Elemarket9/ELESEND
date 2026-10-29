@@ -27,17 +27,17 @@ if [ "${RESTORE}" = true ]; then
   dc up -d db
   READY=false
   for ((attempt=0;attempt<30;attempt++)); do
-    if dc exec -T db pg_isready -U elesend -d elesend >/dev/null; then READY=true; break; fi
+    if dc exec -T db pg_isready -U "${POSTGRES_USER:-elesend}" -d "${POSTGRES_DB:-elesend}" >/dev/null; then READY=true; break; fi
     sleep 1
   done
   [ "${READY}" = true ] || { echo 'Database not ready; no restore attempted'; exit 1; }
   printf -v RESTORE_TIMESTAMP '%(%Y%m%dT%H%M%SZ)T' -1
   SAFETY_BACKUP="${BACKUP_DIR}/before-explicit-restore-${RESTORE_TIMESTAMP}.sql"
-  dc exec -T db pg_dump -U elesend elesend > "${SAFETY_BACKUP}"
+  dc exec -T db pg_dump -U "${POSTGRES_USER:-elesend}" "${POSTGRES_DB:-elesend}" > "${SAFETY_BACKUP}"
   [ -s "${SAFETY_BACKUP}" ]
   # Single transaction: a SQL error rolls back the schema drop and entire restore.
   { printf 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;\n'; while IFS= read -r line || [ -n "$line" ]; do printf '%s\n' "$line"; done < "${SNAPSHOT_FILE}"; } |
-    dc exec -T db psql -X --single-transaction -v ON_ERROR_STOP=1 -U elesend -d elesend
+    dc exec -T db psql -X --single-transaction -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-elesend}" -d "${POSTGRES_DB:-elesend}"
 fi
 docker tag elesend-api:previous elesend-api:latest
 export ELESEND_API_IMAGE=elesend-api:latest
@@ -45,8 +45,8 @@ dc up -d --no-build --no-deps api caddy
 for ((attempt=0;attempt<30;attempt++)); do
   if dc exec -T api node --input-type=module -e '
     const token=process.env.READINESS_PROBE_TOKEN;
-    if(!token)process.exit(1);
-    const response=await fetch("http://127.0.0.1:"+(process.env.PORT||3090)+"/ready",{headers:{"x-elesend-health-token":token}});
+    const headers=token?{"x-elesend-health-token":token,"x-readiness-token":token}:{};
+    const response=await fetch("http://127.0.0.1:"+(process.env.PORT||3090)+"/readyz",{headers});
     if(!response.ok)process.exit(1);
   '; then echo 'Previous image is ready; database preserved unless explicit restore was requested'; exit 0; fi
   sleep 1

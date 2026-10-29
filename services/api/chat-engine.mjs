@@ -67,11 +67,196 @@ function maskDisplayName(userRow, role, restaurantRow = null) {
   return userRow?.name ? `${userRow.name} (Customer)` : 'Customer';
 }
 
-// Shared in-process realtime pub/sub & ephemeral typing state across HTTP/SSE/WebSocket connections
-const realtimeClients = new Map(); // userId -> Set<{ send(event, payload), conversationIds: Set, close() }>
-const ephemeralTyping = new Map(); // `${conversationId}:${userId}` -> { userId, role, expiresAt }
+// Shared multi-instance realtime pub/sub & ephemeral typing state across HTTP/SSE/WebSocket connections
+// Uses Symbol.for('elesend.realtime.bus') across module instances + PostgreSQL LISTEN/NOTIFY across processes.
+const REALTIME_BUS_KEY = Symbol.for('elesend.realtime.bus');
+if (!globalThis[REALTIME_BUS_KEY]) {
+  globalThis[REALTIME_BUS_KEY] = {
+    nodeId: randomUUID(),
+    clients: new Map(), // userId -> Set<{ send(event, payload), conversationIds: Set, close() }>
+    typing: new Map(),  // `${conversationId}:${userId}` -> { userId, role, expiresAt }
+    dbs: new Set(),
+    bridges: new WeakMap()
+  };
+}
+const realtimeBus = globalThis[REALTIME_BUS_KEY];
+const realtimeClients = realtimeBus.clients;
+const ephemeralTyping = realtimeBus.typing;
 
-export function publishRealtimeToUsers(userIds, event, payload) {
+export function createRealtimeEventDeduplicator(maxSize = 1000) {
+  const seen = new Set();
+  return {
+    accept(eventOrPayload, maybePayload) {
+      const payload = maybePayload !== undefined ? maybePayload : eventOrPayload;
+      const eventId =
+        payload?.eventId ||
+        eventOrPayload?.eventId ||
+        (payload?.conversationId && payload?.id ? `${payload.conversationId}:${payload.id}` : null);
+      if (!eventId) return true;
+      if (seen.has(eventId)) return false;
+      seen.add(eventId);
+      if (seen.size > maxSize) {
+        const oldest = seen.values().next().value;
+        seen.delete(oldest);
+      }
+      return true;
+    },
+    has(eventId) {
+      return seen.has(eventId);
+    },
+    get size() {
+      return seen.size;
+    }
+  };
+}
+
+async function broadcastCrossInstance(envelope, { db: targetDb = null, throwOnError = false } = {}) {
+  const serialized = JSON.stringify({ ...envelope, originNodeId: realtimeBus.nodeId, ts: Date.now() });
+  if (targetDb && typeof targetDb.query === 'function') {
+    try {
+      await targetDb.query("SELECT pg_notify('elesend_realtime', $1)", [serialized]);
+      return true;
+    } catch (err) {
+      if (throwOnError) throw err;
+      return false;
+    }
+  }
+  let lastErr = null;
+  for (const db of realtimeBus.dbs) {
+    if (db && typeof db.query === 'function') {
+      try {
+        await db.query("SELECT pg_notify('elesend_realtime', $1)", [serialized]);
+        return true;
+      } catch (err) {
+        lastErr = err;
+      }
+      break;
+    }
+  }
+  if (lastErr && throwOnError) throw lastErr;
+  return false;
+}
+
+function applyRealtimeEnvelopeLocally(envelope) {
+  if (!envelope || typeof envelope !== 'object') return;
+  if (envelope.type === 'publish') {
+    deliverRealtimeToLocalUsers(envelope.userIds, envelope.event, envelope.payload);
+  } else if (envelope.type === 'revoke_conversation') {
+    disconnectLocalRevokedUserFromConversation(envelope.userId, envelope.conversationId, envelope.reason);
+  } else if (envelope.type === 'revoke_session') {
+    disconnectLocalRealtimeSession(envelope.sessionToken, envelope.reason);
+  } else if (envelope.type === 'revoke_user') {
+    disconnectLocalRealtimeUser(envelope.userId, envelope.reason);
+  }
+}
+
+async function ensureRealtimePgListener(db) {
+  if (!db?.pool || typeof db.pool.connect !== 'function') return;
+  let state = realtimeBus.bridges.get(db);
+  if (state && (state.connecting || state.client)) return;
+  if (!state) {
+    state = { connecting: false, client: null, stop: null, reconnectTimer: null, stopped: false };
+    realtimeBus.bridges.set(db, state);
+  }
+  if (state.stopped) return;
+  if (state.reconnectTimer) {
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+  }
+  state.connecting = true;
+  try {
+    const client = await db.pool.connect();
+    if (state.stopped) {
+      state.connecting = false;
+      try { client.release(); } catch {}
+      return;
+    }
+    state.client = client;
+    state.connecting = false;
+    client.connection?.stream?.unref?.();
+    const onNotification = msg => {
+      if (msg?.channel !== 'elesend_realtime' || !msg.payload) return;
+      try {
+        const parsed = JSON.parse(msg.payload);
+        if (parsed.originNodeId === realtimeBus.nodeId) return;
+        applyRealtimeEnvelopeLocally(parsed);
+      } catch {}
+    };
+    const cleanup = (destroySocket = true) => {
+      client.removeListener('notification', onNotification);
+      if (state.client === client) {
+        state.client = null;
+        state.connecting = false;
+        try { client.release(destroySocket); } catch {}
+        if (destroySocket && !state.stopped && realtimeBus.dbs.has(db) && realtimeClients.size > 0 && !state.reconnectTimer) {
+          state.reconnectTimer = setTimeout(() => {
+            state.reconnectTimer = null;
+            if (!state.stopped && realtimeBus.dbs.has(db) && realtimeClients.size > 0) {
+              ensureRealtimePgListener(db).catch(() => {});
+            }
+          }, 150);
+          state.reconnectTimer.unref?.();
+        }
+      }
+    };
+    state.stop = async () => {
+      state.stopped = true;
+      if (state.reconnectTimer) {
+        clearTimeout(state.reconnectTimer);
+        state.reconnectTimer = null;
+      }
+      try { await client.query('UNLISTEN elesend_realtime'); } catch {}
+      cleanup(false);
+    };
+    client.on('notification', onNotification);
+    client.once('error', () => cleanup(true));
+    client.once('end', () => cleanup(true));
+    await client.query('LISTEN elesend_realtime');
+  } catch {
+    state.connecting = false;
+    state.client = null;
+    if (!state.stopped && realtimeBus.dbs.has(db) && realtimeClients.size > 0 && !state.reconnectTimer) {
+      state.reconnectTimer = setTimeout(() => {
+        state.reconnectTimer = null;
+        if (!state.stopped && realtimeBus.dbs.has(db) && realtimeClients.size > 0) {
+          ensureRealtimePgListener(db).catch(() => {});
+        }
+      }, 250);
+      state.reconnectTimer.unref?.();
+    }
+  }
+}
+
+export function attachRealtimeDatabaseBridge(db) {
+  if (!db?.pool || typeof db.pool.connect !== 'function' || typeof db.query !== 'function') return;
+  const existingState = realtimeBus.bridges.get(db);
+  if (existingState) existingState.stopped = false;
+  realtimeBus.dbs.add(db);
+  if (typeof db.close === 'function' && !db._realtimeWrappedClose) {
+    const origClose = db.close.bind(db);
+    db._realtimeWrappedClose = true;
+    db.close = async (...args) => {
+      realtimeBus.dbs.delete(db);
+      const bridge = realtimeBus.bridges.get(db);
+      if (bridge) {
+        bridge.stopped = true;
+        if (bridge.reconnectTimer) {
+          clearTimeout(bridge.reconnectTimer);
+          bridge.reconnectTimer = null;
+        }
+        if (bridge.stop) {
+          await bridge.stop().catch(() => {});
+        }
+      }
+      return origClose(...args);
+    };
+  }
+  if (realtimeClients.size > 0) {
+    return ensureRealtimePgListener(db).catch(() => {});
+  }
+}
+
+function deliverRealtimeToLocalUsers(userIds, event, payload) {
   const uniqueIds = [...new Set((userIds || []).filter(Boolean).map(String))];
   const now = Date.now();
   for (const uid of uniqueIds) {
@@ -87,6 +272,9 @@ export function publishRealtimeToUsers(userIds, event, payload) {
           conns.delete(conn);
           continue;
         }
+        if (conn._deduplicator && payload?.eventId && !conn._deduplicator.accept(event, payload)) {
+          continue;
+        }
         if (!conn.conversationIds || conn.conversationIds.size === 0 || !payload?.conversationId || conn.conversationIds.has(payload.conversationId)) {
           conn.send(event, payload);
         }
@@ -98,7 +286,44 @@ export function publishRealtimeToUsers(userIds, event, payload) {
   }
 }
 
-export function disconnectRevokedUserFromConversation(userId, conversationId, reason = 'access_revoked') {
+export async function publishRealtimeToUsers(userIds, event, payload, options = {}) {
+  const uniqueIds = [...new Set((userIds || []).filter(Boolean).map(String))];
+  const stablePayload =
+    payload && typeof payload === 'object' && options?.eventId && !payload.eventId
+      ? { ...payload, eventId: options.eventId }
+      : payload;
+  deliverRealtimeToLocalUsers(uniqueIds, event, stablePayload);
+  if (typeof options?.publishTransport === 'function') {
+    await options.publishTransport({
+      eventId: stablePayload?.eventId || options?.eventId || null,
+      userIds: uniqueIds,
+      event,
+      payload: stablePayload
+    });
+  }
+  await broadcastCrossInstance(
+    {
+      type: 'publish',
+      eventId: stablePayload?.eventId || options?.eventId || null,
+      userIds: uniqueIds,
+      event,
+      payload: stablePayload
+    },
+    options
+  );
+}
+
+export function emitRealtimeUserEvent(userId, eventOrPayload, maybePayload) {
+  if (!userId) return;
+  if (typeof eventOrPayload === 'object' && eventOrPayload !== null && maybePayload === undefined) {
+    const evtName = eventOrPayload.type || eventOrPayload.event || 'notification';
+    publishRealtimeToUsers([String(userId)], evtName, eventOrPayload);
+    return;
+  }
+  publishRealtimeToUsers([String(userId)], eventOrPayload, maybePayload);
+}
+
+function disconnectLocalRevokedUserFromConversation(userId, conversationId, reason = 'access_revoked') {
   const conns = realtimeClients.get(String(userId));
   if (!conns) return;
   for (const conn of [...conns]) {
@@ -117,7 +342,12 @@ export function disconnectRevokedUserFromConversation(userId, conversationId, re
   }
 }
 
-export function disconnectRealtimeSession(sessionToken, reason = 'session_revoked') {
+export function disconnectRevokedUserFromConversation(userId, conversationId, reason = 'access_revoked') {
+  disconnectLocalRevokedUserFromConversation(userId, conversationId, reason);
+  broadcastCrossInstance({ type: 'revoke_conversation', userId: String(userId), conversationId, reason });
+}
+
+function disconnectLocalRealtimeSession(sessionToken, reason = 'session_revoked') {
   if (!sessionToken) return 0;
   let closed = 0;
   for (const [uid, conns] of realtimeClients.entries()) {
@@ -136,7 +366,13 @@ export function disconnectRealtimeSession(sessionToken, reason = 'session_revoke
   return closed;
 }
 
-export function disconnectRealtimeUser(userId, reason = 'account_suspended') {
+export function disconnectRealtimeSession(sessionToken, reason = 'session_revoked') {
+  const closed = disconnectLocalRealtimeSession(sessionToken, reason);
+  broadcastCrossInstance({ type: 'revoke_session', sessionToken, reason });
+  return closed;
+}
+
+function disconnectLocalRealtimeUser(userId, reason = 'account_suspended') {
   if (!userId) return 0;
   const conns = realtimeClients.get(String(userId));
   if (!conns) return 0;
@@ -153,18 +389,38 @@ export function disconnectRealtimeUser(userId, reason = 'account_suspended') {
   return closed;
 }
 
+export function disconnectRealtimeUser(userId, reason = 'account_suspended') {
+  const closed = disconnectLocalRealtimeUser(userId, reason);
+  broadcastCrossInstance({ type: 'revoke_user', userId: String(userId), reason });
+  return closed;
+}
+
 export function registerRealtimeConnection(userId, conn, options = {}) {
   const uid = String(userId);
   if (options?.expiresAt && !conn.expiresAt) {
     conn.expiresAt = options.expiresAt;
   }
+  if ((options?.deduplicate || conn?.deduplicate) && !conn._deduplicator) {
+    conn._deduplicator = createRealtimeEventDeduplicator();
+  }
   if (!realtimeClients.has(uid)) realtimeClients.set(uid, new Set());
   realtimeClients.get(uid).add(conn);
+  for (const db of realtimeBus.dbs) {
+    const bridge = realtimeBus.bridges.get(db);
+    if (bridge) bridge.stopped = false;
+    ensureRealtimePgListener(db).catch(() => {});
+  }
   return () => {
     const set = realtimeClients.get(uid);
     if (set) {
       set.delete(conn);
       if (set.size === 0) realtimeClients.delete(uid);
+    }
+    if (realtimeClients.size === 0) {
+      for (const db of realtimeBus.dbs) {
+        const bridge = realtimeBus.bridges.get(db);
+        if (bridge?.stop) bridge.stop().catch(() => {});
+      }
     }
   };
 }
@@ -222,7 +478,7 @@ export function upgradeToChatWebSocket(req, socket, head, { actor, sessionToken 
     conversationIds: initialConversationId ? new Set([initialConversationId]) : new Set(),
     singleConversationId: initialConversationId || null,
     send(event, data) {
-      sendWsJson({ event, data, ts: new Date().toISOString() });
+      sendWsJson({ eventId: data?.eventId || null, event, data, ts: new Date().toISOString() });
     },
     close() {
       try {
@@ -234,7 +490,7 @@ export function upgradeToChatWebSocket(req, socket, head, { actor, sessionToken 
     }
   };
 
-  const unregister = registerRealtimeConnection(actor.id, conn, { expiresAt: calculatedExpiresAt });
+  const unregister = registerRealtimeConnection(actor.id, conn, { expiresAt: calculatedExpiresAt, deduplicate: true });
 
   let buffer = head && head.length ? Buffer.from(head) : Buffer.alloc(0);
 
@@ -308,8 +564,63 @@ export function upgradeToChatWebSocket(req, socket, head, { actor, sessionToken 
   conn.send('connected', { userId: actor.id, role: actor.kind });
 }
 
-export function chatEngine(db) {
+export function chatEngine(db, options = {}) {
   check(db && typeof db.query === 'function', 500, 'Database instance required for chatEngine');
+  attachRealtimeDatabaseBridge(db);
+  const customPublishTransport = typeof options?.publishTransport === 'function' ? options.publishTransport : null;
+
+  async function currentEventRecipients(userIds, conversationId) {
+    if (!conversationId || !userIds.length) return [];
+    return (await db.query(`SELECT p.user_id FROM chat_participants p
+      JOIN chat_conversations c ON c.id=p.conversation_id
+      LEFT JOIN shipments s ON s.id=c.shipment_id
+      WHERE p.conversation_id=$1 AND p.user_id=ANY($2::uuid[])
+        AND p.membership_status='active'
+        AND (p.role<>'rider' OR s.rider_id=p.user_id)`, [conversationId,userIds])).rows.map(r=>r.user_id);
+  }
+
+  async function publishClaimedOutboxEvent(outboxEvent) {
+    if (!outboxEvent?.id) return false;
+    const claimerId = String(options?.workerId || realtimeBus.nodeId);
+    try {
+      const claimRes = await db.query(
+        `UPDATE chat_realtime_outbox
+            SET claimed_by = $2,
+                claimed_at = clock_timestamp(),
+                lease_expires_at = clock_timestamp() + ($3::int * interval '1 second'),
+                attempts = attempts + 1
+          WHERE id = $1
+            AND published_at IS NULL
+            AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
+          RETURNING id`,
+        [outboxEvent.id, claimerId, 30]
+      );
+      if (claimRes && claimRes.rowCount === 0) {
+        return false;
+      }
+      const stablePayload = outboxEvent.payload?.eventId
+        ? outboxEvent.payload
+        : { ...(outboxEvent.payload || {}), eventId: outboxEvent.id };
+      await publishRealtimeToUsers(await currentEventRecipients(outboxEvent.userIds || [], stablePayload.conversationId), outboxEvent.event, stablePayload, {
+        db,
+        eventId: stablePayload.eventId,
+        throwOnError: true,
+        publishTransport: customPublishTransport
+      });
+      await db.query(
+        `UPDATE chat_realtime_outbox SET published_at = now(), lease_expires_at = NULL, last_error = NULL WHERE id = $1 AND published_at IS NULL`,
+        [outboxEvent.id]
+      );
+      return true;
+    } catch (err) {
+      const errMsg = String(err?.message || err || 'Realtime outbox publish failed');
+      await db.query(
+        `UPDATE chat_realtime_outbox SET last_error = $2 WHERE id = $1 AND published_at IS NULL`,
+        [outboxEvent.id, errMsg]
+      ).catch(() => {});
+      return false;
+    }
+  }
 
   async function loadPolicy(c = db) {
     const row = (await c.query('SELECT * FROM chat_messaging_policy WHERE id = true')).rows[0];
@@ -1064,7 +1375,7 @@ export function chatEngine(db) {
       const v = schema.parse(input);
       const rawBodyText = v.body ?? v.bodyText ?? '';
 
-      return db.tx(async c => {
+      const txResult = await db.tx(async c => {
         const { conv, participant, shipment, policy } = await authorizeConversationAccess(c, actor, conversationId, {
           requireSendable: true,
           supportJustification: 'Support agent sending message'
@@ -1077,7 +1388,7 @@ export function chatEngine(db) {
           [conv.id, actor.id, v.clientMessageId]
         )).rows[0];
         if (existingMsg) {
-          return { ...this.formatMessage(existingMsg), duplicate: true };
+          return { response: { ...this.formatMessage(existingMsg), duplicate: true }, outboxEvent: null };
         }
 
         // Enforce per-user rate limit
@@ -1215,17 +1526,27 @@ export function chatEngine(db) {
           );
         }
 
-        // Clear sender typing indicator
-        ephemeralTyping.delete(`${conv.id}:${actor.id}`);
-
-        const formatted = this.formatMessage(msgRow);
+        const outboxId = id();
+        const formatted = { ...this.formatMessage(msgRow), eventId: outboxId };
         const notifyUserIds = [actor.id, ...activeRecipients.map(r => r.user_id)];
-        queueMicrotask(() => {
-          publishRealtimeToUsers(notifyUserIds, 'message.created', formatted);
-        });
+        await c.query(
+          `INSERT INTO chat_realtime_outbox (id, conversation_id, event_type, recipient_user_ids, payload)
+           VALUES ($1, $2, 'message.created', $3::uuid[], $4::jsonb)`,
+          [outboxId, conv.id, notifyUserIds, JSON.stringify(formatted)]
+        );
 
-        return { ...formatted, duplicate: false };
+        return {
+          response: { ...formatted, duplicate: false },
+          outboxEvent: { id: outboxId, conversationId: conv.id, userIds: notifyUserIds, event: 'message.created', payload: formatted }
+        };
       });
+
+      if (txResult.outboxEvent) {
+        ephemeralTyping.delete(`${txResult.outboxEvent.conversationId}:${actor.id}`);
+        await publishClaimedOutboxEvent(txResult.outboxEvent);
+      }
+
+      return txResult.response;
     },
 
     formatMessage(row) {
@@ -1238,6 +1559,9 @@ export function chatEngine(db) {
         clientMessageId: row.client_message_id,
         messageType: row.message_type,
         body: row.moderation_status === 'redacted'
+          ? '[Message removed by ELESEND Safety Moderation]'
+          : row.body,
+        bodyText: row.moderation_status === 'redacted'
           ? '[Message removed by ELESEND Safety Moderation]'
           : row.body,
         quickReplyKey: row.quick_reply_key || null,
@@ -1322,13 +1646,13 @@ export function chatEngine(db) {
      * Verifiable recipient delivery acknowledgement (transitions SENT -> DELIVERED).
      */
     async acknowledgeDelivered(actor, conversationId, { upToSeq } = {}) {
-      return db.tx(async c => {
+      const txResult = await db.tx(async c => {
         const { conv } = await authorizeConversationAccess(c, actor, conversationId, {
           requireSendable: false,
           supportJustification: 'Support delivery ack'
         });
         const targetSeq = Number.isInteger(Number(upToSeq)) ? Number(upToSeq) : Number(conv.last_message_seq || 0);
-        if (targetSeq <= 0) return { deliveredSeq: 0, updatedCount: 0 };
+        if (targetSeq <= 0) return { response: { deliveredSeq: 0, updatedCount: 0 }, outboxEvent: null };
 
         await c.query(
           `UPDATE chat_participants
@@ -1350,33 +1674,49 @@ export function chatEngine(db) {
           [conv.id, targetSeq, actor.id]
         );
 
+        let outboxEvent = null;
         if (updated.rowCount > 0) {
           const senderIds = [...new Set(updated.rows.map(r => r.sender_id))];
-          queueMicrotask(() => {
-            publishRealtimeToUsers(senderIds, 'message.delivered', {
-              conversationId: conv.id,
-              deliveredByUserId: actor.id,
-              upToSeq: targetSeq,
-              deliveredAt: new Date().toISOString()
-            });
-          });
+          const outboxId = id();
+          const payload = {
+            eventId: outboxId,
+            conversationId: conv.id,
+            deliveredByUserId: actor.id,
+            upToSeq: targetSeq,
+            deliveredAt: new Date().toISOString()
+          };
+          await c.query(
+            `INSERT INTO chat_realtime_outbox (id, conversation_id, event_type, recipient_user_ids, payload)
+             VALUES ($1, $2, 'message.delivered', $3::uuid[], $4::jsonb)`,
+            [outboxId, conv.id, senderIds, JSON.stringify(payload)]
+          );
+          outboxEvent = { id: outboxId, userIds: senderIds, event: 'message.delivered', payload };
         }
 
-        return { conversationId: conv.id, deliveredSeq: targetSeq, updatedCount: updated.rowCount };
+        return {
+          response: { conversationId: conv.id, deliveredSeq: targetSeq, updatedCount: updated.rowCount },
+          outboxEvent
+        };
       });
+
+      if (txResult.outboxEvent) {
+        await publishClaimedOutboxEvent(txResult.outboxEvent);
+      }
+
+      return txResult.response;
     },
 
     /**
      * Verifiable read receipt (transitions SENT/DELIVERED -> READ only when recipient marks read).
      */
     async markRead(actor, conversationId, { upToSeq } = {}) {
-      return db.tx(async c => {
+      const txResult = await db.tx(async c => {
         const { conv } = await authorizeConversationAccess(c, actor, conversationId, {
           requireSendable: false,
           supportJustification: 'Support read ack'
         });
         const targetSeq = Number.isInteger(Number(upToSeq)) ? Number(upToSeq) : Number(conv.last_message_seq || 0);
-        if (targetSeq <= 0) return { readSeq: 0, updatedCount: 0 };
+        if (targetSeq <= 0) return { response: { readSeq: 0, updatedCount: 0 }, outboxEvent: null };
 
         await c.query(
           `UPDATE chat_participants
@@ -1401,20 +1741,111 @@ export function chatEngine(db) {
           [conv.id, targetSeq, actor.id]
         );
 
+        let outboxEvent = null;
         if (updated.rowCount > 0) {
           const senderIds = [...new Set(updated.rows.map(r => r.sender_id))];
-          queueMicrotask(() => {
-            publishRealtimeToUsers(senderIds, 'message.read', {
-              conversationId: conv.id,
-              readByUserId: actor.id,
-              upToSeq: targetSeq,
-              readAt: new Date().toISOString()
-            });
-          });
+          const outboxId = id();
+          const payload = {
+            eventId: outboxId,
+            conversationId: conv.id,
+            readByUserId: actor.id,
+            upToSeq: targetSeq,
+            readAt: new Date().toISOString()
+          };
+          await c.query(
+            `INSERT INTO chat_realtime_outbox (id, conversation_id, event_type, recipient_user_ids, payload)
+             VALUES ($1, $2, 'message.read', $3::uuid[], $4::jsonb)`,
+            [outboxId, conv.id, senderIds, JSON.stringify(payload)]
+          );
+          outboxEvent = { id: outboxId, userIds: senderIds, event: 'message.read', payload };
         }
 
-        return { conversationId: conv.id, readSeq: targetSeq, updatedCount: updated.rowCount };
+        return {
+          response: { conversationId: conv.id, readSeq: targetSeq, updatedCount: updated.rowCount },
+          outboxEvent
+        };
       });
+
+      if (txResult.outboxEvent) {
+        await publishClaimedOutboxEvent(txResult.outboxEvent);
+      }
+
+      return txResult.response;
+    },
+
+    async claimRealtimeOutbox(arg1 = 50, arg2 = {}) {
+      const opts = typeof arg1 === 'object' && arg1 !== null ? arg1 : (arg2 || {});
+      const rawLimit = typeof arg1 === 'number' ? arg1 : (opts.batchLimit ?? opts.limit ?? 50);
+      const lim = Math.max(1, Math.min(200, Number(rawLimit) || 50));
+      const leaseSeconds = Math.max(1, Math.min(3600, Number(opts.leaseSeconds ?? 30) || 30));
+      const claimerId = String(opts.workerId || options?.workerId || realtimeBus.nodeId);
+      const rows = (await db.query(
+        `UPDATE chat_realtime_outbox
+            SET claimed_by = $2,
+                claimed_at = clock_timestamp(),
+                lease_expires_at = clock_timestamp() + ($3::int * interval '1 second'),
+                attempts = attempts + 1
+          WHERE id IN (
+            SELECT id FROM chat_realtime_outbox
+             WHERE published_at IS NULL
+               AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
+             ORDER BY created_at ASC, id ASC
+             LIMIT $1
+             FOR UPDATE SKIP LOCKED
+          )
+          RETURNING id, conversation_id, event_type, recipient_user_ids, payload, claimed_by, claimed_at, lease_expires_at, attempts`,
+        [lim, claimerId, leaseSeconds]
+      )).rows;
+      return rows.map(r => {
+        const parsedPayload = typeof r.payload === 'string' ? JSON.parse(r.payload) : (r.payload || {});
+        const stablePayload = parsedPayload.eventId ? parsedPayload : { ...parsedPayload, eventId: r.id };
+        return { ...r, payload: stablePayload, eventId: stablePayload.eventId };
+      });
+    },
+
+    async flushRealtimeOutbox(arg1 = 50, arg2 = {}) {
+      const opts = typeof arg1 === 'object' && arg1 !== null ? arg1 : (arg2 || {});
+      const claimerId = String(opts.workerId || options?.workerId || realtimeBus.nodeId);
+      const rows = await this.claimRealtimeOutbox(arg1, { ...opts, workerId: claimerId });
+      if (opts.simulateCrashAfterClaim) {
+        const crashErr = new Error('Simulated worker crash after claiming realtime outbox lease');
+        crashErr.code = 'OUTBOX_CRASH_AFTER_CLAIM';
+        crashErr.claimed = rows.length;
+        throw crashErr;
+      }
+      let flushed = 0;
+      let failed = 0;
+      const errors = [];
+      for (const r of rows) {
+        try {
+          const stablePayload = r.payload?.eventId ? r.payload : { ...(r.payload || {}), eventId: r.id };
+          await publishRealtimeToUsers(await currentEventRecipients(r.recipient_user_ids || [], r.conversation_id || stablePayload.conversationId), r.event_type, stablePayload, {
+            db,
+            eventId: stablePayload.eventId,
+            throwOnError: true,
+            publishTransport: opts.publishTransport || customPublishTransport
+          });
+          const markRes = await db.query(
+            `UPDATE chat_realtime_outbox SET published_at = now(), lease_expires_at = NULL, last_error = NULL WHERE id = $1 AND claimed_by = $2 AND published_at IS NULL`,
+            [r.id, claimerId]
+          );
+          if (!markRes || markRes.rowCount > 0) {
+            flushed++;
+          }
+        } catch (err) {
+          failed++;
+          const errMsg = String(err?.message || err || 'Realtime outbox publish failed');
+          errors.push({ id: r.id, eventId: r.eventId || r.id, error: errMsg });
+          await db.query(
+            `UPDATE chat_realtime_outbox SET last_error = $2 WHERE id = $1 AND published_at IS NULL`,
+            [r.id, errMsg]
+          ).catch(() => {});
+          if (opts.throwOnError) {
+            throw err;
+          }
+        }
+      }
+      return { claimed: rows.length, flushed, failed, errors };
     },
 
     /**

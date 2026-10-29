@@ -6,15 +6,15 @@ services:
     restart: unless-stopped
     command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
     environment:
-      POSTGRES_DB: elesend
-      POSTGRES_USER: elesend
+      POSTGRES_DB: ${POSTGRES_DB:-elesend}
+      POSTGRES_USER: ${POSTGRES_USER:-elesend}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Required}
     volumes:
       - pgdata:/var/lib/postgresql
       - ./postgres.conf:/etc/postgresql/postgresql.conf:ro
     networks: [private]
     healthcheck:
-      test: [CMD-SHELL, 'pg_isready -U elesend -d elesend']
+      test: [CMD-SHELL, 'pg_isready -h "$$(hostname -i)" -p 5432 -U "$${POSTGRES_USER:-elesend}" -d "$${POSTGRES_DB:-elesend}"']
       interval: 10s
       timeout: 5s
       retries: 10
@@ -76,7 +76,7 @@ services:
       NODE_ENV: production
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       BACKGROUND_JOBS_ENABLED: ${BACKGROUND_JOBS_ENABLED:-true}
-      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-172.29.240.10/32}
       READINESS_PROBE_TOKEN: ${READINESS_PROBE_TOKEN:-}
       HOST: 0.0.0.0
       PORT: '3090'
@@ -129,8 +129,17 @@ services:
       SETTLEMENT_PAYSTACK_RECIPIENT_TYPE: ${SETTLEMENT_PAYSTACK_RECIPIENT_TYPE:-}
       SETTLEMENT_PAYSTACK_PROVIDER_CHANNEL: ${SETTLEMENT_PAYSTACK_PROVIDER_CHANNEL:-}
     depends_on:
+      db: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
-    networks: [private,egress]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3090/readyz',{headers:process.env.READINESS_PROBE_TOKEN?{'x-elesend-health-token':process.env.READINESS_PROBE_TOKEN,'x-readiness-token':process.env.READINESS_PROBE_TOKEN}:{}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks:
+      private: {}
+      egress:
+        ipv4_address: 172.29.240.11
     logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
     deploy:
       resources:
@@ -151,8 +160,11 @@ services:
     ports:
       - '80:80'
       - '443:443'
-    depends_on: [api]
-    networks: [egress]
+    depends_on:
+      api: {condition: service_healthy}
+    networks:
+      egress:
+        ipv4_address: 172.29.240.10
     logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
     deploy:
       resources:
@@ -162,7 +174,11 @@ services:
           memory: 64M
 networks:
   private: {internal: true}
-  egress: {}
+  egress:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.240.0/28
 volumes:
   pgdata: {}
   caddydata: {}

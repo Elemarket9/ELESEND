@@ -16,6 +16,7 @@ import {calibrateETA} from './algorithms/eta.mjs';
 import {minCostBipartiteAssignment} from './algorithms/batch.mjs';
 import {featureService} from './algorithms/features.mjs';
 import {getRedisClient} from './infrastructure/cache/redis.mjs';
+import {chatEngine} from './chat-engine.mjs';
 const uuid=z.string().uuid();
 const sampleSchema=z.object({latitude:z.number().finite().min(-90).max(90),longitude:z.number().finite().min(-180).max(180),accuracyMeters:z.number().finite().min(0).max(1000),observedAt:z.string().datetime({offset:true}),headingDegrees:z.number().finite().min(0).max(359.999).optional(),speedMps:z.number().finite().min(0).max(80).optional()}).strict();
 const point=r=>({latitude:Number(r.latitude),longitude:Number(r.longitude)});
@@ -26,6 +27,7 @@ function authorizedRider(r){check(r&&r.status==='approved',403,'Approved rider r
 export function dispatchEngine(db,{routing}={}){
  check(routing&&typeof routing.route==='function'&&typeof routing.matrix==='function',500,'Road routing adapter required');
  const features=featureService(db);
+ const chat=chatEngine(db);
  async function getPolicy(actor){check(actor?.kind==='admin',403,'Administrator required');check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission='dispatch:configure'",[actor.id])).rowCount,403,'Dispatch configuration permission required');return policy(db);}
  async function configure(actor,body){const schema=z.object({searchRadiiM:z.array(z.number().int().min(250).max(100000)).min(1).max(8),candidateLimit:z.number().int().min(1).max(200),freshSeconds:z.number().int().min(10).max(300),maxSampleAgeSeconds:z.number().int().min(15).max(600),maxAccuracyM:z.number().int().min(5).max(1000),maxSpeedMps:z.number().int().min(2).max(100),offerSeconds:z.number().int().min(10).max(180),retrySeconds:z.number().int().min(10).max(900),maxAttempts:z.number().int().min(1).max(100),sampleRetentionHours:z.number().int().min(1).max(168),movingUploadSeconds:z.number().int().min(5).max(120),idleUploadSeconds:z.number().int().min(15).max(600),multiStopEnabled:z.boolean(),maxActiveParcels:z.number().int().min(1).max(10),maxDetourSeconds:z.number().int().min(0).max(1800),deliverySlackSeconds:z.number().int().min(120).max(7200),maxPickupEtaSeconds:z.number().int().min(120).max(7200),maxOfferMovementM:z.number().int().min(20).max(2000)}).strict();
   const v=schema.parse(body);check(v.searchRadiiM.every((n,i)=>i===0||n>v.searchRadiiM[i-1]),400,'Search radii must strictly increase');check(v.freshSeconds<=v.maxSampleAgeSeconds,400,'Fresh threshold must not exceed accepted sample age');check(v.movingUploadSeconds<v.freshSeconds&&v.idleUploadSeconds>=v.movingUploadSeconds,400,'Invalid tracking intervals');
@@ -97,6 +99,27 @@ export function dispatchEngine(db,{routing}={}){
    }
    await c.query('UPDATE riders SET current_position=ST_SetSRID(ST_MakePoint($2,$3),4326)::geography,position_at=$4,position_accuracy_m=$5,observed_heading_deg=$6,observed_speed_mps=$7 WHERE id=$1',[actor.id,v.longitude,v.latitude,v.observedAt,v.accuracyMeters,v.headingDegrees??null,v.speedMps??null]);
    await c.query('INSERT INTO rider_location_samples(rider_id,position,observed_at,accuracy_m) VALUES($1,ST_SetSRID(ST_MakePoint($2,$3),4326)::geography,$4,$5)',[actor.id,v.longitude,v.latitude,v.observedAt,v.accuracyMeters]);
+   const activeRows=(await c.query("SELECT id,state FROM shipments WHERE rider_id=$1 AND state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP') ORDER BY created_at",[actor.id])).rows;
+   const trackedShipmentIds=[];
+   if(activeRows.length){
+    const planRow=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1',[actor.id])).rows[0];
+    const stops=Array.isArray(planRow?.stops)?planRow.stops:[];
+    const firstStopShipmentId=stops[0]?.shipmentId??null;
+    const hasInCustody=activeRows.some(s=>s.state!=='RIDER_ASSIGNED');
+    for(const sh of activeRows){
+     const shouldPublish=sh.state!=='RIDER_ASSIGNED'||!stops.length||firstStopShipmentId===sh.id||(!hasInCustody&&activeRows.length===1);
+     if(shouldPublish){
+      await c.query(`INSERT INTO locations(shipment_id,rider_id,latitude,longitude,updated_at) VALUES($1,$2,$3,$4,$5)
+       ON CONFLICT(shipment_id) DO UPDATE SET rider_id=EXCLUDED.rider_id,latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,updated_at=EXCLUDED.updated_at`,
+       [sh.id,actor.id,v.latitude,v.longitude,v.observedAt]);
+      trackedShipmentIds.push(sh.id);
+     }
+    }
+   }
+   const pendingOffers=(await c.query(`SELECT o.id AS "offerId",o.shipment_id AS id,o.expires_at AS "expiresAt",o.pickup_eta_seconds AS "pickupEtaSeconds",o.pickup_road_meters AS "pickupRoadMeters",o.pickup_road_meters AS distance_m,o.direction,o.quoted_entitlement_minor AS entitlement_minor,o.expected_active AS "existingParcels",o.planned_dropoff_seconds AS "estimatedDropoffSeconds",
+     s.amount_minor,s.commission_minor,s.payment_method,s.cash_payer,COALESCE(q.request->>'vehicle',$2) AS vehicle,q.request->>'description' AS description,q.request->'pickup' AS pickup,q.request->'destination' AS destination
+    FROM dispatch_offers o JOIN shipments s ON s.id=o.shipment_id JOIN quotes q ON q.id=s.quote_id
+    WHERE o.rider_id=$1 AND o.status='offered' AND o.expires_at>now() AND s.state='AWAITING_ASSIGNMENT' AND (s.paid OR s.payment_method='CASH') ORDER BY o.created_at LIMIT 10`,[actor.id,r.vehicle])).rows;
    getRedisClient().saveRiderLocation(actor.id, {
      latitude: v.latitude,
      longitude: v.longitude,
@@ -105,7 +128,7 @@ export function dispatchEngine(db,{routing}={}){
      accuracy: v.accuracyMeters,
      observedAt: v.observedAt
    }).catch(() => {});
-   return {ok:true,eligibleUntil:new Date(Date.parse(v.observedAt)+p.fresh_seconds*1000).toISOString()};
+   return {ok:true,eligibleUntil:new Date(Date.parse(v.observedAt)+p.fresh_seconds*1000).toISOString(),trackedShipments:trackedShipmentIds.length,pendingOffers};
   });
  }
  async function optIn(actor,input){check(actor?.kind==='rider',403,'Rider required');const v=z.object({enabled:z.boolean()}).strict().parse(input);
@@ -354,10 +377,10 @@ export function dispatchEngine(db,{routing}={}){
   const pre=(await c.query('SELECT company_id FROM riders WHERE id=$1',[actor.id])).rows[0];check(pre,403,'Rider required');
   if(pre.company_id)check((await c.query("SELECT 1 FROM companies WHERE id=$1 AND status='approved' FOR UPDATE",[pre.company_id])).rowCount,403,'Company inactive');
   const r=(await c.query("SELECT * FROM riders WHERE id=$1 AND status='approved' FOR UPDATE",[actor.id])).rows[0];authorizedRider(r);check(r.online,409,'Go online first');
-  return (await c.query(`SELECT o.id AS "offerId",o.shipment_id AS id,o.expires_at AS "expiresAt",o.pickup_eta_seconds AS "pickupEtaSeconds",o.pickup_road_meters AS "pickupRoadMeters",o.direction,o.quoted_entitlement_minor AS entitlement_minor,o.expected_active AS "existingParcels",o.planned_dropoff_seconds AS "estimatedDropoffSeconds",
-    s.amount_minor,s.commission_minor,s.payment_method,s.cash_payer,q.request->'pickup' AS pickup,q.request->'destination' AS destination
+  return (await c.query(`SELECT o.id AS "offerId",o.shipment_id AS id,o.expires_at AS "expiresAt",o.pickup_eta_seconds AS "pickupEtaSeconds",o.pickup_road_meters AS "pickupRoadMeters",o.pickup_road_meters AS distance_m,o.direction,o.quoted_entitlement_minor AS entitlement_minor,o.expected_active AS "existingParcels",o.planned_dropoff_seconds AS "estimatedDropoffSeconds",
+    s.amount_minor,s.commission_minor,s.payment_method,s.cash_payer,COALESCE(q.request->>'vehicle',$2) AS vehicle,q.request->>'description' AS description,q.request->'pickup' AS pickup,q.request->'destination' AS destination
    FROM dispatch_offers o JOIN shipments s ON s.id=o.shipment_id JOIN quotes q ON q.id=s.quote_id
-   WHERE o.rider_id=$1 AND o.status='offered' AND o.expires_at>now() AND s.state='AWAITING_ASSIGNMENT' AND (s.paid OR s.payment_method='CASH') ORDER BY o.created_at LIMIT 30`,[actor.id])).rows;
+   WHERE o.rider_id=$1 AND o.status='offered' AND o.expires_at>now() AND s.state='AWAITING_ASSIGNMENT' AND (s.paid OR s.payment_method='CASH') ORDER BY o.created_at LIMIT 30`,[actor.id,r.vehicle])).rows;
  });}
  async function accept(actor,sid,offerId){uuid.parse(sid);uuid.parse(offerId);check(actor?.kind==='rider',403,'Rider credentials required');
   return db.tx(async c=>{
@@ -405,10 +428,15 @@ export function dispatchEngine(db,{routing}={}){
    if(s.payment_method==='CASH')await cashEligible(c,actor.id,s.commission_minor);
    await c.query("UPDATE dispatch_offers SET status='accepted',accepted_at=now() WHERE id=$1",[o.id]);
    await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE shipment_id=$1 AND id<>$2 AND status='offered'",[sid,o.id]);
-   await c.query("UPDATE shipments SET rider_id=$2,company_id=$3,state='RIDER_ASSIGNED' WHERE id=$1",[sid,r.id,r.company_id]);
+   await c.query("UPDATE shipments SET rider_id=$2,company_id=$3,state='RIDER_ASSIGNED',watchdog_last_inspected_at=NULL,watchdog_next_review_at=NULL WHERE id=$1",[sid,r.id,r.company_id]);
    await c.query(`INSERT INTO rider_dispatch_plans(rider_id,revision,stops) VALUES($1,1,$2)
       ON CONFLICT(rider_id) DO UPDATE SET revision=rider_dispatch_plans.revision+1,stops=$2,updated_at=now()`,[r.id,JSON.stringify(o.proposed_stops)]);
    await c.query("INSERT INTO dispatch_commitments(shipment_id,rider_id,promised_delivery_before) VALUES($1,$2,now()+($3::int * interval '1 second'))",[sid,r.id,o.planned_dropoff_seconds+p.delivery_slack_seconds]);
+   if(!Array.isArray(o.proposed_stops)||!o.proposed_stops.length||o.proposed_stops[0]?.shipmentId===sid){
+    await c.query(`INSERT INTO locations(shipment_id,rider_id,latitude,longitude,updated_at) VALUES($1,$2,$3,$4,$5)
+     ON CONFLICT(shipment_id) DO UPDATE SET rider_id=EXCLUDED.rider_id,latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,updated_at=EXCLUDED.updated_at`,
+     [sid,r.id,location.latitude,location.longitude,r.position_at]);
+   }
    if(o.route_corridor_geojson?.type==='LineString'){
     // Corridors contain provider-certified road geometry, never straight-line shortcuts.
     await c.query(`INSERT INTO rider_route_corridors(rider_id,road_path,plan_revision,valid_until)
@@ -489,11 +517,144 @@ export function dispatchEngine(db,{routing}={}){
     AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.id=locations.shipment_id AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP','FAILED','RETURN_REQUESTED'))`,[p.sample_retention_hours]);
   return {removedSamples:samples.rowCount,removedRiderSnapshots:snapshots.rowCount,removedShipmentTracking:tracking.rowCount};
   });}
- async function tick(limit=8){check(Number.isInteger(limit)&&limit>=1&&limit<=20,400);const due=(await db.query(`SELECT s.id FROM shipments s WHERE state='AWAITING_ASSIGNMENT' AND (paid OR payment_method='CASH') AND next_dispatch_at<=now()
+ async function watchdog({limit=25,staleGpsSeconds=null,pickupGraceSeconds=null,reviewIntervalSeconds=60,autoReassignPreCustody=true,onlyDueReviews=false}={}){
+  check(Number.isInteger(limit)&&limit>=1&&limit<=100,400,'Invalid watchdog batch size');
+  const p=await policy(db);
+  const staleSec=Number.isInteger(staleGpsSeconds)&&staleGpsSeconds>0?staleGpsSeconds:Math.max(Number(p.fresh_seconds||120)*2,180);
+  const pickupGraceSec=Number.isInteger(pickupGraceSeconds)&&pickupGraceSeconds>0?pickupGraceSeconds:Math.max(Number(p.delivery_slack_seconds||600),300);
+  const reviewSec=Number.isInteger(reviewIntervalSeconds)&&reviewIntervalSeconds>=1?reviewIntervalSeconds:60;
+  const candidates=(await db.query(`
+   SELECT s.id, s.rider_id, r.company_id, s.state, s.customer_id,
+          f.id AS food_order_id, f.ready_at, f.state AS food_state,
+          r.online AS rider_online, r.position_at AS rider_position_at,
+          l.updated_at AS location_updated_at,
+          dc.promised_delivery_before,
+          (SELECT o.accepted_at FROM dispatch_offers o WHERE o.shipment_id=s.id AND o.rider_id=s.rider_id AND o.status='accepted' ORDER BY o.accepted_at DESC LIMIT 1) AS offer_accepted_at,
+          (SELECT o.pickup_eta_seconds FROM dispatch_offers o WHERE o.shipment_id=s.id AND o.rider_id=s.rider_id AND o.status='accepted' ORDER BY o.accepted_at DESC LIMIT 1) AS offer_pickup_eta_seconds
+   FROM shipments s
+   JOIN riders r ON r.id=s.rider_id
+   LEFT JOIN food_orders f ON f.shipment_id=s.id
+   LEFT JOIN locations l ON l.shipment_id=s.id AND l.rider_id=s.rider_id
+   LEFT JOIN dispatch_commitments dc ON dc.shipment_id=s.id AND dc.rider_id=s.rider_id
+   WHERE s.rider_id IS NOT NULL
+     AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP')
+     AND (NOT $4::boolean OR COALESCE(s.watchdog_next_review_at, '-infinity'::timestamptz) <= clock_timestamp())
+     AND (
+      r.online = false
+      OR GREATEST(COALESCE(r.position_at, '-infinity'::timestamptz), COALESCE(l.updated_at, '-infinity'::timestamptz)) < now() - ($1::int * interval '1 second')
+      OR (s.state='RIDER_ASSIGNED' AND f.ready_at IS NOT NULL AND f.ready_at < now() - ($2::int * interval '1 second'))
+      OR (s.state='RIDER_ASSIGNED' AND EXISTS (
+       SELECT 1 FROM dispatch_offers o
+       WHERE o.shipment_id=s.id AND o.rider_id=s.rider_id AND o.status='accepted'
+         AND o.accepted_at + ((COALESCE(o.pickup_eta_seconds, 300) + $2::int) * interval '1 second') < now()
+      ))
+      OR (s.state IN ('PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP') AND dc.promised_delivery_before IS NOT NULL AND dc.promised_delivery_before < now())
+     )
+   ORDER BY
+    CASE WHEN COALESCE(s.watchdog_next_review_at, '-infinity'::timestamptz) <= clock_timestamp() THEN 0 ELSE 1 END ASC,
+    s.watchdog_last_inspected_at ASC NULLS FIRST,
+    s.watchdog_next_review_at ASC NULLS FIRST,
+    s.created_at ASC
+   LIMIT $3
+  `,[staleSec,pickupGraceSec,limit,Boolean(onlyDueReviews)])).rows;
+  const results=[];
+  for(const cand of candidates){
+   try{
+    const item=await db.tx(async c=>{
+     // Enforce canonical delivery lock hierarchy: companies -> riders -> shipments -> rider_dispatch_plans -> food_orders
+     if(cand.company_id)await c.query('SELECT id FROM companies WHERE id=$1 FOR UPDATE',[cand.company_id]);
+     const r=(await c.query('SELECT * FROM riders WHERE id=$1 FOR UPDATE',[cand.rider_id])).rows[0];
+     const s=(await c.query('SELECT * FROM shipments WHERE id=$1 FOR UPDATE',[cand.id])).rows[0];
+     if(!s||!s.rider_id||s.rider_id!==cand.rider_id||!['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state))return null;
+     const plan=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[s.rider_id])).rows[0];
+     const f=cand.food_order_id?(await c.query('SELECT * FROM food_orders WHERE id=$1 FOR UPDATE',[cand.food_order_id])).rows[0]:null;
+     const loc=(await c.query('SELECT updated_at FROM locations WHERE shipment_id=$1 AND rider_id=$2',[s.id,s.rider_id])).rows[0];
+     const dc=(await c.query('SELECT promised_delivery_before FROM dispatch_commitments WHERE shipment_id=$1 AND rider_id=$2',[s.id,s.rider_id])).rows[0];
+     const accOffer=(await c.query("SELECT id,accepted_at,pickup_eta_seconds FROM dispatch_offers WHERE shipment_id=$1 AND rider_id=$2 AND status='accepted' ORDER BY accepted_at DESC LIMIT 1",[s.id,s.rider_id])).rows[0];
+     const pickedUp=s.state!=='RIDER_ASSIGNED'||
+      Boolean((await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount)||
+      Boolean((await c.query('SELECT 1 FROM cash_collections WHERE shipment_id=$1',[s.id])).rowCount)||
+      f?.state==='IN_TRANSIT';
+     const nowMs=Date.now();
+     const latestGpsMs=Math.max(
+      r?.position_at?new Date(r.position_at).getTime():-Infinity,
+      loc?.updated_at?new Date(loc.updated_at).getTime():-Infinity
+     );
+     const isStaleGps=!r?.online||!Number.isFinite(latestGpsMs)||(nowMs-latestGpsMs)>staleSec*1000;
+     const pickupDeadlineMs=Math.min(
+      ...[
+       f?.ready_at?new Date(f.ready_at).getTime()+pickupGraceSec*1000:Infinity,
+       accOffer?.accepted_at?new Date(accOffer.accepted_at).getTime()+(Number(accOffer.pickup_eta_seconds||300)+pickupGraceSec)*1000:Infinity
+      ]
+     );
+     const isOverduePickup=!pickedUp&&Number.isFinite(pickupDeadlineMs)&&nowMs>pickupDeadlineMs;
+     const isOverdueDelivery=pickedUp&&dc?.promised_delivery_before&&nowMs>new Date(dc.promised_delivery_before).getTime();
+     const reasons=[];
+     const signals=[];
+     if(isStaleGps){reasons.push('stale_gps');signals.push({code:'STALE_GPS',severity:pickedUp?'high':'medium'});}
+     if(isOverduePickup){reasons.push('overdue_pickup');signals.push({code:'OVERDUE_PICKUP',severity:'medium'});}
+     if(isOverdueDelivery){reasons.push('overdue_delivery');signals.push({code:'OVERDUE_DELIVERY',severity:'high'});}
+     if(!reasons.length)return null;
+     const oldRiderId=s.rider_id;
+     for(const sig of signals){
+      const existingSig=(await c.query("SELECT id FROM operational_risk_signals WHERE rider_id=$1 AND shipment_id=$2 AND signal_code=$3 AND review_status='pending' LIMIT 1",[oldRiderId,s.id,sig.code])).rows[0];
+      if(!existingSig){
+       await c.query('INSERT INTO operational_risk_signals(rider_id,shipment_id,signal_code,severity,evidence) VALUES($1,$2,$3,$4,$5)',
+        [oldRiderId,s.id,sig.code,sig.severity,JSON.stringify({reasons,foodOrderId:f?.id??null,state:s.state,lastGpsAt:Number.isFinite(latestGpsMs)?new Date(latestGpsMs).toISOString():null,promisedDeliveryBefore:dc?.promised_delivery_before??null})]);
+      }
+     }
+     const reasonSummary=`Watchdog detected ${reasons.join(', ')} for rider ${oldRiderId} in state ${s.state}`;
+     if(!pickedUp){
+      await c.query("INSERT INTO dispatch_exceptions(shipment_id,actor_id,kind,reason) VALUES($1,NULL,'reassignment_review',$2)",[s.id,reasonSummary]);
+      await c.query("INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,'delivery_watchdog_alert',$3) ON CONFLICT(id) DO NOTHING",
+       [`watchdog-pre:${s.id}:${oldRiderId}`,s.customer_id,JSON.stringify({shipmentId:s.id,orderId:f?.id??null,reasons,action:autoReassignPreCustody?'reassigned_pre_pickup':'reassignment_offered',message:'Your assigned courier became unresponsive before pickup. We are reassigning your delivery to the next available courier.'})]);
+      if(autoReassignPreCustody){
+       await c.query('UPDATE challenges SET expires_at=now() WHERE shipment_id=$1 AND consumed_at IS NULL',[s.id]);
+       await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE shipment_id=$1 AND status IN ('offered','accepted')",[s.id]);
+       if(plan&&Array.isArray(plan.stops)){
+        await c.query('UPDATE rider_dispatch_plans SET stops=$2,revision=revision+1,updated_at=now() WHERE rider_id=$1',[oldRiderId,JSON.stringify(plan.stops.filter(x=>x.shipmentId!==s.id))]);
+       }
+       await c.query('DELETE FROM dispatch_commitments WHERE shipment_id=$1',[s.id]);
+       await c.query('DELETE FROM locations WHERE shipment_id=$1',[s.id]);
+       await c.query("UPDATE shipments SET state='AWAITING_ASSIGNMENT',rider_id=NULL,company_id=NULL,next_dispatch_at=now(),dispatch_attempts=0,watchdog_last_inspected_at=clock_timestamp(),watchdog_next_review_at=NULL WHERE id=$1",[s.id]);
+       await chat.revokeRiderConversations(c,{shipmentId:s.id,oldRiderUserId:oldRiderId,reason:'watchdog_reassigned'});
+       if(f){
+        await c.query('UPDATE food_orders SET dispatch_started_at=now(),watchdog_last_inspected_at=clock_timestamp(),watchdog_next_review_at=NULL,updated_at=now() WHERE id=$1',[f.id]);
+        await c.query('INSERT INTO audit_logs(action,entity_id) VALUES($1,$2)',[`food_order.watchdog_reassigned:${reasons.join(',')}`,f.id]);
+       }
+       await audit(c,null,`dispatch.watchdog_reassigned_pre_pickup:${reasons.join(',')}`,s.id);
+       await change(c,s.id,'dispatch.reassignment_needed');
+       return {shipmentId:s.id,foodOrderId:f?.id??null,previousRiderId:oldRiderId,status:'reassigned_pre_pickup',reasons,shipmentState:'AWAITING_ASSIGNMENT',supportAlerted:true,reassignmentOffered:true};
+      }
+      const sched=(await c.query("UPDATE shipments SET watchdog_last_inspected_at=clock_timestamp(),watchdog_next_review_at=clock_timestamp()+($2::int*interval '1 second') WHERE id=$1 RETURNING watchdog_last_inspected_at,watchdog_next_review_at",[s.id,reviewSec])).rows[0];
+      if(f)await c.query('UPDATE food_orders SET watchdog_last_inspected_at=$2,watchdog_next_review_at=$3 WHERE id=$1',[f.id,sched?.watchdog_last_inspected_at??new Date(),sched?.watchdog_next_review_at??new Date(Date.now()+reviewSec*1000)]);
+      await audit(c,null,`dispatch.watchdog_pre_pickup_alert:${reasons.join(',')}`,s.id);
+      return {shipmentId:s.id,foodOrderId:f?.id??null,riderId:oldRiderId,status:'escalated_pre_pickup',reasons,shipmentState:s.state,supportAlerted:true,reassignmentOffered:true,lastInspectedAt:sched?.watchdog_last_inspected_at??null,nextReviewAt:sched?.watchdog_next_review_at??null};
+     }
+     const existingEx=(await c.query("SELECT 1 FROM dispatch_exceptions WHERE shipment_id=$1 AND kind='reassignment_review' AND created_at>now()-interval '15 minutes' LIMIT 1",[s.id])).rowCount;
+     if(!existingEx){
+      await c.query("INSERT INTO dispatch_exceptions(shipment_id,actor_id,kind,reason) VALUES($1,NULL,'reassignment_review',$2)",[s.id,reasonSummary]);
+     }
+     const sched=(await c.query("UPDATE shipments SET watchdog_last_inspected_at=clock_timestamp(),watchdog_next_review_at=clock_timestamp()+($2::int*interval '1 second') WHERE id=$1 RETURNING watchdog_last_inspected_at,watchdog_next_review_at",[s.id,reviewSec])).rows[0];
+     if(f)await c.query('UPDATE food_orders SET watchdog_last_inspected_at=$2,watchdog_next_review_at=$3 WHERE id=$1',[f.id,sched?.watchdog_last_inspected_at??new Date(),sched?.watchdog_next_review_at??new Date(Date.now()+reviewSec*1000)]);
+     await c.query("INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,'delivery_watchdog_alert',$3) ON CONFLICT(id) DO NOTHING",
+      [`watchdog-custody:${s.id}:${oldRiderId}:${ reasons.join('_') }`,s.customer_id,JSON.stringify({shipmentId:s.id,orderId:f?.id??null,riderId:oldRiderId,reasons,action:'support_escalated',message:'Delivery monitoring flagged a delay on your active order and alerted operations support.'})]);
+     await audit(c,null,`dispatch.watchdog_escalated_in_custody:${reasons.join(',')}`,s.id);
+     await change(c,s.id,'dispatch.delivery_escalated');
+     return {shipmentId:s.id,foodOrderId:f?.id??null,riderId:oldRiderId,status:'escalated_in_custody',reasons,shipmentState:s.state,supportAlerted:true,reassignmentOffered:false,lastInspectedAt:sched?.watchdog_last_inspected_at??null,nextReviewAt:sched?.watchdog_next_review_at??null};
+    });
+    if(item)results.push(item);
+   }catch(e){results.push({shipmentId:cand.id,foodOrderId:cand.food_order_id??null,status:'error',code:e.code??e.status??'internal'});}
+  }
+  return results;
+ }
+ async function tick(limit=8){check(Number.isInteger(limit)&&limit>=1&&limit<=20,400);
+  await watchdog({limit});
+  const due=(await db.query(`SELECT s.id FROM shipments s WHERE state='AWAITING_ASSIGNMENT' AND (paid OR payment_method='CASH') AND next_dispatch_at<=now()
     AND NOT EXISTS (SELECT 1 FROM food_orders f WHERE f.shipment_id=s.id AND (f.payment_status<>'PAID' OR f.payment_method='CASH' OR f.state NOT IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')))
     AND NOT EXISTS (SELECT 1 FROM dispatch_offers o WHERE o.shipment_id=s.id AND o.status='offered' AND o.expires_at>now())
     ORDER BY next_dispatch_at,created_at LIMIT $1`,[limit])).rows;
   const results=[];for(const row of due){try{results.push(await dispatchShipment(row.id));}catch(e){results.push({shipmentId:row.id,status:'error',code:e.code??e.status??'internal'});}}return results;
  }
- return {getPolicy,configure,algorithmFeatures:features.list,setAlgorithmFeature:features.set,riskSignals,reviewRisk,previewFleetBatch,trackingSettings,vehiclePolicy,setVehiclePolicy,riderPosition,optIn,manifest,nearby,availability,evaluate,dispatchShipment,offers,accept,decline,release,pruneSamples,refreshCorridors,tick};
+ return {getPolicy,configure,algorithmFeatures:features.list,setAlgorithmFeature:features.set,riskSignals,reviewRisk,previewFleetBatch,trackingSettings,vehiclePolicy,setVehiclePolicy,riderPosition,optIn,manifest,nearby,availability,evaluate,dispatchShipment,offers,accept,decline,release,pruneSamples,refreshCorridors,watchdog,tick};
 }

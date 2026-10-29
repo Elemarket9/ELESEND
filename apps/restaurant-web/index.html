@@ -163,14 +163,143 @@
 
   <div class="container">
     <div id="authView" style="display: none;">
-      <div class="login-box">
-        <h2>Merchant Login</h2>
-        <p>Access your restaurant live kitchen terminal, menu items, and financial settlements.</p>
-        <div class="field">
-          <label>Merchant Access Token / Session Token</label>
-          <input type="password" id="loginToken" class="input" placeholder="Paste Merchant Bearer Token or API key">
+      <div class="login-box" style="max-width: 500px;">
+        <div style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid var(--card-border); padding-bottom: 12px;">
+          <button class="btn" id="authTabSignInBtn" style="flex: 1; padding: 10px;" onclick="switchAuthMode('signin')">Merchant Sign In</button>
+          <button class="btn btn-secondary" id="authTabRegisterBtn" style="flex: 1; padding: 10px;" onclick="switchAuthMode('register')">Register Restaurant</button>
         </div>
-        <button class="btn" onclick="submitLogin()">Access Kitchen Terminal</button>
+
+        <div id="authErrorBanner" style="display: none; background: rgba(217, 45, 64, 0.15); border: 1px solid var(--danger); color: #FCA5A5; padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; margin-bottom: 16px;"></div>
+        <div id="authInfoBanner" style="display: none; background: rgba(24, 198, 165, 0.15); border: 1px solid var(--primary); color: var(--primary); padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; margin-bottom: 16px;"></div>
+
+        <!-- Mode 1: Merchant Phone + Password Sign In -->
+        <div id="authModeSignIn">
+          <h2>Merchant Sign In</h2>
+          <p>Sign in with your registered Ghana mobile phone and password to manage your live kitchen terminal, menu items, and settlements.</p>
+          <div class="field">
+            <label>Ghana Mobile Number</label>
+            <input type="tel" id="loginPhone" class="input" placeholder="024 123 4567 or +233241234567">
+          </div>
+          <div class="field">
+            <label>Password</label>
+            <input type="password" id="loginPassword" class="input" placeholder="Enter your password (12–128 characters)">
+          </div>
+          <button class="btn" onclick="submitLogin()">Sign In to Kitchen Terminal</button>
+          <div style="display: flex; justify-content: space-between; margin-top: 14px; font-size: 13px;">
+            <a href="javascript:void(0)" style="color: var(--primary); text-decoration: none; font-weight: 700;" onclick="switchAuthMode('forgot')">Forgot password? Recover via SMS</a>
+            <a href="javascript:void(0)" style="color: var(--text-muted); text-decoration: none; font-weight: 600;" onclick="switchAuthMode('register')">New restaurant? Register</a>
+          </div>
+        </div>
+
+        <!-- Mode 2: Restaurant Merchant Registration -->
+        <div id="authModeRegister" style="display: none;">
+          <h2>Register Your Restaurant</h2>
+          <p>Create your ELESEND merchant account and kitchen profile (10% flat food commission).</p>
+          <div class="field">
+            <label>Restaurant / Chop Bar Name</label>
+            <input type="text" id="regRestaurantName" class="input" placeholder="e.g. Osu Night Market Grill">
+          </div>
+          <div class="field">
+            <label>Merchant Phone Number (Ghana)</label>
+            <input type="tel" id="regPhone" class="input" placeholder="024 123 4567">
+          </div>
+          <div class="field">
+            <label>Password (12–128 characters)</label>
+            <input type="password" id="regPassword" class="input" placeholder="Create a strong password (min 12 chars)">
+          </div>
+          <div class="field">
+            <label>Cuisine / Category</label>
+            <input type="text" id="regCuisine" class="input" placeholder="e.g. Ghanaian Local, Jollof & Grill, Waakye">
+          </div>
+          <div class="field">
+            <label>Street Address / Landmark</label>
+            <input type="text" id="regAddress" class="input" placeholder="e.g. Oxford Street, Osu, Accra">
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+            <div class="field">
+              <label>Latitude (Ghana)</label>
+              <input type="number" step="0.0001" id="regLatitude" class="input" value="5.5560">
+            </div>
+            <div class="field">
+              <label>Longitude (Ghana)</label>
+              <input type="number" step="0.0001" id="regLongitude" class="input" value="-0.1825">
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+            <button type="button" class="btn btn-secondary" style="padding: 8px 12px; font-size: 12px;" onclick="detectMerchantGps()">📍 Use Current Kitchen GPS</button>
+          </div>
+          <button class="btn" onclick="submitRegisterRestaurant()">Create Restaurant Account</button>
+        </div>
+
+        <!-- Mode 3: Phone Verification (6-Digit SMS OTP) -->
+        <div id="authModeVerifyPhone" style="display: none;">
+          <h2>Verify Merchant Phone</h2>
+          <p>Enter the 6-digit SMS verification code sent to your registered merchant phone number.</p>
+          <div class="field">
+            <label>6-Digit Verification Code</label>
+            <input type="text" id="verifyPhoneCode" maxlength="6" class="input" placeholder="000000" style="text-align: center; font-size: 20px; letter-spacing: 6px; font-family: var(--mono);">
+          </div>
+          <button class="btn" onclick="submitVerifyMerchantPhone()">Verify Phone & Open Kitchen</button>
+          <button class="btn btn-secondary" style="margin-top: 10px;" onclick="requestMerchantPhoneChallenge()">Send / Resend SMS Code</button>
+        </div>
+
+        <!-- Mode 4: Password Recovery (6-Digit SMS OTP) -->
+        <div id="authModeForgot" style="display: none;">
+          <h2>Recover Merchant Password</h2>
+          <p>Verify ownership of your registered merchant phone number to set a new password and revoke old sessions.</p>
+          <div class="field">
+            <label>Registered Ghana Mobile Number</label>
+            <input type="tel" id="forgotPhone" class="input" placeholder="024 123 4567">
+          </div>
+          <button class="btn btn-secondary" style="margin-bottom: 16px;" onclick="requestMerchantPasswordRecovery()">Send 6-Digit Recovery Code</button>
+          <div id="forgotResetFields" style="display: none;">
+            <div class="field">
+              <label>6-Digit SMS Recovery Code</label>
+              <input type="text" id="forgotCode" maxlength="6" class="input" placeholder="000000">
+            </div>
+            <div class="field">
+              <label>New Password (12–128 characters)</label>
+              <input type="password" id="forgotNewPassword" class="input" placeholder="Enter new password (min 12 chars)">
+            </div>
+            <button class="btn" onclick="submitMerchantPasswordReset()">Verify Code & Reset Password</button>
+          </div>
+          <div style="margin-top: 14px; text-align: center;">
+            <a href="javascript:void(0)" style="color: var(--text-muted); font-size: 13px; text-decoration: none;" onclick="switchAuthMode('signin')">← Back to Sign In</a>
+          </div>
+        </div>
+
+        <!-- Mode 5: Complete Restaurant Profile (when business user has no restaurant row yet) -->
+        <div id="authModeCreateProfile" style="display: none;">
+          <h2>Complete Restaurant Profile</h2>
+          <p>Link your restaurant kitchen location to your merchant account to start receiving orders.</p>
+          <div class="field">
+            <label>Restaurant Name</label>
+            <input type="text" id="profileRestaurantName" class="input" placeholder="e.g. Papaye Osu">
+          </div>
+          <div class="field">
+            <label>Kitchen Contact Phone</label>
+            <input type="tel" id="profilePhone" class="input" placeholder="024 123 4567">
+          </div>
+          <div class="field">
+            <label>Cuisine</label>
+            <input type="text" id="profileCuisine" class="input" placeholder="e.g. Ghanaian Local & Grill">
+          </div>
+          <div class="field">
+            <label>Kitchen Address</label>
+            <input type="text" id="profileAddress" class="input" placeholder="e.g. Osu Oxford Street, Accra">
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+            <div class="field">
+              <label>Latitude</label>
+              <input type="number" step="0.0001" id="profileLatitude" class="input" value="5.5560">
+            </div>
+            <div class="field">
+              <label>Longitude</label>
+              <input type="number" step="0.0001" id="profileLongitude" class="input" value="-0.1825">
+            </div>
+          </div>
+          <button class="btn" onclick="submitCreateRestaurantProfile()">Save Restaurant & Open Terminal</button>
+        </div>
       </div>
     </div>
 
@@ -539,9 +668,54 @@
       return data;
     }
 
-    function showAuthView() {
+    let merchantPhoneChallengeId = null;
+    let merchantRecoveryChallengeId = null;
+
+    function normalizeGhanaPhoneInput(raw) {
+      const cleaned = String(raw || '').replace(/[\s\-()]/g, '');
+      if (/^0[25]\d{8}$/.test(cleaned)) return '+233' + cleaned.slice(1);
+      if (/^233[25]\d{8}$/.test(cleaned)) return '+' + cleaned;
+      return cleaned;
+    }
+
+    function setAuthMessage(errorMsg = '', infoMsg = '') {
+      const errEl = document.getElementById('authErrorBanner');
+      const infoEl = document.getElementById('authInfoBanner');
+      if (errEl) {
+        errEl.style.display = errorMsg ? 'block' : 'none';
+        errEl.textContent = errorMsg || '';
+      }
+      if (infoEl) {
+        infoEl.style.display = infoMsg ? 'block' : 'none';
+        infoEl.textContent = infoMsg || '';
+      }
+    }
+
+    function switchAuthMode(mode) {
+      setAuthMessage('', '');
+      const modes = {
+        signin: 'authModeSignIn',
+        register: 'authModeRegister',
+        verify: 'authModeVerifyPhone',
+        forgot: 'authModeForgot',
+        profile: 'authModeCreateProfile'
+      };
+      Object.entries(modes).forEach(([k, id]) => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = k === mode ? 'block' : 'none';
+      });
+      const signInBtn = document.getElementById('authTabSignInBtn');
+      const regBtn = document.getElementById('authTabRegisterBtn');
+      if (signInBtn && regBtn) {
+        signInBtn.className = mode === 'register' ? 'btn btn-secondary' : 'btn';
+        regBtn.className = mode === 'register' ? 'btn' : 'btn btn-secondary';
+      }
+    }
+
+    function showAuthView(mode = 'signin') {
       document.getElementById('authView').style.display = 'block';
       document.getElementById('mainView').style.display = 'none';
+      switchAuthMode(mode);
     }
 
     function showMainView() {
@@ -549,22 +723,215 @@
       document.getElementById('mainView').style.display = 'block';
     }
 
-    function submitLogin() {
-      const val = document.getElementById('loginToken').value.trim();
-      if (!val) return alert('Please enter your merchant bearer token');
-      activeToken = val;
-      localStorage.setItem('elesend_merchant_token', val);
-      init();
+    function detectMerchantGps() {
+      if (!navigator.geolocation) {
+        setAuthMessage('Browser geolocation unavailable; enter latitude and longitude manually.');
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          document.getElementById('regLatitude').value = pos.coords.latitude.toFixed(6);
+          document.getElementById('regLongitude').value = pos.coords.longitude.toFixed(6);
+          setAuthMessage('', 'Kitchen GPS coordinates updated.');
+        },
+        () => setAuthMessage('Could not read browser GPS; enter latitude and longitude manually.')
+      );
     }
 
-    function logout() {
+    async function submitLogin() {
+      setAuthMessage('', '');
+      const phone = normalizeGhanaPhoneInput(document.getElementById('loginPhone')?.value || '');
+      const password = (document.getElementById('loginPassword')?.value || '');
+      if (!/^\+233[25]\d{8}$/.test(phone)) {
+        setAuthMessage('Enter a valid Ghana mobile phone number (e.g. 024 123 4567).');
+        return;
+      }
+      if (password.length < 12 || password.length > 128) {
+        setAuthMessage('Password must be between 12 and 128 characters.');
+        return;
+      }
+      try {
+        const data = await apiRequest('/api/v1/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ phone, password })
+        });
+        if (!['business', 'admin'].includes(data?.user?.kind)) {
+          setAuthMessage('Please sign in with a Restaurant Merchant (business) account.');
+          return;
+        }
+        activeToken = data.token;
+        localStorage.setItem('elesend_merchant_token', data.token);
+        const pStatus = await apiRequest('/api/v1/me/phone').catch(() => ({ verified: true }));
+        if (pStatus && pStatus.verified === false) {
+          showAuthView('verify');
+          await requestMerchantPhoneChallenge();
+          return;
+        }
+        await init();
+      } catch (err) {
+        setAuthMessage(err.message || 'Invalid phone number or password.');
+      }
+    }
+
+    async function submitRegisterRestaurant() {
+      setAuthMessage('', '');
+      const name = (document.getElementById('regRestaurantName')?.value || '').trim();
+      const phone = normalizeGhanaPhoneInput(document.getElementById('regPhone')?.value || '');
+      const password = (document.getElementById('regPassword')?.value || '');
+      const cuisine = (document.getElementById('regCuisine')?.value || '').trim() || 'Ghanaian Local';
+      const address = (document.getElementById('regAddress')?.value || '').trim();
+      const latitude = Number(document.getElementById('regLatitude')?.value);
+      const longitude = Number(document.getElementById('regLongitude')?.value);
+
+      if (name.length < 2) return setAuthMessage('Enter your restaurant name (min 2 characters).');
+      if (!/^\+233[25]\d{8}$/.test(phone)) return setAuthMessage('Enter a valid Ghana mobile number (e.g. 024 123 4567).');
+      if (password.length < 12 || password.length > 128) return setAuthMessage('Password must be 12 to 128 characters.');
+      if (address.length < 3) return setAuthMessage('Enter your restaurant street address or landmark.');
+      if (!Number.isFinite(latitude) || latitude < 4.5 || latitude > 11.5 || !Number.isFinite(longitude) || longitude < -3.5 || longitude > 1.5) {
+        return setAuthMessage('Coordinates must be within Ghana (Lat 4.5..11.5, Lon -3.5..1.5).');
+      }
+
+      try {
+        await apiRequest('/api/v1/auth/register', {
+          method: 'POST',
+          body: JSON.stringify({ phone, password, kind: 'business', name })
+        });
+        const loginData = await apiRequest('/api/v1/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ phone, password })
+        });
+        activeToken = loginData.token;
+        localStorage.setItem('elesend_merchant_token', loginData.token);
+
+        await apiRequest('/api/v1/restaurants', {
+          method: 'POST',
+          body: JSON.stringify({
+            name,
+            phone,
+            address,
+            latitude,
+            longitude,
+            cuisine,
+            prepTimeMinutes: 20,
+            deliveryRadiusM: 10000
+          })
+        });
+
+        const pStatus = await apiRequest('/api/v1/me/phone').catch(() => ({ verified: false }));
+        if (!pStatus.verified) {
+          showAuthView('verify');
+          await requestMerchantPhoneChallenge();
+          return;
+        }
+        await init();
+      } catch (err) {
+        setAuthMessage(err.message || 'Registration failed.');
+      }
+    }
+
+    async function requestMerchantPhoneChallenge() {
+      setAuthMessage('', '');
+      try {
+        const ch = await apiRequest('/api/v1/me/phone-challenge', { method: 'POST', body: JSON.stringify({}) });
+        merchantPhoneChallengeId = ch.challengeId;
+        setAuthMessage('', '6-digit verification code sent via SMS to your merchant phone.');
+      } catch (err) {
+        setAuthMessage(err.message || 'Could not send phone verification code.');
+      }
+    }
+
+    async function submitVerifyMerchantPhone() {
+      setAuthMessage('', '');
+      const code = (document.getElementById('verifyPhoneCode')?.value || '').trim();
+      if (!merchantPhoneChallengeId) return setAuthMessage('Click "Send / Resend SMS Code" first.');
+      if (!/^\d{6}$/.test(code)) return setAuthMessage('Enter the 6-digit SMS verification code.');
+      try {
+        await apiRequest('/api/v1/me/phone-verify', {
+          method: 'POST',
+          body: JSON.stringify({ challengeId: merchantPhoneChallengeId, code })
+        });
+        merchantPhoneChallengeId = null;
+        await init();
+      } catch (err) {
+        setAuthMessage(err.message || 'Phone verification failed.');
+      }
+    }
+
+    async function requestMerchantPasswordRecovery() {
+      setAuthMessage('', '');
+      const phone = normalizeGhanaPhoneInput(document.getElementById('forgotPhone')?.value || '');
+      if (!/^\+233[25]\d{8}$/.test(phone)) {
+        return setAuthMessage('Enter a valid registered Ghana mobile number.');
+      }
+      try {
+        const ch = await apiRequest('/api/v1/auth/password-recovery', {
+          method: 'POST',
+          body: JSON.stringify({ phone })
+        });
+        merchantRecoveryChallengeId = ch.challengeId;
+        document.getElementById('forgotResetFields').style.display = 'block';
+        setAuthMessage('', '6-digit recovery code sent via SMS. Enter the code and your new password below.');
+      } catch (err) {
+        setAuthMessage(err.message || 'Failed to request password recovery.');
+      }
+    }
+
+    async function submitMerchantPasswordReset() {
+      setAuthMessage('', '');
+      const phone = normalizeGhanaPhoneInput(document.getElementById('forgotPhone')?.value || '');
+      const code = (document.getElementById('forgotCode')?.value || '').trim();
+      const newPassword = (document.getElementById('forgotNewPassword')?.value || '');
+      if (!merchantRecoveryChallengeId) return setAuthMessage('Request a 6-digit recovery code first.');
+      if (!/^\d{6}$/.test(code)) return setAuthMessage('Enter the 6-digit SMS recovery code.');
+      if (newPassword.length < 12 || newPassword.length > 128) return setAuthMessage('New password must be 12 to 128 characters.');
+      try {
+        await apiRequest('/api/v1/auth/password-reset', {
+          method: 'POST',
+          body: JSON.stringify({ phone, challengeId: merchantRecoveryChallengeId, code, newPassword })
+        });
+        merchantRecoveryChallengeId = null;
+        document.getElementById('forgotResetFields').style.display = 'none';
+        switchAuthMode('signin');
+        document.getElementById('loginPhone').value = phone;
+        setAuthMessage('', 'Password reset complete and old sessions revoked. Sign in with your new password.');
+      } catch (err) {
+        setAuthMessage(err.message || 'Password reset failed.');
+      }
+    }
+
+    async function submitCreateRestaurantProfile() {
+      setAuthMessage('', '');
+      const name = (document.getElementById('profileRestaurantName')?.value || '').trim();
+      const phone = normalizeGhanaPhoneInput(document.getElementById('profilePhone')?.value || '');
+      const cuisine = (document.getElementById('profileCuisine')?.value || '').trim() || 'Ghanaian Local';
+      const address = (document.getElementById('profileAddress')?.value || '').trim();
+      const latitude = Number(document.getElementById('profileLatitude')?.value);
+      const longitude = Number(document.getElementById('profileLongitude')?.value);
+      if (name.length < 2 || !/^\+233[25]\d{8}$/.test(phone) || address.length < 3) {
+        return setAuthMessage('Please provide restaurant name, valid Ghana phone, and kitchen address.');
+      }
+      try {
+        await apiRequest('/api/v1/restaurants', {
+          method: 'POST',
+          body: JSON.stringify({ name, phone, cuisine, address, latitude, longitude, prepTimeMinutes: 20, deliveryRadiusM: 10000 })
+        });
+        await init();
+      } catch (err) {
+        setAuthMessage(err.message || 'Could not create restaurant profile.');
+      }
+    }
+
+    async function logout() {
       if (confirm('Logout of Kitchen Terminal?')) {
+        try {
+          if (activeToken) await apiRequest('/api/v1/auth/logout', { method: 'POST', body: JSON.stringify({}) });
+        } catch {}
         localStorage.removeItem('elesend_merchant_token');
         activeToken = '';
         currentRestaurant = null;
         if (pollInterval) clearInterval(pollInterval);
         if (prepTimerInterval) clearInterval(prepTimerInterval);
-        showAuthView();
+        showAuthView('signin');
       }
     }
 
@@ -572,14 +939,22 @@
       try {
         const list = await apiRequest('/api/v1/restaurants?mine=true');
         if (!list || list.length === 0) {
-          alert('No restaurant account linked to this token. Please contact ELESEND support.');
-          return;
+          showAuthView('profile');
+          setAuthMessage('', 'Complete your restaurant profile below to activate your kitchen terminal.');
+          return false;
         }
         currentRestaurant = list[0];
         document.getElementById('restaurantHeaderName').textContent = currentRestaurant.name;
         updateStoreStatusUI();
+        return true;
       } catch (err) {
+        if (String(err.message || '').includes('Session expired') || String(err.message || '').includes('Authentication required')) {
+          localStorage.removeItem('elesend_merchant_token');
+          activeToken = '';
+          showAuthView('signin');
+        }
         console.error('Failed to load restaurant profile', err);
+        return false;
       }
     }
 
@@ -1391,11 +1766,12 @@
 
     async function init() {
       if (!activeToken) {
-        showAuthView();
+        showAuthView('signin');
         return;
       }
+      const ok = await loadRestaurant();
+      if (!ok) return;
       showMainView();
-      await loadRestaurant();
       await pollOrders();
       if (pollInterval) clearInterval(pollInterval);
       pollInterval = setInterval(pollOrders, 4000);

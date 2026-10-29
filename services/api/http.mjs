@@ -1,6 +1,7 @@
 import {createServer} from 'node:http';
 import {ZodError} from 'zod';
 import {check,limit,equal} from './security.mjs';
+import {haversine} from './dispatch-geometry.mjs';
 import {network} from './network.mjs';
 import {vehicleService} from './vehicle.mjs';
 import {clientIp,resolveVerifiedHost} from './client-ip.mjs';
@@ -30,10 +31,10 @@ import {
 } from './weekly-settlement.mjs';
 import {walletSummary,walletDebt,walletTransactions,adminWalletOverview,adminWalletReconciliation,walletPolicyView,updateWalletPolicy} from './rider-wallet.mjs';
 import {getSystemHealthReport} from './infrastructure/monitoring/system-health.mjs';
-export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null}={}){
+export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null,readinessToken=null}={}){
   const net=network(db),vehicles=vehicleService(db),markets=marketService(db);
   const restaurants=restaurant||restaurantService(db);
-  const restOrders=restaurantOrders||restaurantOrderService(db,{platform:app,dispatcher,routing:app?.routing});
+  const restOrders=restaurantOrders||restaurantOrderService(db,{platform:app,dispatcher,routing:app?.routing,sms:app?.sms});
   const commissions=commissionEngine(db);
   const promos=promotionEngine(db);
   const chat=chatEngine(db);
@@ -58,9 +59,13 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});
    res.end('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Return to ELESEND</title></head><body><h1>Return to ELESEND</h1><p>The app will verify your payment status. This page does not confirm a charge or cancellation.</p><p><a href="elesend://payments">Open ELESEND</a></p></body></html>');return;
   }
-  if(path==='/ready'&&method==='GET'){
-   const secret=process.env.READINESS_PROBE_TOKEN;
-   check(secret&&secret.length>=32&&equal(req.headers['x-elesend-health-token'],secret),404,'Endpoint not found');
+  if((path==='/ready'||path==='/readyz')&&method==='GET'){
+   const secret=readinessToken!==null?readinessToken:(process.env.READINESS_PROBE_TOKEN||'');
+   const hdr=req.headers['x-elesend-health-token']||req.headers['x-readiness-token'];
+   const remote=req.socket?.remoteAddress||'';
+   const isContainerLoopback=path==='/readyz'&&(remote==='127.0.0.1'||remote==='::1'||remote==='::ffff:127.0.0.1')&&!req.headers['x-forwarded-for'];
+   const authorized=(secret.length>0&&equal(hdr,secret))||(secret.length===0&&isContainerLoopback);
+   check(authorized,404,'Endpoint not found');
    await db.query('SELECT 1');send(200,{status:'ready'});return;
   }
   await limit(db,'http:'+clientIp(req),300,60);
@@ -116,20 +121,26 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   }
   if(method==='POST'&&path==='/api/v1/auth/register'){await limit(db,'registration-ip:'+clientIp(req),12,3600);send(201,await app.register(body));return;}
   if(method==='POST'&&path==='/api/v1/auth/login'){await limit(db,'login-ip:'+clientIp(req),40,900);send(200,await app.login(body));return;}
+  if(method==='POST'&&path==='/api/v1/auth/password-recovery'){await limit(db,'pw-recovery-ip:'+clientIp(req),10,900);send(200,await app.passwordRecoveryChallenge(body));return;}
+  if(method==='POST'&&path==='/api/v1/auth/password-reset'){await limit(db,'pw-reset-ip:'+clientIp(req),15,900);send(200,await app.resetPassword(body));return;}
   const token=req.headers.authorization?.replace(/^Bearer /,'')||(path==='/api/v1/chat/stream'?new URL(req.url,'http://localhost').searchParams.get('token'):null);const actor=token?.startsWith('es_live_')?await net.authenticateKey(token):await app.authenticate(token);
   net.authorizeKey(actor,method,path);
   await limit(db,'user:'+actor.id,150,60);
   if(path.startsWith('/api/v1/admin/'))check(actor?.kind==='admin',403,'Administrator required');
   let result;
-  if(method==='POST'&&path==='/api/v1/auth/logout'){result=await app.logout(token);disconnectRealtimeSession(token,'logged_out');}
+  if(method==='POST'&&path==='/api/v1/auth/logout'){result=await app.logout(token,body,actor);disconnectRealtimeSession(token,'logged_out');}
   else if(method==='GET'&&path==='/api/v1/me/phone')result=await app.phoneStatus(actor);
   else if(method==='POST'&&path==='/api/v1/me/phone-challenge')result=await app.phoneChallenge(actor);
   else if(method==='POST'&&path==='/api/v1/me/phone-verify')result=await app.verifyPhone(actor,body);
+  else if(method==='POST'&&path==='/api/v1/me/push-token')result=await app.registerPushToken(actor,body,{sessionToken:token});
+  else if(method==='GET'&&path==='/api/v1/me/push-tokens')result=await app.listPushTokens(actor);
   else if(method==='GET'&&path==='/api/v1/payments/methods'){check(checkout,503);result=await checkout.methods();}
   else if(method==='GET'&&path==='/api/v1/admin/payments/methods'){check(checkout,503);check(actor.kind==='admin',403,'Administrator required');check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])",[actor.id,['payments:configure','finance:read','finance:approve','finance:configure']])).rowCount,403,'Payment or finance permission required');result=await checkout.methods();}
   else if(method==='POST'&&path==='/api/v1/admin/payments/methods'){check(checkout,503);result=await checkout.configure(actor,body);}
   else if(method==='GET'&&path==='/api/v1/admin/payments/exceptions'){check(checkout,503);result=await checkout.exceptionQueue(actor);}
   else if(method==='GET'&&path==='/api/v1/admin/payments/operation-exceptions'){check(moneyOperations,503);result=await moneyOperations.exceptions(actor);}
+  else if(method==='GET'&&(path==='/api/v1/admin/disputes'||path==='/api/v1/admin/payments/disputes')){check(moneyOperations,503);result=await moneyOperations.disputes(actor);}
+  else if(method==='POST'&&/^\/api\/v1\/admin\/(?:payments\/)?disputes\/[0-9a-f-]+\/(?:resolve|refund)$/.test(path)){check(moneyOperations,503);const parts=path.split('/');const did=parts[parts.length-2];result=await moneyOperations.resolveDispute(actor,did,body);}
   else if(method==='GET'&&path==='/api/v1/admin/payments/refunds'){check(moneyOperations,503);result=await moneyOperations.refunds(actor);}
   else if(method==='POST'&&/^\/api\/v1\/admin\/payments\/refunds\/[0-9a-f-]+\/submit$/.test(path)){check(moneyOperations,503);result=await moneyOperations.submitRefund(actor,path.split('/')[6]);}
   else if(method==='POST'&&/^\/api\/v1\/admin\/payments\/refunds\/[0-9a-f-]+\/reconcile$/.test(path)){check(moneyOperations,503);result=await moneyOperations.reconcileRefund(actor,path.split('/')[6]);}
@@ -307,7 +318,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
     result=await createTemporaryDeliveryReference(db,actor,body);
    }
    else if(method==='GET'&&/^\/api\/v1\/maps\/egia\/temporary-reference\/[0-9a-f-]{36}$/.test(path)){
-    result=await getTemporaryDeliveryReference(db,actor,path.split('/')[5]);
+    result=await getTemporaryDeliveryReference(db,actor,path.split('/')[6]);
    }
    else if(method==='POST'&&path==='/api/v1/rider/map-report'){
     await limit(db,'rider-rep:'+actor.id,20,60);
@@ -324,8 +335,12 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
     const r=(await db.query('SELECT ST_Y(current_position::geometry) as lat,ST_X(current_position::geometry) as lon FROM riders WHERE id=$1',[actor.id])).rows[0];
     check(r&&Number.isFinite(Number(r.lat))&&Number.isFinite(Number(r.lon)),400,'Rider position unavailable');
     const qDest=s.quote_request?.destination||s.quote_request?.dropoff||null;
-    const destLat=Number(s.dest_lat??qDest?.latitude);
-    const destLon=Number(s.dest_lon??qDest?.longitude);
+    const qLat=Number(qDest?.latitude),qLon=Number(qDest?.longitude),refLat=Number(s.dest_lat),refLon=Number(s.dest_lon);
+    if(Number.isFinite(refLat)&&Number.isFinite(refLon)&&Number.isFinite(qLat)&&Number.isFinite(qLon)){
+     check(haversine({latitude:refLat,longitude:refLon},{latitude:qLat,longitude:qLon})<=5,409,'Temporary delivery reference coordinates diverge from quoted destination');
+    }
+    const destLat=Number.isFinite(qLat)?qLat:refLat;
+    const destLon=Number.isFinite(qLon)?qLon:refLon;
     check(Number.isFinite(destLat)&&Number.isFinite(destLon),422,'Confirmed destination coordinates required for navigation');
     const destCoords={
      latitude:destLat,
@@ -375,6 +390,18 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/delivery/availability'){check(dispatcher,503,'Dispatch unavailable');check(['customer','business'].includes(actor.kind),403);result=await dispatcher.availability(body);}
   else if(method==='GET'&&path==='/api/v1/admin/dispatch-policy'){check(dispatcher,503);result=await dispatcher.getPolicy(actor);}
   else if(method==='POST'&&path==='/api/v1/admin/dispatch-policy'){check(dispatcher,503);result=await dispatcher.configure(actor,body);}
+  else if(method==='POST'&&path==='/api/v1/admin/dispatch/watchdog'){
+   check(actor.kind==='admin',403,'Administrator required');
+   check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])",[actor.id,['dispatch:configure','verification:write','support:moderate']])).rowCount,403,'Dispatch permission required');
+   const shipRes=dispatcher?.watchdog?await dispatcher.watchdog(body):[];
+   const foodRes=restOrders?.monitorAssignedDeliveries?await restOrders.monitorAssignedDeliveries(body):[];
+   const shipActions=Array.isArray(shipRes)?shipRes:(shipRes?.actions||[]);
+   const foodActions=Array.isArray(foodRes)?foodRes:(foodRes?.actions||[]);
+   for(const act of [...shipActions,...foodActions]){
+    if((act.reassigned||act.status==='reassigned_pre_pickup')&&act.shipmentId)await chat.revokeRiderConversations(db,{shipmentId:act.shipmentId,oldRiderUserId:act.previousRiderId,reason:'watchdog_reassigned'});
+   }
+   result={shipments:shipRes,foodOrders:foodRes};
+  }
   else if(method==='GET'&&path==='/api/v1/admin/markets')result=await markets.list(actor);
   else if(method==='POST'&&path==='/api/v1/admin/markets/stage')result=await markets.stage(actor,body);
   else if(method==='POST'&&path==='/api/v1/admin/markets/activate')result=await markets.activate(actor,body);
@@ -401,7 +428,11 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/rider/wallet/topups'){check(actor?.kind==='rider',403,'Rider required');check(finance,503);result=await finance.initiate(actor,{...body,kind:'commission_repayment'});}
   else if(method==='GET'&&/^\/api\/v1\/rider\/wallet\/topups\/[0-9a-f-]{36}$/.test(path)){check(actor?.kind==='rider',403,'Rider required');check(finance,503);result=await finance.paymentStatus(actor,path.split('/')[6]);}
   else if(method==='GET'&&path==='/api/v1/admin/finance/wallet-overview')result=await adminWalletOverview(db,actor);
-  else if(method==='GET'&&path==='/api/v1/admin/finance/reconciliation')result=await adminWalletReconciliation(db,actor);
+  else if((method==='GET'||method==='POST')&&path==='/api/v1/admin/finance/reconciliation'){
+   const u=new URL(req.url,'http://localhost').searchParams;
+   const repair=method==='POST'?body?.repair!==false:u.get('repair')==='true';
+   result=await adminWalletReconciliation(db,actor,{repair});
+  }
   else if(method==='GET'&&path==='/api/v1/admin/finance/wallet-policy')result=await walletPolicyView(db,actor);
   else if(method==='POST'&&path==='/api/v1/admin/finance/wallet-policy')result=await updateWalletPolicy(db,actor,body);
   else if(method==='POST'&&path==='/api/v1/rider/commissions/payments'){check(actor?.kind==='rider',403,'Rider required');check(finance,503);result=await finance.initiate(actor,{...body,kind:'commission_repayment'});}
@@ -504,10 +535,10 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
        sessionToken:token||null,
        conversationIds:convId?new Set([convId]):new Set(),
        singleConversationId:convId||null,
-       send(event,data){if(!res.writableEnded)res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);},
+       send(event,data){if(!res.writableEnded){const idLine=data?.eventId?`id: ${data.eventId}\n`:'';res.write(`${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);}},
        close(){if(!res.writableEnded)res.end();}
      };
-     const unregister=registerRealtimeConnection(actor.id,conn,{expiresAt});
+     const unregister=registerRealtimeConnection(actor.id,conn,{expiresAt,deduplicate:true});
      req.on('close',unregister);
      conn.send('connected',{userId:actor.id,role:actor.kind,conversationId:convId||null});
      return;

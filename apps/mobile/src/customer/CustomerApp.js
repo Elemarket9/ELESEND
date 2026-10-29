@@ -83,6 +83,11 @@ export default function CustomerApp() {
   const [phoneCode, setPhoneCode] = useState('');
   const [credentials, setCredentials] = useState(initialCreds);
   const [isSignup, setIsSignup] = useState(false);
+  const [forgotModal, setForgotModal] = useState(false);
+  const [recoveryPhone, setRecoveryPhone] = useState('');
+  const [recoveryChallenge, setRecoveryChallenge] = useState(null);
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -284,7 +289,7 @@ export default function CustomerApp() {
       try {
         const trk = await call('GET', `/api/v1/public-track/${trackingShipment.id}`);
         if (!cancelled) {
-          if (trk?.courier) setLiveCourier(trk.courier);
+          setLiveCourier(trk?.courier || null);
           if (trk?.riderPhone && !trackingShipment.rider_phone) {
             setTrackingShipment(ts => ts ? { ...ts, rider_phone: trk.riderPhone } : null);
           }
@@ -298,6 +303,38 @@ export default function CustomerApp() {
       clearInterval(interval);
     };
   }, [trackingShipment?.id]);
+
+  async function requestPasswordRecoveryChallenge() {
+    const normPhone = normalizeGhanaPhone(recoveryPhone || credentials.phone);
+    if (!isValidGhanaPhone(normPhone)) throw Error('Enter a valid registered Ghana mobile number');
+    const ch = await call('POST', '/api/v1/auth/password-recovery', { phone: normPhone });
+    setRecoveryPhone(normPhone);
+    setRecoveryChallenge(ch);
+    setRecoveryCode('');
+    setError('6-digit password recovery code sent via SMS to ' + normPhone);
+  }
+
+  async function submitPasswordReset() {
+    const normPhone = normalizeGhanaPhone(recoveryPhone || credentials.phone);
+    if (!isValidGhanaPhone(normPhone)) throw Error('Enter a valid registered Ghana mobile number');
+    if (!recoveryChallenge?.challengeId) throw Error('Request a 6-digit recovery code first');
+    if (!/^\d{6}$/.test(recoveryCode.trim())) throw Error('Enter the 6-digit SMS recovery code');
+    if (recoveryNewPassword.length < 12 || recoveryNewPassword.length > 128) {
+      throw Error('New password must be between 12 and 128 characters');
+    }
+    await call('POST', '/api/v1/auth/password-reset', {
+      phone: normPhone,
+      challengeId: recoveryChallenge.challengeId,
+      code: recoveryCode.trim(),
+      newPassword: recoveryNewPassword
+    });
+    setForgotModal(false);
+    setRecoveryChallenge(null);
+    setRecoveryCode('');
+    setRecoveryNewPassword('');
+    setCredentials(c => ({ ...c, phone: normPhone, password: '' }));
+    setError('Password reset complete. All previous sessions have been revoked. Sign in with your new password.');
+  }
 
   async function signIn() {
     const normPhone = normalizeGhanaPhone(credentials.phone);
@@ -920,7 +957,11 @@ export default function CustomerApp() {
     const { body, options } = buildFoodOrderRequest(foodQuote.requestBody, idempKey, 'MOMO');
     const order = await call('POST', ENDPOINTS.foodOrder, body, options);
     const orderId = order?.orderId || order?.id || '';
-    Alert.alert('Order Placed!', `Your food order #${String(orderId).slice(0, 8)} is awaiting payment and restaurant confirmation.`);
+    if (order?.shipment_id) {
+      await startOrResumeCheckout(order.shipment_id, 'MOMO');
+    } else {
+      Alert.alert('Order Placed!', `Your food order #${String(orderId).slice(0, 8)} is awaiting payment and restaurant confirmation.`);
+    }
     setCartItems([]);
     setCartModal(false);
     setSelectedRest(null);
@@ -1136,9 +1177,72 @@ export default function CustomerApp() {
               )}
             </TouchableOpacity>
 
+            {!isSignup && (
+              <TouchableOpacity
+                style={styles.switchAuthTouch}
+                onPress={() => {
+                  setForgotModal(v => !v);
+                  setRecoveryPhone(credentials.phone || '');
+                  setError('');
+                }}>
+                <Text style={styles.switchAuthText}>Forgot password? Recover via SMS</Text>
+              </TouchableOpacity>
+            )}
+
+            {forgotModal && !isSignup && (
+              <View style={{ marginTop: 12, padding: 14, borderRadius: 12, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0' }}>
+                <Text style={{ fontWeight: '800', fontSize: 15, color: colors.textDark }}>Recover Account Password</Text>
+                <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 4 }}>
+                  Verify your registered Ghana phone with a 6-digit SMS code to set a new password.
+                </Text>
+                <TextInput
+                  style={[styles.formInput, { marginTop: 10 }]}
+                  placeholder="Registered phone (e.g. 024 123 4567)"
+                  placeholderTextColor={colors.textPlaceholder}
+                  keyboardType="phone-pad"
+                  value={recoveryPhone}
+                  onChangeText={setRecoveryPhone}
+                />
+                <TouchableOpacity
+                  style={[styles.primaryActionButton, { marginTop: 10, backgroundColor: '#1E293B' }]}
+                  disabled={busy}
+                  onPress={() => execute(requestPasswordRecoveryChallenge)}>
+                  <Text style={styles.primaryActionText}>Send 6-Digit Recovery Code</Text>
+                </TouchableOpacity>
+                {recoveryChallenge?.challengeId && (
+                  <View style={{ marginTop: 10 }}>
+                    <TextInput
+                      style={styles.formInput}
+                      placeholder="6-Digit SMS Code"
+                      placeholderTextColor={colors.textPlaceholder}
+                      keyboardType="number-pad"
+                      maxLength={6}
+                      value={recoveryCode}
+                      onChangeText={setRecoveryCode}
+                    />
+                    <TextInput
+                      style={[styles.formInput, { marginTop: 8 }]}
+                      placeholder="New Password (12–128 characters)"
+                      placeholderTextColor={colors.textPlaceholder}
+                      secureTextEntry
+                      maxLength={128}
+                      value={recoveryNewPassword}
+                      onChangeText={setRecoveryNewPassword}
+                    />
+                    <TouchableOpacity
+                      style={[styles.primaryActionButton, { marginTop: 10 }]}
+                      disabled={busy}
+                      onPress={() => execute(submitPasswordReset)}>
+                      <Text style={styles.primaryActionText}>Verify Code & Reset Password</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            )}
+
             <TouchableOpacity
               style={styles.switchAuthTouch}
-              onPress={() => { setIsSignup(!isSignup); setError(''); }}>
+              onPress={() => { setIsSignup(!isSignup); setForgotModal(false); setError(''); }}>
               <Text style={styles.switchAuthText}>
                 {isSignup ? 'Already have an account? Sign In' : "Don't have an account? Sign Up"}
               </Text>
@@ -1856,6 +1960,13 @@ export default function CustomerApp() {
                 )}
 
                 <View style={styles.activeOrderActionsRow}>
+                  {o.payment_status !== 'PAID' && Boolean(o.shipment_id) && (
+                    <TouchableOpacity
+                      style={[styles.liveTrackButton, { backgroundColor: colors.brandCoral, marginRight: 6 }]}
+                      onPress={() => execute(() => startOrResumeCheckout(o.shipment_id, o.payment_method || 'MOMO'))}>
+                      <Text style={styles.liveTrackText}>💳 Pay Now</Text>
+                    </TouchableOpacity>
+                  )}
                   <TouchableOpacity
                     style={[styles.liveTrackButton, { backgroundColor: '#0F172A' }]}
                     onPress={() => openOrderChat({ conversationType: 'CUSTOMER_RESTAURANT', foodOrderId: o.id })}>
@@ -2736,10 +2847,10 @@ export default function CustomerApp() {
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: '#E2E8F0', backgroundColor: '#FFFFFF' }}>
             <View>
               <Text style={{ fontSize: 16, fontWeight: '800', color: colors.textDark }}>
-                💬 {activeChatConversation?.conversationType || 'Order Chat'}
+                💬 {activeConversation?.conversationType || 'Order Chat'}
               </Text>
               <Text style={{ fontSize: 11, color: colors.textSecondary }}>
-                State: {activeChatConversation?.state || 'ACTIVE'} • Epoch #{activeChatConversation?.assignmentEpoch || 1}
+                State: {activeConversation?.state || 'ACTIVE'} • Epoch #{activeConversation?.assignmentEpoch || 1}
               </Text>
             </View>
             <View style={{ flexDirection: 'row', gap: 8 }}>
@@ -2785,7 +2896,7 @@ export default function CustomerApp() {
                     {String(msg.senderRole || '').toUpperCase()} • #{msg.seq}
                   </Text>
                   <Text style={{ fontSize: 13, color: isMine ? '#FFFFFF' : '#0F172A' }}>
-                    {msg.bodyText || (msg.messageType === 'location_pin' ? `📍 Pin: ${msg.locationPin?.label || ''}` : '')}
+                    {msg.body || msg.bodyText || (msg.messageType === 'location_pin' ? `📍 Pin: ${msg.locationPin?.label || ''}` : '')}
                   </Text>
                   <Text style={{ fontSize: 10, color: isMine ? '#CBD5E1' : '#94A3B8', marginTop: 4, textAlign: 'right' }}>
                     {msg.deliveryStatus || 'SENT'}
@@ -2793,8 +2904,8 @@ export default function CustomerApp() {
                 </View>
               );
             })}
-            {Boolean(chatTypingPeer) && (
-              <Text style={{ fontSize: 11, color: '#64748B', fontStyle: 'italic' }}>{chatTypingPeer}</Text>
+            {Array.isArray(chatTyping) && chatTyping.length > 0 && (
+              <Text style={{ fontSize: 11, color: '#64748B', fontStyle: 'italic' }}>Participant is typing...</Text>
             )}
           </ScrollView>
 
@@ -2802,15 +2913,15 @@ export default function CustomerApp() {
           <View style={{ backgroundColor: '#FFFFFF', paddingHorizontal: 12, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#E2E8F0' }}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
               {[
-                { key: 'cust_gate_code', label: 'Here is the gate landmark.' },
-                { key: 'cust_call_arrival', label: 'Please call when you arrive.' },
-                { key: 'cust_coming_out', label: "I'm coming out now." },
-                { key: 'cust_leave_reception', label: 'Please meet me at reception.' }
+                { key: 'cust_landmark_shop', label: 'Near the landmark shop.' },
+                { key: 'cust_call_arrival', label: 'Please call on arrival.' },
+                { key: 'cust_coming_outside', label: "I'm coming outside now." },
+                { key: 'cust_main_entrance', label: 'Deliver to main entrance.' }
               ].map(preset => (
                 <TouchableOpacity
                   key={preset.key}
                   style={{ backgroundColor: '#F1F5F9', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 6, marginRight: 6 }}
-                  onPress={() => sendCustomerChatMessage({ messageType: 'quick_reply', quickReplyKey: preset.key, bodyText: preset.label })}>
+                  onPress={() => sendCustomerChatMessage('quick_reply', preset.label, preset.key)}>
                   <Text style={{ fontSize: 11, color: '#0F172A', fontWeight: '600' }}>{preset.label}</Text>
                 </TouchableOpacity>
               ))}
@@ -2826,12 +2937,12 @@ export default function CustomerApp() {
                 style={[styles.sheetNoteInput, { flex: 1, marginBottom: 0 }]}
                 placeholder="Type an order message..."
                 placeholderTextColor={colors.textPlaceholder}
-                value={chatInputText}
-                onChangeText={setChatInputText}
+                value={chatText}
+                onChangeText={setChatText}
               />
               <TouchableOpacity
                 style={{ backgroundColor: colors.brandCoral, paddingHorizontal: 16, paddingVertical: 11, borderRadius: 10 }}
-                onPress={() => sendCustomerChatMessage({ messageType: 'text', bodyText: chatInputText })}>
+                onPress={() => sendCustomerChatMessage('text', chatText)}>
                 <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 13 }}>Send</Text>
               </TouchableOpacity>
             </View>

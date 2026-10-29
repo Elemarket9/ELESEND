@@ -24,8 +24,8 @@ import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline, openTurnByTurnNavigation } from '../maps/map-adapter';
 import { call, loadToken, saveToken, clearToken, ghc, parseGhs, BASE } from '../api';
-import { sample, startShiftTracking, stopShiftTracking } from '../tracking';
-import { cacheJobs, readCachedJobs, clearCachedJobs } from '../offline';
+import { sample, startShiftTracking, stopShiftTracking, subscribeBackgroundOfferAlerts, acquireDevicePushToken, registerDevicePushChannel } from '../tracking';
+import { cacheJobs, readCachedJobs, readLastCachedJobs, clearCachedJobs } from '../offline';
 import { normalizeGhanaPhone, isValidGhanaPhone } from '../phone';
 import { colors, typography, spacing, radii } from '../theme';
 
@@ -50,6 +50,11 @@ export default function RiderApp() {
   const [phoneCode, setPhoneCode] = useState('');
   const [credentials, setCredentials] = useState(initialCreds);
   const [isSignup, setIsSignup] = useState(false);
+  const [forgotModal, setForgotModal] = useState(false);
+  const [recoveryPhone, setRecoveryPhone] = useState('');
+  const [recoveryChallenge, setRecoveryChallenge] = useState(null);
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -127,21 +132,56 @@ export default function RiderApp() {
             setError('Please sign in with a Courier Rider account on this application.');
           }
         }
-      } catch {
-        await clearToken();
+      } catch (e) {
+        if (e.status===401 || e.status===403) {
+          await clearToken();
+          await clearCachedJobs();
+        } else if (await loadToken()) {
+          setOfflineCopy(await readLastCachedJobs().catch(()=>null));
+        }
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
-  // Periodic Refresh for Offers, Manifest, and Weekly Settlement
+  // Periodic Refresh + Background Offer Alert Channel (Screen-Off / Battery-Saving Resilient)
   useEffect(() => {
     if (!auth || auth.kind !== 'rider' || phoneState?.verified === false) return;
     let cancelled = false;
 
-    const poll = async () => {
-      if (cancelled || AppState.currentState !== 'active') return;
+    acquireDevicePushToken({ appScope: 'rider' })
+      .then(acquired => (acquired?.ok && acquired?.pushToken) ? registerDevicePushChannel({ appScope: 'rider', pushToken: acquired.pushToken, deviceId: acquired.deviceId, platform: acquired.platform || 'android', appState: AppState.currentState || 'active', backgroundLocationEnabled: Boolean(online) }) : { registered: false, available: false })
+      .catch(() => null);
+
+    const applyOfferList = currentOffers => {
+      const list = Array.isArray(currentOffers) ? currentOffers : Array.isArray(currentOffers?.offers) ? currentOffers.offers : [];
+      const currentIds = list.map(x => x.offerId || x.id);
+      const hasNewOffer = currentIds.some(id => !prevOffersRef.current.has(id));
+      if (vibrationEnabled && hasNewOffer && list.length > 0) {
+        try { Vibration.vibrate([0, 400, 200, 400]); } catch {}
+      } else if (list.length === 0) {
+        try { Vibration.cancel(); } catch {}
+      }
+      prevOffersRef.current = new Set(currentIds);
+      setOffers(list);
+    };
+
+    const unsubscribeBackgroundAlerts = subscribeBackgroundOfferAlerts(bgOffers => {
+      if (!cancelled && online) {
+        applyOfferList(bgOffers);
+      }
+    });
+
+    const poll = async ({ allowBackground = false } = {}) => {
+      if (cancelled) return;
+      if (!allowBackground && AppState.currentState && AppState.currentState !== 'active') {
+        if (online) {
+          const bgOffers = await call('GET', '/api/v1/rider/offers').catch(() => null);
+          if (!cancelled && Array.isArray(bgOffers)) applyOfferList(bgOffers);
+        }
+        return;
+      }
       try {
         const [m, o, v, cs, fin] = await Promise.all([
           call('GET', '/api/v1/rider/manifest').catch(() => null),
@@ -151,17 +191,15 @@ export default function RiderApp() {
           call('GET', '/api/v1/rider/wallet/summary').catch(() => null)
         ]);
         if (!cancelled) {
-          if (m) setManifest(m);
-          const currentOffers = o || [];
-          const currentIds = currentOffers.map(x => x.offerId || x.id);
-          const hasNewOffer = currentIds.some(id => !prevOffersRef.current.has(id));
-          if (vibrationEnabled && hasNewOffer && currentOffers.length > 0) {
-            try { Vibration.vibrate([0, 400, 200, 400]); } catch {}
-          } else if (currentOffers.length === 0) {
-            try { Vibration.cancel(); } catch {}
+          if (m) {
+            setManifest(m);
+            setOfflineCopy(null);
+            await cacheJobs(auth.id, m).catch(() => {});
+          } else {
+            const cached = await readCachedJobs(auth.id).catch(() => null);
+            if (cached) { setOfflineCopy(cached); setManifest(null); }
           }
-          prevOffersRef.current = new Set(currentIds);
-          setOffers(currentOffers);
+          applyOfferList(o || []);
           if (v) {
             setVehicle(v);
             setOnline(v.online);
@@ -174,14 +212,22 @@ export default function RiderApp() {
       }
     };
 
-    poll();
-    const interval = setInterval(poll, online ? 3500 : 12000);
+    const appStateSub = AppState.addEventListener?.('change', nextState => {
+      if (nextState === 'active') {
+        poll({ allowBackground: true });
+      }
+    });
+
+    poll({ allowBackground: true });
+    const interval = setInterval(() => poll(), online ? 3500 : 12000);
     return () => {
       cancelled = true;
       clearInterval(interval);
+      unsubscribeBackgroundAlerts();
+      appStateSub?.remove?.();
       try { Vibration.cancel(); } catch {}
     };
-  }, [auth, online, phoneState?.verified]);
+  }, [auth, online, phoneState?.verified, vibrationEnabled]);
 
   // GPS Movement & Location Tracking Watcher
   useEffect(() => {
@@ -204,7 +250,10 @@ export default function RiderApp() {
             const v = sample(pos);
             if (v && !shifts?.background) {
               try {
-                await call('POST', '/api/v1/rider/location', v);
+                const locRes = await call('POST', '/api/v1/rider/location', v);
+                if (mounted && Array.isArray(locRes?.pendingOffers) && locRes.pendingOffers.length > 0) {
+                  setOffers(locRes.pendingOffers);
+                }
               } catch (e) {
                 if (mounted) setError(e.message);
               }
@@ -224,6 +273,38 @@ export default function RiderApp() {
   }, [auth, online, phoneState?.verified, shifts?.background, trackingSeconds]);
 
   // --- Auth & Onboarding Actions ---
+  async function requestPasswordRecoveryChallenge() {
+    const normPhone = normalizeGhanaPhone(recoveryPhone || credentials.phone);
+    if (!isValidGhanaPhone(normPhone)) throw Error('Enter a valid registered Ghana mobile number');
+    const ch = await call('POST', '/api/v1/auth/password-recovery', { phone: normPhone });
+    setRecoveryPhone(normPhone);
+    setRecoveryChallenge(ch);
+    setRecoveryCode('');
+    setError('6-digit password recovery code sent via SMS to ' + normPhone);
+  }
+
+  async function submitPasswordReset() {
+    const normPhone = normalizeGhanaPhone(recoveryPhone || credentials.phone);
+    if (!isValidGhanaPhone(normPhone)) throw Error('Enter a valid registered Ghana mobile number');
+    if (!recoveryChallenge?.challengeId) throw Error('Request a 6-digit recovery code first');
+    if (!/^\d{6}$/.test(recoveryCode.trim())) throw Error('Enter the 6-digit SMS recovery code');
+    if (recoveryNewPassword.length < 12 || recoveryNewPassword.length > 128) {
+      throw Error('New password must be between 12 and 128 characters');
+    }
+    await call('POST', '/api/v1/auth/password-reset', {
+      phone: normPhone,
+      challengeId: recoveryChallenge.challengeId,
+      code: recoveryCode.trim(),
+      newPassword: recoveryNewPassword
+    });
+    setForgotModal(false);
+    setRecoveryChallenge(null);
+    setRecoveryCode('');
+    setRecoveryNewPassword('');
+    setCredentials(c => ({ ...c, phone: normPhone, password: '' }));
+    setError('Password reset complete. All previous sessions have been revoked. Sign in with your new password.');
+  }
+
   async function signIn() {
     const normPhone = normalizeGhanaPhone(credentials.phone);
     if (!isValidGhanaPhone(normPhone)) throw Error('Enter a valid Ghana phone (e.g. 024 123 4567)');
@@ -380,7 +461,14 @@ export default function RiderApp() {
     setOffers(prev => prev.filter(x => x.offerId !== offer.offerId));
     setTab('Manifest');
     const m = await call('GET', '/api/v1/rider/manifest').catch(() => null);
-    if (m) setManifest(m);
+    if (m) {
+            setManifest(m);
+            setOfflineCopy(null);
+            await cacheJobs(auth.id, m).catch(() => {});
+          } else {
+            const cached = await readCachedJobs(auth.id).catch(() => null);
+            if (cached) { setOfflineCopy(cached); setManifest(null); }
+          }
   }
 
   async function declineOffer(offer) {
@@ -610,6 +698,15 @@ export default function RiderApp() {
   // =========================================================================
   // RENDER: COURIER ONBOARDING & AUTHENTICATION
   // =========================================================================
+  if (!auth && offlineCopy) {
+    return <ScrollView contentContainerStyle={{padding:24}}>
+      <Text>Saved deliveries — view only</Text>
+      <Text>Last saved: {offlineCopy.cachedAt}. Connect to refresh before taking any action.</Text>
+      {offlineCopy.shipments.map(job=><Text key={job.id}>{job.details?.pickup} → {job.details?.destination}</Text>)}
+      {offlineCopy.stops.map((stop,index)=><Text key={index}>{stop.kind}: {stop.shipmentId}</Text>)}
+      <Pressable onPress={async()=>{await clearToken();await clearCachedJobs();setOfflineCopy(null);}}><Text>Sign out and clear saved jobs</Text></Pressable>
+    </ScrollView>;
+  }
   if (!auth) {
     return (
       <View style={styles.screen}>
@@ -727,8 +824,69 @@ export default function RiderApp() {
               {busy ? <ActivityIndicator color={colors.bg} /> : <Text style={styles.primaryBtnText}>{isSignup ? 'Complete Registration' : 'Sign In as Driver'}</Text>}
             </TouchableOpacity>
 
+            {!isSignup && (
+              <TouchableOpacity
+                onPress={() => {
+                  setForgotModal(v => !v);
+                  setRecoveryPhone(credentials.phone || '');
+                  setError('');
+                }}
+                style={styles.switchAuthBtn}>
+                <Text style={styles.switchAuthText}>Forgot password? Recover via SMS</Text>
+              </TouchableOpacity>
+            )}
+
+            {forgotModal && !isSignup && (
+              <View style={{ marginTop: 14, padding: 14, borderRadius: radii.md, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.line }}>
+                <Text style={styles.authCardTitle}>Recover Courier Password</Text>
+                <Text style={styles.authCardSubtitle}>Verify your registered Ghana phone with a 6-digit SMS code to set a new password.</Text>
+                <TextInput
+                  placeholder="Registered phone (e.g. 024 123 4567)"
+                  placeholderTextColor={colors.textMuted}
+                  keyboardType="phone-pad"
+                  style={[styles.input, { marginTop: 8 }]}
+                  value={recoveryPhone}
+                  onChangeText={setRecoveryPhone}
+                />
+                <TouchableOpacity
+                  onPress={() => execute(requestPasswordRecoveryChallenge)}
+                  style={[styles.secondaryBtn, { marginTop: 10 }]}
+                  disabled={busy}>
+                  <Text style={styles.secondaryBtnText}>Send 6-Digit Recovery Code</Text>
+                </TouchableOpacity>
+                {recoveryChallenge?.challengeId && (
+                  <View style={{ marginTop: 12 }}>
+                    <TextInput
+                      placeholder="6-Digit SMS Code"
+                      placeholderTextColor={colors.textMuted}
+                      keyboardType="number-pad"
+                      maxLength={6}
+                      style={styles.input}
+                      value={recoveryCode}
+                      onChangeText={setRecoveryCode}
+                    />
+                    <TextInput
+                      placeholder="New Password (12–128 characters)"
+                      placeholderTextColor={colors.textMuted}
+                      secureTextEntry
+                      maxLength={128}
+                      style={[styles.input, { marginTop: 8 }]}
+                      value={recoveryNewPassword}
+                      onChangeText={setRecoveryNewPassword}
+                    />
+                    <TouchableOpacity
+                      onPress={() => execute(submitPasswordReset)}
+                      style={[styles.primaryBtn, { marginTop: 10 }]}
+                      disabled={busy}>
+                      <Text style={styles.primaryBtnText}>Verify Code & Reset Password</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            )}
+
             <TouchableOpacity
-              onPress={() => { setIsSignup(!isSignup); setError(''); }}
+              onPress={() => { setIsSignup(!isSignup); setForgotModal(false); setError(''); }}
               style={styles.switchAuthBtn}>
               <Text style={styles.switchAuthText}>
                 {isSignup ? 'Already registered? Sign In' : 'New courier? Register here'}
@@ -831,6 +989,11 @@ export default function RiderApp() {
           </View>
         </View>
 
+        {offlineCopy && <View style={{padding:16}}>
+          <Text>Saved jobs (view only) — {offlineCopy.cachedAt}</Text>
+          {offlineCopy.stops.map((stop,index)=><Text key={index}>{stop.kind}: {stop.shipmentId}</Text>)}
+          {offlineCopy.shipments.map(job=><Text key={job.id}>{job.details?.pickup} → {job.details?.destination}</Text>)}
+        </View>}
         {/* Online / Offline Switch */}
         <TouchableOpacity
           onPress={() => execute(toggleOnline)}
@@ -890,6 +1053,15 @@ export default function RiderApp() {
         {/* ================================================================= */}
         {tab === 'Jobs' && (
           <View>
+            {online && shifts && shifts.background === false && (
+              <View style={styles.motionWarningBanner}>
+                <Text style={styles.motionWarningTitle}>⚠️ BACKGROUND LOCATION / BATTERY SAVER ACTIVE</Text>
+                <Text style={styles.motionWarningSub}>
+                  Allow "All the time" location and disable Battery Saver for ELESEND Rider so offers and GPS alerts continue when your screen is off ({shifts.reason || 'background permission required'}).
+                </Text>
+              </View>
+            )}
+
             {!isStationary(speed) && (
               <View style={styles.motionWarningBanner}>
                 <Text style={styles.motionWarningTitle}>⚠️ MOTORCYCLE IN MOTION</Text>
@@ -921,9 +1093,9 @@ export default function RiderApp() {
               <View key={o.offerId} style={styles.offerCard}>
                 <View style={styles.offerHeader}>
                   <View style={styles.earningsPill}>
-                    <Text style={styles.earningsPillText}>Earn {ghc(o.amount_minor)}</Text>
+                    <Text style={styles.earningsPillText}>Earn {ghc(o.entitlement_minor ?? o.amount_minor)}</Text>
                   </View>
-                  <Text style={styles.offerDistance}>{Math.round(o.distance_m / 100) / 10} km</Text>
+                  <Text style={styles.offerDistance}>{Math.round(((o.pickupRoadMeters ?? o.distance_m) || 0) / 100) / 10} km</Text>
                 </View>
 
                 <View style={styles.routeBox}>
@@ -938,7 +1110,7 @@ export default function RiderApp() {
                   </View>
                 </View>
 
-                <Text style={styles.offerPackageInfo}>📦 {o.description || 'Standard Package'} • {o.vehicle}</Text>
+                <Text style={styles.offerPackageInfo}>📦 {o.description || 'Standard Package'} • {o.vehicle || vehicle?.vehicle || 'motorcycle'}</Text>
 
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
                   <TouchableOpacity
@@ -950,7 +1122,7 @@ export default function RiderApp() {
                   </TouchableOpacity>
                   <TouchableOpacity
                     accessibilityRole="button"
-                    accessibilityLabel={`Accept job for ${o.description || 'Package'} earning ${ghc(o.amount_minor)}`}
+                    accessibilityLabel={`Accept job for ${o.description || 'Package'} earning ${ghc(o.entitlement_minor ?? o.amount_minor)}`}
                     onPress={() => execute(() => acceptOffer(o))}
                     style={[styles.primaryBtn, { flex: 2, minHeight: 56 }, !isStationary(speed) && { opacity: 0.6 }]}
                     disabled={!isStationary(speed)}>
@@ -1262,7 +1434,7 @@ export default function RiderApp() {
                           {String(msg.senderRole || '').toUpperCase()} • #{msg.seq}
                         </Text>
                         <Text style={{ fontSize: 13, color: colors.text, marginTop: 2 }}>
-                          {msg.bodyText || (msg.messageType === 'location_pin' ? `📍 Pin: ${msg.locationPin?.label || ''}` : '')}
+                          {msg.body || msg.bodyText || (msg.messageType === 'location_pin' ? `📍 Pin: ${msg.locationPin?.label || ''}` : '')}
                         </Text>
                         <Text style={{ fontSize: 10, color: colors.textMuted, marginTop: 4, textAlign: 'right' }}>
                           {msg.deliveryStatus || 'SENT'}

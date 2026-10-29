@@ -3,14 +3,14 @@ services:
     image: postgis/postgis:18-3.6
     restart: unless-stopped
     environment:
-      POSTGRES_DB: elesend
-      POSTGRES_USER: elesend
+      POSTGRES_DB: ${POSTGRES_DB:-elesend}
+      POSTGRES_USER: ${POSTGRES_USER:-elesend}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a database password}
     volumes:
       - pgdata:/var/lib/postgresql
     networks: [private]
     healthcheck:
-      test: [CMD-SHELL, pg_isready -U elesend -d elesend]
+      test: [CMD-SHELL, 'pg_isready -U "$" -d "$"']
       interval: 5s
       retries: 20
     logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}

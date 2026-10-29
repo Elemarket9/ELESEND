@@ -6,8 +6,9 @@
 import {reconcileAndEnforceWeeklyRestrictions} from './weekly-settlement.mjs';
 import {runScheduledRecovery} from './rider-wallet.mjs';
 import {runGeographicLearningCycle} from './infrastructure/maps/egia/background-learner.mjs';
+import {chatEngine} from './chat-engine.mjs';
 
-export const LOCKS={dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208};
+export const LOCKS={dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209};
 
 const warn=(component,code,extra={})=>process.stderr.write(JSON.stringify({level:'warn',component,code,...extra})+'\n');
 
@@ -24,7 +25,8 @@ export async function withAdvisoryLock(db,lockId,task){
  finally{client?.release();}
 }
 
-export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=null,money=null,checkout=null,finance=null,paymentProvider=null}){
+export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=null,money=null,checkout=null,finance=null,paymentProvider=null,chat=null}){
+ const chatSvc=chat||(db&&typeof db.query==='function'?chatEngine(db):null);
  const busy=new Set();
  const guarded=(name,lockId,fn)=>async()=>{
   if(busy.has(name))return false;busy.add(name);
@@ -34,7 +36,12 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
  };
  const jobs={
   notifications:guarded('notifications',null,async()=>{await notifications?.tick();}),
+  chatOutbox:guarded('chat_outbox',null,async()=>{await chatSvc?.flushRealtimeOutbox();}),
   foodExpiry:guarded('food_expiry',LOCKS.foodExpiry,async()=>{await restOrders?.expireUnfulfilledOrders();}),
+  deliveryWatchdog:guarded('delivery_watchdog',LOCKS.deliveryWatchdog,async()=>{
+   if(restOrders&&typeof restOrders.monitorAssignedDeliveries==='function')await restOrders.monitorAssignedDeliveries({onlyDueReviews:true});
+   if(dispatch&&typeof dispatch.watchdog==='function')await dispatch.watchdog({onlyDueReviews:true});
+  }),
   moneyRecon:guarded('money_reconciliation',LOCKS.moneyRecon,async()=>{if(!money)return;await money.syncRefunds();await money.reconcileDue();}),
   dispatch:guarded('dispatch',null,async()=>{if(!dispatch)return;const rows=await dispatch.tick();const errors=rows.filter(r=>r.status==='error');if(errors.length)warn('dispatch','tick_errors',{errors});}),
   paymentRecon:guarded('payment_reconciliation',LOCKS.paymentRecon,async()=>{
@@ -65,6 +72,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
    await db.query("DELETE FROM rate_limits WHERE expires_at<now()-interval '1 hour'");
    await db.query("DELETE FROM sessions WHERE expires_at<now()-interval '24 hours'");
    await db.query("DELETE FROM account_phone_challenges WHERE expires_at<now()-interval '24 hours'");
+   await db.query("DELETE FROM account_recovery_challenges WHERE expires_at<now()-interval '24 hours'");
    const notifDays = parseInt(process.env.NOTIFICATION_RETENTION_DAYS || '14', 10);
    if (notifDays > 0) {
      await db.query("DELETE FROM notification_jobs WHERE state IN ('sent','expired') AND created_at < now() - ($1::int * interval '1 day')", [notifDays]);
@@ -81,7 +89,9 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
  function start({unref=false}={}){
   const every=(fn,ms,enabled=true)=>{if(!enabled)return;const t=setInterval(()=>{fn();},ms);if(unref)t.unref();timers.push(t);};
   every(jobs.notifications,3000,!!notifications);
+  every(jobs.chatOutbox,3000,!!chatSvc);
   every(jobs.foodExpiry,15000,!!restOrders);
+  every(jobs.deliveryWatchdog,15000,!!restOrders||!!dispatch);
   every(jobs.moneyRecon,30000,!!money&&!!paymentProvider);
   every(jobs.dispatch,3000,!!dispatch);
   every(jobs.paymentRecon,30000,!!paymentProvider&&(!!checkout||!!finance));

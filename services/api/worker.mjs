@@ -60,15 +60,17 @@ export async function startWorker(options = {}) {
     : null);
 
   const dispatch = options.dispatch || (routing ? dispatchEngine(db, { routing }) : null);
-  const notifications = options.notifications || notificationWorker(db, {
-    transport: config.notifications.endpoint ? notificationGateway(config.notifications) : null
-  });
 
   const sms = options.sms || (config.sms.provider === 'hubtel' && config.sms.hubtel
     ? hubtelSmsGateway(config.sms.hubtel)
     : config.sms.provider === 'https_gateway' && config.sms.httpsGateway
     ? httpsSmsGateway(config.sms.httpsGateway)
     : null);
+
+  const notifications = options.notifications || notificationWorker(db, {
+    transport: config.notifications.endpoint ? notificationGateway(config.notifications) : null,
+    sms
+  });
 
   const app = options.app || platform(db, {
     otpKey: config.security.otpKey,

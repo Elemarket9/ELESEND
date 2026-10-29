@@ -9,17 +9,35 @@ import {calculateQuote} from './pricing.mjs';
 import {evaluateRestaurantBatch} from './algorithms/restaurant-batch.mjs';
 import {promotionEngine} from './promotion-engine.mjs';
 import {commissionEngine} from './commission-engine.mjs';
+import {chatEngine} from './chat-engine.mjs';
 
 const uuid = z.string().uuid();
 
-export function restaurantOrderService(db, {platform = null, dispatcher = null, routing = null,acceptanceTimeoutSeconds=300,courierTimeoutSeconds=1200,unpaidTimeoutSeconds=1800} = {}) {
+export function restaurantOrderService(db, options = {}) {
+  const {platform = null, dispatcher = null, routing = null, sms = undefined, acceptanceTimeoutSeconds=300,courierTimeoutSeconds=1200,unpaidTimeoutSeconds=1800} = options;
   check(db && typeof db.query === 'function', 500, 'Database instance required');
   for(const value of [acceptanceTimeoutSeconds,courierTimeoutSeconds,unpaidTimeoutSeconds])check(Number.isInteger(value)&&value>=60&&value<=86400,500,'Invalid food order timeout');
   const promos = promotionEngine(db);
   const commissions = commissionEngine(db);
+  const chat = chatEngine(db);
+  const hasSmsOption = 'sms' in options || (platform && 'sms' in platform);
+  const hasDispatcherOption = ('dispatcher' in options && options.dispatcher === null) || ('dispatch' in options && options.dispatch === null) || (platform && 'dispatch' in platform && platform.dispatch === null);
+  const effectiveSms = sms !== undefined ? sms : platform?.sms;
+  const effectiveDispatcher = dispatcher ?? options.dispatch ?? platform?.dispatch ?? null;
+
+  function assertDeliveryCapabilities() {
+    check(routing && typeof routing.route === 'function', 503, 'Road routing service required for delivery quotation');
+    if (process.env.NODE_ENV === 'production' || hasSmsOption) {
+      check(effectiveSms && typeof effectiveSms.send === 'function', 503, 'Food ordering paused: custody-verification SMS unavailable');
+    }
+    if (process.env.NODE_ENV === 'production' || hasDispatcherOption) {
+      check(Boolean(effectiveDispatcher), 503, 'Food ordering paused: dispatch engine unavailable');
+    }
+  }
 
   async function quoteFoodOrder(actor, input) {
     await marketService(db).assertGhanaOperating();
+    assertDeliveryCapabilities();
     check(actor && ['customer', 'business', 'admin'].includes(actor.kind), 403, 'Customer credentials required');
     const schema = z.object({
       restaurantId: z.string().uuid(),
@@ -31,7 +49,12 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       deliveryAddress: z.string().trim().min(3).max(255),
       deliveryLatitude: z.number().finite().min(4.5).max(11.5),
       deliveryLongitude: z.number().finite().min(-3.5).max(1.5),
-      customerPhone: z.string().trim().transform(p => p.replace(/\s+/g, '')).pipe(z.string().regex(/^(\+233|0)[25][0-9]{8}$/, 'Valid Ghana phone number required')),
+      customerPhone: z.string().trim().transform(p => {
+        const clean = p.replace(/\s+/g, '');
+        if (/^0[25][0-9]{8}$/.test(clean)) return '+233' + clean.slice(1);
+        if (/^233[25][0-9]{8}$/.test(clean)) return '+' + clean;
+        return clean;
+      }).pipe(z.string().regex(/^\+233[25][0-9]{8}$/, 'Valid Ghana phone number required')),
       specialInstructions: z.string().trim().max(300).optional().default(''),
       promoCode: z.string().trim().max(40).nullable().optional(),
       promoCodes: z.array(z.string().trim().max(40)).max(5).optional(),
@@ -239,6 +262,7 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
     check(actor && ['customer', 'business'].includes(actor.kind), 403, 'Customer credentials required');
     check(['MOMO', 'CARD', 'QR'].includes(paymentMethod), 400, 'Food orders require upfront payment for food and delivery; cash is not accepted');
     check(typeof idempotencyKey==='string'&&/^[a-zA-Z0-9_-]{8,128}$/.test(idempotencyKey),400,'Food order idempotency key required');
+    assertDeliveryCapabilities();
     check((await db.query('SELECT phone_verified_at FROM users WHERE id=$1',[actor.id])).rows[0]?.phone_verified_at,403,'Verify your phone before placing a food order');
     const mergedPromoCodes = [
       ...(promoCode ? [promoCode] : []),
@@ -283,7 +307,29 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       const orderId = randomUUID();
       const shipmentKey = `food-${orderId}`;
 
-      const restaurant = (await c.query('SELECT * FROM restaurants WHERE id = $1', [quote.restaurantId])).rows[0];
+      const restaurant = (await c.query('SELECT * FROM restaurants WHERE id = $1 FOR UPDATE', [quote.restaurantId])).rows[0];
+      check(restaurant && restaurant.status==='approved' && restaurantOpenNow(restaurant),409,'Restaurant availability changed; refresh your order');
+      check(Number(restaurant.latitude)===Number(quote.restaurantLatitude) && Number(restaurant.longitude)===Number(quote.restaurantLongitude),409,'Restaurant location changed; request a new quote');
+      const ids=[...new Set(quote.items.map(i=>i.itemId))];
+      const catalog=(await c.query('SELECT * FROM menu_items WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE',[ids])).rows;
+      const mods=(await c.query('SELECT * FROM menu_item_modifiers WHERE item_id=ANY($1::uuid[]) ORDER BY id FOR UPDATE',[ids])).rows;
+      const opts=(await c.query('SELECT * FROM menu_modifier_options WHERE modifier_id=ANY($1::uuid[]) ORDER BY id FOR UPDATE',[mods.map(m=>m.id)])).rows;
+      for(const item of quote.items){
+        const current=catalog.find(i=>i.id===item.itemId);
+        check(current?.is_available,409,'Menu availability changed; refresh your order');
+        let price=Number(current.price_minor);
+        for(const opt of item.options||[]){
+          const live=opts.find(o=>o.id===opt.id);
+          check(live?.is_available && mods.some(m=>m.id===live.modifier_id && m.item_id===item.itemId),409,'Menu options changed; refresh your order');
+          price+=Number(live.price_minor);
+        }
+        for(const mod of mods.filter(m=>m.item_id===item.itemId)){
+          const count=(item.options||[]).filter(o=>opts.find(v=>v.id===o.id)?.modifier_id===mod.id).length;
+          check((!mod.is_required || count>=Math.max(1,mod.min_selections)) && count<=mod.max_selections,409,'Menu choices changed; refresh your order');
+        }
+        check(price===Number(item.unitPriceMinor),409,'Menu prices changed; refresh your order');
+      }
+
       const normPayMethod = paymentMethod === 'QR' ? 'BANK_QR' : (paymentMethod || 'MOMO');
       const txPromoEval = await promos.evaluateCheckoutPromotions(c, {
         actor,
@@ -741,10 +787,11 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         const nextStops = plan.stops.filter(x => x.shipmentId !== shipment.id);
         await c.query('UPDATE rider_dispatch_plans SET stops = $2, revision = revision + 1, updated_at = now() WHERE rider_id = $1', [shipment.rider_id, JSON.stringify(nextStops)]);
       }
-      await c.query('DELETE FROM locations WHERE rider_id = $1 AND shipment_id = $2', [shipment.rider_id, shipment.id]);
     }
+    await c.query('UPDATE challenges SET expires_at = now() WHERE shipment_id = $1 AND consumed_at IS NULL', [shipment.id]);
+    await c.query('DELETE FROM locations WHERE shipment_id = $1', [shipment.id]);
     await c.query('DELETE FROM dispatch_commitments WHERE shipment_id = $1', [shipment.id]);
-    await c.query("UPDATE dispatch_offers SET status = 'expired' WHERE shipment_id = $1 AND status = 'offered'", [shipment.id]);
+    await c.query("UPDATE dispatch_offers SET status = 'invalidated' WHERE shipment_id = $1 AND status IN ('offered', 'accepted')", [shipment.id]);
   }
 
   async function resolveOrder(actor, orderId, input = {}) {
@@ -754,12 +801,28 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
       reason: z.string().trim().min(3).max(1000)
     }).strict().parse(input);
     return db.tx(async c => {
+      // Enforce canonical delivery lock hierarchy: companies -> riders -> shipments -> rider_dispatch_plans -> food_orders
+      const pre = (await c.query(
+        `SELECT f.shipment_id, s.rider_id, r.company_id
+           FROM food_orders f
+           LEFT JOIN shipments s ON s.id = f.shipment_id
+           LEFT JOIN riders r ON r.id = s.rider_id
+          WHERE f.id = $1`,
+        [orderId]
+      )).rows[0];
+      check(pre, 404, 'Food order not found');
+      check(pre.shipment_id, 409, 'Food order has no delivery shipment');
+      if (pre.company_id) await c.query('SELECT id FROM companies WHERE id = $1 FOR UPDATE', [pre.company_id]);
+      if (pre.rider_id) await c.query('SELECT id FROM riders WHERE id = $1 FOR UPDATE', [pre.rider_id]);
+      const shipment = (await c.query('SELECT * FROM shipments WHERE id = $1 FOR UPDATE', [pre.shipment_id])).rows[0];
+      check(shipment, 404, 'Delivery shipment not found');
+      check(!shipment.rider_id || shipment.rider_id === pre.rider_id, 409, 'Shipment rider assignment changed concurrently; retry');
+      if (shipment.rider_id) {
+        await c.query('SELECT rider_id FROM rider_dispatch_plans WHERE rider_id = $1 FOR UPDATE', [shipment.rider_id]);
+      }
       const order = await lockFoodOrder(c, orderId);
       check(order, 404, 'Food order not found');
       check(!['DELIVERED', 'CANCELLED', 'REJECTED'].includes(order.state), 409, `Food order is already terminal (${order.state})`);
-      check(order.shipment_id, 409, 'Food order has no delivery shipment');
-      const shipment = (await c.query('SELECT * FROM shipments WHERE id = $1 FOR UPDATE', [order.shipment_id])).rows[0];
-      check(shipment, 404, 'Delivery shipment not found');
       const restaurant = (await c.query('SELECT * FROM restaurants WHERE id = $1', [order.restaurant_id])).rows[0];
       const isAdmin = actor?.kind === 'admin';
       const isOwner = Boolean(actor && restaurant && restaurant.owner_id === actor.id);
@@ -793,8 +856,13 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
 
       if (v.action === 'returned') {
         check(isAdmin || isOwner, 403, 'Only restaurant owner or administrator may confirm physical return');
-        check(pickedUp && ['FAILED', 'RETURN_REQUESTED', 'RETURNED'].includes(shipment.state), 409, 'Return confirmation requires a post-pickup failed or return-requested shipment');
+        check(pickedUp && (['FAILED', 'RETURN_REQUESTED', 'RETURNED'].includes(shipment.state) || (isAdmin && ['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(shipment.state))), 409, 'Return confirmation requires a post-pickup failed or return-requested shipment');
         await clearRiderAssignmentArtifacts(c, shipment);
+        if (['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(shipment.state)) {
+          await c.query("UPDATE shipments SET state = 'FAILED' WHERE id = $1", [shipment.id]);
+          await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'FAILED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'FAILED'})]);
+          shipment.state = 'FAILED';
+        }
         if (shipment.state === 'FAILED') {
           await c.query("UPDATE shipments SET state = 'RETURN_REQUESTED' WHERE id = $1", [shipment.id]);
           await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'RETURN_REQUESTED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'RETURN_REQUESTED'})]);
@@ -824,8 +892,13 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         return {orderId, state: updated.state, shipmentState: 'CANCELLED', riderId: null, refundReviewRequired: Boolean(shipment.paid)};
       } else {
         check(isAdmin || isOwner || (isCustomer && shipment.state === 'RETURNED'), 403, 'Post-pickup refund requires restaurant return confirmation or operator decision');
-        check(['FAILED', 'RETURN_REQUESTED', 'RETURNED'].includes(shipment.state), 409, 'Post-pickup order can only be cancelled after delivery failure or return');
+        check(['FAILED', 'RETURN_REQUESTED', 'RETURNED'].includes(shipment.state) || (isAdmin && ['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(shipment.state)), 409, 'Post-pickup order can only be cancelled after delivery failure or return');
         await clearRiderAssignmentArtifacts(c, shipment);
+        if (['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(shipment.state)) {
+          await c.query("UPDATE shipments SET state = 'FAILED' WHERE id = $1", [shipment.id]);
+          await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'FAILED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'FAILED'})]);
+          shipment.state = 'FAILED';
+        }
         if (shipment.state === 'FAILED') {
           await c.query("UPDATE shipments SET state = 'RETURN_REQUESTED' WHERE id = $1", [shipment.id]);
           await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'RETURN_REQUESTED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'RETURN_REQUESTED'})]);
@@ -887,14 +960,140 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
     };
   }
 
-  async function expireUnfulfilledOrders({limit=25}={}){
+  async function monitorAssignedDeliveries({limit=25,staleGpsSeconds=null,pickupGraceSeconds=null,reviewIntervalSeconds=60,autoReassignPreCustody=true,onlyDueReviews=false}={}){
+    check(Number.isInteger(limit)&&limit>=1&&limit<=100,400,'Invalid watchdog batch size');
+    const dp=(await db.query('SELECT fresh_seconds,delivery_slack_seconds FROM dispatch_policy WHERE id=1')).rows[0]||{};
+    const staleSec=Number.isInteger(staleGpsSeconds)&&staleGpsSeconds>0?staleGpsSeconds:Math.max(Number(dp.fresh_seconds||120)*2,180);
+    const pickupGraceSec=Number.isInteger(pickupGraceSeconds)&&pickupGraceSeconds>0?pickupGraceSeconds:Math.max(Number(dp.delivery_slack_seconds||600),300);
+    const reviewSec=Number.isInteger(reviewIntervalSeconds)&&reviewIntervalSeconds>=1?reviewIntervalSeconds:60;
+    const rows=(await db.query(`
+      SELECT f.id AS order_id, s.id AS shipment_id, s.rider_id, r.company_id
+      FROM food_orders f
+      JOIN shipments s ON s.id=f.shipment_id
+      JOIN riders r ON r.id=s.rider_id
+      LEFT JOIN locations l ON l.shipment_id=s.id AND l.rider_id=s.rider_id
+      LEFT JOIN dispatch_commitments dc ON dc.shipment_id=s.id AND dc.rider_id=s.rider_id
+      WHERE f.state IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP','IN_TRANSIT')
+        AND s.rider_id IS NOT NULL
+        AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP')
+        AND (NOT $4::boolean OR COALESCE(f.watchdog_next_review_at, s.watchdog_next_review_at, '-infinity'::timestamptz) <= clock_timestamp())
+        AND (
+          r.online = false
+          OR GREATEST(COALESCE(r.position_at, '-infinity'::timestamptz), COALESCE(l.updated_at, '-infinity'::timestamptz)) < now() - ($1::int * interval '1 second')
+          OR (s.state='RIDER_ASSIGNED' AND f.ready_at IS NOT NULL AND f.ready_at < now() - ($2::int * interval '1 second'))
+          OR (s.state='RIDER_ASSIGNED' AND EXISTS (
+            SELECT 1 FROM dispatch_offers o
+            WHERE o.shipment_id=s.id AND o.rider_id=s.rider_id AND o.status='accepted'
+              AND o.accepted_at + ((COALESCE(o.pickup_eta_seconds, 300) + $2::int) * interval '1 second') < now()
+          ))
+          OR (s.state IN ('PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP') AND (
+            (dc.promised_delivery_before IS NOT NULL AND dc.promised_delivery_before < now())
+            OR (dc.promised_delivery_before IS NULL AND COALESCE(f.ready_at, f.accepted_at, f.created_at) < now() - interval '45 minutes')
+          ))
+        )
+      ORDER BY
+        CASE WHEN COALESCE(f.watchdog_next_review_at, s.watchdog_next_review_at, '-infinity'::timestamptz) <= clock_timestamp() THEN 0 ELSE 1 END ASC,
+        COALESCE(f.watchdog_last_inspected_at, s.watchdog_last_inspected_at) ASC NULLS FIRST,
+        COALESCE(f.watchdog_next_review_at, s.watchdog_next_review_at) ASC NULLS FIRST,
+        f.created_at ASC
+      LIMIT $3
+    `,[staleSec,pickupGraceSec,limit,Boolean(onlyDueReviews)])).rows;
+    const watched=[];
+    for(const row of rows){
+      try{
+        const entry=await db.tx(async c=>{
+          // Enforce canonical lock hierarchy: companies -> riders -> shipments -> rider_dispatch_plans -> food_orders
+          if(row.company_id)await c.query('SELECT id FROM companies WHERE id=$1 FOR UPDATE',[row.company_id]);
+          const r=(await c.query('SELECT * FROM riders WHERE id=$1 FOR UPDATE',[row.rider_id])).rows[0];
+          const s=(await c.query('SELECT * FROM shipments WHERE id=$1 FOR UPDATE',[row.shipment_id])).rows[0];
+          if(!s||!s.rider_id||s.rider_id!==row.rider_id||!['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state))return null;
+          await c.query('SELECT rider_id FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[s.rider_id]);
+          const f=await lockFoodOrder(c,row.order_id);
+          if(!f||!['ACCEPTED','PREPARING','READY_FOR_PICKUP','IN_TRANSIT'].includes(f.state))return null;
+          const loc=(await c.query('SELECT updated_at FROM locations WHERE shipment_id=$1 AND rider_id=$2',[s.id,s.rider_id])).rows[0];
+          const dc=(await c.query('SELECT promised_delivery_before FROM dispatch_commitments WHERE shipment_id=$1 AND rider_id=$2',[s.id,s.rider_id])).rows[0];
+          const accOffer=(await c.query("SELECT id,accepted_at,pickup_eta_seconds FROM dispatch_offers WHERE shipment_id=$1 AND rider_id=$2 AND status='accepted' ORDER BY accepted_at DESC LIMIT 1",[s.id,s.rider_id])).rows[0];
+          const pickedUp=s.state!=='RIDER_ASSIGNED'||f.state==='IN_TRANSIT'||
+            Boolean((await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount);
+          const nowMs=Date.now();
+          const latestGpsMs=Math.max(
+            r?.position_at?new Date(r.position_at).getTime():-Infinity,
+            loc?.updated_at?new Date(loc.updated_at).getTime():-Infinity
+          );
+          const isStaleGps=!r?.online||!Number.isFinite(latestGpsMs)||(nowMs-latestGpsMs)>staleSec*1000;
+          const pickupDeadlineMs=Math.min(
+            f.ready_at?new Date(f.ready_at).getTime()+pickupGraceSec*1000:Infinity,
+            accOffer?.accepted_at?new Date(accOffer.accepted_at).getTime()+(Number(accOffer.pickup_eta_seconds||300)+pickupGraceSec)*1000:Infinity
+          );
+          const isOverduePickup=!pickedUp&&Number.isFinite(pickupDeadlineMs)&&nowMs>pickupDeadlineMs;
+          const deliveryDeadlineMs=dc?.promised_delivery_before
+            ?new Date(dc.promised_delivery_before).getTime()
+            :(new Date(f.ready_at||f.accepted_at||f.created_at).getTime()+45*60*1000);
+          const isOverdueDelivery=pickedUp&&Number.isFinite(deliveryDeadlineMs)&&nowMs>deliveryDeadlineMs;
+          const reasons=[];
+          const signals=[];
+          if(isStaleGps){reasons.push('stale_gps');signals.push({code:'STALE_GPS',severity:pickedUp?'high':'medium'});}
+          if(isOverduePickup){reasons.push('overdue_pickup');signals.push({code:'OVERDUE_PICKUP',severity:'medium'});}
+          if(isOverdueDelivery){reasons.push('overdue_delivery');signals.push({code:'OVERDUE_DELIVERY',severity:'high'});}
+          if(!reasons.length)return null;
+          const oldRiderId=s.rider_id;
+          for(const sig of signals){
+            const existingSig=(await c.query("SELECT id FROM operational_risk_signals WHERE rider_id=$1 AND shipment_id=$2 AND signal_code=$3 AND review_status='pending' LIMIT 1",[oldRiderId,s.id,sig.code])).rows[0];
+            if(!existingSig){
+              await c.query('INSERT INTO operational_risk_signals(rider_id,shipment_id,signal_code,severity,evidence) VALUES($1,$2,$3,$4,$5)',
+                [oldRiderId,s.id,sig.code,sig.severity,JSON.stringify({orderId:f.id,reasons,state:s.state,lastGpsAt:Number.isFinite(latestGpsMs)?new Date(latestGpsMs).toISOString():null})]);
+            }
+          }
+          const reasonSummary=`Assigned food delivery watchdog detected ${reasons.join(', ')} for rider ${oldRiderId}`;
+          if(!pickedUp){
+            await c.query("INSERT INTO dispatch_exceptions(shipment_id,actor_id,kind,reason) VALUES($1,NULL,'reassignment_review',$2)",[s.id,reasonSummary]);
+            await c.query("INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,'delivery_watchdog_alert',$3) ON CONFLICT(id) DO NOTHING",
+              [`food-watchdog-pre:${f.id}:${oldRiderId}`,f.customer_id,JSON.stringify({orderId:f.id,shipmentId:s.id,reasons,action:autoReassignPreCustody?'reassigned_pre_pickup':'reassignment_offered',message:'Your assigned courier became unresponsive before pickup. We are reassigning your food order to the next available courier.'})]);
+            if(autoReassignPreCustody){
+              await clearRiderAssignmentArtifacts(c,s);
+              await c.query("UPDATE shipments SET state='AWAITING_ASSIGNMENT',rider_id=NULL,company_id=NULL,next_dispatch_at=now(),dispatch_attempts=0,watchdog_last_inspected_at=clock_timestamp(),watchdog_next_review_at=NULL WHERE id=$1",[s.id]);
+              await c.query('UPDATE food_orders SET dispatch_started_at=now(),watchdog_last_inspected_at=clock_timestamp(),watchdog_next_review_at=NULL,updated_at=now() WHERE id=$1',[f.id]);
+              await c.query("INSERT INTO outbox(shipment_id,kind,payload) VALUES($1,'AWAITING_ASSIGNMENT',$2)",[s.id,JSON.stringify({shipmentId:s.id,kind:'AWAITING_ASSIGNMENT',watchdogReassigned:true})]);
+              await c.query('INSERT INTO audit_logs(action,entity_id) VALUES($1,$2)',[`food_order.watchdog_reassigned:${reasons.join(',')}`,f.id]);
+              if(chat&&typeof chat.revokeRiderConversations==='function'){
+                await chat.revokeRiderConversations(c,{shipmentId:s.id,oldRiderUserId:oldRiderId,reason:'watchdog_reassigned'});
+              }
+              return {id:f.id,orderId:f.id,shipmentId:s.id,previousRiderId:oldRiderId,reassigned:true,status:'reassigned_pre_pickup',reason:reasons[0],reasons,shipmentState:'AWAITING_ASSIGNMENT',supportAlerted:true,reassignmentOffered:true};
+            }
+            const sched=(await c.query("UPDATE food_orders SET watchdog_last_inspected_at=clock_timestamp(),watchdog_next_review_at=clock_timestamp()+($2::int*interval '1 second') WHERE id=$1 RETURNING watchdog_last_inspected_at,watchdog_next_review_at",[f.id,reviewSec])).rows[0];
+            await c.query("UPDATE shipments SET watchdog_last_inspected_at=$2,watchdog_next_review_at=$3 WHERE id=$1",[s.id,sched?.watchdog_last_inspected_at??new Date(),sched?.watchdog_next_review_at??new Date(Date.now()+reviewSec*1000)]);
+            await c.query('INSERT INTO audit_logs(action,entity_id) VALUES($1,$2)',[`food_order.watchdog_pre_pickup_alert:${reasons.join(',')}`,f.id]);
+            return {id:f.id,orderId:f.id,shipmentId:s.id,riderId:oldRiderId,status:'escalated_pre_pickup',reason:reasons[0],reasons,shipmentState:s.state,supportAlerted:true,reassignmentOffered:true,lastInspectedAt:sched?.watchdog_last_inspected_at??null,nextReviewAt:sched?.watchdog_next_review_at??null};
+          }
+          const existingEx=(await c.query("SELECT 1 FROM dispatch_exceptions WHERE shipment_id=$1 AND kind='reassignment_review' AND created_at>now()-interval '15 minutes' LIMIT 1",[s.id])).rowCount;
+          if(!existingEx){
+            await c.query("INSERT INTO dispatch_exceptions(shipment_id,actor_id,kind,reason) VALUES($1,NULL,'reassignment_review',$2)",[s.id,reasonSummary]);
+          }
+          const sched=(await c.query("UPDATE food_orders SET watchdog_last_inspected_at=clock_timestamp(),watchdog_next_review_at=clock_timestamp()+($2::int*interval '1 second') WHERE id=$1 RETURNING watchdog_last_inspected_at,watchdog_next_review_at",[f.id,reviewSec])).rows[0];
+          await c.query("UPDATE shipments SET watchdog_last_inspected_at=$2,watchdog_next_review_at=$3 WHERE id=$1",[s.id,sched?.watchdog_last_inspected_at??new Date(),sched?.watchdog_next_review_at??new Date(Date.now()+reviewSec*1000)]);
+          await c.query("INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,'delivery_watchdog_alert',$3) ON CONFLICT(id) DO NOTHING",
+            [`food-watchdog-custody:${f.id}:${oldRiderId}:${reasons.join('_')}`,f.customer_id,JSON.stringify({orderId:f.id,shipmentId:s.id,riderId:oldRiderId,reasons,action:'support_escalated',message:'Delivery monitoring flagged a delay on your active food order and alerted operations support.'})]);
+          await c.query('INSERT INTO audit_logs(action,entity_id) VALUES($1,$2)',[`food_order.watchdog_escalated_in_custody:${reasons.join(',')}`,f.id]);
+          return {id:f.id,orderId:f.id,shipmentId:s.id,riderId:oldRiderId,status:'escalated_in_custody',reason:reasons[0],reasons,shipmentState:s.state,supportAlerted:true,reassignmentOffered:false,lastInspectedAt:sched?.watchdog_last_inspected_at??null,nextReviewAt:sched?.watchdog_next_review_at??null};
+        });
+        if(entry)watched.push(entry);
+      }catch(e){watched.push({id:row.order_id,orderId:row.order_id,shipmentId:row.shipment_id,status:'error',code:e.code||e.status||'internal'});}
+    }
+    return watched;
+  }
+
+  async function expireUnfulfilledOrders({limit=25,includeAssignedWatchdog=true,staleGpsSeconds=null,pickupGraceSeconds=null,autoReassignPreCustody=true}={}){
     check(Number.isInteger(limit)&&limit>=1&&limit<=100,400,'Invalid expiry batch size');
+    const results=[];
+    if(includeAssignedWatchdog){
+      const watchdogResults=await monitorAssignedDeliveries({limit,staleGpsSeconds,pickupGraceSeconds,autoReassignPreCustody});
+      results.push(...watchdogResults);
+    }
     const ids=(await db.query(`SELECT f.id FROM food_orders f JOIN shipments s ON s.id=f.shipment_id
       WHERE (f.state='SUBMITTED' AND f.payment_status='PENDING' AND f.created_at<now()-$1::int*interval '1 second')
       OR (f.state='SUBMITTED' AND f.payment_status='PAID' AND EXISTS(SELECT 1 FROM shipment_checkout_intents i WHERE i.shipment_id=s.id AND i.status='confirmed' AND i.confirmed_at<now()-$2::int*interval '1 second'))
       OR (f.state IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP') AND s.state='AWAITING_ASSIGNMENT' AND s.rider_id IS NULL AND LEAST(COALESCE(f.dispatch_started_at,f.ready_at,s.next_dispatch_at),COALESCE(f.ready_at,s.next_dispatch_at),s.next_dispatch_at)<now()-$3::int*interval '1 second')
       ORDER BY f.created_at LIMIT $4`,[unpaidTimeoutSeconds,acceptanceTimeoutSeconds,courierTimeoutSeconds,limit])).rows;
-    const results=[];
     for(const {id} of ids){
       try{results.push(await db.tx(async c=>{
         const f=await lockFoodOrder(c,id);
@@ -1002,7 +1201,7 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
         currentLoadedG: 0,
         riderSimulated: false
       } : {
-        id: 'mock-dispatch-rider',
+        id: null,
         latitude: r.latitude,
         longitude: r.longitude,
         vehicle: 'motorcycle',
@@ -1062,6 +1261,7 @@ export function restaurantOrderService(db, {platform = null, dispatcher = null, 
     resolveOrder,
     getRestaurantSettlements,
     evaluateBatchDispatch,
+    monitorAssignedDeliveries,
     expireUnfulfilledOrders
   };
 }
