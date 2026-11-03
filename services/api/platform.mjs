@@ -22,6 +22,17 @@ const uuid=z.string().uuid();
 const registration=z.object({phone:z.string().max(30),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional()}).strict();
 const address=z.object({address:z.string().min(5).max(400),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict();
 const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(['motorcycle','car','van']).optional(),recipientPhone:z.string().max(30),weightG:z.number().int().min(1).max(10000000),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
+const ACCOUNT_SMS_PER_NUMBER=5,ACCOUNT_SMS_BLOCK_SECONDS=900;
+/** Allows 5 account SMS per number per 15 minutes; the 6th attempt starts a full 15-minute block.
+ * Call outside a transaction, so a failed request cannot roll the count back. */
+async function limitAccountSms(db,phoneNumber){
+ const r=await db.query(`INSERT INTO rate_limits(subject,count,expires_at) VALUES($1,1,now()+$2*interval '1 second')
+  ON CONFLICT(subject) DO UPDATE SET
+   count=CASE WHEN rate_limits.expires_at<=now() THEN 1 ELSE rate_limits.count+1 END,
+   expires_at=CASE WHEN rate_limits.expires_at<=now() OR rate_limits.count=$3 THEN excluded.expires_at ELSE rate_limits.expires_at END
+  RETURNING count`,['account-sms:'+hash(phoneNumber),ACCOUNT_SMS_BLOCK_SECONDS,ACCOUNT_SMS_PER_NUMBER]);
+ check(r.rows[0].count<=ACCOUNT_SMS_PER_NUMBER,429,'Too many SMS requests for this number. Try again in 15 minutes.');
+}
 const audit=(c,actor,action,entity)=>c.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[actor,action,entity]);
 export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env.ADMIN_MFA_ENCRYPTION_KEY}={}){
  check(/^[a-f0-9]{64}$/i.test(otpKey??''),500,'OTP_KEY must be 32 random bytes encoded as hex');
@@ -49,10 +60,14 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async phoneStatus(actor){const u=(await db.query('SELECT phone,phone_verified_at FROM users WHERE id=$1',[actor.id])).rows[0];check(u,401);return {phone:u.phone,verified:!!u.phone_verified_at};},
  async phoneChallenge(actor){check(sms&&typeof sms.send==='function',503,'Phone SMS verification unavailable');
   check(['customer','business','rider','company'].includes(actor.kind),403);
+  // Requests that would send nothing should not use up the number's allowance.
+  const current=(await db.query('SELECT phone,phone_verified_at FROM users WHERE id=$1',[actor.id])).rows[0];
+  check(current&&!current.phone_verified_at,409,'Phone already verified or account unavailable');
+  check(!(await db.query('SELECT 1 FROM account_phone_challenges WHERE user_id=$1 AND expires_at>now() AND consumed_at IS NULL',[actor.id])).rowCount,409,'A phone verification code is already active');
+  await limitAccountSms(db,current.phone);
   const cid=id(),code=newCode(),to=await db.tx(async c=>{
    const u=(await c.query('SELECT phone,phone_verified_at FROM users WHERE id=$1 FOR UPDATE',[actor.id])).rows[0];
    check(u&&!u.phone_verified_at,409,'Phone already verified or account unavailable');
-   await limit(c,'phone-challenge:'+actor.id,3,900);
    check(!(await c.query('SELECT 1 FROM account_phone_challenges WHERE user_id=$1 AND expires_at>now() AND consumed_at IS NULL',[actor.id])).rowCount,409,'A phone verification code is already active');
    const digest=mac(otpKey,['account-phone-v1',cid,actor.id,u.phone,code]);
    await c.query("INSERT INTO account_phone_challenges(id,user_id,phone,digest,expires_at) VALUES($1,$2,$3,$4,now()+interval '5 minutes')",[cid,actor.id,u.phone,digest]);
@@ -93,7 +108,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   check(sms&&typeof sms.send==='function',503,'Password recovery SMS unavailable');
   const v=z.object({phone:z.string().max(30)}).strict().parse(input);
   const p=phone(v.phone);
-  await limit(db,'pw-recovery:'+hash(p),3,900);
+  await limitAccountSms(db,p);
   const cid=id(),code=newCode();
   const target=await db.tx(async c=>{
    const u=(await c.query('SELECT id,phone,kind FROM users WHERE phone=$1 FOR UPDATE',[p])).rows[0];
@@ -102,7 +117,6 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     if(u?.kind==='admin')await audit(c,u.id,'auth.password_recovery_blocked_admin',u.id);
     return null;
    }
-   await limit(c,'pw-recovery-user:'+u.id,3,900);
    await c.query('UPDATE account_recovery_challenges SET expires_at=now() WHERE user_id=$1 AND consumed_at IS NULL AND expires_at>now()',[u.id]);
    const digest=mac(otpKey,['account-recovery-v1',cid,u.id,u.phone,code]);
    await c.query("INSERT INTO account_recovery_challenges(id,user_id,phone,digest,expires_at) VALUES($1,$2,$3,$4,now()+interval '5 minutes')",[cid,u.id,u.phone,digest]);
