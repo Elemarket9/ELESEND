@@ -234,11 +234,25 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   },
   async verifyBeneficiary(actor,input){
    check(actor?.id,403,'Authentication required');
-   const v=z.object({recipientReference:z.string().min(3).max(160)}).strict().parse(input);
+   const v=z.union([
+    z.object({recipientReference:z.string().min(3).max(160)}).strict(),
+    z.object({momoNetwork:z.enum(['MTN','TELECEL','AT']),accountName:z.string().trim().min(2).max(100)}).strict()
+   ]).parse(input);
    check(typeof provider?.verifyBeneficiary==='function',503,'Adapter beneficiary verification unavailable');
-   const r=await provider.verifyBeneficiary({beneficiaryId:actor.id,recipientReference:v.recipientReference});
-   check(r.verified===true&&r.beneficiaryId===actor.id&&r.recipientReference===v.recipientReference,409,'Beneficiary ownership not verified');
-   await db.query(`INSERT INTO payout_beneficiaries(user_id,provider,recipient_reference) VALUES($1,$2,$3) ON CONFLICT(user_id,provider) DO UPDATE SET recipient_reference=excluded.recipient_reference,verified_at=now()`,[actor.id,provider.name,v.recipientReference]);
+   let verifiedPhone;
+   if(provider.requiresVerifiedPhone){
+    const user=(await db.query('SELECT phone,phone_verified_at FROM users WHERE id=$1',[actor.id])).rows[0];
+    check(user?.phone_verified_at,403,'Verify your phone number before adding payout details');
+    verifiedPhone=user.phone;
+   }
+   let recipientReference=v.recipientReference;
+   if(!recipientReference){
+    check(typeof provider.createBeneficiary==='function',503,'Adapter cannot create payout recipients');
+    recipientReference=(await provider.createBeneficiary({phone:verifiedPhone,network:v.momoNetwork,accountName:v.accountName})).recipientReference;
+   }
+   const r=await provider.verifyBeneficiary({beneficiaryId:actor.id,recipientReference,...(verifiedPhone?{verifiedPhone}:{})});
+   check(r.verified===true&&r.beneficiaryId===actor.id&&r.recipientReference===recipientReference,409,'Beneficiary ownership not verified');
+   await db.query(`INSERT INTO payout_beneficiaries(user_id,provider,recipient_reference) VALUES($1,$2,$3) ON CONFLICT(user_id,provider) DO UPDATE SET recipient_reference=excluded.recipient_reference,verified_at=now()`,[actor.id,provider.name,recipientReference]);
    return {verified:true};
   },
   async payouts(actor){await permit(actor,READ);return (await db.query('SELECT * FROM payout_operations ORDER BY created_at DESC LIMIT 100')).rows;},

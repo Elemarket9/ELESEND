@@ -27,8 +27,61 @@ export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://ap
    eventId:(typeof id==='number'||typeof id==='string')?'psp-transaction:'+String(id):'',
    environment:d?.domain,transactionId:id};
  }
+ // Paystack telco codes, confirmed against its live bank list before a recipient is created.
+ const NETWORK_CODES={MTN:'MTN',TELECEL:'VOD',AT:'ATL'};
+ const PAYOUT_PREFIX='espayout-';
+ const lastNineDigits=value=>String(value??'').replace(/\D/g,'').slice(-9);
+ async function verifyTransfer(reference){
+  check(/^[a-z0-9_-]{16,50}$/.test(reference),400,'Invalid transfer reference');
+  const d=await remote('/transfer/verify/'+encodeURIComponent(reference));
+  if(production)check(d?.domain==='live',409,'Transfer is not live');
+  check(d?.reference===reference&&Number.isSafeInteger(Number(d?.amount))&&(typeof d?.id==='number'||typeof d?.id==='string'),502,'Invalid transfer verification response');
+  const failed=d.status==='failed'||d.status==='reversed';
+  return {verified:true,type:'payout',provider:'paystack',
+   status:d.status==='success'?'paid':failed?'failed':'pending',
+   reversed:d.status==='reversed',
+   requestId:reference.startsWith(PAYOUT_PREFIX)?reference.slice(PAYOUT_PREFIX.length):null,
+   providerId:d.transfer_code??null,
+   recipientReference:typeof d.recipient==='object'?d.recipient?.recipient_code:d.recipient,
+   amountMinor:Number(d.amount),currency:d.currency,
+   eventId:'transfer:'+d.id+(failed?':'+d.status:''),
+   ...(failed?{failureReason:String(d.gateway_response||d.failures||'Provider reported transfer '+d.status).slice(0,300)}:{})};
+ }
  return {
-  name:'paystack',methods,allowedCheckoutHosts:['checkout.paystack.com'],payerFields:['email'],
+  name:'paystack',methods,requiresVerifiedPhone:true,
+  /** Creates a mobile money recipient for a phone number ELESEND has already verified by SMS. */
+  async createBeneficiary({phone,network,accountName}){
+   const code=NETWORK_CODES[network];
+   check(code,400,'Unsupported mobile money network');
+   const digits=lastNineDigits(phone);
+   check(digits.length===9,400,'Valid mobile money number required');
+   check(typeof accountName==='string'&&accountName.trim().length>=2,400,'Account name required');
+   const banks=await remote('/bank?currency=GHS&type=mobile_money');
+   check(Array.isArray(banks)&&banks.some(b=>b?.code===code&&b.active!==false&&b.is_deleted!==true),503,'Mobile money network unavailable');
+   const d=await remote('/transferrecipient',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'mobile_money',name:accountName.trim(),account_number:'0'+digits,bank_code:code,currency:'GHS'})});
+   check(typeof d?.recipient_code==='string',502,'Invalid recipient response');
+   return {recipientReference:d.recipient_code};
+  },
+  /** Paystack returns no account name for mobile money, so ownership rests on the SMS-verified number. */
+  async verifyBeneficiary({beneficiaryId,recipientReference,verifiedPhone}){
+   check(/^RCP_[A-Za-z0-9]+$/.test(recipientReference),400,'Invalid recipient reference');
+   const d=await remote('/transferrecipient/'+encodeURIComponent(recipientReference));
+   if(production)check(d?.domain==='live',409,'Recipient is not live');
+   const owned=d?.recipient_code===recipientReference&&d?.type==='mobile_money'&&d?.currency==='GHS'&&d?.active===true&&d?.is_deleted!==true&&d?.isDeleted!==true
+    &&lastNineDigits(verifiedPhone).length===9&&lastNineDigits(d?.details?.account_number)===lastNineDigits(verifiedPhone);
+   return {verified:owned,beneficiaryId,recipientReference};
+  },
+  async createPayout({requestId,recipientReference,amountMinor,currency}){
+   check(/^[0-9a-f-]{36}$/.test(requestId)&&/^RCP_[A-Za-z0-9]+$/.test(recipientReference)&&Number.isSafeInteger(amountMinor)&&amountMinor>0&&currency==='GHS',400,'Invalid payout request');
+   // The reference is stable per payout, so Paystack cannot treat a repeat as a second transfer.
+   const d=await remote('/transfer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'balance',amount:amountMinor,recipient:recipientReference,reference:PAYOUT_PREFIX+requestId,reason:'ELESEND payout',currency})});
+   check(d?.status!=='otp',409,'Paystack requires OTP for transfers: turn off transfer confirmation in the dashboard');
+   return {providerId:d?.transfer_code??null};
+  },
+  verifyPayout({requestId}){
+   check(/^[0-9a-f-]{36}$/.test(requestId),400,'Invalid payout request');
+   return verifyTransfer(PAYOUT_PREFIX+requestId);
+  },allowedCheckoutHosts:['checkout.paystack.com'],payerFields:['email'],
   commissionIntentId(record){const ref=typeof record==='string'?record:record?.reference||'';const m=/^escomm_([0-9a-f]{32})$/.exec(ref);if(!m)return null;const h=m[1];return [h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');},
   async createCheckout({reference,amountMinor,currency,method,email}){
    check(methods.includes(method),503,'PSP channel not enabled');
@@ -91,6 +144,12 @@ export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://ap
    const digest=createHmac('sha512',secretKey).update(rawBody).digest();
    check(timingSafeEqual(Buffer.from(signature,'hex'),digest),403,'Invalid PSP signature');
    let incoming;try{incoming=JSON.parse(rawBody.toString('utf8'));}catch{check(false,400,'Invalid PSP event');}
+   // Refund outcomes are picked up by the reconciliation job, which verifies each refund with Paystack.
+   if(['transfer.success','transfer.failed','transfer.reversed'].includes(incoming.event)){
+    const reference=incoming?.data?.reference;
+    if(typeof reference!=='string'||!reference.startsWith(PAYOUT_PREFIX))return null;
+    return verifyTransfer(reference);
+   }
    if(incoming.event!=='charge.success')return null;
    const ref=incoming?.data?.reference;
    check(typeof ref==='string'&&/^[A-Za-z0-9._=-]{8,90}$/.test(ref),400,'Invalid PSP reference');

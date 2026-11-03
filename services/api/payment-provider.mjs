@@ -27,7 +27,11 @@ export function paymentWebhook({db,provider,checkout,finance,money,moneyOperatio
   const record=await provider.parseVerifiedWebhook(rawBody,headers);
   if(!record)return {status:'ignored'};
   if(record.type==='refund'||record.kind==='refund')return record.status==='refunded'?moneySvc.confirmRefund(record):{status:'acknowledged'};
-  if(record.type==='payout'||record.kind==='payout')return record.status==='paid'?moneySvc.confirmPayout(record):{status:'acknowledged'};
+  if(record.type==='payout'||record.kind==='payout'){
+   // Money returned after a payout looked complete needs finance review: ledgers are never rewritten automatically.
+   if(record.reversed){await db.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES(NULL,$1,$2)',['payment.payout_reversal_reported:'+record.eventId,record.requestId]);return {status:'acknowledged',requiresReview:true};}
+   return record.status==='paid'?moneySvc.confirmPayout(record):{status:'acknowledged'};
+  }
   const reversal=record.status==='reversed';
   if(record.status!=='success'&&!reversal)return {status:'ignored'};
   const checkoutIntent=await db.query('SELECT shipment_id FROM shipment_checkout_intents WHERE provider=$1 AND reference=$2',[provider.name,record.reference]);
