@@ -208,8 +208,8 @@ test('timeline records and measured accuracy work against PostgreSQL',{skip:!pro
   await db.query("INSERT INTO riders(id,vehicle,max_weight_g,status,online) VALUES($1,'motorcycle',20000,'approved',true)",[rider]);
   const policy=(await db.query('SELECT id FROM pricing_policies LIMIT 1')).rows[0].id;
   const request={vehicle:'motorcycle',pickup:{address:'A',latitude:5.5,longitude:-0.2},destination:{address:'B',latitude:5.6,longitude:-0.2},recipientPhone:'+233241234567',weightG:100,description:'Test'};
-  await db.query("INSERT INTO quotes(id,customer_id,policy_id,request,amount_minor,commission_minor,expires_at,payment_method) VALUES($1,$2,$3,$4,1000,130,now()+interval '1 hour','CASH')",[quote,customer,policy,JSON.stringify(request)]);
-  await db.query("INSERT INTO shipments(id,customer_id,quote_id,idempotency_key,state,recipient_phone,amount_minor,commission_minor,payment_method,cash_payer) VALUES($1,$2,$3,$4,'AWAITING_ASSIGNMENT','+233241234567',1000,130,'CASH','recipient')",[shipment,customer,quote,randomUUID()]);
+  await db.query("INSERT INTO quotes(id,customer_id,policy_id,request,amount_minor,commission_minor,expires_at,payment_method) VALUES($1,$2,$3,$4,1000,130,now()+interval '1 hour','MOMO')",[quote,customer,policy,JSON.stringify(request)]);
+  await db.query("INSERT INTO shipments(id,customer_id,quote_id,idempotency_key,state,recipient_phone,amount_minor,commission_minor,payment_method,paid) VALUES($1,$2,$3,$4,'AWAITING_ASSIGNMENT','+233241234567',1000,130,'MOMO',true)",[shipment,customer,quote,randomUUID()]);
   const stop=kind=>({shipmentId:shipment,kind,weightG:100,latitude:5.5,longitude:-0.2});
   await db.query('INSERT INTO rider_dispatch_plans(rider_id,revision,stops) VALUES($1,1,$2)',[rider,JSON.stringify([stop('pickup'),stop('dropoff')])]);
   await db.query("UPDATE shipments SET rider_id=$2,state='RIDER_ASSIGNED' WHERE id=$1",[shipment,rider]);
