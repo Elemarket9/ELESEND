@@ -354,6 +354,11 @@ export function renderAdminPortalHtml() {
           <div id="custodyList"></div>
         </div>
         <div class="card">
+          <div class="card-title"><span>Stuck Withdrawals</span><button class="action-btn" onclick="loadStuckWithdrawals()">Refresh</button></div>
+          <div class="card-subtitle">The system keeps retrying safely. Release only after confirming in the Paystack dashboard that no transfer exists.</div>
+          <div id="stuckList"></div>
+        </div>
+        <div class="card">
           <div class="card-title"><span>Emergency Alerts</span><button class="action-btn" onclick="loadSafety()">Refresh</button></div>
           <div id="safetyList"></div>
         </div>
@@ -1139,6 +1144,28 @@ export function renderAdminPortalHtml() {
         alert('Campaign created');
       } catch (e) { alert(e.message); }
     }
+    async function loadStuckWithdrawals() {
+      const box = document.getElementById('stuckList');
+      try {
+        const rows = (await api('/api/v1/admin/payments/withdrawals')).filter(w => w.stuck_flagged_at && ['initiating', 'pending', 'needs_review'].includes(w.status));
+        box.textContent = rows.length ? '' : 'No stuck withdrawals.';
+        rows.forEach(w => {
+          const line = document.createElement('p');
+          line.textContent = String(w.id).slice(0, 8) + ' • GH₵' + (Number(w.amount_minor) / 100).toFixed(2) + ' • ' + (w.failure_reason || w.status) + ' ';
+          const b = document.createElement('button');
+          b.className = 'action-btn btn-danger';
+          b.textContent = 'Release to Balance';
+          b.onclick = async () => {
+            const reason = prompt('Confirm you checked Paystack and no transfer exists. Reason:');
+            if (!reason) return;
+            try { await api('/api/v1/admin/payments/withdrawals/' + w.id + '/release-unsent', { method: 'POST', body: JSON.stringify({ reason }) }); } catch (e) { alert(e.message); }
+            loadStuckWithdrawals();
+          };
+          line.appendChild(b);
+          box.appendChild(line);
+        });
+      } catch (e) { box.textContent = e.message; }
+    }
     async function loadCustody() {
       const box = document.getElementById('custodyList');
       try {
@@ -1160,6 +1187,7 @@ export function renderAdminPortalHtml() {
     }
     async function loadRisk() {
       loadCustody();
+      loadStuckWithdrawals();
       loadSafety();
       try {
         const signals = await api('/api/v1/admin/risk-signals');

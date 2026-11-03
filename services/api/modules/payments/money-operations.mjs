@@ -153,6 +153,15 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    const target=record.status==='paid'?'paid':record.reversed?'reversed':'failed';
    if(row.status===target)return {id:row.id,status:row.status,duplicate:true};
    const reversingPaid=row.status==='paid'&&target==='reversed';
+   // Paid after the money was released: block more withdrawals now, so the same money cannot leave twice.
+   if(target==='paid'&&['failed','reversed'].includes(row.status)){
+    const held=await c.query('INSERT INTO payout_holds(user_id,withdrawal_id,reason) VALUES($1,$2,$3) ON CONFLICT(user_id) DO NOTHING RETURNING user_id',[row.beneficiary_id,row.id,'Provider paid a withdrawal already released to the balance']);
+    if(held.rowCount){
+     await c.query("INSERT INTO operational_risk_signals(signal_code,severity,evidence) VALUES('PAID_AFTER_RELEASE','high',$1)",[JSON.stringify({withdrawalId:row.id,userId:row.beneficiary_id,amountMinor:Number(row.amount_minor)})]);
+     await c.query("INSERT INTO audit_logs(action,entity_id) VALUES('payout_withdrawal.paid_after_release',$1)",[row.id]);
+    }
+    return {id:row.id,status:'paid_after_release',duplicate:!held.rowCount};
+   }
    check(LIVE_PAYOUT.includes(row.status)||reversingPaid,409,'Withdrawal not in flight');
    check(!(await c.query('SELECT 1 FROM payment_operation_events WHERE provider=$1 AND event_id=$2',[row.provider,record.eventId])).rowCount,409,'Provider receipt already applied to another operation');
    await recordEvent(c,row,target==='paid'?'payout':'payout_failed',record);
@@ -194,7 +203,11 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   if(record?.status!=='not_found')return applyWithdrawalRecord(w,record);
   // The provider has no such transfer. Resending the same reference cannot pay twice, so this needs no staff.
   const age=(Date.now()-new Date(w.created_at).getTime())/1000,idle=(Date.now()-new Date(w.updated_at).getTime())/1000;
-  if(age>GIVE_UP_AFTER_SECONDS)return failLocally(w,'Provider never accepted the transfer');
+  // Never released automatically: "not found" could be wrong, and a second payment could follow. Staff are told.
+  if(age>GIVE_UP_AFTER_SECONDS&&!w.stuck_flagged_at){
+   await db.query("UPDATE payout_withdrawals SET stuck_flagged_at=now() WHERE id=$1",[w.id]);
+   await db.query("INSERT INTO operational_risk_signals(shipment_id,signal_code,severity,evidence) VALUES(NULL,'WITHDRAWAL_STUCK','high',$1)",[JSON.stringify({withdrawalId:w.id,userId:w.beneficiary_id})]);
+  }
   if(idle<RESUBMIT_AFTER_SECONDS)return {id:w.id,status:w.status};
   return submitWithdrawal(w);
  }
@@ -206,8 +219,14 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    if(typeof provider.verifyBeneficiary==='function'){
     const user=(await db.query('SELECT phone FROM users WHERE id=$1',[w.beneficiary_id])).rows[0];
     const owned=await provider.verifyBeneficiary({beneficiaryId:w.beneficiary_id,recipientReference:w.recipient_reference,verifiedPhone:user?.phone});
-    if(owned?.verified!==true)return failLocally(w,'Payout destination no longer matches the verified phone number');
+    if(owned?.verified!==true){
+     // A release is only safe if the provider has never been asked to pay this withdrawal.
+     if(!w.provider_attempted_at)return failLocally(w,'Payout destination no longer matches the verified phone number');
+     await db.query("UPDATE payout_withdrawals SET status='needs_review',failure_reason=$2,updated_at=now() WHERE id=$1 AND status IN ('initiating','pending','needs_review')",[w.id,'Destination check failed after an earlier attempt']);
+     return {id:w.id,status:'needs_review',amountMinor};
+    }
    }
+   await db.query('UPDATE payout_withdrawals SET provider_attempted_at=coalesce(provider_attempted_at,now()) WHERE id=$1',[w.id]);
    receipt=await provider.createPayout({requestId:w.id,idempotencyKey:w.id,recipientReference:w.recipient_reference,amountMinor,currency:w.currency});
   }catch(e){
    // The transfer may have gone through, so it stays locked until the provider says what happened.
@@ -234,6 +253,7 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   if(prior)return {existing:prior};
   check(!(await c.query("SELECT 1 FROM payout_withdrawals WHERE beneficiary_id=$1 AND status IN ('initiating','pending','needs_review')",[userId])).rowCount,409,'You already have a withdrawal in progress');
   check(!(await c.query("SELECT 1 FROM payout_withdrawals WHERE beneficiary_id=$1 AND status NOT IN ('failed','reversed') AND (created_at AT TIME ZONE 'UTC')::date=(now() AT TIME ZONE 'UTC')::date",[userId])).rowCount,429,'You can withdraw once a day. Please try again tomorrow');
+  check(!(await c.query('SELECT 1 FROM payout_holds WHERE user_id=$1',[userId])).rowCount,423,'Withdrawals are on hold on this account. Please contact support');
   const user=(await c.query('SELECT phone_verified_at,credentials_changed_at,deleted_at FROM users WHERE id=$1',[userId])).rows[0];
   check(user?.phone_verified_at&&!user.deleted_at,403,'Verify your phone number before withdrawing');
   const holdUntil=changed=>changed?new Date(changed).getTime()+securityHoldHours*3600000:0;
@@ -329,6 +349,9 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    if(typeof provider.verifyPayout==='function'){
     const rows=await claim('payout_operations',limit,olderThanSeconds);
     const withdrawals=await claim('payout_withdrawals',limit,olderThanSeconds);
+    // Released withdrawals are rechecked for a week, in case the provider pays one late.
+    const released=(await db.query("UPDATE payout_withdrawals SET last_reconciled_at=now() WHERE id IN (SELECT id FROM payout_withdrawals WHERE provider=$1 AND status IN ('failed','reversed') AND provider_attempted_at IS NOT NULL AND updated_at>now()-interval '7 days' AND coalesce(last_reconciled_at,updated_at)<now()-interval '1 hour' ORDER BY coalesce(last_reconciled_at,updated_at) LIMIT $2) RETURNING *",[provider.name,limit])).rows;
+    results.push(...await pool(released,concurrency,async w=>{try{return await reconcileWithdrawal(w);}catch(e){return {id:w.id,status:'verification_unavailable',error:e.code??'error'};}}));
     results.push(...await pool(withdrawals,concurrency,async w=>{try{return await reconcileWithdrawal(w);}catch(e){return {id:w.id,status:'verification_unavailable',error:e.code??'error'};}finally{await release('payout_withdrawals',w.id);}}));
     results.push(...await pool(rows,concurrency,async p=>{try{return await verifyPayoutOp(p);}catch(e){return {id:p.id,status:'verification_unavailable',error:e.code??'error'};}finally{await release('payout_operations',p.id).catch(()=>{});}}));
    }
@@ -445,7 +468,19 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    }
    return results;
   },
-  async withdrawals(actor){await permit(actor,READ);return (await db.query('SELECT id,beneficiary_id,amount_minor,fee_minor,currency,status,provider_id,failure_reason,created_at,updated_at FROM payout_withdrawals ORDER BY created_at DESC LIMIT 100')).rows;},
+  /** Last resort for a transfer the provider still cannot find after a day. Late payment is caught by the recheck. */
+  async releaseUnsentWithdrawal(actor,id,input){
+   await permit(actor,'finance:approve');uuid.parse(id);
+   const {reason}=z.object({reason:z.string().trim().min(10).max(500)}).strict().parse(input);
+   const w=await loadWithdrawal(id);
+   check(w&&LIVE_PAYOUT.includes(w.status),409,'Withdrawal is not in progress');
+   check(Date.now()-new Date(w.created_at).getTime()>GIVE_UP_AFTER_SECONDS*1000,409,'Wait 24 hours before releasing a withdrawal');
+   const record=await withTimeout(provider.verifyPayout({requestId:w.id,providerId:w.provider_id,recipientReference:w.recipient_reference,amountMinor:Number(w.amount_minor),currency:w.currency}),verifyTimeoutMs);
+   check(record?.status==='not_found',409,'The provider has a record of this transfer, so it cannot be released');
+   await db.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[actor.id,'payout_withdrawal.manual_release:'+reason,id]);
+   return failLocally(w,'Released by finance: '+reason);
+  },
+  async withdrawals(actor){await permit(actor,READ);return (await db.query('SELECT id,beneficiary_id,amount_minor,fee_minor,currency,status,provider_id,failure_reason,stuck_flagged_at,created_at,updated_at FROM payout_withdrawals ORDER BY created_at DESC LIMIT 100')).rows;},
   /** Handles a verified provider reversal. Returns null for payouts that are not withdrawals. */
   async reverseWithdrawal(record){
    uuid.parse(record.requestId);

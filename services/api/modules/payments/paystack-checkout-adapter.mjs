@@ -14,7 +14,7 @@ export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://ap
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
   try{
    const response=await fetchImpl(endpoint+path,{...options,headers:{Authorization:`Bearer ${secretKey}`,'Accept-Encoding':'gzip, deflate',...options.headers},signal:controller.signal,redirect:'error'});
-   if(!response.ok){const error=Object.assign(new Error(`PSP request failed (${response.status})`),{status:502,providerStatus:response.status});throw error;}
+   if(!response.ok){const detail=await response.json().catch(()=>null);throw Object.assign(new Error(`PSP request failed (${response.status})`),{status:502,providerStatus:response.status,providerMessage:String(detail?.message??'')});}
    const raw=await response.json();check(raw?.status===true,502,'PSP rejected request');return raw.data;
   }finally{clearTimeout(timer);}
  }
@@ -83,7 +83,8 @@ export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://ap
    check(/^[0-9a-f-]{36}$/.test(requestId),400,'Invalid payout request');
    // Paystack answers with an error when it has no transfer for the reference.
    return verifyTransfer(PAYOUT_PREFIX+requestId).catch(e=>{
-    if([400,404].includes(e.providerStatus))return {verified:false,type:'payout',provider:'paystack',status:'not_found',requestId};
+    // Only a clear answer counts. Any other error leaves the transfer locked and is checked again.
+    if(e.providerStatus===404||(e.providerStatus===400&&/not found/i.test(e.providerMessage)))return {verified:false,type:'payout',provider:'paystack',status:'not_found',requestId};
     throw e;
    });
   },allowedCheckoutHosts:['checkout.paystack.com'],payerFields:['email'],

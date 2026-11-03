@@ -26,7 +26,7 @@ Production refuses test keys. Enable each method in the admin portal after this.
 - **Customer fee:** digital payments add `PAYSTACK_CUSTOMER_FEE_BPS` (default 195, Paystack's listed 1.95%) on top of the order total. Set it to 0 if your agreed terms or legal advice rule it out. Cancelled orders refund the fee to the customer.
 - **Riders:** they press Withdraw and enter their password. The API sends the transfer with no staff step, minus the transfer fee.
 - **Restaurants and delivery companies:** their available balance is paid automatically once a day when a payout account is saved.
-- **Unclear results:** the system checks with Paystack and resends only with the same reference, which Paystack treats as the same transfer. If Paystack still has no transfer after 24 hours, or it fails or is reversed, the money returns to the available balance.
+- **Unclear results:** the system checks with Paystack and resends only with the same reference, which Paystack treats as the same transfer. If it fails or is reversed, the money returns to the available balance. If Paystack cannot find a transfer, the money stays locked and the same reference keeps being retried. After 24 hours it is flagged in the admin portal, where finance can release it after checking the Paystack dashboard. Released withdrawals are rechecked for a week, and a late payment puts the account on hold.
 
 ## Automatic payout protection
 | Protection | Setting | Default |

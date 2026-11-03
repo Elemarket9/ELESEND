@@ -132,11 +132,26 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await db.query("UPDATE payout_withdrawals SET updated_at=now()-interval '10 minutes',last_reconciled_at=now()-interval '10 minutes' WHERE id=$1",[lost.id]);
   await money.reconcileDue({olderThanSeconds:0});
   assert.equal(submitted.length,2);assert.equal(submitted[0].requestId,submitted[1].requestId);
-  // After a day with no transfer at Paystack, the money comes back by itself.
-  await db.query("UPDATE payout_withdrawals SET created_at=now()-interval '30 days',last_reconciled_at=now()-interval '10 minutes' WHERE id=$1",[lost.id]);
+  // Not found never releases money by itself, however long it takes.
+  await db.query("UPDATE payout_withdrawals SET created_at=now()-interval '30 days',updated_at=now()-interval '10 minutes',last_reconciled_at=now()-interval '10 minutes' WHERE id=$1",[lost.id]);
   await money.reconcileDue({olderThanSeconds:0});
-  assert.equal((await db.query('SELECT status FROM payout_withdrawals WHERE id=$1',[lost.id])).rows[0].status,'failed');
+  const lostRow=(await db.query('SELECT * FROM payout_withdrawals WHERE id=$1',[lost.id])).rows[0];
+  assert.ok(['initiating','pending','needs_review'].includes(lostRow.status));assert.ok(lostRow.stuck_flagged_at);
+  assert.equal(await payable(missing),0);
+  await assert.rejects(withdraw(key()),/in progress/);
+  // Finance can release it only with the provider still reporting no transfer.
+  const releaser=await user('admin');await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'finance:approve')",[releaser]);
+  await assert.rejects(money.releaseUnsentWithdrawal({id:customer,kind:'customer'},lost.id,{reason:'Not allowed to do this'}));
+  outcome='pending';
+  await assert.rejects(money.releaseUnsentWithdrawal({id:releaser,kind:'admin'},lost.id,{reason:'Checked the Paystack dashboard'}),/record of this transfer/);
+  outcome='missing';
+  assert.equal((await money.releaseUnsentWithdrawal({id:releaser,kind:'admin'},lost.id,{reason:'Checked the Paystack dashboard'})).status,'failed');
   assert.equal(await payable(missing),700);
+  // If the provider pays it late anyway, the account goes on hold before the money can leave twice.
+  const late=await money.confirmPayout({verified:true,type:'payout',provider:'fixture',status:'paid',requestId:lost.id,providerId:'TRF_'+lost.id,recipientReference:lostRow.recipient_reference,amountMinor:Number(lostRow.amount_minor),currency:'GHS',eventId:'transfer:'+randomUUID()});
+  assert.equal(late.status,'paid_after_release');
+  await assert.rejects(withdraw(key()),/on hold/);
+  await db.query('DELETE FROM payout_holds WHERE user_id=$1',[rider]);
   outcome='success';
   await db.query("UPDATE payout_operations SET created_at=now() WHERE withdrawal_id=$1",[lost.id]);
 
