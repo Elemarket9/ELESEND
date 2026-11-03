@@ -123,10 +123,10 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   }
   check(body&&typeof body==='object'&&!Array.isArray(body),400,'JSON object required');
   if(method==='POST'&&path==='/api/v1/auth/register'){await limit(db,'registration-ip:'+clientIp(req),12,3600);send(201,await app.register(body));return;}
-  if(method==='POST'&&path==='/api/v1/auth/login'){await limit(db,'login-ip:'+clientIp(req),40,900);send(200,await app.login(body));return;}
+  if(method==='POST'&&path==='/api/v1/auth/login'){await limit(db,'login-ip:'+clientIp(req),40,900);send(200,await app.login(body,{clientIp:clientIp(req)}));return;}
   if(method==='POST'&&path==='/api/v1/auth/password-recovery'){await limit(db,'pw-recovery-ip:'+clientIp(req),10,900);send(200,await app.passwordRecoveryChallenge(body));return;}
   if(method==='POST'&&path==='/api/v1/auth/password-reset'){await limit(db,'pw-reset-ip:'+clientIp(req),15,900);send(200,await app.resetPassword(body));return;}
-  const token=req.headers.authorization?.replace(/^Bearer /,'')||(path==='/api/v1/chat/stream'?new URL(req.url,'http://localhost').searchParams.get('token'):null);const actor=token?.startsWith('es_live_')?await net.authenticateKey(token):await app.authenticate(token);
+  const token=req.headers.authorization?.replace(/^Bearer /,'');const actor=token?.startsWith('es_live_')?await net.authenticateKey(token):await app.authenticate(token);
   net.authorizeKey(actor,method,path);
   await limit(db,'user:'+actor.id,150,60);
   if(path.startsWith('/api/v1/admin/'))check(actor?.kind==='admin',403,'Administrator required');
@@ -643,7 +643,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
     try{
       const u=new URL(req.url,'http://localhost');
       if(u.pathname!=='/api/v1/chat/ws'){socket.write('HTTP/1.1 404 Not Found\r\n\r\n');socket.destroy();return;}
-      const token=req.headers.authorization?.replace(/^Bearer /,'')||u.searchParams.get('token');
+      // Credentials are header-only: URLs end up in proxy logs and browser history.
+      const token=req.headers.authorization?.replace(/^Bearer /,'');
       if(!token){socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');socket.destroy();return;}
       // No API key scope grants chat, matching net.authorizeKey on the HTTP chat routes.
       if(token.startsWith('es_live_')){socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');socket.destroy();return;}

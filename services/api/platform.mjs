@@ -266,7 +266,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await audit(c,uid,'registered',uid);
   });return {id:uid,kind:v.kind,phone:p,phoneVerified:false};
  },
- async login(input){const v=z.object({phone:z.string().max(30),password:z.string().max(128),totpCode:z.string().regex(/^\d{6}$/).optional()}).strict().parse(input);const p=phone(v.phone);await limit(db,'login:'+hash(p),10,900);
+ async login(input,{clientIp='unknown'}={}){const v=z.object({phone:z.string().max(30),password:z.string().max(128),totpCode:z.string().regex(/^\d{6}$/).optional()}).strict().parse(input);const p=phone(v.phone);
+  // Attempts are limited per source so one attacker cannot lock the real owner out of an account.
+  // The higher account-wide cap still bounds guessing spread across many addresses.
+  await limit(db,'login-source:'+hash(p+'|'+clientIp),10,900);await limit(db,'login:'+hash(p),100,900);
   const u=(await db.query('SELECT * FROM users WHERE phone=$1',[p])).rows[0];
   // Spend equivalent password derivation work for unknown identities.
   const ok=await passwordMatches(v.password,u?.password_hash??('0'.repeat(32)+':'+ '0'.repeat(128)));check(u&&ok,401,'Invalid credentials');
