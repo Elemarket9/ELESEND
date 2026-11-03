@@ -30,9 +30,11 @@ export function paymentWebhook({db,provider,checkout,finance,money,moneyOperatio
   if(record.type==='payout'||record.kind==='payout')return record.status==='paid'?moneySvc.confirmPayout(record):{status:'acknowledged'};
   const reversal=record.status==='reversed';
   if(record.status!=='success'&&!reversal)return {status:'ignored'};
-  if((await db.query('SELECT 1 FROM shipment_checkout_intents WHERE provider=$1 AND reference=$2',[provider.name,record.reference])).rowCount){
+  const checkoutIntent=await db.query('SELECT shipment_id FROM shipment_checkout_intents WHERE provider=$1 AND reference=$2',[provider.name,record.reference]);
+  if(checkoutIntent.rowCount){
    // Customer-payment reversals/chargebacks require finance review; never auto-confirm or silently drop.
-   if(reversal){await db.query("INSERT INTO audit_logs(actor_id,action,entity_id) VALUES(NULL,'payment.checkout_reversal_reported',NULL)");return {status:'acknowledged',requiresReview:true};}
+   // The entity and reference are what let finance find the affected payment.
+   if(reversal){await db.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES(NULL,$1,$2)',['payment.checkout_reversal_reported:'+record.reference,checkoutIntent.rows[0].shipment_id]);return {status:'acknowledged',requiresReview:true};}
    return checkout.confirmVerified(record);
   }
   let intentId=provider.commissionIntentId?.(record)??provider.commissionIntentId?.(record.reference)??null;

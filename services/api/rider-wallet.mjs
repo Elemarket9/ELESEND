@@ -420,6 +420,8 @@ export async function walletReconciliation(c){
 export async function adminWalletReconciliation(db,actor,{repair=false}={}){
  await permit(db,actor);
  if(repair){
+  // Read-only finance staff may view the report; recovering debt from earnings moves rider money.
+  await permit(db,actor,['finance:approve','finance:configure']);
   const {results}=await runScheduledRecovery(db);
   const refreshed=await walletReconciliation(db);
   const repairRecoveries=results.filter(r=>r.recoveredMinor>0);

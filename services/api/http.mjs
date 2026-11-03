@@ -42,11 +42,13 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const server=createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192},async(req,res)=>{
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
  res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
- const send=(code,body)=>{res.writeHead(code,{'Content-Type':'application/json'});res.end(JSON.stringify(body));};
+ // Serialize before writing headers: a failure must stay recoverable by the catch block below.
+ const send=(code,body)=>{const payload=JSON.stringify(body);res.writeHead(code,{'Content-Type':'application/json'});res.end(payload);};
  try{
   check(!req.url.includes('\0')&&!(req.headers.host??'').includes('\0'),400,'Invalid request characters');
   if(req.headers['content-encoding']&&req.headers['content-encoding'].toLowerCase()!=='identity')check(false,415,'Content-Encoding not supported');
-  const path=new URL(req.url,'http://localhost').pathname,method=req.method;
+  let path;try{path=new URL(req.url,'http://localhost').pathname;}catch{check(false,400,'Invalid request URL');}
+  const method=req.method;
 
   if(method==='OPTIONS'){
    res.setHeader('Access-Control-Allow-Origin','*');
@@ -119,6 +121,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    check(finance,503,'Commission settlement unavailable');
    send(200,await finance.handleWebhook(rawBody,req.headers));return;
   }
+  check(body&&typeof body==='object'&&!Array.isArray(body),400,'JSON object required');
   if(method==='POST'&&path==='/api/v1/auth/register'){await limit(db,'registration-ip:'+clientIp(req),12,3600);send(201,await app.register(body));return;}
   if(method==='POST'&&path==='/api/v1/auth/login'){await limit(db,'login-ip:'+clientIp(req),40,900);send(200,await app.login(body));return;}
   if(method==='POST'&&path==='/api/v1/auth/password-recovery'){await limit(db,'pw-recovery-ip:'+clientIp(req),10,900);send(200,await app.passwordRecoveryChallenge(body));return;}
@@ -154,7 +157,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='GET'&&path==='/api/v1/admin/restaurants'){check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission='verification:write'",[actor.id])).rowCount,403);result=await restaurants.listRestaurants({includePending:true});}
   else if(method==='POST'&&/^\/api\/v1\/shipments\/[0-9a-f-]+\/checkout$/.test(path)){check(checkout,503);result=await checkout.initiate(actor,path.split('/')[4],body);}
   else if(method==='GET'&&/^\/api\/v1\/shipments\/[0-9a-f-]+\/checkout$/.test(path)){check(checkout,503);result=await checkout.status(actor,path.split('/')[4]);}
-  else if(method==='GET'&&path==='/api/v1/me')result=actor;
+  else if(method==='GET'&&path==='/api/v1/me'){const {sessionTokenHash:_omitted,...profile}=actor;result=profile;}
   else if(method==='GET'&&path==='/api/v1/maps/config')result={renderer:'private',routing:'osrm',ghanaPostGpsLookup:Boolean(ghanaPostGps)};
   else if(method==='POST'&&path==='/api/v1/maps/ghana-address'){
    check(ghanaPostGps,503,'GhanaPostGPS address lookup is disabled');
@@ -188,7 +191,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    const preparedFoodOnly=u.get('prepared_food_only')==='true';
    const registeredOnly=u.get('registered_only')==='true';
    const zoom=Number.isFinite(Number(u.get('zoom')))?Number(u.get('zoom')):14;
-   const limitVal=Math.min(Math.max(parseInt(u.get('limit')||'50',10),1),250);
+   const limitVal=Math.min(Math.max(parseInt(u.get('limit')||'50',10)||50,1),250);
    const offsetVal=Math.max(0,Math.min(10000,parseInt(u.get('offset')||'0',10)||0));
 
    let whereClause='WHERE geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)';
@@ -430,7 +433,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='GET'&&path==='/api/v1/admin/finance/wallet-overview')result=await adminWalletOverview(db,actor);
   else if((method==='GET'||method==='POST')&&path==='/api/v1/admin/finance/reconciliation'){
    const u=new URL(req.url,'http://localhost').searchParams;
-   const repair=method==='POST'?body?.repair!==false:u.get('repair')==='true';
+   // Repair moves money between ledgers, so only an explicit POST may request it.
+   const repair=method==='POST'&&body?.repair===true;
    result=await adminWalletReconciliation(db,actor,{repair});
   }
   else if(method==='GET'&&path==='/api/v1/admin/finance/wallet-policy')result=await walletPolicyView(db,actor);
@@ -630,7 +634,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   }send(200,result);
  }catch(e){const status=e instanceof ZodError?400:e.status??(e.code==='23505'?409:500);
   const clientError=status===500?'Internal server error':e.code==='23505'?'Unique resource already exists':e instanceof ZodError?'Invalid input':e.message;
-  send(status,{error:clientError});
+  // Once a response has started the status cannot change; end it rather than crash the process.
+  if(res.headersSent){if(!res.writableEnded)res.end();}else send(status,{error:clientError});
   if(status===500)process.stderr.write(JSON.stringify({level:'error',code:e.code??'internal',time:new Date().toISOString()})+'\n');
  }
 });
@@ -640,7 +645,9 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
       if(u.pathname!=='/api/v1/chat/ws'){socket.write('HTTP/1.1 404 Not Found\r\n\r\n');socket.destroy();return;}
       const token=req.headers.authorization?.replace(/^Bearer /,'')||u.searchParams.get('token');
       if(!token){socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');socket.destroy();return;}
-      const actor=token.startsWith('es_live_')?await net.authenticateKey(token):await app.authenticate(token);
+      // No API key scope grants chat, matching net.authorizeKey on the HTTP chat routes.
+      if(token.startsWith('es_live_')){socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');socket.destroy();return;}
+      const actor=await app.authenticate(token);
       const initialConvId=u.searchParams.get('conversationId');
       if(initialConvId){
         await chat.authorizeConversationAccess(db,actor,initialConvId,{supportJustification:u.searchParams.get('justification')||'WebSocket subscription'});
@@ -652,7 +659,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
         onClientMessage:async(msg,conn)=>{
           let liveActor;
           try{
-            liveActor=token.startsWith('es_live_')?await net.authenticateKey(token):await app.authenticate(token);
+            liveActor=await app.authenticate(token);
           }catch{
             conn.send('session.revoked',{reason:'unauthorized',timestamp:new Date().toISOString()});
             conn.close();

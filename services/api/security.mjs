@@ -18,7 +18,7 @@ export async function passwordMatches(password,stored){
 export const newToken=()=>randomBytes(32).toString('hex');
 export const newCode=()=>randomInt(0,1000000).toString().padStart(6,'0');
 export function mac(secret,fields){return createHmac('sha256',Buffer.from(secret,'hex')).update(JSON.stringify(fields)).digest('hex');}
-export function equal(a,b){return typeof a==='string'&&typeof b==='string'&&a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b));}
+export function equal(a,b){if(typeof a!=='string'||typeof b!=='string')return false;const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y);}
 export async function limit(db,subject,max,seconds){
  const r=await db.query(`INSERT INTO rate_limits(subject,count,expires_at) VALUES($1,1,now()+$2*interval '1 second') ON CONFLICT(subject) DO UPDATE SET count=CASE WHEN rate_limits.expires_at<=now() THEN 1 ELSE rate_limits.count+1 END,expires_at=CASE WHEN rate_limits.expires_at<=now() THEN excluded.expires_at ELSE rate_limits.expires_at END RETURNING count`,[subject,seconds]);
  check(r.rows[0].count<=max,429,'Too many requests');
