@@ -36,7 +36,7 @@ if($Vehicle -eq 'all' -or $Vehicle -eq 'car'){
 }
 if($Vehicle -eq 'all' -or $Vehicle -eq 'motorcycle'){
   # Uses road rules from the car profile: the bicycle profile allows footpaths and uses cycling speeds.
-  # The API applies ROUTING_MOTORCYCLE_DURATION_FACTOR to make motorcycle ETAs faster.
+  # Not verified against Ghanaian motorbike access. Changing the profile requires rebuilding this graph.
   Build-Graph '/opt/car.lua' 'ghana-motorcycle'
 }
 Write-Output 'Private Ghana OSRM routing graphs (car + motorcycle) prepared.'

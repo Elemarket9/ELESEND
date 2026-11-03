@@ -8,7 +8,7 @@ import {runScheduledRecovery} from './rider-wallet.mjs';
 import {runGeographicLearningCycle} from './infrastructure/maps/egia/background-learner.mjs';
 import {chatEngine} from './chat-engine.mjs';
 
-export const LOCKS={dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209};
+export const LOCKS={dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209,etaRefresh:839210};
 
 const warn=(component,code,extra={})=>process.stderr.write(JSON.stringify({level:'warn',component,code,...extra})+'\n');
 
@@ -25,7 +25,7 @@ export async function withAdvisoryLock(db,lockId,task){
  finally{client?.release();}
 }
 
-export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=null,money=null,checkout=null,finance=null,paymentProvider=null,chat=null,routing=null}){
+export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=null,money=null,checkout=null,finance=null,paymentProvider=null,chat=null,routing=null,eta=null}){
  const chatSvc=chat||(db&&typeof db.query==='function'?chatEngine(db):null);
  const busy=new Set();
  const guarded=(name,lockId,fn)=>async()=>{
@@ -65,6 +65,8 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
    const recovered=results.filter(r=>r.recoveredMinor>0);
    if(recovered.length)process.stdout.write(JSON.stringify({level:'info',component:'wallet_reconciliation',msg:'catch_up_recovery',riders:recovered.length})+'\n');
   }),
+  // Records each stage's estimate even when no customer is watching, so accuracy can be measured.
+  etaRefresh:guarded('eta_refresh',LOCKS.etaRefresh,async()=>{await eta?.refreshActive();}),
   pruning:guarded('location_retention',LOCKS.dispatchPruning,async()=>{await dispatch?.pruneSamples();}),
    geoLearning:guarded('geo_learning',LOCKS.geoLearning,async()=>{await runGeographicLearningCycle(db,{routing});}),
   corridors:guarded('corridor_refresh',LOCKS.corridors,async()=>{await dispatch?.refreshCorridors();}),
@@ -95,6 +97,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
   every(jobs.moneyRecon,30000,!!money&&!!paymentProvider);
   every(jobs.dispatch,3000,!!dispatch);
   every(jobs.paymentRecon,30000,!!paymentProvider&&(!!checkout||!!finance));
+  every(jobs.etaRefresh,60000,!!eta);
   every(jobs.pruning,3600000,!!dispatch);
   every(jobs.corridors,60000,!!dispatch);
   every(jobs.maintenance,3600000);

@@ -28,7 +28,7 @@ fi
 # 2. Motorcycle Graph
 if [ ! -e "$task_data/ghana-motorcycle.osrm" ]; then
   # Uses road rules from the car profile: the bicycle profile allows footpaths and uses cycling speeds.
-  # The API applies ROUTING_MOTORCYCLE_DURATION_FACTOR to make motorcycle ETAs faster.
+  # Not verified against Ghanaian motorbike access. Changing the profile requires rebuilding this graph.
   # OSRM names its output after the input, so extract from a copy to keep the car graph intact.
   cp "$task_data/ghana-latest.osm.pbf" "$task_data/ghana-motorcycle.osm.pbf"
   docker run --rm --network none --mount "type=bind,source=$task_data,target=/data" "$task_image" osrm-extract -p /opt/car.lua /data/ghana-motorcycle.osm.pbf

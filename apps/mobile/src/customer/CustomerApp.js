@@ -114,6 +114,7 @@ export default function CustomerApp() {
   const [myShipments, setMyShipments] = useState([]);
   const [trackingShipment, setTrackingShipment] = useState(null);
   const [liveCourier, setLiveCourier] = useState(null);
+  const [deliveryEta, setDeliveryEta] = useState(null);
   const [placeQuery, setPlaceQuery] = useState('');
   const [placesList, setPlacesList] = useState([]);
   const [detectedLocation, setDetectedLocation] = useState(null);
@@ -282,6 +283,7 @@ export default function CustomerApp() {
   useEffect(() => {
     if (!trackingShipment?.id) {
       setLiveCourier(null);
+      setDeliveryEta(null);
       return;
     }
     let cancelled = false;
@@ -290,6 +292,7 @@ export default function CustomerApp() {
         const trk = await call('GET', `/api/v1/public-track/${trackingShipment.id}`);
         if (!cancelled) {
           setLiveCourier(trk?.courier || null);
+          setDeliveryEta(trk?.deliveryEta || null);
           if (trk?.riderPhone && !trackingShipment.rider_phone) {
             setTrackingShipment(ts => ts ? { ...ts, rider_phone: trk.riderPhone } : null);
           }
@@ -1564,7 +1567,6 @@ export default function CustomerApp() {
                   style={[styles.vehicleOptionCard, booking.vehicle === 'motorcycle' && styles.vehicleOptionCardActive]}
                   onPress={() => updateBooking('vehicle', 'motorcycle')}>
                   <Text style={{ fontSize: 26, marginBottom: 4 }}>🏍️</Text>
-                  <Text style={styles.vehicleEtaBadge}>13 min</Text>
                   <Text style={styles.vehicleOptionName}>Express</Text>
                   <Text style={styles.vehicleOptionPrice}>from GH₵ 15</Text>
                 </TouchableOpacity>
@@ -1574,7 +1576,6 @@ export default function CustomerApp() {
                   style={[styles.vehicleOptionCard, booking.vehicle === 'car' && styles.vehicleOptionCardActive]}
                   onPress={() => updateBooking('vehicle', 'car')}>
                   <Text style={{ fontSize: 26, marginBottom: 4 }}>🚗</Text>
-                  <Text style={styles.vehicleEtaBadge}>15 min</Text>
                   <Text style={styles.vehicleOptionName}>Standard Car</Text>
                   <Text style={styles.vehicleOptionPrice}>from GH₵ 25</Text>
                 </TouchableOpacity>
@@ -2605,6 +2606,12 @@ export default function CustomerApp() {
             </View>
           )}
 
+          {deliveryEta?.message ? (
+            <Text accessibilityLiveRegion="polite" style={{ paddingHorizontal: 16, paddingVertical: 10, fontSize: 14, fontWeight: '700', color: '#0F172A', backgroundColor: '#F1F5F9' }}>
+              {deliveryEta.message}
+            </Text>
+          ) : null}
+
           <View style={{ flex: 1 }}>
             <MapView
               initialRegion={{ latitude: 5.6037, longitude: -0.1870, longitudeDelta: 0.08 }}
@@ -3092,7 +3099,6 @@ const styles = StyleSheet.create({
   vehicleCarousel: { flexDirection: 'row', gap: 10, paddingVertical: 4 },
   vehicleOptionCard: { width: 112, backgroundColor: '#F8FAFC', borderRadius: 16, padding: 10, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
   vehicleOptionCardActive: { borderColor: colors.brandCoral, backgroundColor: '#FFF5F3' },
-  vehicleEtaBadge: { fontSize: 10, fontWeight: '700', color: '#64748B' },
   vehicleOptionName: { fontSize: 12, fontWeight: '800', color: '#0F172A', marginTop: 2 },
   vehicleOptionPrice: { fontSize: 11, fontWeight: '700', color: colors.brandCoral, marginTop: 1 },
   inputMicroLabel: { fontSize: 11, fontWeight: '700', color: '#64748B', textTransform: 'uppercase', marginBottom: 4 },

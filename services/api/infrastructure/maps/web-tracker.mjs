@@ -1,5 +1,4 @@
 import {createHmac,timingSafeEqual} from 'node:crypto';
-import {haversine} from '../../dispatch-geometry.mjs';
 
 export function escapeHtml(str) {
  if (str == null) return '';
@@ -77,7 +76,7 @@ function sanitizePublicAddress(addr,fallbackLabel){
  return stripped||fallbackLabel;
 }
 
-export async function getPublicTracking(db, token, {actor=null, secret=null}={}){
+export async function getPublicTracking(db, token, {actor=null, secret=null, eta=null}={}){
  const parsed=verifyPublicTrackingToken(token,{secret});
  if(!parsed.valid||!parsed.shipmentId)return null;
 
@@ -135,21 +134,7 @@ export async function getPublicTracking(db, token, {actor=null, secret=null}={})
   fresh:true
  }:null;
 
- let etaEstimate=null;
- if(courier&&req.destination&&['IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(row.state)){
-  const distMeters=haversine(courier,req.destination);
-  const mins=Math.max(1,Math.round((distMeters/1000)/(courier.vehicle==='motorcycle'?28:22)*60));
-  const remKm=Math.round(distMeters/100)/10;
-  etaEstimate={
-   remainingDistanceKm:remKm,
-   distanceKm:remKm,
-   estimatedMinutes:mins,
-   minutes:mins,
-   estimateType:'straight_line_approximation',
-   isRoadVerified:false
-  };
- }
-
+ // Straight-line estimates are no longer shown: customer ETAs come from road routes via the ETA service.
  const pickupAddr = isPrivilegedView
   ? (req.pickup?.address || 'Pickup Location')
   : sanitizePublicAddress(req.pickup?.address, 'Pickup Location');
@@ -177,7 +162,8 @@ export async function getPublicTracking(db, token, {actor=null, secret=null}={})
   courierStale: isPrivilegedView ? Boolean(isCourierActive && (!row.courier_time || !isCourierFresh)) : undefined,
   // Raw riderPhone PII is only exposed to authenticated shipment participants or verified signed tracking tokens
   riderPhone: (isCourierActive && isPrivilegedView) ? (row.rider_phone || null) : null,
-  eta:etaEstimate,
+  eta:null,
+  deliveryEta:eta?await eta.customerEta(row.id):null,
   createdAt:row.created_at,
   completedAt:row.completed_at
  };
@@ -283,12 +269,8 @@ export function renderTrackingHtml(data, trackingTokenOverride = null){
     </div>
    </div>
 
-   <div class="eta-card" id="eta-box" style="${data.eta?'':'display:none;'}">
-    <div>
-     <div class="eta-label">APPROXIMATE ARRIVAL (STRAIGHT-LINE ESTIMATE)</div>
-     <div class="status-subtitle">~${data.eta?escapeHtml(data.eta.remainingDistanceKm):0} km direct distance</div>
-    </div>
-    <div class="eta-time">~${data.eta?escapeHtml(data.eta.estimatedMinutes):0} mins</div>
+   <div class="eta-card" id="eta-box" style="${data.deliveryEta?.message?'':'display:none;'}">
+    <div class="status-subtitle" id="eta-message">${escapeHtml(data.deliveryEta?.message||'')}</div>
    </div>
   </div>
 
@@ -353,12 +335,9 @@ export function renderTrackingHtml(data, trackingTokenOverride = null){
     const fresh = await res.json();
     document.getElementById('state-badge').innerText = (fresh.state || '').replace(/_/g, ' ');
     document.getElementById('status-label').innerText = fresh.statusLabel || '';
-    if (fresh.eta && document.getElementById('eta-box')) {
-     document.getElementById('eta-box').style.display = 'flex';
-     document.getElementById('eta-box').innerHTML = '<div><div class="eta-label">APPROXIMATE ARRIVAL (STRAIGHT-LINE ESTIMATE)</div><div class="status-subtitle">~' + Number(fresh.eta.remainingDistanceKm) + ' km direct distance</div></div><div class="eta-time">~' + Number(fresh.eta.estimatedMinutes) + ' mins</div>';
-    } else if (document.getElementById('eta-box')) {
-     document.getElementById('eta-box').style.display = 'none';
-    }
+    const etaMessage = fresh.deliveryEta && fresh.deliveryEta.message;
+    document.getElementById('eta-box').style.display = etaMessage ? 'flex' : 'none';
+    document.getElementById('eta-message').textContent = etaMessage || '';
    } catch(e) {}
   }
   setInterval(pollStatus, 6000);

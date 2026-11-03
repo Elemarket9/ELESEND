@@ -296,15 +296,16 @@ export function validateConfig(env = process.env) {
     }
   }
 
-  const motorcycleDurationFactor = env.ROUTING_MOTORCYCLE_DURATION_FACTOR === undefined || String(env.ROUTING_MOTORCYCLE_DURATION_FACTOR).trim() === ''
+  // Customer ETA only. Fares, dispatch ranking and delivery deadlines use raw road times.
+  const motorcycleEtaFactor = env.ETA_MOTORCYCLE_BASELINE_FACTOR === undefined || String(env.ETA_MOTORCYCLE_BASELINE_FACTOR).trim() === ''
     ? 0.75
-    : Number(env.ROUTING_MOTORCYCLE_DURATION_FACTOR);
-  if (!Number.isFinite(motorcycleDurationFactor) || motorcycleDurationFactor < 0.3 || motorcycleDurationFactor > 1) {
-    errors.push('ROUTING_MOTORCYCLE_DURATION_FACTOR must be a number from 0.3 to 1.');
+    : Number(env.ETA_MOTORCYCLE_BASELINE_FACTOR);
+  if (!Number.isFinite(motorcycleEtaFactor) || motorcycleEtaFactor < 0.3 || motorcycleEtaFactor > 1) {
+    errors.push('ETA_MOTORCYCLE_BASELINE_FACTOR must be a number from 0.3 to 1.');
   }
 
   const routingConfig = {
-    durationFactors: {motorcycle: motorcycleDurationFactor},
+    etaBaselineFactors: {motorcycle: motorcycleEtaFactor},
     osrmUrl,
     vehicleRoutes: assembledVehicleRoutes,
     profiles,

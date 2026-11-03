@@ -105,14 +105,11 @@ test('off-road stretches split at roads and time gaps, and lose 100 m at each en
  assert.equal(offRoadSegments(gap,gap.map(()=>200)).length,2);
 });
 
-test('motorcycle ETAs use the factor, and other vehicles and distance do not',async()=>{
+test('routing returns raw road times, so fares and dispatch ignore the customer ETA factor',async()=>{
  const fetchImpl=async()=>new Response(JSON.stringify({code:'Ok',routes:[{distance:5000,duration:1000,geometry:{type:'LineString',coordinates:[]}}],waypoints:[]}));
- const routing=osrmRouting({endpoint:'http://osrm.test',profiles:{car:'driving',motorcycle:'driving'},durationFactors:{motorcycle:0.75},fetchImpl});
- const a={latitude:5.6,longitude:-0.2},b={latitude:5.63,longitude:-0.2};
- const bike=await routing.route(a,b,{vehicle:'motorcycle'}),car=await routing.route(a,b,{vehicle:'car'});
- assert.equal(bike.durationSeconds,750);
- assert.equal(car.durationSeconds,1000);
- assert.equal(bike.distanceMeters,5000);
+ const routing=osrmRouting({endpoint:'http://osrm.test',profiles:{motorcycle:'driving'},fetchImpl});
+ const leg=await routing.route({latitude:5.6,longitude:-0.2},{latitude:5.63,longitude:-0.2},{vehicle:'motorcycle'});
+ assert.equal(leg.durationSeconds,1000);
 });
 
 test('the motorcycle graph no longer uses the bicycle profile',()=>{

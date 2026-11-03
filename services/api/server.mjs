@@ -18,6 +18,7 @@ import {reconcileAndEnforceWeeklyRestrictions} from './weekly-settlement.mjs';
 import {loadConfig} from './config.mjs';
 import {notificationGateway,notificationWorker} from './notifications.mjs';
 import {backgroundJobs} from './background-jobs.mjs';
+import {etaService} from './eta/eta-service.mjs';
 
 enforcePatchedNodeRuntime();
 const config = loadConfig(process.env);
@@ -33,8 +34,7 @@ const routing = (config.routing.vehicleRoutes || config.routing.osrmUrl)
   ? osrmRouting({
       endpoint: config.routing.osrmUrl,
       profiles: config.routing.profiles,
-      vehicleRoutes: config.routing.vehicleRoutes,
-      durationFactors: config.routing.durationFactors
+      vehicleRoutes: config.routing.vehicleRoutes
     })
   : null;
 
@@ -64,14 +64,15 @@ const money=moneyOperations(db,{provider:paymentProvider});
 const restOrders = restaurantOrderService(db, {platform: app, dispatcher: dispatch, routing, sms, ...config.food});
 
 const scheduler = config.server.backgroundJobsEnabled
-  ? backgroundJobs({db,dispatch,notifications,restOrders,money,checkout,finance,paymentProvider,routing}).start({unref:true})
+  ? backgroundJobs({db,dispatch,notifications,restOrders,money,checkout,finance,paymentProvider,routing,eta:etaService(db,{routing,baselineFactors:config.routing.etaBaselineFactors})}).start({unref:true})
   : null;
 
 const server = httpServer(db, app, dispatch, finance, checkout, {
   ghanaPostGps: configuredGhanaPostGps(),
   restaurantOrders: restOrders,
   paymentsWebhook:paymentWebhook({db,provider:paymentProvider,checkout,finance,money,moneyOperations:money}),
-  moneyOperations:money
+  moneyOperations:money,
+  etaBaselineFactors:config.routing.etaBaselineFactors
 });
 
 const port = config.server.port;
