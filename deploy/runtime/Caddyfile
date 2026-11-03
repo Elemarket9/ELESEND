@@ -27,3 +27,12 @@
   respond @blocked 404
   reverse_proxy api:3090
 }
+
+# Public map tiles. Tiles are already compressed. Set MAPS_HOST once you have a domain.
+{$MAPS_HOST:maps.localhost} {
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    -Server
+  }
+  reverse_proxy maps:3145
+}

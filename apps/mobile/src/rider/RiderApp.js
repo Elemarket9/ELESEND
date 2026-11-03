@@ -770,8 +770,7 @@ export default function RiderApp() {
                 <View style={styles.vehicleRow}>
                   {[
                     { id: 'motorcycle', label: '🛵 Motorbike', sub: 'Up to 20kg' },
-                    { id: 'car', label: '🚗 Car', sub: 'Up to 150kg' },
-                    { id: 'van', label: '🚐 Van', sub: 'Up to 800kg' }
+                    { id: 'car', label: '🚗 Car', sub: 'Up to 150kg' }
                   ].map(v => (
                     <TouchableOpacity
                       key={v.id}

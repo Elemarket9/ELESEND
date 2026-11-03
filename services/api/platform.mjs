@@ -421,6 +421,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   // Native clients explicitly choose CASH/MOMO/CARD/QR. Legacy DIGITAL cannot
   // initiate public checkout or self-report payment success.
   if(v.paymentMethod!=='DIGITAL'){const allowed=(await db.query('SELECT enabled FROM checkout_method_policies WHERE method=$1',[v.paymentMethod])).rows[0];check(allowed?.enabled,503,'Payment method is not active');}
+  if(v.vehicle){const capability=(await db.query('SELECT enabled FROM vehicle_capabilities WHERE vehicle=$1',[v.vehicle])).rows[0];check(capability?.enabled!==false,409,'This vehicle type is not available yet');}
   for(const location of [v.pickup,v.destination])validateGhanaBoundary(location.latitude,location.longitude);
   const p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NOT DISTINCT FROM $1',[v.vehicle??null])).rows[0];check(p,503,'Pricing not configured for selected vehicle');
   check(routing,503,'Road routing not configured; prices cannot be estimated safely');

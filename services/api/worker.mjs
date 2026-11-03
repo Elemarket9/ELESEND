@@ -13,6 +13,7 @@ import {assertRequiredSchema,assertPaymentOperations} from './startup-guards.mjs
 import { loadConfig } from './config.mjs';
 import { dispatchEngine } from './dispatch.mjs';
 import { osrmRouting } from './dispatch-routing.mjs';
+import { etaService } from './eta/eta-service.mjs';
 import { privateRoutingPriority } from './infrastructure/maps/PrivateRoutingPolicy.mjs';
 import { financeService } from './finance.mjs';
 import { checkoutService } from './checkout.mjs';
@@ -105,7 +106,9 @@ export async function startWorker(options = {}) {
     money,
     checkout,
     finance,
-    paymentProvider
+    paymentProvider,
+    routing,
+    eta: etaService(db, { routing, baselineFactors: config.routing.etaBaselineFactors })
   }).start({ unref: false });
 
   function stop() {

@@ -4,6 +4,7 @@ import {randomUUID,randomInt} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {calculateBearing,bearingToCardinal,buildUnmappedCommunityRoute} from '../services/api/infrastructure/maps/egia/unmapped-navigation.mjs';
 import {runGeographicLearningCycle} from '../services/api/infrastructure/maps/egia/background-learner.mjs';
+import {offRoadSegments} from '../services/api/infrastructure/maps/egia/gps-quality-filter.mjs';
 import {createMapLifecycleService} from '../services/api/infrastructure/maps/egia/map-lifecycle-service.mjs';
 import {osrmRouting} from '../services/api/dispatch-routing.mjs';
 
@@ -43,9 +44,11 @@ test('a road disconnected from the current route is not stitched in',async()=>{
  assert.deepEqual(result.candidateSegmentsUsed.map(s=>s.id),['connected']);
 });
 
+const OFF_ROAD={nearestRoadMeters:async()=>200};
+const trail=(count=8,latitude=5.6)=>Array.from({length:count},(_,i)=>({latitude:latitude+i*0.001,longitude:-0.2,accuracyMeters:8,observedAt:new Date(Date.now()-(count-i)*60000).toISOString()}));
 function learnerDb(road,riderId){
  const updates=[];
- const samples=[0,1,2,3].map(i=>({latitude:5.6+i*0.001,longitude:-0.2,accuracyMeters:8,observedAt:new Date(Date.now()-(4-i)*60000).toISOString()}));
+ const samples=trail();
  return {updates,query:async(sql,params)=>{
   if(sql.includes('FROM rider_location_samples'))return {rows:[{rider_id:riderId,samples}]};
   if(sql.includes('FROM candidate_roads'))return {rows:road?[road]:[]};
@@ -58,23 +61,71 @@ const candidate=over=>({id:randomUUID(),status:'OBSERVED',confidence:35,observat
 test('one rider seen again does not corroborate their own road',async()=>{
  const rider=randomUUID();
  const db=learnerDb(candidate({contributor_rider_ids:[rider]}),rider);
- assert.equal((await runGeographicLearningCycle(db)).roadsCorroborated,0);
+ assert.equal((await runGeographicLearningCycle(db,{routing:OFF_ROAD})).roadsCorroborated,0);
  assert.equal(db.updates.length,0);
 });
 
 test('a second, different rider corroborates a road and is recorded',async()=>{
  const first=randomUUID(),second=randomUUID();
  const db=learnerDb(candidate({contributor_rider_ids:[first]}),second);
- assert.equal((await runGeographicLearningCycle(db)).roadsCorroborated,1);
+ assert.equal((await runGeographicLearningCycle(db,{routing:OFF_ROAD})).roadsCorroborated,1);
  assert.equal(db.updates[0].params.at(-1),second);
 });
 
 test('learning never changes a road an administrator has decided on',async()=>{
  for(const status of ['VERIFIED','PUBLISHED','REJECTED','RETIRED']){
   const db=learnerDb(candidate({status}),randomUUID());
-  await runGeographicLearningCycle(db);
+  await runGeographicLearningCycle(db,{routing:OFF_ROAD});
   assert.equal(db.updates.length,0,status);
  }
+});
+
+test('riding on mapped roads creates no candidate road',async()=>{
+ const db=learnerDb(null,randomUUID());
+ assert.equal((await runGeographicLearningCycle(db,{routing:{nearestRoadMeters:async()=>5}})).roadsDiscovered,0);
+ assert.equal(db.updates.length,0);
+});
+
+test('without road data, and when road checks fail, nothing is learned',async()=>{
+ for(const options of [{},{routing:{nearestRoadMeters:async()=>{throw Error('down');}}}]){
+  const db=learnerDb(null,randomUUID());
+  await runGeographicLearningCycle(db,options);
+  assert.equal(db.updates.length,0);
+ }
+});
+
+test('off-road stretches split at roads and time gaps, and lose 100 m at each end',()=>{
+ const samples=trail(20);
+ const distances=samples.map((_,i)=>i===10?5:200);
+ const segments=offRoadSegments(samples,distances);
+ assert.equal(segments.length,2);
+ assert.equal(segments[0][0],samples[1]);
+ assert.equal(segments[0].at(-1),samples[8]);
+ const gap=trail(4).concat(trail(4,5.7).map(s=>({...s,observedAt:new Date(Date.now()+3600000).toISOString()})));
+ assert.equal(offRoadSegments(gap,gap.map(()=>200)).length,2);
+});
+
+test('routing returns raw road times, so fares and dispatch ignore the customer ETA factor',async()=>{
+ const fetchImpl=async()=>new Response(JSON.stringify({code:'Ok',routes:[{distance:5000,duration:1000,geometry:{type:'LineString',coordinates:[]}}],waypoints:[]}));
+ const routing=osrmRouting({endpoint:'http://osrm.test',profiles:{motorcycle:'driving'},fetchImpl});
+ const leg=await routing.route({latitude:5.6,longitude:-0.2},{latitude:5.63,longitude:-0.2},{vehicle:'motorcycle'});
+ assert.equal(leg.durationSeconds,1000);
+});
+
+test('the motorcycle graph no longer uses the bicycle profile',()=>{
+ for(const file of ['prepare-ghana-osrm.sh','prepare-ghana-osrm.ps1'])assert.equal(readFileSync(new URL('../scripts/'+file,import.meta.url),'utf8').includes('bicycle.lua'),false,file);
+});
+
+test('van delivery is refused while its capability is off',async()=>{
+ const {platform}=await import('../services/api/platform.mjs');
+ const db={query:async sql=>{
+  if(sql.includes('vehicle_capabilities'))return {rows:[{enabled:false}]};
+  if(sql.includes('service_markets'))return {rows:[{service_enabled:true}],rowCount:1};
+  return {rows:[{enabled:true}],rowCount:1};
+ },tx:fn=>fn(db)};
+ const place={address:'Osu, Accra',latitude:5.56,longitude:-0.18};
+ const app=platform(db,{otpKey:'c'.repeat(64)});
+ await assert.rejects(app.quote({id:randomUUID(),kind:'customer'},{pickup:place,destination:place,vehicle:'van',recipientPhone:'0241234567',weightG:1000,description:'Parcel',paymentMethod:'CASH'}),e=>e.status===409&&/not available/.test(e.message));
 });
 
 test('routing admits more concurrent requests than the old limit of 8',async()=>{
@@ -130,5 +181,15 @@ test('landmark publish and rollback work against PostgreSQL',{skip:!process.env.
    VALUES($1,'Audit Road',ST_SetSRID(ST_GeomFromText('LINESTRING(-0.18 5.56,-0.18 5.562)'),4326)::geography,'REJECTED','{}')`,[roadId]);
   await assert.rejects(maps.publishRoad(admin,roadId,'verified on site'),e=>e.status===409);
   await assert.rejects(maps.publishRoad(admin,'not-a-uuid'),e=>e.status===400);
+  // Road matching needs both ends on the corridor, and a second rider corroborates.
+  const riders=[randomUUID(),randomUUID()],latitude=10.5+Math.random()/2;
+  const learnerDbFor=rider=>({...db,query:(sql,params)=>sql.includes('FROM rider_location_samples')?Promise.resolve({rows:[{rider_id:rider,samples:trail(12,latitude)}]}):db.query(sql,params)});
+  assert.equal((await runGeographicLearningCycle(learnerDbFor(riders[0]),{routing:OFF_ROAD})).roadsDiscovered,1);
+  assert.equal((await runGeographicLearningCycle(learnerDbFor(riders[1]),{routing:OFF_ROAD})).roadsCorroborated,1);
+  const road=(await db.query(`SELECT status,distinct_riders,contributor_rider_ids FROM candidate_roads WHERE ST_DWithin(corridor,ST_SetSRID(ST_MakePoint(-0.2,$1),4326)::geography,300) ORDER BY created_at DESC LIMIT 1`,[latitude+0.004])).rows[0];
+  assert.equal(road.status,'CORROBORATED');
+  assert.equal(road.distinct_riders,2);
+  assert.deepEqual([...road.contributor_rider_ids].sort(),[...riders].sort());
+  assert.equal((await db.query("SELECT enabled FROM vehicle_capabilities WHERE vehicle='van'")).rows[0].enabled,false);
  }finally{await db.close();}
 });

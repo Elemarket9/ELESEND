@@ -17,6 +17,7 @@ import {getPublicTracking,renderTrackingHtml} from './infrastructure/maps/web-tr
 import {renderAdminPortalHtml} from './admin-web/admin-portal.mjs';
 import {renderRestaurantPortalHtml,renderRestaurantManifestJson} from './restaurant-web/restaurant-portal.mjs';
 import {restaurantService} from './restaurant.mjs';
+import {etaService} from './eta/eta-service.mjs';
 import {restaurantOrderService} from './restaurant-orders.mjs';
 import {commissionEngine} from './commission-engine.mjs';
 import {promotionEngine} from './promotion-engine.mjs';
@@ -32,7 +33,7 @@ import {
 } from './weekly-settlement.mjs';
 import {walletSummary,walletDebt,walletTransactions,adminWalletOverview,adminWalletReconciliation,walletPolicyView,updateWalletPolicy} from './rider-wallet.mjs';
 import {getSystemHealthReport} from './infrastructure/monitoring/system-health.mjs';
-export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null,readinessToken=null}={}){
+export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null,readinessToken=null,etaBaselineFactors={}}={}){
   const net=network(db),vehicles=vehicleService(db),markets=marketService(db);
   const restaurants=restaurant||restaurantService(db);
   const restOrders=restaurantOrders||restaurantOrderService(db,{platform:app,dispatcher,routing:app?.routing,sms:app?.sms});
@@ -40,6 +41,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const promos=promotionEngine(db);
   const chat=chatEngine(db);
   const mapLifecycle=createMapLifecycleService(db);
+  const eta=etaService(db,{routing:app?.routing,baselineFactors:etaBaselineFactors});
   const ipLimit=ipLimits(),floodGuard=memoryRateLimiter();
   const server=createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192},async(req,res)=>{
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
@@ -77,7 +79,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   if(method==='GET'&&/^\/track\/[0-9a-f.-]{36,100}$/i.test(path)){
    floodGuard.hit('public-track:'+ipKey,ipLimit.publicTrackPerMinute,60);
    const rawTok=path.split('/')[2];
-   const data=await getPublicTracking(db,rawTok);
+   const data=await getPublicTracking(db,rawTok,{eta});
    if(!data){res.writeHead(404,{'Content-Type':'text/html'});res.end('<!DOCTYPE html><html><body style="background:#0c1324;color:#fff;font-family:sans-serif;padding:30px;text-align:center;"><h2>Tracking link not found or expired</h2></body></html>');return;}
    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end(renderTrackingHtml(data,rawTok));return;
   }
@@ -87,7 +89,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    const bearer=req.headers.authorization?.replace(/^Bearer /,'');
    let optActor=null;
    if(bearer){try{optActor=bearer.startsWith('es_live_')?await net.authenticateKey(bearer):await app.authenticate(bearer);}catch{}}
-   const data=await getPublicTracking(db,rawTok,{actor:optActor});
+   const data=await getPublicTracking(db,rawTok,{actor:optActor,eta});
    if(!data){send(404,{error:'Tracking not found'});return;}
    send(200,data);return;
   }
@@ -370,6 +372,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
       db
     });
    }
+   else if(method==='GET'&&path==='/api/v1/admin/eta/accuracy')result=await eta.accuracyReport(actor);
+   else if(method==='GET'&&/^\/api\/v1\/admin\/shipments\/[0-9a-f-]{36}\/eta$/.test(path))result=await eta.diagnostics(actor,path.split('/')[5]);
    else if(method==='GET'&&path==='/api/v1/admin/geo-intelligence/dashboard'){
     result=await mapLifecycle.getAdminGeoDashboard(actor);
    }

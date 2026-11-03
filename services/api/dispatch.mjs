@@ -101,6 +101,16 @@ export function dispatchEngine(db,{routing}={}){
    await c.query('INSERT INTO rider_location_samples(rider_id,position,observed_at,accuracy_m) VALUES($1,ST_SetSRID(ST_MakePoint($2,$3),4326)::geography,$4,$5)',[actor.id,v.longitude,v.latitude,v.observedAt,v.accuracyMeters]);
    const activeRows=(await c.query("SELECT id,state FROM shipments WHERE rider_id=$1 AND state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP') ORDER BY created_at",[actor.id])).rows;
    const trackedShipmentIds=[];
+   // Arrival records separate road travel from waiting. Poor fixes are ignored rather than guessed from.
+   if(activeRows.length&&v.accuracyMeters<=50){
+    await c.query(`SELECT record_delivery_milestone(s.id,CASE WHEN s.state='RIDER_ASSIGNED' THEN 'arrived_pickup' ELSE 'arrived_customer' END,s.rider_id)
+     FROM shipments s JOIN quotes q ON q.id=s.quote_id
+     WHERE s.rider_id=$1 AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP')
+      AND ST_DWithin(ST_SetSRID(ST_MakePoint($2,$3),4326)::geography,
+       ST_SetSRID(ST_MakePoint(
+        (q.request->(CASE WHEN s.state='RIDER_ASSIGNED' THEN 'pickup' ELSE 'destination' END)->>'longitude')::float8,
+        (q.request->(CASE WHEN s.state='RIDER_ASSIGNED' THEN 'pickup' ELSE 'destination' END)->>'latitude')::float8),4326)::geography,75)`,[actor.id,v.longitude,v.latitude]);
+   }
    if(activeRows.length){
     const planRow=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1',[actor.id])).rows[0];
     const stops=Array.isArray(planRow?.stops)?planRow.stops:[];

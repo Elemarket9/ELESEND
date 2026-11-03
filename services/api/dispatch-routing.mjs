@@ -65,6 +65,13 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,m
     return normalize(m,d);
    });
   },
+  /** Metres from a point to the nearest road on the vehicle's graph. */
+  async nearestRoadMeters(point,{vehicle='car'}={}){
+   const body=await request(`/nearest/v1/${profile(vehicle)}/${coords(point)}?number=1`,vehicle);
+   const meters=body.waypoints?.[0]?.distance;
+   check(Number.isFinite(meters),503,'Invalid nearest road response');
+   return meters;
+  },
   capabilities:Object.freeze({roadNetwork:true,traffic:false,mapMatching:false,multiVehicleProfileMustBeConfigured:true})
  };
 }
