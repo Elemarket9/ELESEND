@@ -92,7 +92,7 @@ services:
       ROUTING_PROVIDER_PRIORITY: osrm
       ROUTING_OSRM_PROFILES_JSON: '${ROUTING_OSRM_PROFILES_JSON:-{"car":"driving","motorcycle":"driving"}}'
       ROUTING_ALLOW_SINGLE_ENDPOINT: ${ROUTING_ALLOW_SINGLE_ENDPOINT:-false}
-      ROUTING_MOTORCYCLE_DURATION_FACTOR: ${ROUTING_MOTORCYCLE_DURATION_FACTOR:-0.75}
+      ETA_MOTORCYCLE_BASELINE_FACTOR: ${ETA_MOTORCYCLE_BASELINE_FACTOR:-0.75}
       GHANAPOSTGPS_LOOKUP_ENABLED: ${GHANAPOSTGPS_LOOKUP_ENABLED:-false}
       GHANAPOSTGPS_LOOKUP_URL: ${GHANAPOSTGPS_LOOKUP_URL:-https://ghanapostgps.sperixlabs.org}
       NOTIFICATION_GATEWAY_ENDPOINT: ${NOTIFICATION_GATEWAY_ENDPOINT:-}
@@ -155,6 +155,7 @@ services:
     environment:
       ELESEND_API_HOST: ${ELESEND_API_HOST:?Required}
       ADMIN_HOST: ${ADMIN_HOST:?Set admin hostname}
+      MAPS_HOST: ${MAPS_HOST:-maps.localhost}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddydata:/data
@@ -174,6 +175,46 @@ services:
           memory: 256M
         reservations:
           memory: 64M
+  # Map services need prepared data (see scripts/). Start them with: --profile maps
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v26.10.0
+    profiles: [maps]
+    command: [osrm-routed, --algorithm, mld, --max-table-size, '100', /data/ghana-latest.osrm]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - {type: bind, source: '${GHANA_MAP_DATA:-./map-data}', target: /data, read_only: true}
+    networks: [private]
+    logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+  osrm-motorcycle:
+    image: ghcr.io/project-osrm/osrm-backend:v26.10.0
+    profiles: [maps]
+    command: [osrm-routed, --algorithm, mld, --max-table-size, '100', /data/ghana-motorcycle.osrm]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - {type: bind, source: '${GHANA_MAP_DATA:-./map-data}', target: /data, read_only: true}
+    networks: [private]
+    logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+  maps:
+    build:
+      context: ../..
+      dockerfile: deploy/maps/Dockerfile
+    profiles: [maps]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - {type: bind, source: '${GHANA_MAP_DATA:-./map-data}', target: /data, read_only: true}
+    networks:
+      egress:
+        ipv4_address: 172.29.240.12
+    logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
 networks:
   private: {internal: true}
   egress:
