@@ -71,9 +71,9 @@ test('administrator sessions end after 30 minutes without use',{skip:!url},async
   const {hash}=await import('../services/api/security.mjs');
   await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'test-only','admin',now())",[id,'+2332'+randomInt(10000000,99999999)]);
   await db.query("INSERT INTO sessions(token_hash,user_id,expires_at,admin_mfa_verified,last_seen_at) VALUES($1,$2,now()+interval '4 hours',true,now()-interval '31 minutes')",[hash(token),id]);
-  await assert.rejects(platform(db,{}).authenticate(token),{status:401});
+  await assert.rejects(platform(db,{otpKey:'d'.repeat(64)}).authenticate(token),{status:401});
   await db.query("UPDATE sessions SET last_seen_at=now()-interval '10 minutes' WHERE token_hash=$1",[hash(token)]);
-  assert.equal((await platform(db,{}).authenticate(token)).id,id);
+  assert.equal((await platform(db,{otpKey:'d'.repeat(64)}).authenticate(token)).id,id);
   assert.ok((await db.query("SELECT 1 FROM sessions WHERE token_hash=$1 AND last_seen_at>now()-interval '1 minute'",[hash(token)])).rowCount);
  }finally{await db.close();}
 });
