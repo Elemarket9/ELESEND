@@ -379,6 +379,9 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await assert.rejects(app.approve(reviewer,'riders',applicant,'approved'),/insurance was rejected/);
   await uploadAll(applicant);
   await app.approve(reviewer,'riders',applicant,'approved');
+  // One approval covers the vehicle, and the plate is stored only in the vehicle record.
+  const vehicleRow=(await db.query('SELECT registration_plate,verification_status FROM rider_vehicle_registrations WHERE rider_id=$1',[applicant])).rows[0];
+  assert.equal(vehicleRow.registration_plate,'GR 1234-26');assert.equal(vehicleRow.verification_status,'approved');
   await db.query("UPDATE rider_documents SET valid_until=now()::date-1 WHERE rider_id=$1 AND kind='insurance'",[applicant]);
   const docExpired=await suspendExpiredDocuments(db);
   assert.ok(docExpired.includes(applicant));
@@ -479,6 +482,8 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   // Goals, referrals and campaigns. Rewards arrive once, as commission credit.
   const goalsRider={id:safetyRider,kind:'rider'};
   assert.equal((await tools.setEarningsGoals(db,goalsRider,{dailyGoalMinor:5000,weeklyGoalMinor:null})).dailyGoalMinor,5000);
+  const {recordFinancialEntry}=await import('../services/api/modules/payments/index.mjs');
+  await db.tx(async c=>recordFinancialEntry(c,{shipment:(await c.query('SELECT * FROM shipments WHERE id=$1',[rated])).rows[0],beneficiaryId:safetyRider}));
   assert.ok((await tools.riderEarningsGoals(db,goalsRider)).todayMinor>=370);
   const inviter=await newRider(),invited=await newRider();
   const inviteCode=(await tools.referralSummary(db,{id:inviter,kind:'rider'})).code;

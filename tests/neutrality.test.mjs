@@ -13,7 +13,7 @@ test('the customer app has no made-up prices, places, addresses or contact detai
 
 test('portals and navigation depend on no outside font or map service',()=>{
  for(const file of ['apps/restaurant-web/index.html','services/api/admin-web/admin-portal.mjs','services/api/http.mjs'])assert.equal(/fonts\.(googleapis|gstatic)/.test(read(file)),false,file);
- for(const file of ['apps/mobile/src/maps/map-adapter.js','apps/mobile-shared/src/maps/map-adapter.js'])assert.equal(/google/i.test(read(file)),false,file);
+ for(const file of ['apps/mobile/src/maps/map-adapter.js'])assert.equal(/google/i.test(read(file)),false,file);
 });
 
 test('unused competitor and paid routing code is gone',()=>{

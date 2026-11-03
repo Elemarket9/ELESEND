@@ -46,6 +46,21 @@ export function isLoopbackOrPrivateIp(host) {
  * Validates the raw environment dictionary and returns structured configuration.
  * Does not throw on failure; returns { ok, config, errors }.
  */
+function checkOrigin(name, value, isProduction, errors) {
+  try {
+    const u = new URL(value);
+    if (isProduction && u.protocol !== 'https:') errors.push(`${name} must use HTTPS in production (got "${u.protocol}").`);
+    else if (!['http:', 'https:'].includes(u.protocol)) errors.push(`${name} must use http: or https: (got "${u.protocol}").`);
+    else if (u.username || u.password) errors.push(`${name} must not contain user credentials.`);
+    else if (u.pathname && u.pathname !== '/' && u.pathname !== '') errors.push(`${name} must be an origin without a path component (got "${u.pathname}").`);
+    else if (u.search) errors.push(`${name} must not contain a query string.`);
+    else if (u.hash) errors.push(`${name} must not contain a URL hash/fragment.`);
+    else if (!u.hostname || /[\s<>"`\\]/.test(u.hostname)) errors.push(`${name} contains an invalid hostname.`);
+  } catch {
+    errors.push(`${name} must be a valid URL (got "${value}").`);
+  }
+}
+
 export function validateConfig(env = process.env) {
   const errors = [];
   const warnings = [];
@@ -132,26 +147,7 @@ export function validateConfig(env = process.env) {
     if (isProduction && !value) {
       errors.push(`${name} is required in production.`);
     } else if (value) {
-      try {
-        const u = new URL(value);
-        if (isProduction && u.protocol !== 'https:') {
-          errors.push(`${name} must use HTTPS in production (got "${u.protocol}").`);
-        } else if (!['http:', 'https:'].includes(u.protocol)) {
-          errors.push(`${name} must use http: or https: (got "${u.protocol}").`);
-        } else if (u.username || u.password) {
-          errors.push(`${name} must not contain user credentials.`);
-        } else if (u.pathname && u.pathname !== '/' && u.pathname !== '') {
-          errors.push(`${name} must be an origin without a path component (got "${u.pathname}").`);
-        } else if (u.search) {
-          errors.push(`${name} must not contain a query string.`);
-        } else if (u.hash) {
-          errors.push(`${name} must not contain a URL hash/fragment.`);
-        } else if (!u.hostname || /[\s<>"`\\]/.test(u.hostname)) {
-          errors.push(`${name} contains an invalid hostname.`);
-        }
-      } catch {
-        errors.push(`${name} must be a valid URL (got "${value}").`);
-      }
+      checkOrigin(name, value, isProduction, errors);
     }
   }
 
@@ -162,26 +158,7 @@ export function validateConfig(env = process.env) {
   ];
   for (const [name, val] of optionalOriginOverrides) {
     if (val) {
-      try {
-        const u = new URL(val);
-        if (isProduction && u.protocol !== 'https:') {
-          errors.push(`${name} must use HTTPS in production (got "${u.protocol}").`);
-        } else if (!['http:', 'https:'].includes(u.protocol)) {
-          errors.push(`${name} must use http: or https: (got "${u.protocol}").`);
-        } else if (u.username || u.password) {
-          errors.push(`${name} must not contain user credentials.`);
-        } else if (u.pathname && u.pathname !== '/' && u.pathname !== '') {
-          errors.push(`${name} must be an origin without a path component (got "${u.pathname}").`);
-        } else if (u.search) {
-          errors.push(`${name} must not contain a query string.`);
-        } else if (u.hash) {
-          errors.push(`${name} must not contain a URL hash/fragment.`);
-        } else if (!u.hostname || /[\s<>"`\\]/.test(u.hostname)) {
-          errors.push(`${name} contains an invalid hostname.`);
-        }
-      } catch {
-        errors.push(`${name} must be a valid URL (got "${val}").`);
-      }
+      checkOrigin(name, val, isProduction, errors);
     }
   }
 

@@ -432,7 +432,7 @@ export function renderAdminPortalHtml() {
             <span>Payout Operations (Two-Person Approval)</span>
             <button class="action-btn" onclick="loadFinance()">Refresh Payouts</button>
           </div>
-          <div class="card-subtitle">Propose, approve (requires second finance admin), reconcile, and safely retry failed rider/company/restaurant payouts.</div>
+          <div class="card-subtitle">Exceptions only. Riders are paid through their own withdrawals, so use this just to correct a problem payout. Requires a second finance admin to approve.</div>
           <form onsubmit="handleProposePayout(event)" style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 16px;">
             <div style="flex: 2; min-width: 220px;">
               <label class="form-label">Shipment ID</label>

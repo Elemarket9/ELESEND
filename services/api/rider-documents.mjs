@@ -1,8 +1,10 @@
+import {requirePermission} from './permissions.mjs';
 /**
  * Profile photo, insurance and roadworthiness, as Bolt asks of drivers in Ghana. The rider uploads through a
  * short-lived link opened in the phone browser. Images are encrypted, so a database copy alone cannot show them.
  */
-import {createCipheriv,createDecipheriv,createHash,randomBytes} from 'node:crypto';
+import {createHash,randomBytes} from 'node:crypto';
+import {seal,unseal} from './sealed-values.mjs';
 import {z} from 'zod';
 import {check} from './security.mjs';
 import {identityConfigured} from './identity-verification.mjs';
@@ -14,22 +16,10 @@ const MAX_BYTES=2*1024*1024;
 const today=()=>new Date().toISOString().slice(0,10);
 const hashToken=token=>createHash('sha256').update(token).digest('hex');
 const key=riderDataKey;
-function encryptImage(image,riderId,kind){
- const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key(),iv);
- cipher.setAAD(Buffer.from(`elesend:rider-document:v1:${riderId}:${kind}`));
- const data=Buffer.concat([cipher.update(image),cipher.final()]);
- return ['v1',iv.toString('base64url'),data.toString('base64url'),cipher.getAuthTag().toString('base64url')].join('.');
-}
-function decryptImage(value,riderId,kind){
- const [,iv,data,tag]=value.split('.');
- const decipher=createDecipheriv('aes-256-gcm',key(),Buffer.from(iv,'base64url'));
- decipher.setAAD(Buffer.from(`elesend:rider-document:v1:${riderId}:${kind}`));
- decipher.setAuthTag(Buffer.from(tag,'base64url'));
- return Buffer.concat([decipher.update(Buffer.from(data,'base64url')),decipher.final()]);
-}
-async function requireVerifier(c,actor){
- check(actor?.kind==='admin'&&(await c.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission='verification:write'",[actor.id])).rowCount,403,'Permission required');
-}
+const imageContext=(riderId,kind)=>`elesend:rider-document:v1:${riderId}:${kind}`;
+const encryptImage=(image,riderId,kind)=>seal(key(),imageContext(riderId,kind),image);
+const decryptImage=(value,riderId,kind)=>unseal(key(),imageContext(riderId,kind),value);
+const requireVerifier=(c,actor)=>requirePermission(c,actor,'verification:write');
 // The identity provider photographs the licence when it is on. Otherwise staff review a photo here.
 const requiredKinds=vehicle=>KINDS.filter(kind=>(!EXPIRING.includes(kind)||vehicle!=='bicycle')&&(kind!=='licence_photo'||!identityConfigured()));
 

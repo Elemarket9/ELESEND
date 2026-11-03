@@ -1,3 +1,4 @@
+import {errorText,pool,raceTimeout,submissionChecks} from './async-helpers.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from '../../security.mjs';
@@ -7,22 +8,8 @@ import {customerMoneyReceived,customerMoneyUnapplied} from './checkout-accountin
 import {validatePayer} from './payment-provider.mjs';
 const uuid=z.string().uuid(),key=z.string().regex(/^[a-zA-Z0-9_-]{8,128}$/);
 const payer=z.object({idempotencyKey:key,email:z.email().max(254).optional()}).strict();
-const reasonText=e=>String(e?.message||'Provider error').slice(0,500);
-function withTimeout(promise,ms){
- if(!Number.isFinite(ms)||ms<=0)return promise;
- let timer;
- return Promise.race([
-  promise,
-  new Promise((_,rej)=>{timer=setTimeout(()=>rej(Object.assign(Error('Payment provider verification timed out'),{status:504,code:'provider_timeout'})),ms);})
- ]).finally(()=>clearTimeout(timer));
-}
-async function pool(items,limit,fn){
- const out=[],n=Math.max(1,limit|0);let i=0;
- await Promise.all(Array.from({length:Math.min(n,items.length)},async()=>{
-  while(i<items.length){const idx=i++;out[idx]=await fn(items[idx]);}
- }));
- return out;
-}
+const reasonText=e=>errorText(e, 'Provider error');
+const withTimeout=(promise,ms)=>raceTimeout(promise,ms,()=>Object.assign(Error('Payment provider verification timed out'),{status:504,code:'provider_timeout'}));
 /** A shipment payment is confirmed ONLY by independently verified provider evidence.
  * The local app never gets to choose amount, currency, provider reference or success.
  */
@@ -34,18 +21,7 @@ export function checkoutService(db,options={}){
  const cap=method=>!!provider&&DIGITAL_METHODS.includes(method)&&provider.methods?.includes(method)&&typeof provider.createCheckout==='function'&&typeof provider.verifyPayment==='function';
  const inFlightInitiations=new Map();
  const shipmentLocks=new Map();
- function isSubmissionCallActive(row){
-  if(!row||row.status!=='initiating')return false;
-  if(inFlightInitiations.has(row.id))return true;
-  if(!row.submission_token||!row.submission_lease_until)return false;
-  return new Date(row.submission_lease_until).getTime()>Date.now();
- }
- function canCreationStillComplete(row){
-  if(!row||row.status!=='initiating')return false;
-  if(inFlightInitiations.has(row.id))return true;
-  if(!row.submission_lease_until)return false;
-  return new Date(row.submission_lease_until).getTime()>Date.now();
- }
+ const {isSubmissionCallActive,canCreationStillComplete}=submissionChecks(inFlightInitiations);
  async function withShipmentLock(shipmentId,fn){
   const prev=shipmentLocks.get(shipmentId)??Promise.resolve();
   let release;

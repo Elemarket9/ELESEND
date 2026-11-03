@@ -1,3 +1,4 @@
+import {envInt} from '../../env-values.mjs';
 /**
  * Cash commission on company jobs is owed by the company, which receives those jobs' earnings.
  * The balance is derived from the immutable shipment ledger, with no editable debt column.
@@ -5,10 +6,7 @@
 import {checkoutJournal} from './checkout-accounting.mjs';
 
 const ACCOUNT='company_commission_receivable';
-export function companyDebtLimitMinor(){
- const n=Number(process.env.COMPANY_COMMISSION_DEBT_LIMIT_MINOR);
- return process.env.COMPANY_COMMISSION_DEBT_LIMIT_MINOR&&Number.isSafeInteger(n)&&n>=0?n:50000;
-}
+export const companyDebtLimitMinor=()=>envInt(process.env.COMPANY_COMMISSION_DEBT_LIMIT_MINOR,50000,0);
 export async function companyDebtMinor(c,companyId){
  return Number((await c.query(`SELECT coalesce(sum(CASE WHEN l.side='debit' THEN l.amount_minor ELSE -l.amount_minor END),0)::bigint AS debt
    FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id JOIN shipments s ON s.id=j.shipment_id

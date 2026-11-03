@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {renderRestaurantPortalHtml, renderRestaurantManifestJson} from '../services/api/restaurant-web/restaurant-portal.mjs';
 import {renderAdminPortalHtml} from '../services/api/admin-web/admin-portal.mjs';
-import {normalizeGhanaPhone, isValidGhanaPhone, formatGhanaDisplayPhone} from '../apps/mobile-shared/src/phone.js';
-import {colors} from '../apps/mobile-shared/src/theme.js';
+import {normalizeGhanaPhone, isValidGhanaPhone, formatGhanaDisplayPhone} from '../apps/mobile/src/phone.js';
+import {colors} from '../apps/mobile/src/theme.js';
 import {httpServer} from '../services/api/http.mjs';
 
 test('Mobile shared theme tokens match ELESEND design system', () => {

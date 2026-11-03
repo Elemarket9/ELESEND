@@ -1,5 +1,6 @@
 /** Reads and writes other modules need from payment tables. Those modules never query the tables themselves. */
-const holdHours=()=>{const n=Number(process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS);return process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS&&Number.isSafeInteger(n)&&n>=0?n:24;};
+import {payoutSettings} from './payout-settings.mjs';
+const holdHours=()=>payoutSettings().earningsHoldHours;
 
 export async function ensureCommissionAccount(c,riderId){
  await c.query('INSERT INTO commission_accounts(rider_id) VALUES($1) ON CONFLICT DO NOTHING',[riderId]);
@@ -82,4 +83,12 @@ export async function restaurantFinanceSummary(c,restaurantId){
    FROM payout_operations p JOIN food_orders f ON f.shipment_id = p.shipment_id
    WHERE f.restaurant_id = $1 AND p.kind = 'restaurant' AND p.status = 'paid'`,[restaurantId])).rows[0];
  return {settlements,totals,balance:{availableMinor:Number(owed.available),onHoldMinor:Number(owed.on_hold),inProgressMinor:Number(owed.in_progress),paidMinor:Number(paid.total)}};
+}
+/** The rider's own earnings, from one record, for goals and totals. */
+export async function riderEarningsTotals(c,riderId){
+ const r=(await c.query(`SELECT
+   coalesce(sum(entitlement_minor) FILTER(WHERE (created_at AT TIME ZONE 'UTC')::date=(now() AT TIME ZONE 'UTC')::date),0)::bigint AS today,
+   coalesce(sum(entitlement_minor) FILTER(WHERE (created_at AT TIME ZONE 'UTC')>=date_trunc('week',now() AT TIME ZONE 'UTC')),0)::bigint AS week
+  FROM financial_entries WHERE beneficiary_id=$1`,[riderId])).rows[0];
+ return {todayMinor:Number(r.today),weekMinor:Number(r.week)};
 }

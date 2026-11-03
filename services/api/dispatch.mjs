@@ -1,3 +1,4 @@
+import {assessDeliveryHealth} from './algorithms/delivery-health.mjs';
 import {cashAlreadyReported} from './modules/payments/index.mjs';
 import {foodDispatchAllowed} from './modules/payments/index.mjs';
 import {randomUUID} from 'node:crypto';
@@ -586,25 +587,7 @@ export function dispatchEngine(db,{routing}={}){
       Boolean((await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount)||
       await cashAlreadyReported(c,s.id)||
       f?.state==='IN_TRANSIT';
-     const nowMs=Date.now();
-     const latestGpsMs=Math.max(
-      r?.position_at?new Date(r.position_at).getTime():-Infinity,
-      loc?.updated_at?new Date(loc.updated_at).getTime():-Infinity
-     );
-     const isStaleGps=!r?.online||!Number.isFinite(latestGpsMs)||(nowMs-latestGpsMs)>staleSec*1000;
-     const pickupDeadlineMs=Math.min(
-      ...[
-       f?.ready_at?new Date(f.ready_at).getTime()+pickupGraceSec*1000:Infinity,
-       accOffer?.accepted_at?new Date(accOffer.accepted_at).getTime()+(Number(accOffer.pickup_eta_seconds||300)+pickupGraceSec)*1000:Infinity
-      ]
-     );
-     const isOverduePickup=!pickedUp&&Number.isFinite(pickupDeadlineMs)&&nowMs>pickupDeadlineMs;
-     const isOverdueDelivery=pickedUp&&dc?.promised_delivery_before&&nowMs>new Date(dc.promised_delivery_before).getTime();
-     const reasons=[];
-     const signals=[];
-     if(isStaleGps){reasons.push('stale_gps');signals.push({code:'STALE_GPS',severity:pickedUp?'high':'medium'});}
-     if(isOverduePickup){reasons.push('overdue_pickup');signals.push({code:'OVERDUE_PICKUP',severity:'medium'});}
-     if(isOverdueDelivery){reasons.push('overdue_delivery');signals.push({code:'OVERDUE_DELIVERY',severity:'high'});}
+     const {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,nowMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f?.ready_at,offer:accOffer,deliveryDeadlineMs:dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():NaN});
      if(!reasons.length)return null;
      const oldRiderId=s.rider_id;
      for(const sig of signals){

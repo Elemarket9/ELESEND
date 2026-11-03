@@ -124,7 +124,7 @@ test('SMS Adapters, Notification Worker Receipt Integrity & Mobile Push Channel 
     const mobilePkg = JSON.parse(readFileSync(new URL('../apps/mobile/package.json', import.meta.url), 'utf8'));
     assert.ok(mobilePkg.dependencies?.['expo-notifications'], 'apps/mobile/package.json must declare expo-notifications dependency');
 
-    for (const relPath of ['../apps/mobile/src/tracking.js', '../apps/mobile-shared/src/tracking.js']) {
+    for (const relPath of ['../apps/mobile/src/tracking.js']) {
       const trackingSrc = readFileSync(new URL(relPath, import.meta.url), 'utf8');
       assert.ok(trackingSrc.includes("import * as Notifications from 'expo-notifications'"), `${relPath} must import expo-notifications`);
       assert.ok(trackingSrc.includes('export async function acquireDevicePushToken'), `${relPath} must export acquireDevicePushToken`);

@@ -1,3 +1,4 @@
+import {errorText,pool,raceTimeout,submissionChecks} from './async-helpers.mjs';
 import {MARKET_CURRENCY} from '../../market.mjs';
 import {validatePayer} from './payment-provider.mjs';
 import {validatedCheckoutUrl} from './checkout-policy.mjs';
@@ -24,16 +25,8 @@ const positive=z.number().int().min(1).max(1000000000);
 const amount=z.number().int().min(0).max(1000000000);
 const idem=z.string().regex(/^[a-zA-Z0-9_-]{8,128}$/);
 
-function withTimeout(promise,ms){
- let timer;
- return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(Error('Provider verification timed out'),{code:'provider_timeout'})),ms);})]).finally(()=>clearTimeout(timer));
-}
-async function pool(items,limit,fn){
- const out=new Array(items.length);let next=0;
- await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{while(next<items.length){const i=next++;out[i]=await fn(items[i]);}}));
- return out;
-}
-const reasonText=e=>String(e?.message||e||'unknown').slice(0,500);
+const withTimeout=(promise,ms)=>raceTimeout(promise,ms,()=>Object.assign(Error('Provider verification timed out'),{code:'provider_timeout'}));
+const reasonText=e=>errorText(e);
 const defaultReference=intentId=>'escomm_'+String(intentId).replaceAll('-','');
 
 const commissionEntries = {
@@ -132,18 +125,7 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
  const requireRider=actor=>check(actor?.kind==='rider',403,'Rider account required');
  const inFlightInitiations=new Map();
  const riderReservationLocks=new Map();
- function isSubmissionCallActive(row){
-  if(!row||row.status!=='initiating')return false;
-  if(inFlightInitiations.has(row.id))return true;
-  if(!row.submission_token||!row.submission_lease_until)return false;
-  return new Date(row.submission_lease_until).getTime()>Date.now();
- }
- function canCreationStillComplete(row){
-  if(!row||row.status!=='initiating')return false;
-  if(inFlightInitiations.has(row.id))return true;
-  if(!row.submission_lease_until)return false;
-  return new Date(row.submission_lease_until).getTime()>Date.now();
- }
+ const {isSubmissionCallActive,canCreationStillComplete}=submissionChecks(inFlightInitiations);
  async function withRiderLock(riderId,fn){
   const prev=riderReservationLocks.get(riderId)??Promise.resolve();
   let release;

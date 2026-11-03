@@ -2,7 +2,8 @@
  * Keys are encrypted at rest with a dedicated deployment secret. This is NOT
  * phishing-resistant MFA; device-bound passkeys should be assessed later.
  */
-import {createCipheriv,createDecipheriv,createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
+import {createDecipheriv,createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
+import {seal} from './sealed-values.mjs';
 import {check} from './security.mjs';
 const alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 export function decodeBase32(value){
@@ -18,9 +19,7 @@ export function encodeBase32(bytes){let bits=0,acc=0,out='';for(const b of bytes
 export const generateAdminTotpSecret=()=>encodeBase32(randomBytes(20));
 function encryptionKey(masterKey){check(typeof masterKey==='string'&&/^[a-fA-F0-9]{64}$/.test(masterKey),503,'ADMIN_MFA_ENCRYPTION_KEY must be 32 bytes hex');return Buffer.from(masterKey,'hex');}
 export function encryptAdminSecret(secret,userId,masterKey){decodeBase32(secret);check(/^[0-9a-f-]{36}$/i.test(userId),400,'Invalid administrator identifier');
- const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',encryptionKey(masterKey),iv);
- cipher.setAAD(Buffer.from('elesend:admin-mfa:v1:'+userId));const encrypted=Buffer.concat([cipher.update(secret,'utf8'),cipher.final()]);
- return ['v1',iv.toString('base64url'),encrypted.toString('base64url'),cipher.getAuthTag().toString('base64url')].join('.');}
+ return seal(encryptionKey(masterKey),'elesend:admin-mfa:v1:'+userId,secret);}
 export function decryptAdminSecret(value,userId,masterKey){
  check(typeof value==='string',503,'Administrator factor unavailable');const parts=value.split('.');check(parts.length===4&&parts[0]==='v1',503,'Unknown factor encryption format');
  try{const decipher=createDecipheriv('aes-256-gcm',encryptionKey(masterKey),Buffer.from(parts[1],'base64url'));
