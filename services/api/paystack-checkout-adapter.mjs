@@ -5,7 +5,7 @@ import {validatedCheckoutUrl} from './checkout-policy.mjs';
  * QR renders a provider-hosted checkout URL as a QR code (not GHQR merchant QR).
  * Requires active Ghana merchant account with the chosen checkout channels.
  */
-export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://api.paystack.co',allowedMethods=['MOMO','CARD','QR'],production=process.env.NODE_ENV==='production'}={}){
+export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://api.paystack.co',allowedMethods=['MOMO','CARD','QR'],processingFeeBps=195,production=process.env.NODE_ENV==='production'}={}){
  check(typeof secretKey==='string'&&/^sk_(live|test)_/.test(secretKey),503,'Valid server-only PSP key required');
  if(production)check(secretKey.startsWith('sk_live_'),503,'Live PSP key required for production');
  check(endpoint==='https://api.paystack.co',500,'Only official PSP endpoint is accepted');
@@ -48,7 +48,7 @@ export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://ap
    ...(failed?{failureReason:String(d.gateway_response||d.failures||'Provider reported transfer '+d.status).slice(0,300)}:{})};
  }
  return {
-  name:'paystack',methods,requiresVerifiedPhone:true,
+  name:'paystack',methods,processingFeeBps,requiresVerifiedPhone:true,
   /** Creates a mobile money recipient for a phone number ELESEND has already verified by SMS. */
   async createBeneficiary({phone,network,accountName}){
    const code=NETWORK_CODES[network];

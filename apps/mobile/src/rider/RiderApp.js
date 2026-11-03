@@ -675,6 +675,18 @@ export default function RiderApp() {
     if (w) setFinanceSnapshot(w);
   }
 
+  async function requestWithdrawal() {
+    const res = await call('POST', '/api/v1/rider/wallet/withdraw', { idempotencyKey: Crypto.randomUUID() });
+    const amount = ghc(res?.amountMinor || 0);
+    setError(res?.status === 'paid'
+      ? `${amount} sent to your Mobile Money.`
+      : res?.status === 'awaiting_approval'
+        ? `Your withdrawal of ${amount} is waiting for approval.`
+        : `Your withdrawal of ${amount} is processing.`);
+    const fin = await call('GET', '/api/v1/rider/wallet/summary').catch(() => null);
+    if (fin) setFinanceSnapshot(fin);
+  }
+
   async function submitWithdrawalRequest() {
     const accountName = payoutName.trim();
     if (accountName.length < 2) throw Error('Enter the name on your Mobile Money account');
@@ -1536,6 +1548,12 @@ export default function RiderApp() {
                 onPress={() => setWithdrawModal(true)}
                 style={[styles.primaryBtn, { marginTop: 12 }]}>
                 <Text style={styles.primaryBtnText}>Payout Account</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                disabled={busy || !(financeSnapshot?.withdrawableMinor > 0)}
+                onPress={() => execute(requestWithdrawal)}
+                style={[styles.primaryBtn, { marginTop: 8, opacity: financeSnapshot?.withdrawableMinor > 0 ? 1 : 0.5 }]}>
+                <Text style={styles.primaryBtnText}>Withdraw {ghc(financeSnapshot?.withdrawableMinor || 0)}</Text>
               </TouchableOpacity>
             </View>
 

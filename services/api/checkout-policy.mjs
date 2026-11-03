@@ -4,6 +4,11 @@ export const CHECKOUT_METHODS=Object.freeze(['CASH','MOMO','CARD','QR']);
 export const DIGITAL_METHODS=Object.freeze(['MOMO','CARD','QR']);
 export function isCheckoutMethod(value){return CHECKOUT_METHODS.includes(value);}
 export function checkoutDisplay(method){return ({CASH:'Cash to rider',MOMO:'Mobile money',CARD:'Card',QR:'Scan-to-pay checkout QR'})[method]??'Unsupported';}
+/** The fee added so that, after the provider takes its percentage of the total, the full price remains. */
+export function processingFeeMinor(baseMinor,feeBps){
+ if(!Number.isInteger(feeBps)||feeBps<=0)return 0;
+ return Math.ceil(baseMinor*10000/(10000-feeBps))-baseMinor;
+}
 export function validateVerifiedPayment(record,{reference,amountMinor,currency,method}){
  if(!record||record.status!=='success'||record.reference!==reference||record.currency!==currency||!Number.isSafeInteger(record.amountMinor)||record.amountMinor!==amountMinor||typeof record.eventId!=='string'||record.eventId.length<4)throw Object.assign(Error('Payment verification evidence mismatch'),{status:409});
  // QR is a checkout-link QR; payer completes transaction using a supported

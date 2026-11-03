@@ -125,6 +125,11 @@ export default function CustomerApp() {
   };
   const [deliveryEta, setDeliveryEta] = useState(null);
   const [shareToken, setShareToken] = useState(null);
+  // The server sets this rate, so customers see the same fee before and at checkout.
+  const digitalFeeNote = () => {
+    const bps = paymentMethods.find?.(m => m.processingFeeBps)?.processingFeeBps;
+    return bps ? `A ${(bps / 100).toFixed(2)}% payment processing fee is added at checkout.` : null;
+  };
   const [placeQuery, setPlaceQuery] = useState('');
   const [placesList, setPlacesList] = useState([]);
   const [detectedLocation, setDetectedLocation] = useState(null);
@@ -1642,6 +1647,9 @@ export default function CustomerApp() {
                   <Text style={styles.paymentMethodPillText}>{booking.paymentMethod === 'CASH' ? 'Cash' : 'Mobile Money'}</Text>
                 </TouchableOpacity>
 
+                {booking.paymentMethod !== 'CASH' && digitalFeeNote() && (
+                  <Text style={{ fontSize: 11, color: colors.textSecondary, marginBottom: 6 }}>{digitalFeeNote()}</Text>
+                )}
                 <TouchableOpacity
                   style={styles.orderFormCtaButton}
                   onPress={() => execute(step === 0 ? getParcelQuote : bookParcel)}>
@@ -2862,6 +2870,9 @@ export default function CustomerApp() {
                   <Text style={[styles.foodQuoteLabel, { fontWeight: '800', color: colors.textDark }]}>Total</Text>
                   <Text style={[styles.foodQuoteValue, { fontWeight: '800', color: colors.brandCoral }]}>{ghc(foodQuote.totalMinor)}</Text>
                 </View>
+                {digitalFeeNote() && (
+                  <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 6 }}>{digitalFeeNote()}</Text>
+                )}
               </View>
             )}
           </ScrollView>

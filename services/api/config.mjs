@@ -326,6 +326,9 @@ export function validateConfig(env = process.env) {
   const hubtelClientSecret = (env.HUBTEL_CLIENT_SECRET || '').trim();
   const hubtelMerchantNo = (env.HUBTEL_MERCHANT_ACCOUNT_NUMBER || '').trim();
   const paystackSecretKey = (env.PAYSTACK_SECRET_KEY || '').trim();
+  // Paystack's Ghana rate, added to customer payments. Update it if your agreed rate changes; 0 means ELESEND absorbs it.
+  const paystackFeeBps = (env.PAYSTACK_CUSTOMER_FEE_BPS ?? '').trim() === '' ? 195 : Number(env.PAYSTACK_CUSTOMER_FEE_BPS);
+  if (!Number.isInteger(paystackFeeBps) || paystackFeeBps < 0 || paystackFeeBps > 1000) errors.push('PAYSTACK_CUSTOMER_FEE_BPS must be a whole number from 0 to 1000.');
 
   if (rawPaymentProvider === 'hubtel') {
     paymentProviderName = 'hubtel';
@@ -376,6 +379,7 @@ export function validateConfig(env = process.env) {
     ? {
         secretKey: paystackSecretKey,
         allowedMethods: (env.PAYSTACK_ENABLED_METHODS || 'MOMO,CARD').split(',').map(s => s.trim()).filter(Boolean),
+        processingFeeBps: paystackFeeBps,
         recipientType: (env.SETTLEMENT_PAYSTACK_RECIPIENT_TYPE || '').trim() || null,
         providerChannel: (env.SETTLEMENT_PAYSTACK_PROVIDER_CHANNEL || '').trim() || null
       }

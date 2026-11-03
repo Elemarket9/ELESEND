@@ -16,7 +16,7 @@ export function restaurantOpenNow(restaurant,now=new Date()){
 
 export async function requireFoodPayment(c, order) {
  const shipment=(await c.query('SELECT * FROM shipments WHERE id=$1',[order.shipment_id])).rows[0];
- const receipt=(await c.query("SELECT 1 FROM shipment_checkout_intents WHERE shipment_id=$1 AND status='confirmed' AND amount_minor=$2",[order.shipment_id,order.total_minor])).rowCount;
+ const receipt=(await c.query("SELECT 1 FROM shipment_checkout_intents WHERE shipment_id=$1 AND status='confirmed' AND amount_minor-processing_fee_minor=$2",[order.shipment_id,order.total_minor])).rowCount;
  check(order.payment_method!=='CASH'&&order.payment_status==='PAID'&&shipment?.paid&&receipt,409,'Food and delivery must be paid upfront before kitchen acceptance');
  return shipment;
 }

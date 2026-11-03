@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from './security.mjs';
 import {MARKET_CURRENCY} from './market.mjs';
-import {DIGITAL_METHODS,validateVerifiedPayment,validatedCheckoutUrl} from './checkout-policy.mjs';
+import {DIGITAL_METHODS,validateVerifiedPayment,validatedCheckoutUrl,processingFeeMinor} from './checkout-policy.mjs';
 import {customerMoneyReceived,customerMoneyUnapplied} from './checkout-accounting.mjs';
 import {validatePayer} from './payment-provider.mjs';
 const uuid=z.string().uuid(),key=z.string().regex(/^[a-zA-Z0-9_-]{8,128}$/);
@@ -61,7 +61,7 @@ export function checkoutService(db,options={}){
  }
  const list=async()=>{
   const r=await db.query('SELECT method,enabled FROM checkout_method_policies ORDER BY method');
-  return r.rows.map(x=>({method:x.method,enabled:x.method==='CASH'?true:x.enabled&&cap(x.method),configured:x.method==='CASH'||cap(x.method),adminEnabled:x.enabled,payerFields:x.method==='CASH'?[]:provider?.payerFields||[]}));
+  return r.rows.map(x=>({method:x.method,enabled:x.method==='CASH'?true:x.enabled&&cap(x.method),configured:x.method==='CASH'||cap(x.method),adminEnabled:x.enabled,payerFields:x.method==='CASH'?[]:provider?.payerFields||[],...(x.method!=='CASH'&&provider?.processingFeeBps?{processingFeeBps:provider.processingFeeBps}:{})}));
  };
  const admin=async(c,actor)=>{check(actor?.kind==='admin',403,'Administrator required');check((await c.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission='payments:configure'",[actor.id])).rowCount,403,'Payment policy permission required');};
  async function confirm(verification){
@@ -84,7 +84,7 @@ export function checkoutService(db,options={}){
    const foodPayable=!fo||!['CANCELLED','REJECTED','DELIVERED'].includes(fo.state);
    const wasInactive=['failed','expired'].includes(intent.status);
    // A verified late payment arriving after local expiry/failure is still applied when the order remains payable and unpaid!
-   const normal=foodPayable&&valid&&expectedAmount===Number(intent.amount_minor)&&!s.paid&&s.state==='AWAITING_PAYMENT'&&intent.status!=='confirmed';
+   const normal=foodPayable&&valid&&expectedAmount+Number(intent.processing_fee_minor||0)===Number(intent.amount_minor)&&!s.paid&&s.state==='AWAITING_PAYMENT'&&intent.status!=='confirmed';
    if(!normal){
     // Verified money can arrive AFTER cancellation, after another intent paid the shipment, or with
     // mismatched terms. Persist 100% of verified funds in customer_refund_liability for refund review.
@@ -111,7 +111,7 @@ export function checkoutService(db,options={}){
    await c.query('INSERT INTO checkout_confirmed_events(provider,event_id,intent_id,shipment_id,reference,amount_minor,currency) VALUES($1,$2,$3,$4,$5,$6,$7)',[provider.name,verification.eventId,intent.id,s.id,intent.reference,verification.amountMinor,verification.currency]);
    // Existing immutable settlement evidence retained for earlier module compatibility.
    await c.query('INSERT INTO payment_events(provider,event_id,shipment_id,amount_minor,currency) VALUES($1,$2,$3,$4,$5)',[provider.name,verification.eventId,s.id,verification.amountMinor,verification.currency]);
-   await customerMoneyReceived(c,{shipmentId:s.id,eventKey:'checkout:'+provider.name+':verified:'+verification.eventId,amountMinor:verification.amountMinor});
+   await customerMoneyReceived(c,{shipmentId:s.id,eventKey:'checkout:'+provider.name+':verified:'+verification.eventId,amountMinor:verification.amountMinor,processingFeeMinor:Number(intent.processing_fee_minor||0)});
    await c.query(
     `UPDATE shipment_checkout_intents
         SET status='confirmed',
@@ -157,7 +157,7 @@ export function checkoutService(db,options={}){
    return {status:'confirmed',duplicate:false,lateRecovery:wasInactive,shipmentId:s.id,intentId:intent.id};
   });
  }
- const resultRow=r=>({intentId:r.id,shipmentId:r.shipment_id,method:r.method,status:r.status,checkoutUrl:r.checkout_url??null,reference:r.reference,amountMinor:Number(r.amount_minor),currency:r.currency,failureReason:r.failure_reason??null});
+ const resultRow=r=>({intentId:r.id,shipmentId:r.shipment_id,method:r.method,status:r.status,checkoutUrl:r.checkout_url??null,reference:r.reference,amountMinor:Number(r.amount_minor),processingFeeMinor:Number(r.processing_fee_minor||0),currency:r.currency,failureReason:r.failure_reason??null});
  return {
   methods:list,
   confirmVerified:confirm,
@@ -214,16 +214,18 @@ export function checkoutService(db,options={}){
      check(pol?.enabled,503,'Payment method is disabled');
      const fo=(await c.query('SELECT total_minor,state FROM food_orders WHERE shipment_id=$1',[s.id])).rows[0];
      if(fo)check(!['CANCELLED','REJECTED','DELIVERED'].includes(fo.state),409,'Food order is no longer payable');
-     const chargeAmount=fo?fo.total_minor:s.amount_minor;
+     const baseAmount=Number(fo?fo.total_minor:s.amount_minor);
+     const processingFee=processingFeeMinor(baseAmount,provider.processingFeeBps);
+     const chargeAmount=baseAmount+processingFee;
      const id=randomUUID(),reference='es_'+id.replaceAll('-','');
      const r=(await c.query(
       `INSERT INTO shipment_checkout_intents(
          id,shipment_id,customer_id,method,provider,reference,amount_minor,currency,
-         idempotency_key,payer_email,submission_token,submission_lease_until,submitted_at,updated_at
-       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now()+make_interval(secs=>$12),now(),now())
+         idempotency_key,payer_email,submission_token,submission_lease_until,submitted_at,updated_at,processing_fee_minor
+       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now()+make_interval(secs=>$12),now(),now(),$13)
        ON CONFLICT (customer_id,idempotency_key) DO NOTHING
        RETURNING *`,
-      [id,s.id,actor.id,s.payment_method,provider.name,reference,chargeAmount,MARKET_CURRENCY,v.idempotencyKey,email,submissionToken,submissionLeaseSeconds]
+      [id,s.id,actor.id,s.payment_method,provider.name,reference,chargeAmount,MARKET_CURRENCY,v.idempotencyKey,email,submissionToken,submissionLeaseSeconds,processingFee]
      )).rows[0];
      if(!r){
       const concurrent=(await c.query('SELECT * FROM shipment_checkout_intents WHERE customer_id=$1 AND idempotency_key=$2',[actor.id,v.idempotencyKey])).rows[0];
