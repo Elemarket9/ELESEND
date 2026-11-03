@@ -21,6 +21,7 @@ import {
   TouchableOpacity, Modal, Vibration
 } from 'react-native';
 import * as Location from 'expo-location';
+import { WalletDashboard } from '../rider-wallet-dashboard';
 import { EmergencyButton, RatingPrompts, RiderTools, ShareLiveLocation, TrustedContactCard } from '../rider-safety';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline, openTurnByTurnNavigation } from '../maps/map-adapter';
@@ -1577,6 +1578,7 @@ export default function RiderApp() {
         {/* ================================================================= */}
         {tab === 'Earnings' && (
           <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+            <WalletDashboard />
             <RatingPrompts />
             <RiderTools />
             <TrustedContactCard />

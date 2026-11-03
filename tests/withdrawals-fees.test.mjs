@@ -178,6 +178,17 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   assert.equal(submitted[0].amountMinor,599900);
   assert.equal((await payable(a1))+(await payable(a2)),0);
   await assert.rejects(withdraw(key(),other),/once a day/);
+  // The wallet shows the rider each withdrawal and a statement, and no one else's.
+  const {walletWithdrawals,walletStatement,walletSummary}=await import('../services/api/modules/payments/rider-wallet.mjs');
+  const shown=await walletWithdrawals(db,other);
+  assert.equal(shown.onHold,false);
+  assert.equal(shown.withdrawals[0].earnedMinor,600000);assert.equal(shown.withdrawals[0].feeMinor,100);assert.equal(shown.withdrawals[0].sentMinor,599900);assert.equal(shown.withdrawals[0].deliveries,2);
+  assert.match(shown.withdrawals[0].transferCode,/^TRF_/);
+  const statement=await walletStatement(db,other);
+  assert.equal(statement.deliveries,2);assert.equal(statement.withdrawals,1);
+  assert.match(statement.csv,/^Type,Date,Reference/);assert.match(statement.csv,/Withdrawal,.*TRF_.*,paid,Mobile Money,,1\.00,5999\.00/);
+  await assert.rejects(walletStatement(db,other,{from:'2020-01-01',to:'2026-01-01'}),/up to 92 days/);
+  await assert.rejects(walletWithdrawals(db,{id:customer,kind:'customer'}),/Rider account/);
   await assert.rejects(db.query("INSERT INTO payout_withdrawals(id,beneficiary_id,idempotency_key,provider,recipient_reference,amount_minor) VALUES($1,$2,$3,'fixture','RCP_second',100)",[randomUUID(),second_rider,key()]),/payout_withdrawals_once_a_day/);
   await assert.rejects(db.query('UPDATE payout_withdrawals SET fee_minor=0 WHERE id=$1',[charged.id]),/immutable/);
 

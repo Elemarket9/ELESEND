@@ -452,3 +452,32 @@ export async function runScheduledRecovery(db,{limit=50}={}){
  }
  return {report,results};
 }
+
+/** Every withdrawal with what was earned, the fee, what was sent and the provider's transfer code. */
+export async function walletWithdrawals(db,actor,{limit=50}={}){
+ check(actor?.kind==='rider',403,'Rider account required');
+ const n=Math.min(Math.max(Number.parseInt(limit,10)||50,1),100);
+ const rows=(await db.query(`SELECT w.id,w.status,w.amount_minor,w.fee_minor,w.currency,w.provider_id,w.failure_reason,w.created_at,w.updated_at,
+    (SELECT count(*)::int FROM payout_operations p WHERE p.withdrawal_id=w.id) AS deliveries
+   FROM payout_withdrawals w WHERE w.beneficiary_id=$1 ORDER BY w.created_at DESC LIMIT $2`,[actor.id,n])).rows;
+ const hold=(await db.query('SELECT 1 FROM payout_holds WHERE user_id=$1',[actor.id])).rowCount>0;
+ return {onHold:hold,withdrawals:rows.map(w=>({id:w.id,status:w.status,earnedMinor:Number(w.amount_minor)+Number(w.fee_minor),feeMinor:Number(w.fee_minor),sentMinor:Number(w.amount_minor),currency:w.currency,transferCode:w.provider_id,failureReason:w.failure_reason,deliveries:w.deliveries,requestedAt:w.created_at,updatedAt:w.updated_at}))};
+}
+const STATEMENT_MAX_DAYS=92;
+/** A dated statement of deliveries and withdrawals. All values come from the server's records. */
+export async function walletStatement(db,actor,{from,to}={}){
+ check(actor?.kind==='rider',403,'Rider account required');
+ const end=to?new Date(to):new Date(),start=from?new Date(from):new Date(end.getTime()-30*86400000);
+ check(!Number.isNaN(start.getTime())&&!Number.isNaN(end.getTime())&&start<=end,400,'Invalid statement dates');
+ check(end.getTime()-start.getTime()<=STATEMENT_MAX_DAYS*86400000,400,`A statement can cover up to ${STATEMENT_MAX_DAYS} days`);
+ const deliveries=(await db.query(`SELECT s.id,s.state,s.payment_method,s.amount_minor,s.commission_minor,s.company_id,s.completed_at,s.created_at
+   FROM shipments s WHERE s.rider_id=$1 AND s.state IN ('COMPLETED','RETURNED') AND coalesce(s.completed_at,s.created_at) BETWEEN $2 AND $3 ORDER BY coalesce(s.completed_at,s.created_at) DESC LIMIT 2000`,[actor.id,start,end])).rows;
+ const withdrawals=(await db.query(`SELECT id,status,amount_minor,fee_minor,provider_id,created_at FROM payout_withdrawals
+   WHERE beneficiary_id=$1 AND created_at BETWEEN $2 AND $3 ORDER BY created_at DESC LIMIT 500`,[actor.id,start,end])).rows;
+ const money=v=>(Number(v)/100).toFixed(2);
+ const lines=['Type,Date,Reference,Status,Payment,Fare,Commission or fee,Your amount'];
+ for(const d of deliveries)lines.push(['Delivery',new Date(d.completed_at??d.created_at).toISOString(),d.id,d.state,d.payment_method,money(d.amount_minor),money(d.commission_minor),d.company_id?'Paid to company':money(Number(d.amount_minor)-Number(d.commission_minor))].join(','));
+ for(const w of withdrawals)lines.push(['Withdrawal',new Date(w.created_at).toISOString(),w.provider_id??w.id,w.status,'Mobile Money','',money(w.fee_minor),money(w.amount_minor)].join(','));
+ return {currency:MARKET_CURRENCY,from:start.toISOString(),to:end.toISOString(),deliveries:deliveries.length,withdrawals:withdrawals.length,csv:lines.join('\n')+'\n'};
+}
+

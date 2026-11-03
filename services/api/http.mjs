@@ -39,7 +39,7 @@ import {
   getWeeklySettlementSettings,
   updateWeeklySettlementSettings
 } from './modules/payments/index.mjs';
-import {walletSummary,walletDebt,walletTransactions,adminWalletOverview,adminWalletReconciliation,walletPolicyView,updateWalletPolicy} from './modules/payments/index.mjs';
+import {walletWithdrawals,walletStatement,walletSummary,walletDebt,walletTransactions,adminWalletOverview,adminWalletReconciliation,walletPolicyView,updateWalletPolicy} from './modules/payments/index.mjs';
 import {getSystemHealthReport} from './infrastructure/monitoring/system-health.mjs';
 export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null,readinessToken=null,etaBaselineFactors={}}={}){
   const net=network(db),vehicles=vehicleService(db),markets=marketService(db);
@@ -486,6 +486,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   // Rider wallet: available to debt-restricted/suspended riders (authentication only) so repayment is never blocked.
   else if(method==='GET'&&path==='/api/v1/rider/wallet/summary')result=await walletSummary(db,actor);
   else if(method==='GET'&&path==='/api/v1/rider/wallet/debt')result=await walletDebt(db,actor);
+  else if(method==='GET'&&path==='/api/v1/rider/wallet/withdrawals')result=await walletWithdrawals(db,actor);
+  else if(method==='GET'&&path==='/api/v1/rider/wallet/statement'){await limit(db,'wallet-statement:'+actor.id,20,3600);const q=new URL(req.url,'http://localhost').searchParams;result=await walletStatement(db,actor,{from:q.get('from')||undefined,to:q.get('to')||undefined});}
   else if(method==='GET'&&path==='/api/v1/rider/wallet/transactions')result=await walletTransactions(db,actor,{limit:new URL(req.url,'http://localhost').searchParams.get('limit')??100});
   else if(method==='POST'&&path==='/api/v1/rider/wallet/topups'){check(actor?.kind==='rider',403,'Rider required');check(finance,503);result=await finance.initiate(actor,{...body,kind:'commission_repayment'});}
   else if(method==='GET'&&/^\/api\/v1\/rider\/wallet\/topups\/[0-9a-f-]{36}$/.test(path)){check(actor?.kind==='rider',403,'Rider required');check(finance,503);result=await finance.paymentStatus(actor,path.split('/')[6]);}
