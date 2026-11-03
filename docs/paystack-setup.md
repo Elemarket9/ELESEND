@@ -54,7 +54,7 @@ There is no limit on the amount a person can withdraw. Keep `WITHDRAWAL_FEE_MINO
 - **Parcels never picked up:** the rider releases the job, and the sender can cancel for a full refund.
 
 ## Rider identity
-A rider cannot be approved without a current driver's licence on file, or a Ghana Card for bicycle riders. Staff compare the details in the admin portal against the original document before approving. Riders are suspended when the approved document expires. One document cannot back two accounts. Set `RIDER_ID_ENCRYPTION_KEY` to 64 random hexadecimal characters, and back it up, because the numbers cannot be read without it.
+A rider cannot be approved without a current driver's licence, or a Ghana Card for bicycle riders, and a passed photo and selfie check through Didit. Didit stores the images. In its console, create a workflow with ID verification, liveness and face match, and set the webhook URL to `https://<API host>/api/v1/identity/webhook` using webhook version 3. Set `DIDIT_API_KEY`, `DIDIT_WORKFLOW_ID` and `DIDIT_WEBHOOK_SECRET`. Didit reads the photographed document but does not confirm it against a government licence register, so check licences with the DVLA or a registry lookup provider as well. Riders are suspended when the approved document expires. One document cannot back two accounts. Set `RIDER_ID_ENCRYPTION_KEY` to 64 random hexadecimal characters, and back it up, because the numbers cannot be read without it.
 
 ## Missing parcels
 A parcel still with its rider `PARCEL_CUSTODY_LIMIT_HOURS` (default 24) after pickup opens an incident. The rider is suspended, withdrawals stop, and the evidence is frozen. It appears in the admin portal under Risk Signals. Staff check the facts, then record the outcome and any police reference. The system never contacts the police itself.
@@ -74,4 +74,5 @@ Use small real amounts, on each of MTN, Telecel and AT:
 - [ ] Withdrawing more than the Paystack balance recovers by itself once the balance is funded.
 - [ ] Commission repayment reduces the rider's debt.
 - [ ] Webhook retries and duplicates cause no double effects.
+- [ ] A real Ghana driver's licence passes the Didit check, with its number read correctly.
 - [ ] Confirm with Paystack that the `VOD` code is still right for Telecel, and whether account names can be checked for mobile money.

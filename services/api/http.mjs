@@ -1,4 +1,4 @@
-import {riderLicenceStatus,submitRiderLicence,rejectRiderLicence,attachLicences} from './rider-licence.mjs';
+import {riderLicenceStatus,submitRiderLicence,rejectRiderLicence,attachLicences,startIdentityCheck,identityWebhook} from './rider-licence.mjs';
 import {listCustodyIncidents,resolveCustodyIncident} from './custody-incidents.mjs';
 import {createServer} from 'node:http';
 import {randomUUID} from 'node:crypto';
@@ -119,10 +119,12 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   if(!path.startsWith('/api/v1/'))check(false,404,'Endpoint not found');
   let body={},rawBody=Buffer.alloc(0);if(method==='POST'){
    check((req.headers['content-type']??'').split(';')[0]==='application/json',415,'JSON required');let size=0;const parts=[];
-   for await(const part of req.iterator({destroyOnReturn:false})){size+=part.length;if(size>32768){res.setHeader('Connection','close');req.resume();check(false,413,'Request too large');}parts.push(part);}
+   const bodyLimit=path==='/api/v1/identity/webhook'?1048576:32768;
+   for await(const part of req.iterator({destroyOnReturn:false})){size+=part.length;if(size>bodyLimit){res.setHeader('Connection','close');req.resume();check(false,413,'Request too large');}parts.push(part);}
    rawBody=Buffer.concat(parts);try{body=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(rawBody)||'{}');}catch{check(false,400,'Invalid JSON');}
   }
   if(method==='POST'&&['/api/v1/payments/webhook','/api/v1/payments/checkout-webhook','/api/v1/payments/commission-webhook'].includes(path)&&paymentsWebhook){send(200,await paymentsWebhook(rawBody,req.headers));return;}
+  if(method==='POST'&&path==='/api/v1/identity/webhook'){send(200,await identityWebhook(db,rawBody,req.headers));return;}
   if(method==='POST'&&path==='/api/v1/payments/checkout-webhook'){
    check(checkout,503,'Checkout unavailable');send(200,await checkout.webhook(rawBody,req.headers));return;
   }
@@ -408,6 +410,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='GET'&&path==='/api/v1/shipments')result=await app.list(actor);
   else if(method==='GET'&&path==='/api/v1/rider/offers')result=await app.offers(actor);
   else if(method==='GET'&&path==='/api/v1/rider/dispatch-settings'){check(dispatcher,503);result=await dispatcher.trackingSettings(actor);}
+  else if(method==='POST'&&path==='/api/v1/rider/licence/identity-check'){await limit(db,'identity-check:'+actor.id,5,3600);result=await startIdentityCheck(db,actor);}
   else if(method==='GET'&&path==='/api/v1/rider/licence')result=await riderLicenceStatus(db,actor);
   else if(method==='POST'&&path==='/api/v1/rider/licence'){await limit(db,'licence:'+actor.id,10,3600);result=await submitRiderLicence(db,actor,body);}
   else if(method==='GET'&&path==='/api/v1/rider/vehicle')result=await vehicles.profile(actor);

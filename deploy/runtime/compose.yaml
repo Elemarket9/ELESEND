@@ -72,6 +72,9 @@ services:
       TRACKING_TOKEN_SECRET: ${TRACKING_TOKEN_SECRET:-}
       ADMIN_MFA_ENCRYPTION_KEY: ${ADMIN_MFA_ENCRYPTION_KEY:?Set 64 hex characters}
       RIDER_ID_ENCRYPTION_KEY: ${RIDER_ID_ENCRYPTION_KEY:?Set 64 hex characters}
+      DIDIT_API_KEY: ${DIDIT_API_KEY:-}
+      DIDIT_WORKFLOW_ID: ${DIDIT_WORKFLOW_ID:-}
+      DIDIT_WEBHOOK_SECRET: ${DIDIT_WEBHOOK_SECRET:-}
       JWT_SECRET: ${JWT_SECRET:?Set 32+ character JWT secret}
       ADMIN_MASTER_KEY: ${ADMIN_MASTER_KEY:?Set 32+ character admin master key}
       AUDIT_LOG_SECRET: ${AUDIT_LOG_SECRET:?Set 32+ character audit log secret}

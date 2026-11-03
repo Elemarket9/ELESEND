@@ -203,6 +203,9 @@ export function validateConfig(env = process.env) {
     if (!/^[a-fA-F0-9]{64}$/.test((env.RIDER_ID_ENCRYPTION_KEY || '').trim())) {
       errors.push('RIDER_ID_ENCRYPTION_KEY must be exactly 64 hexadecimal characters (32 bytes) in production.');
     }
+    if (!(env.DIDIT_API_KEY || '').trim() || !(env.DIDIT_WORKFLOW_ID || '').trim() || !(env.DIDIT_WEBHOOK_SECRET || '').trim()) {
+      errors.push('DIDIT_API_KEY, DIDIT_WORKFLOW_ID and DIDIT_WEBHOOK_SECRET are required in production for rider identity checks.');
+    }
     if (!/^[a-fA-F0-9]{64}$/.test(adminMfaKey)) {
       errors.push('ADMIN_MFA_ENCRYPTION_KEY must be exactly 64 hexadecimal characters (32 bytes) in production.');
     }

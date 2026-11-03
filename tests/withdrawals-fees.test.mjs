@@ -323,5 +323,35 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await db.query("UPDATE rider_licences SET valid_until=now()::date-1 WHERE rider_id=$1",[applicant]);
   assert.ok((await suspendExpiredLicences(db)).includes(applicant));
   assert.equal((await db.query('SELECT status FROM riders WHERE id=$1',[applicant])).rows[0].status,'suspended');
+
+  // Once identity checks are on, approval needs a passed photo and selfie check that matches the details.
+  const {startIdentityCheck,syncIdentityCheck,identityWebhook}=await import('../services/api/rider-licence.mjs');
+  const {diditProvider}=await import('../services/api/identity-verification.mjs');
+  const {createHmac}=await import('node:crypto');
+  const sessionId=randomUUID(),selfie=await newRider();
+  await db.query("UPDATE riders SET status='pending' WHERE id=$1",[selfie]);
+  let decisionBody;
+  const didit=diditProvider({apiKey:'k',workflowId:'w',webhookSecret:'whsec',fetchImpl:async(url,options)=>({ok:true,status:200,json:async()=>options.method==='POST'?{session_id:sessionId,url:'https://verify.didit.me/session/x'}:decisionBody})});
+  const decisionOf=(number,over={})=>({session_id:sessionId,vendor_data:selfie,status:'Approved',id_verifications:[{status:'Approved',document_type:"Driver's License",document_number:number,expiration_date:nextYear}],liveness_checks:[{status:'Approved'}],face_matches:[{status:'Approved'}],...over});
+  await submitRiderLicence(db,{id:selfie,kind:'rider'},{...licenceForm,licenceNumber:'GH-99999999'});
+  for(const [k,v] of [['DIDIT_API_KEY','k'],['DIDIT_WORKFLOW_ID','w'],['DIDIT_WEBHOOK_SECRET','whsec']])process.env[k]=v;
+  try{
+   await assert.rejects(app.approve(reviewer,'riders',selfie,'approved'),/photo and selfie/);
+   assert.match((await startIdentityCheck(db,{id:selfie,kind:'rider'},{provider:didit})).url,/^https:/);
+   decisionBody=decisionOf('GH-00000000');
+   assert.equal((await syncIdentityCheck(db,selfie,{provider:didit})).status,'failed');
+   await startIdentityCheck(db,{id:selfie,kind:'rider'},{provider:didit});
+   decisionBody=decisionOf('GH 99999999',{face_matches:[{status:'Declined'}]});
+   assert.equal((await syncIdentityCheck(db,selfie,{provider:didit})).status,'failed');
+   await startIdentityCheck(db,{id:selfie,kind:'rider'},{provider:didit});
+   decisionBody=decisionOf('GH 99999999');
+   const raw=Buffer.from(JSON.stringify({session_id:sessionId,status:'Approved'}));
+   const stamp=String(Math.floor(Date.now()/1000));
+   await assert.rejects(identityWebhook(db,raw,{'x-timestamp':stamp,'x-signature':'0'.repeat(64)},{provider:didit}),/signature/);
+   await assert.rejects(identityWebhook(db,raw,{'x-timestamp':'1','x-signature':createHmac('sha256','whsec').update(raw).digest('hex')},{provider:didit}),/Stale/);
+   await identityWebhook(db,raw,{'x-timestamp':stamp,'x-signature':createHmac('sha256','whsec').update(raw).digest('hex')},{provider:didit});
+   await app.approve(reviewer,'riders',selfie,'approved');
+   assert.equal((await db.query('SELECT status FROM riders WHERE id=$1',[selfie])).rows[0].status,'approved');
+  }finally{for(const k of ['DIDIT_API_KEY','DIDIT_WORKFLOW_ID','DIDIT_WEBHOOK_SECRET'])delete process.env[k];}
  }finally{await db.close();}
 });

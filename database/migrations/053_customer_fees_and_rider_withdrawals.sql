@@ -176,3 +176,12 @@ CREATE TABLE IF NOT EXISTS rider_licences (
 );
 -- Riders approved before this check must submit a licence and be reviewed again.
 UPDATE riders SET status='pending',online=false WHERE status='approved';
+
+-- Result of the hosted photo, selfie and liveness check. The images stay with the provider.
+ALTER TABLE rider_licences
+  ADD COLUMN IF NOT EXISTS identity_session_id uuid UNIQUE,
+  ADD COLUMN IF NOT EXISTS identity_status text NOT NULL DEFAULT 'not_started'
+    CHECK (identity_status IN ('not_started','in_progress','approved','failed')),
+  ADD COLUMN IF NOT EXISTS identity_reason text,
+  ADD COLUMN IF NOT EXISTS identity_checked_at timestamptz;
+CREATE INDEX IF NOT EXISTS rider_licences_identity_open ON rider_licences(identity_checked_at) WHERE identity_status='in_progress';

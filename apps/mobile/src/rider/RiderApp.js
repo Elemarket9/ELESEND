@@ -704,9 +704,13 @@ export default function RiderApp() {
       ...(form.licenceClass.trim() ? { licenceClass: form.licenceClass.trim() } : {}),
       ...(form.vehiclePlate.trim() ? { vehiclePlate: form.vehiclePlate.trim() } : {})
     });
-    setLicenceModal(false);
     setLicence(await call('GET', '/api/v1/rider/licence'));
-    setError('Licence submitted for review.');
+    setError('Details saved. Now take your licence photo and selfie.');
+  }
+
+  async function startIdentityPhotos() {
+    const res = await call('POST', '/api/v1/rider/licence/identity-check', {});
+    if (res?.url) await Linking.openURL(res.url);
   }
 
   async function requestWithdrawal() {
@@ -1716,12 +1720,24 @@ export default function RiderApp() {
                   <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.expiresOn} onChangeText={value => setLicenceForm(f => ({ ...f, expiresOn: value }))} />
                   <Text style={[styles.inputLabel, { marginTop: 10 }]}>Vehicle Plate Number</Text>
                   <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.vehiclePlate} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, vehiclePlate: value }))} />
+                  {licence && licence.status !== 'missing' && (
+                    <Text style={[styles.momoSub, { marginTop: 10 }]}>
+                      Photo check: {licence.identityStatus === 'approved' ? 'passed'
+                        : licence.identityStatus === 'in_progress' ? 'in progress'
+                          : licence.identityStatus === 'failed' ? `failed. ${licence.identityReason || ''}` : 'not started'}
+                    </Text>
+                  )}
+                  {licence && licence.status !== 'missing' && licence.identityStatus !== 'approved' && (
+                    <TouchableOpacity disabled={busy} onPress={() => execute(startIdentityPhotos)} style={[styles.primaryBtn, { marginTop: 10 }]}>
+                      <Text style={styles.primaryBtnText}>Take Licence Photo and Selfie</Text>
+                    </TouchableOpacity>
+                  )}
                   <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
                     <TouchableOpacity onPress={() => setLicenceModal(false)} style={[styles.secondaryBtn, { flex: 1 }]}>
                       <Text style={styles.secondaryBtnText}>Close</Text>
                     </TouchableOpacity>
                     <TouchableOpacity disabled={busy} onPress={() => execute(submitLicence)} style={[styles.primaryBtn, { flex: 2 }]}>
-                      <Text style={styles.primaryBtnText}>Submit Licence</Text>
+                      <Text style={styles.primaryBtnText}>Save Details</Text>
                     </TouchableOpacity>
                   </View>
                 </View>

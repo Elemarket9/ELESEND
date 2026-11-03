@@ -1043,7 +1043,7 @@ export function renderAdminPortalHtml() {
           <tr>
             <td>\${escapeHtml(r.phone || r.id.slice(0, 8))}</td>
             <td>COURIER</td>
-            <td>\${escapeHtml(r.vehicle || 'motorcycle')}\${r.licence ? '<br><strong>' + escapeHtml(r.licence.legal_name) + '</strong><br>' + escapeHtml(r.licence.document_type) + ' ' + escapeHtml(r.licence.number) + (r.licence.licence_class ? ' • Class ' + escapeHtml(r.licence.licence_class) : '') + '<br>Expires ' + escapeHtml(r.licence.expires_on) + (r.licence.vehicle_plate ? ' • Plate ' + escapeHtml(r.licence.vehicle_plate) : '') + ' • ' + escapeHtml(r.licence.status) : '<br><em>No licence submitted</em>'}</td>
+            <td>\${escapeHtml(r.vehicle || 'motorcycle')}\${r.licence ? '<br><strong>' + escapeHtml(r.licence.legal_name) + '</strong><br>' + escapeHtml(r.licence.document_type) + ' ' + escapeHtml(r.licence.number) + (r.licence.licence_class ? ' • Class ' + escapeHtml(r.licence.licence_class) : '') + '<br>Expires ' + escapeHtml(r.licence.expires_on) + (r.licence.vehicle_plate ? ' • Plate ' + escapeHtml(r.licence.vehicle_plate) : '') + ' • ' + escapeHtml(r.licence.status) + '<br>Photo check: ' + escapeHtml(r.licence.identity_status) + (r.licence.identity_reason ? ' (' + escapeHtml(r.licence.identity_reason) + ')' : '') : '<br><em>No licence submitted</em>'}</td>
             <td><span class="badge badge-warn">\${escapeHtml(r.status.toUpperCase())}</span></td>
             <td>
               <button class="action-btn" onclick="reviewRider('\${escapeHtml(r.id)}', 'approved')">Approve</button>
