@@ -12,7 +12,7 @@
  *   double-entry ledgers, OTP handover security, and offline resilience.
  */
 
-import { runGuarded, useAccountRecovery } from '../account-actions';
+import { runGuarded, useSignInState, signInWithPassword } from '../account-actions';
 import { SUPPORT_PHONE } from '../config.js';
 import React, { useEffect, useState, useRef } from 'react';
 import {
@@ -82,19 +82,13 @@ function parcelQuoteBody(booking, pickup, destination, authPhone, paymentMethod,
 
 export default function CustomerApp() {
   const [auth, setAuth] = useState(null);
-  const [phoneState, setPhoneState] = useState(null);
-  const [phoneChallenge, setPhoneChallenge] = useState(null);
-  const [phoneCode, setPhoneCode] = useState('');
-  const [credentials, setCredentials] = useState(initialCreds);
-  const [isSignup, setIsSignup] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
   const {
+    phoneState, setPhoneState, phoneChallenge, setPhoneChallenge, phoneCode, setPhoneCode,
+    credentials, setCredentials, isSignup, setIsSignup, loading, setLoading, busy, setBusy, error, setError,
     forgotModal, setForgotModal, recoveryPhone, setRecoveryPhone, recoveryChallenge, setRecoveryChallenge,
     recoveryCode, setRecoveryCode, recoveryNewPassword, setRecoveryNewPassword,
     requestPasswordRecoveryChallenge, submitPasswordReset
-  } = useAccountRecovery({ credentials, setCredentials, setError });
+  } = useSignInState(initialCreds);
 
   // Primary Navigation: 'Home' | 'Send' | 'Cargo' | 'Food' | 'Activity' | 'Profile'
   const [tab, setTab] = useState('Home');
@@ -321,26 +315,15 @@ export default function CustomerApp() {
   }, [trackingShipment?.id]);
 
   async function signIn() {
-    const normPhone = normalizeGhanaPhone(credentials.phone);
-    if (!isValidGhanaPhone(normPhone)) throw Error('Enter a valid Ghana phone (e.g. 024 123 4567)');
-    if (!credentials.password) throw Error('Enter your password');
-
-    const data = await call('POST', '/api/v1/auth/login', {
-      phone: normPhone,
-      password: credentials.password
+    const { data, normPhone, pStatus } = await signInWithPassword(credentials, user => {
+      if (user.kind !== 'customer' && user.kind !== 'business') throw Error('This account is registered as a courier driver. Please use the ELESEND Rider app.');
     });
-    if (data.user.kind !== 'customer' && data.user.kind !== 'business') {
-      throw Error('This account is registered as a courier driver. Please use the ELESEND Rider app.');
-    }
-    await saveToken(data.token);
-    const pStatus = await call('GET', '/api/v1/me/phone').catch(() => ({ phone: normPhone, verified: false }));
     setPhoneState(pStatus);
     setAuth({ ...data.user, phone: pStatus.phone || normPhone, name: data.user.name || credentials.name || 'Valued Customer' });
     setCredentials(initialCreds);
     if (!pStatus.verified) {
       try {
-        const ch = await call('POST', '/api/v1/me/phone-challenge', {});
-        setPhoneChallenge(ch);
+        setPhoneChallenge(await call('POST', '/api/v1/me/phone-challenge', {}));
       } catch (e) {
         setError(e.message || 'Enter verification code or request a new code.');
       }
@@ -2989,6 +2972,8 @@ export default function CustomerApp() {
   );
 }
 
+const HEADER_CIRCLE = { width: 38, height: 38, borderRadius: 19, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' };
+
 const styles = StyleSheet.create({
   // Global Canvas (Modern Light Theme)
   mainCanvas: { flex: 1, backgroundColor: '#F8FAFC' },
@@ -3003,25 +2988,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#F1F5F9'
   },
-  menuIconCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#F1F5F9',
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
+  menuIconCircle: HEADER_CIRCLE,
   locationBreadcrumb: { alignItems: 'center' },
   brandTitleText: { fontSize: 17, fontWeight: '900', color: '#0F172A', letterSpacing: 0.5 },
   locationSubtitleText: { fontSize: 12, fontWeight: '500', color: '#475569', maxWidth: 180 },
-  profileAvatarCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#F1F5F9',
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
+  profileAvatarCircle: HEADER_CIRCLE,
 
   // Auth & Onboarding
   authContainer: { flex: 1, backgroundColor: '#FFFFFF' },

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { call } from './api';
+import { call, saveToken } from './api';
 import { isValidGhanaPhone, normalizeGhanaPhone } from './phone';
 
 /** Runs one action at a time and shows its error, the same way in both apps. */
@@ -65,4 +65,37 @@ export function useAccountRecovery({ credentials, setCredentials, setError }) {
     recoveryCode, setRecoveryCode, recoveryNewPassword, setRecoveryNewPassword,
     requestPasswordRecoveryChallenge, submitPasswordReset
   };
+}
+
+/** Sign-in, phone check and password recovery state, the same in both apps. */
+export function useSignInState(initialCreds) {
+  const [phoneState, setPhoneState] = useState(null); // { phone, verified }
+  const [phoneChallenge, setPhoneChallenge] = useState(null); // { challengeId, expiresInSeconds }
+  const [phoneCode, setPhoneCode] = useState('');
+  const [credentials, setCredentials] = useState(initialCreds);
+  const [isSignup, setIsSignup] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const recovery = useAccountRecovery({ credentials, setCredentials, setError });
+  return {
+    phoneState, setPhoneState, phoneChallenge, setPhoneChallenge, phoneCode, setPhoneCode,
+    credentials, setCredentials, isSignup, setIsSignup, loading, setLoading, busy, setBusy, error, setError,
+    ...recovery
+  };
+}
+
+/** Checks the form, signs in, and only keeps the session once the app accepts this account type. */
+export async function signInWithPassword(credentials, assertAccount) {
+  const normPhone = normalizeGhanaPhone(credentials.phone);
+  if (!isValidGhanaPhone(normPhone)) throw Error('Enter a valid Ghana phone (e.g. 024 123 4567)');
+  if (!credentials.password) throw Error('Enter your password');
+  const data = await call('POST', '/api/v1/auth/login', {
+    phone: normPhone,
+    password: credentials.password
+  });
+  assertAccount(data.user);
+  await saveToken(data.token);
+  const pStatus = await call('GET', '/api/v1/me/phone').catch(() => ({ phone: normPhone, verified: false }));
+  return { data, normPhone, pStatus };
 }

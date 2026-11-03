@@ -347,6 +347,38 @@ export function disconnectRevokedUserFromConversation(userId, conversationId, re
   broadcastCrossInstance({ type: 'revoke_conversation', userId: String(userId), conversationId, reason });
 }
 
+/** Highest earlier assignment for this chat; riders who were replaced lose access here. */
+async function priorAssignmentEpoch(c, column, value, conversationType, activeRiderId) {
+  const priorConvs = (await c.query(
+    `SELECT id, active_rider_id, assignment_epoch
+     FROM chat_conversations
+     WHERE ${column} = $1 AND conversation_type = '${conversationType}'`,
+    [value]
+  )).rows;
+  let priorEpoch = 0;
+  for (const pc of priorConvs) {
+    if (Number(pc.assignment_epoch) > priorEpoch) priorEpoch = Number(pc.assignment_epoch);
+    if (pc.active_rider_id && pc.active_rider_id !== activeRiderId) {
+      disconnectRevokedUserFromConversation(pc.active_rider_id, pc.id, 'rider_reassigned');
+    }
+  }
+  return priorEpoch;
+}
+
+/** Queues a delivered or read receipt for the people who sent the updated messages. */
+async function recordReceiptEvent(c, conversationId, updated, event, fields) {
+  if (updated.rowCount === 0) return null;
+  const senderIds = [...new Set(updated.rows.map(r => r.sender_id))];
+  const outboxId = id();
+  const payload = { eventId: outboxId, conversationId, ...fields };
+  await c.query(
+    `INSERT INTO chat_realtime_outbox (id, conversation_id, event_type, recipient_user_ids, payload)
+     VALUES ($1, $2, '${event}', $3::uuid[], $4::jsonb)`,
+    [outboxId, conversationId, senderIds, JSON.stringify(payload)]
+  );
+  return { id: outboxId, userIds: senderIds, event, payload };
+}
+
 function notifyRevoked(conn, reason) {
   try {
     conn.send('session.revoked', { reason, timestamp: new Date().toISOString() });
@@ -1005,19 +1037,7 @@ export function chatEngine(db, options = {}) {
           }
 
           // Compute assignment epoch (1 + number of prior CUSTOMER_RIDER threads on this shipment)
-          const priorConvs = (await c.query(
-            `SELECT id, active_rider_id, assignment_epoch
-             FROM chat_conversations
-             WHERE shipment_id = $1 AND conversation_type = 'CUSTOMER_RIDER'`,
-            [shipment.id]
-          )).rows;
-          let priorEpoch = 0;
-          for (const pc of priorConvs) {
-            if (Number(pc.assignment_epoch) > priorEpoch) priorEpoch = Number(pc.assignment_epoch);
-            if (pc.active_rider_id && pc.active_rider_id !== activeRiderId) {
-              disconnectRevokedUserFromConversation(pc.active_rider_id, pc.id, 'rider_reassigned');
-            }
-          }
+          const priorEpoch = await priorAssignmentEpoch(c, 'shipment_id', shipment.id, 'CUSTOMER_RIDER', activeRiderId);
 
           const convId = id();
           const conv = (await c.query(
@@ -1129,19 +1149,7 @@ export function chatEngine(db, options = {}) {
             return this.formatConversationSummary(c, auth.conv, actor);
           }
 
-          const priorConvs = (await c.query(
-            `SELECT id, active_rider_id, assignment_epoch
-             FROM chat_conversations
-             WHERE food_order_id = $1 AND conversation_type = 'RIDER_RESTAURANT'`,
-            [foodOrder.id]
-          )).rows;
-          let priorEpoch = 0;
-          for (const pc of priorConvs) {
-            if (Number(pc.assignment_epoch) > priorEpoch) priorEpoch = Number(pc.assignment_epoch);
-            if (pc.active_rider_id && pc.active_rider_id !== activeRiderId) {
-              disconnectRevokedUserFromConversation(pc.active_rider_id, pc.id, 'rider_reassigned');
-            }
-          }
+          const priorEpoch = await priorAssignmentEpoch(c, 'food_order_id', foodOrder.id, 'RIDER_RESTAURANT', activeRiderId);
 
           const convId = id();
           const conv = (await c.query(
@@ -1703,24 +1711,11 @@ export function chatEngine(db, options = {}) {
           [conv.id, targetSeq, actor.id]
         );
 
-        let outboxEvent = null;
-        if (updated.rowCount > 0) {
-          const senderIds = [...new Set(updated.rows.map(r => r.sender_id))];
-          const outboxId = id();
-          const payload = {
-            eventId: outboxId,
-            conversationId: conv.id,
-            deliveredByUserId: actor.id,
-            upToSeq: targetSeq,
-            deliveredAt: new Date().toISOString()
-          };
-          await c.query(
-            `INSERT INTO chat_realtime_outbox (id, conversation_id, event_type, recipient_user_ids, payload)
-             VALUES ($1, $2, 'message.delivered', $3::uuid[], $4::jsonb)`,
-            [outboxId, conv.id, senderIds, JSON.stringify(payload)]
-          );
-          outboxEvent = { id: outboxId, userIds: senderIds, event: 'message.delivered', payload };
-        }
+        const outboxEvent = await recordReceiptEvent(c, conv.id, updated, 'message.delivered', {
+          deliveredByUserId: actor.id,
+          upToSeq: targetSeq,
+          deliveredAt: new Date().toISOString()
+        });
 
         return {
           response: { conversationId: conv.id, deliveredSeq: targetSeq, updatedCount: updated.rowCount },
@@ -1770,24 +1765,11 @@ export function chatEngine(db, options = {}) {
           [conv.id, targetSeq, actor.id]
         );
 
-        let outboxEvent = null;
-        if (updated.rowCount > 0) {
-          const senderIds = [...new Set(updated.rows.map(r => r.sender_id))];
-          const outboxId = id();
-          const payload = {
-            eventId: outboxId,
-            conversationId: conv.id,
-            readByUserId: actor.id,
-            upToSeq: targetSeq,
-            readAt: new Date().toISOString()
-          };
-          await c.query(
-            `INSERT INTO chat_realtime_outbox (id, conversation_id, event_type, recipient_user_ids, payload)
-             VALUES ($1, $2, 'message.read', $3::uuid[], $4::jsonb)`,
-            [outboxId, conv.id, senderIds, JSON.stringify(payload)]
-          );
-          outboxEvent = { id: outboxId, userIds: senderIds, event: 'message.read', payload };
-        }
+        const outboxEvent = await recordReceiptEvent(c, conv.id, updated, 'message.read', {
+          readByUserId: actor.id,
+          upToSeq: targetSeq,
+          readAt: new Date().toISOString()
+        });
 
         return {
           response: { conversationId: conv.id, readSeq: targetSeq, updatedCount: updated.rowCount },

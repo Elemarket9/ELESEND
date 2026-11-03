@@ -140,20 +140,8 @@ export async function deduplicateLandmark(db, candidate) {
           continue; // Distinct businesses in same commercial area
         }
 
-        const rowNorm = normalizeInformalText(row.name);
-        const maxLen = Math.max(normName.length, rowNorm.length, 1);
-        const distSim = 1 - (levenshtein(normName, rowNorm) / maxLen);
-
-        if (distSim >= 0.85 || normName === rowNorm) {
-          return {
-            isDuplicate: true,
-            matchType: 'existing_spatial_landmarks_db',
-            existingId: row.id,
-            existingName: row.name,
-            distanceMeters: Math.round(Number(row.dist_m)),
-            similarity: distSim.toFixed(2)
-          };
-        }
+        const match = landmarkMatch(normName, row);
+        if (match) return match;
       }
     } catch {
       // Fallback to spatial_landmarks if view query fails
@@ -168,18 +156,8 @@ export async function deduplicateLandmark(db, candidate) {
 
         for (const row of fallbackMatch.rows) {
           if (!areCategoriesCompatible(candCategory, row.category?.toLowerCase())) continue;
-          const rowNorm = normalizeInformalText(row.name);
-          const distSim = 1 - (levenshtein(normName, rowNorm) / Math.max(normName.length, rowNorm.length, 1));
-          if (distSim >= 0.85 || normName === rowNorm) {
-            return {
-              isDuplicate: true,
-              matchType: 'existing_spatial_landmarks_db',
-              existingId: row.id,
-              existingName: row.name,
-              distanceMeters: Math.round(Number(row.dist_m)),
-              similarity: distSim.toFixed(2)
-            };
-          }
+          const match = landmarkMatch(normName, row);
+          if (match) return match;
         }
       } catch {
         // Ignore DB search error
@@ -188,4 +166,18 @@ export async function deduplicateLandmark(db, candidate) {
   }
 
   return { isDuplicate: false };
+}
+
+function landmarkMatch(normName, row) {
+  const rowNorm = normalizeInformalText(row.name);
+  const similarity = 1 - (levenshtein(normName, rowNorm) / Math.max(normName.length, rowNorm.length, 1));
+  if (similarity < 0.85 && normName !== rowNorm) return null;
+  return {
+    isDuplicate: true,
+    matchType: 'existing_spatial_landmarks_db',
+    existingId: row.id,
+    existingName: row.name,
+    distanceMeters: Math.round(Number(row.dist_m)),
+    similarity: similarity.toFixed(2)
+  };
 }

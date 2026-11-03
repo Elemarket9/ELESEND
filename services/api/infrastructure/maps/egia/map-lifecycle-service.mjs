@@ -4,6 +4,32 @@ import { check } from '../../../security.mjs';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const requireId = id => check(typeof id === 'string' && UUID_PATTERN.test(id), 400, 'Valid candidate id required');
 
+async function lockVersionForRollback(c, versionTag, changeType, wrongTypeMessage) {
+  const updateVer = (await c.query(`
+    SELECT * FROM map_update_versions WHERE version_tag = $1 FOR UPDATE
+  `, [versionTag])).rows[0];
+  check(updateVer, 404, 'Map update version not found');
+  check(updateVer.change_type === changeType, 409, wrongTypeMessage);
+  check(!updateVer.rolled_back, 409, 'Update is already rolled back');
+  return updateVer;
+}
+
+async function finishRollback(c, actor, updateVer, versionTag, label) {
+  await c.query(`
+    UPDATE map_update_versions
+    SET rolled_back = true, rolled_back_at = now(), rolled_back_by = $1
+    WHERE id = $2
+  `, [actor.id, updateVer.id]);
+  return {
+    success: true,
+    versionTag,
+    featureId: updateVer.feature_id,
+    status: 'RETIRED',
+    rolledBack: true,
+    message: `${label} update successfully rolled back`
+  };
+}
+
 /**
  * Manages the publication lifecycle, approval, rollback and coverage audit for EGIA (Phases 7, 13 & Priority 2).
  */
@@ -96,12 +122,7 @@ export function createMapLifecycleService(db) {
     check(typeof versionTag === 'string' && versionTag.length > 0, 400, 'Version tag required');
 
     return db.tx(async c => {
-      const updateVer = (await c.query(`
-        SELECT * FROM map_update_versions WHERE version_tag = $1 FOR UPDATE
-      `, [versionTag])).rows[0];
-      check(updateVer, 404, 'Map update version not found');
-      check(updateVer.change_type === 'road_publish', 409, 'This version is not a road update');
-      check(!updateVer.rolled_back, 409, 'Update is already rolled back');
+      const updateVer = await lockVersionForRollback(c, versionTag, 'road_publish', 'This version is not a road update');
 
       await c.query(`
         UPDATE candidate_roads
@@ -109,20 +130,7 @@ export function createMapLifecycleService(db) {
         WHERE id = $1
       `, [updateVer.feature_id]);
 
-      await c.query(`
-        UPDATE map_update_versions
-        SET rolled_back = true, rolled_back_at = now(), rolled_back_by = $1
-        WHERE id = $2
-      `, [actor.id, updateVer.id]);
-
-      return {
-        success: true,
-        versionTag,
-        featureId: updateVer.feature_id,
-        status: 'RETIRED',
-        rolledBack: true,
-        message: 'Road update successfully rolled back'
-      };
+      return finishRollback(c, actor, updateVer, versionTag, 'Road');
     });
   }
 
@@ -195,12 +203,7 @@ export function createMapLifecycleService(db) {
     check(typeof versionTag === 'string' && versionTag.length > 0, 400, 'Version tag required');
 
     return db.tx(async c => {
-      const updateVer = (await c.query(`
-        SELECT * FROM map_update_versions WHERE version_tag = $1 FOR UPDATE
-      `, [versionTag])).rows[0];
-      check(updateVer, 404, 'Map update version not found');
-      check(updateVer.change_type === 'landmark_publish', 409, 'This version is not a landmark update');
-      check(!updateVer.rolled_back, 409, 'Update is already rolled back');
+      const updateVer = await lockVersionForRollback(c, versionTag, 'landmark_publish', 'This version is not a landmark update');
 
       await c.query(`
         UPDATE candidate_landmarks
@@ -211,20 +214,7 @@ export function createMapLifecycleService(db) {
       // Remove from active spatial_landmarks
       await c.query(`DELETE FROM spatial_landmarks WHERE id = $1`, [updateVer.feature_id]);
 
-      await c.query(`
-        UPDATE map_update_versions
-        SET rolled_back = true, rolled_back_at = now(), rolled_back_by = $1
-        WHERE id = $2
-      `, [actor.id, updateVer.id]);
-
-      return {
-        success: true,
-        versionTag,
-        featureId: updateVer.feature_id,
-        status: 'RETIRED',
-        rolledBack: true,
-        message: 'Landmark update successfully rolled back'
-      };
+      return finishRollback(c, actor, updateVer, versionTag, 'Landmark');
     });
   }
 

@@ -14,7 +14,7 @@
  * zero customer screens, zero client-side pricing or commission manipulation.
  */
 
-import { runGuarded, useAccountRecovery } from '../account-actions';
+import { runGuarded, useSignInState, signInWithPassword } from '../account-actions';
 import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, TextInput, Pressable, ScrollView, StyleSheet,
@@ -47,22 +47,28 @@ const initialCreds = {
 
 const isStationary = speed => speed === null || speed < 2.5;
 
+function BrandRow({ tagline }) {
+  return (
+    <View style={styles.brandRow}>
+      <View style={styles.brandBadge}><Text style={styles.brandBadgeText}>E</Text></View>
+      <View>
+        <Text style={styles.brandTitle}>ELESEND</Text>
+        <Text style={styles.brandTagline}>{tagline}</Text>
+      </View>
+    </View>
+  );
+}
+
 export default function RiderApp() {
   const [auth, setAuth] = useState(null);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
-  const [phoneState, setPhoneState] = useState(null); // { phone, verified }
-  const [phoneChallenge, setPhoneChallenge] = useState(null); // { challengeId, expiresInSeconds }
-  const [phoneCode, setPhoneCode] = useState('');
-  const [credentials, setCredentials] = useState(initialCreds);
-  const [isSignup, setIsSignup] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
   const {
+    phoneState, setPhoneState, phoneChallenge, setPhoneChallenge, phoneCode, setPhoneCode,
+    credentials, setCredentials, isSignup, setIsSignup, loading, setLoading, busy, setBusy, error, setError,
     forgotModal, setForgotModal, recoveryPhone, setRecoveryPhone, recoveryChallenge, setRecoveryChallenge,
     recoveryCode, setRecoveryCode, recoveryNewPassword, setRecoveryNewPassword,
     requestPasswordRecoveryChallenge, submitPasswordReset
-  } = useAccountRecovery({ credentials, setCredentials, setError });
+  } = useSignInState(initialCreds);
   const [tab, setTab] = useState('Jobs'); // 'Jobs' | 'Manifest' | 'Earnings' | 'Profile'
 
   // Courier Operational State
@@ -118,6 +124,17 @@ export default function RiderApp() {
   const edit = (k, v) => setCredentials(c => ({ ...c, [k]: v }));
 
   const execute = task => runGuarded(task, { busy, setBusy, setError });
+
+  async function applyManifest(m) {
+    if (m) {
+      setManifest(m);
+      setOfflineCopy(null);
+      await cacheJobs(auth.id, m).catch(() => {});
+      return;
+    }
+    const cached = await readCachedJobs(auth.id).catch(() => null);
+    if (cached) { setOfflineCopy(cached); setManifest(null); }
+  }
 
   // Auth Initialization
   useEffect(() => {
@@ -196,14 +213,7 @@ export default function RiderApp() {
           call('GET', '/api/v1/rider/wallet/summary').catch(() => null)
         ]);
         if (!cancelled) {
-          if (m) {
-            setManifest(m);
-            setOfflineCopy(null);
-            await cacheJobs(auth.id, m).catch(() => {});
-          } else {
-            const cached = await readCachedJobs(auth.id).catch(() => null);
-            if (cached) { setOfflineCopy(cached); setManifest(null); }
-          }
+          await applyManifest(m);
           applyOfferList(o || []);
           if (v) {
             setVehicle(v);
@@ -279,26 +289,15 @@ export default function RiderApp() {
 
   // --- Auth & Onboarding Actions ---
   async function signIn() {
-    const normPhone = normalizeGhanaPhone(credentials.phone);
-    if (!isValidGhanaPhone(normPhone)) throw Error('Enter a valid Ghana phone (e.g. 024 123 4567)');
-    if (!credentials.password) throw Error('Enter your password');
-
-    const data = await call('POST', '/api/v1/auth/login', {
-      phone: normPhone,
-      password: credentials.password
+    const { data, normPhone, pStatus } = await signInWithPassword(credentials, user => {
+      if (user.kind !== 'rider') throw Error('This account is registered as a customer. Please use the standard ELESEND app.');
     });
-    if (data.user.kind !== 'rider') {
-      throw Error('This account is registered as a customer. Please use the standard ELESEND app.');
-    }
-    await saveToken(data.token);
-    const pStatus = await call('GET', '/api/v1/me/phone').catch(() => ({ phone: normPhone, verified: false }));
     setPhoneState(pStatus);
     setAuth({ ...data.user, phone: pStatus.phone || normPhone });
     setCredentials(initialCreds);
     if (!pStatus.verified) {
       try {
-        const ch = await call('POST', '/api/v1/me/phone-challenge', {});
-        setPhoneChallenge(ch);
+        setPhoneChallenge(await call('POST', '/api/v1/me/phone-challenge', {}));
       } catch (e) {
         setError(e.message || 'Enter the verification code sent to your phone or request a new code.');
       }
@@ -444,14 +443,7 @@ export default function RiderApp() {
     setOffers(prev => prev.filter(x => x.offerId !== offer.offerId));
     setTab('Manifest');
     const m = await call('GET', '/api/v1/rider/manifest').catch(() => null);
-    if (m) {
-            setManifest(m);
-            setOfflineCopy(null);
-            await cacheJobs(auth.id, m).catch(() => {});
-          } else {
-            const cached = await readCachedJobs(auth.id).catch(() => null);
-            if (cached) { setOfflineCopy(cached); setManifest(null); }
-          }
+    await applyManifest(m);
   }
 
   async function declineOffer(offer) {
@@ -758,13 +750,7 @@ export default function RiderApp() {
         <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
         <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled">
           <View style={styles.authHeader}>
-            <View style={styles.brandRow}>
-              <View style={styles.brandBadge}><Text style={styles.brandBadgeText}>E</Text></View>
-              <View>
-                <Text style={styles.brandTitle}>ELESEND</Text>
-                <Text style={styles.brandTagline}>RIDER COURIER APP</Text>
-              </View>
-            </View>
+            <BrandRow tagline="RIDER COURIER APP" />
             <Text style={styles.authSubtitle}>Drive and earn on your schedule with transparent, administrator-published commission and clear weekly settlements.</Text>
           </View>
 
@@ -951,13 +937,7 @@ export default function RiderApp() {
         <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
         <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled">
           <View style={styles.authHeader}>
-            <View style={styles.brandRow}>
-              <View style={styles.brandBadge}><Text style={styles.brandBadgeText}>E</Text></View>
-              <View>
-                <Text style={styles.brandTitle}>ELESEND</Text>
-                <Text style={styles.brandTagline}>VERIFY COURIER PHONE</Text>
-              </View>
-            </View>
+            <BrandRow tagline="VERIFY COURIER PHONE" />
             <Text style={styles.authSubtitle}>
               Verify your registered Ghana mobile number ({phoneState.phone || auth.phone}) before going online for dispatch.
             </Text>

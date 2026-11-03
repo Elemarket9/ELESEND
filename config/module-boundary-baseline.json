@@ -133,7 +133,6 @@
   "restaurant-orders.mjs: dispatch_policy",
   "restaurant-orders.mjs: locations",
   "restaurant-orders.mjs: notification_jobs",
-  "restaurant-orders.mjs: operational_risk_signals",
   "restaurant-orders.mjs: outbox",
   "restaurant-orders.mjs: pricing_policies",
   "restaurant-orders.mjs: quotes",

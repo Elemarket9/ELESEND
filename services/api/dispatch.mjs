@@ -1,4 +1,5 @@
-import {assessDeliveryHealth} from './algorithms/delivery-health.mjs';
+import {assessDeliveryHealth,RIDER_LATE_OR_SILENT_SQL} from './algorithms/delivery-health.mjs';
+import {recordRiderRiskSignals} from './risk-signals.mjs';
 import {cashAlreadyReported} from './modules/payments/index.mjs';
 import {foodDispatchAllowed} from './modules/payments/index.mjs';
 import {randomUUID} from 'node:crypto';
@@ -552,14 +553,7 @@ export function dispatchEngine(db,{routing}={}){
      AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP')
      AND (NOT $4::boolean OR COALESCE(s.watchdog_next_review_at, '-infinity'::timestamptz) <= clock_timestamp())
      AND (
-      r.online = false
-      OR GREATEST(COALESCE(r.position_at, '-infinity'::timestamptz), COALESCE(l.updated_at, '-infinity'::timestamptz)) < now() - ($1::int * interval '1 second')
-      OR (s.state='RIDER_ASSIGNED' AND f.ready_at IS NOT NULL AND f.ready_at < now() - ($2::int * interval '1 second'))
-      OR (s.state='RIDER_ASSIGNED' AND EXISTS (
-       SELECT 1 FROM dispatch_offers o
-       WHERE o.shipment_id=s.id AND o.rider_id=s.rider_id AND o.status='accepted'
-         AND o.accepted_at + ((COALESCE(o.pickup_eta_seconds, 300) + $2::int) * interval '1 second') < now()
-      ))
+      ${RIDER_LATE_OR_SILENT_SQL}
       OR (s.state IN ('PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP') AND dc.promised_delivery_before IS NOT NULL AND dc.promised_delivery_before < now())
      )
    ORDER BY
@@ -590,13 +584,7 @@ export function dispatchEngine(db,{routing}={}){
      const {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,latestGpsMs,nowMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f?.ready_at,offer:accOffer,deliveryDeadlineMs:dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():NaN});
      if(!reasons.length)return null;
      const oldRiderId=s.rider_id;
-     for(const sig of signals){
-      const existingSig=(await c.query("SELECT id FROM operational_risk_signals WHERE rider_id=$1 AND shipment_id=$2 AND signal_code=$3 AND review_status='pending' LIMIT 1",[oldRiderId,s.id,sig.code])).rows[0];
-      if(!existingSig){
-       await c.query('INSERT INTO operational_risk_signals(rider_id,shipment_id,signal_code,severity,evidence) VALUES($1,$2,$3,$4,$5)',
-        [oldRiderId,s.id,sig.code,sig.severity,JSON.stringify({reasons,foodOrderId:f?.id??null,state:s.state,lastGpsAt:Number.isFinite(latestGpsMs)?new Date(latestGpsMs).toISOString():null,promisedDeliveryBefore:dc?.promised_delivery_before??null})]);
-      }
-     }
+     await recordRiderRiskSignals(c, oldRiderId, s.id, signals, {reasons,foodOrderId:f?.id??null,state:s.state,lastGpsAt:Number.isFinite(latestGpsMs)?new Date(latestGpsMs).toISOString():null,promisedDeliveryBefore:dc?.promised_delivery_before??null});
      const reasonSummary=`Watchdog detected ${reasons.join(', ')} for rider ${oldRiderId} in state ${s.state}`;
      if(!pickedUp){
       await c.query("INSERT INTO dispatch_exceptions(shipment_id,actor_id,kind,reason) VALUES($1,NULL,'reassignment_review',$2)",[s.id,reasonSummary]);

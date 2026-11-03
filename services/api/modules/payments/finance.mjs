@@ -1,4 +1,5 @@
 import {errorText,pool,raceTimeout,submissionChecks} from './async-helpers.mjs';
+import {CONFIRMED_INTENT_FIELDS,claimIntentsToReconcile,markOutcomeUncertain,markRejectedBeforeCharge,reconcileQuietly} from './intent-records.mjs';
 import {MARKET_CURRENCY} from '../../market.mjs';
 import {validatePayer} from './payment-provider.mjs';
 import {validatedCheckoutUrl} from './checkout-policy.mjs';
@@ -41,6 +42,14 @@ const commissionEntries = {
  // Verified digital earnings applied to commission debt (counterpart posted in the shipment ledger).
  earnings_recovery:(v)=>[['rider_earnings_offset_clearing','debit',v],['rider_receivable','credit',v]]
 };
+const NO_OTHER_OPEN_SETTLEMENT=`NOT EXISTS (
+  SELECT 1 FROM settlement_intents other
+   WHERE other.rider_id=settlement_intents.rider_id
+     AND other.kind=settlement_intents.kind
+     AND other.id<>settlement_intents.id
+     AND other.status IN ('initiating','pending')
+)`;
+
 export async function journal(c,{eventKey,riderId,shipmentId=null,kind,value}){
  check(positive.safeParse(value).success,400,'Invalid journal amount');
  const found=await c.query('SELECT id FROM finance_journals WHERE event_key=$1',[eventKey]);
@@ -240,11 +249,7 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
         LIMIT 10`,
       [actor.id,v.kind]
      )).rows;
-     for(const cand of candidates){
-      if(!isSubmissionCallActive(cand)){
-       try{await this.reconcileIntent(cand.id,{silentUnavailable:true});}catch{}
-      }
-     }
+     await reconcileQuietly(candidates,isSubmissionCallActive,id=>this.reconcileIntent(id,{silentUnavailable:true}));
     }
 
     const submissionToken=randomUUID();
@@ -357,13 +362,7 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
           WHERE id=$1
             AND status='initiating'
             AND submission_token=$5
-            AND NOT EXISTS (
-              SELECT 1 FROM settlement_intents other
-               WHERE other.rider_id=settlement_intents.rider_id
-                 AND other.kind=settlement_intents.kind
-                 AND other.id<>settlement_intents.id
-                 AND other.status IN ('initiating','pending')
-            )
+            AND ${NO_OTHER_OPEN_SETTLEMENT}
           RETURNING *`,
         [reserved.id,response?.reference??reserved.provider_reference,safeCheckoutUrl,JSON.stringify(response??{}),submissionToken]
        )).rows[0];
@@ -382,38 +381,12 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
       if(e?.definitiveNoCharge===true){
        await db.tx(async c=>{
         await lockAccount(c,actor.id);
-        await c.query(
-         `UPDATE settlement_intents
-             SET status='failed',
-                 failure_reason=$2,
-                 failed_at=coalesce(failed_at,now()),
-                 provider_terminal_at=now(),
-                 provider_last_status='rejected_before_charge',
-                 submission_token=NULL,
-                 submission_lease_until=NULL,
-                 updated_at=now()
-           WHERE id=$1
-             AND status='initiating'
-             AND submission_token=$3`,
-         [reserved.id,reasonText(e),submissionToken]
-        );
+        await markRejectedBeforeCharge(c,'settlement_intents',reserved.id,reasonText(e),submissionToken);
        });
        throw e;
       }
       if(e?.status===409)throw e;
-      // Release submission_token so retry/reconciliation can check if payment succeeded,
-      // but preserve submission_lease_until so "not_created" is not treated as definitive failure
-      // while the remote provider could still be completing the creation request.
-      await db.query(
-       `UPDATE settlement_intents
-           SET failure_reason=$2,
-               submission_token=NULL,
-               updated_at=now()
-         WHERE id=$1
-           AND status='initiating'
-           AND submission_token=$3`,
-       [reserved.id,'Initialization outcome uncertain: '+reasonText(e),submissionToken]
-      ).catch(()=>{});
+      await markOutcomeUncertain(db,'settlement_intents',reserved.id,reasonText(e),submissionToken);
       throw Object.assign(Error('Commission payment initialization unconfirmed; query status before retry'),{status:503});
      }
     })();
@@ -492,18 +465,8 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
     const receiptNumber=intent.receipt_number||generateReceiptNumber(intentId);
     await c.query(
      `UPDATE settlement_intents
-         SET status='confirmed',
-             confirmed_at=coalesce(confirmed_at,now()),
-             receipt_number=$2,
-             failure_reason=NULL,
-             failed_at=NULL,
-             provider_terminal_at=now(),
-             provider_last_status='success',
-             submission_token=NULL,
-             submission_lease_until=NULL,
-             reconcile_lease_until=NULL,
-             last_reconciled_at=now(),
-             updated_at=now()
+         SET ${CONFIRMED_INTENT_FIELDS},
+             receipt_number=$2
        WHERE id=$1`,
      [intentId,receiptNumber]
     );
@@ -638,13 +601,7 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
         WHERE id=$1
           AND status='initiating'
           AND (submission_token IS NULL OR submission_lease_until IS NULL OR submission_lease_until<=now())
-          AND NOT EXISTS (
-            SELECT 1 FROM settlement_intents other
-             WHERE other.rider_id=settlement_intents.rider_id
-               AND other.kind=settlement_intents.kind
-               AND other.id<>settlement_intents.id
-               AND other.status IN ('initiating','pending')
-          )
+          AND ${NO_OTHER_OPEN_SETTLEMENT}
         RETURNING id`,
       [locked.id,providerStatus]
      )).rows[0];
@@ -659,25 +616,7 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
    if(!provider||typeof provider.verifyPayment!=='function')return [];
    // Every intent without a VERIFIED terminal provider outcome stays eligible, including locally
    // expired/failed ones. Backoff grows with age (age/10, capped) to bound provider load.
-   const rows=(await db.query(
-    `UPDATE settlement_intents
-        SET reconcile_lease_until=now()+make_interval(secs=>$3)
-      WHERE id IN (
-        SELECT id FROM settlement_intents
-         WHERE provider=$1
-           AND status IN ('initiating','pending','expired','failed')
-           AND provider_terminal_at IS NULL
-           AND (reconcile_lease_until IS NULL OR reconcile_lease_until<now())
-           AND (status<>'initiating' OR submission_token IS NULL OR submission_lease_until IS NULL OR submission_lease_until<=now())
-           AND coalesce(last_reconciled_at,submitted_at,updated_at,created_at)
-               < now()-make_interval(secs=>greatest($4::double precision,least(extract(epoch FROM now()-created_at)/10,$5::double precision)))
-         ORDER BY coalesce(last_reconciled_at,submitted_at,updated_at,created_at) ASC
-         LIMIT $2
-         FOR UPDATE SKIP LOCKED
-      )
-      RETURNING id`,
-    [provider.name,limit,leaseSeconds,olderThanSeconds,maxVerifyBackoffSeconds]
-   )).rows;
+   const rows=await claimIntentsToReconcile(db,'settlement_intents',{providerName:provider.name,limit,leaseSeconds,minimumSeconds:olderThanSeconds,maximumBackoffSeconds:maxVerifyBackoffSeconds});
    return pool(rows,concurrency,async r=>{
     try{
      return await this.reconcileIntent(r.id,{silentUnavailable:true});

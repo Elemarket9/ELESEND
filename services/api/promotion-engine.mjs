@@ -120,6 +120,38 @@ function isTownOrRegionMatch(campaign, { restaurant, deliveryAddress }) {
 /**
  * Computes raw discount and funding split for a single campaign against an order context.
  */
+function promotionBadge(v, bogoText, otherText) {
+  if (v.discountType === 'free_delivery') return 'Free Delivery';
+  if (v.discountType === 'percentage') return `${(v.discountBps / 100).toFixed(0)}% OFF`;
+  if (v.discountType === 'fixed') return `GH₵${(v.discountMinor / 100).toFixed(0)} OFF`;
+  return v.discountType === 'bogo' ? bogoText : otherText;
+}
+
+const CAMPAIGN_RESTAURANT_COLUMNS=`id, campaign_id, restaurant_id, consent_status,
+  restaurant_funding_bps, elesend_funding_bps,
+  restaurant_fixed_share_minor, elesend_fixed_share_minor,
+  per_order_restaurant_cap_minor, restaurant_budget_cap_minor`;
+
+function campaignRestaurantTerms(camp, v) {
+  return [
+    camp.restaurant_funding_bps,
+    camp.elesend_funding_bps,
+    camp.restaurant_fixed_share_minor,
+    camp.elesend_fixed_share_minor,
+    v.perOrderRestaurantCapMinor ?? camp.per_order_restaurant_cap_minor ?? null,
+    v.restaurantBudgetCapMinor ?? null
+  ];
+}
+
+async function customerRedemptions(c, campaignId, customerId) {
+  return (await c.query(
+    `SELECT COUNT(*)::int AS cnt
+     FROM promotion_redemptions
+     WHERE campaign_id = $1 AND customer_id = $2 AND status IN ('reserved', 'applied')`,
+    [campaignId, customerId]
+  )).rows[0].cnt;
+}
+
 export function calculateSingleCampaignDiscount({
   campaign,
   consentRecord = null,
@@ -472,17 +504,7 @@ export function promotionEngine(db) {
 
         const campaignId = id();
         const initialStatus = v.status || (v.ownerType === 'joint' ? 'active' : 'active');
-        const badgeText = v.badgeText || (
-          v.discountType === 'free_delivery'
-            ? 'Free Delivery'
-            : v.discountType === 'percentage'
-            ? `${(v.discountBps / 100).toFixed(0)}% OFF`
-            : v.discountType === 'fixed'
-            ? `GH₵${(v.discountMinor / 100).toFixed(0)} OFF`
-            : v.discountType === 'bogo'
-            ? 'Buy 1 Get 1 Free'
-            : 'Special Offer'
-        );
+        const badgeText = v.badgeText || promotionBadge(v, 'Buy 1 Get 1 Free', 'Special Offer');
 
         const row = (await c.query(
           `INSERT INTO promotion_campaigns (
@@ -607,10 +629,7 @@ export function promotionEngine(db) {
         for (const restId of [...new Set(v.restaurantIds)]) {
           const row = (await c.query(
             `INSERT INTO promotion_campaign_restaurants (
-               id, campaign_id, restaurant_id, consent_status,
-               restaurant_funding_bps, elesend_funding_bps,
-               restaurant_fixed_share_minor, elesend_fixed_share_minor,
-               per_order_restaurant_cap_minor, restaurant_budget_cap_minor,
+               ${CAMPAIGN_RESTAURANT_COLUMNS},
                commission_concession_bps, invited_by
              ) VALUES ($1, $2, $3, 'invited', $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (campaign_id, restaurant_id) DO UPDATE SET
@@ -624,12 +643,7 @@ export function promotionEngine(db) {
               id(),
               campaignId,
               restId,
-              camp.restaurant_funding_bps,
-              camp.elesend_funding_bps,
-              camp.restaurant_fixed_share_minor,
-              camp.elesend_fixed_share_minor,
-              v.perOrderRestaurantCapMinor ?? camp.per_order_restaurant_cap_minor ?? null,
-              v.restaurantBudgetCapMinor ?? null,
+              ...campaignRestaurantTerms(camp, v),
               v.commissionConcessionBps ?? camp.commission_concession_bps ?? null,
               actor.id
             ]
@@ -703,17 +717,7 @@ export function promotionEngine(db) {
           (v.discountType === 'fixed' && v.discountMinor > 20000)
         );
         const status = requiresApproval ? 'pending_approval' : (v.status || 'active');
-        const badgeText = v.badgeText || (
-          v.discountType === 'free_delivery'
-            ? 'Free Delivery'
-            : v.discountType === 'percentage'
-            ? `${(v.discountBps / 100).toFixed(0)}% OFF`
-            : v.discountType === 'fixed'
-            ? `GH₵${(v.discountMinor / 100).toFixed(0)} OFF`
-            : v.discountType === 'bogo'
-            ? 'BOGO'
-            : 'Merchant Offer'
-        );
+        const badgeText = v.badgeText || promotionBadge(v, 'BOGO', 'Merchant Offer');
 
         const campaignId = id();
         const row = (await c.query(
@@ -833,10 +837,7 @@ export function promotionEngine(db) {
 
         const row = (await c.query(
           `INSERT INTO promotion_campaign_restaurants (
-             id, campaign_id, restaurant_id, consent_status,
-             restaurant_funding_bps, elesend_funding_bps,
-             restaurant_fixed_share_minor, elesend_fixed_share_minor,
-             per_order_restaurant_cap_minor, restaurant_budget_cap_minor,
+             ${CAMPAIGN_RESTAURANT_COLUMNS},
              commission_concession_bps, consented_by, consented_at,
              decision_notes, agreement_snapshot, updated_at
            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), $13, $14, now())
@@ -855,12 +856,7 @@ export function promotionEngine(db) {
             campaignId,
             restaurantId,
             v.decision,
-            camp.restaurant_funding_bps,
-            camp.elesend_funding_bps,
-            camp.restaurant_fixed_share_minor,
-            camp.elesend_fixed_share_minor,
-            v.perOrderRestaurantCapMinor ?? camp.per_order_restaurant_cap_minor ?? null,
-            v.restaurantBudgetCapMinor ?? null,
+            ...campaignRestaurantTerms(camp, v),
             camp.commission_concession_bps ?? null,
             actor.id,
             v.decisionNotes,
@@ -1306,12 +1302,7 @@ export function promotionEngine(db) {
 
         // 9. Per-customer redemption limit check
         if (actor?.id && Number(camp.per_customer_limit || 0) > 0) {
-          const userUsed = (await c.query(
-            `SELECT COUNT(*)::int AS cnt
-             FROM promotion_redemptions
-             WHERE campaign_id = $1 AND customer_id = $2 AND status IN ('reserved', 'applied')`,
-            [camp.id, actor.id]
-          )).rows[0].cnt;
+          const userUsed = await customerRedemptions(c, camp.id, actor.id);
           if (userUsed >= Number(camp.per_customer_limit)) {
             reject('CUSTOMER_LIMIT_REACHED', `You have already used promotion "${camp.name}" the maximum number of times (${camp.per_customer_limit}).`);
             continue;
@@ -1579,12 +1570,7 @@ export function promotionEngine(db) {
 
         // Re-verify per-customer redemption limit under lock
         if (actor?.id && Number(camp.per_customer_limit || 0) > 0) {
-          const userUsed = (await c.query(
-            `SELECT COUNT(*)::int AS cnt
-             FROM promotion_redemptions
-             WHERE campaign_id = $1 AND customer_id = $2 AND status IN ('reserved', 'applied')`,
-            [camp.id, actor.id]
-          )).rows[0].cnt;
+          const userUsed = await customerRedemptions(c, camp.id, actor.id);
           check(
             userUsed < Number(camp.per_customer_limit),
             409,

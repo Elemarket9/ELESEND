@@ -14,3 +14,12 @@ export function assessDeliveryHealth({pickedUp,rider,location,staleSec,pickupGra
  if(isOverdueDelivery){reasons.push('overdue_delivery');signals.push({code:'OVERDUE_DELIVERY',severity:'high'});}
  return {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,latestGpsMs,nowMs};
 }
+/** Database form of the same checks; $1 is the GPS limit and $2 the pickup grace, both in seconds. */
+export const RIDER_LATE_OR_SILENT_SQL=`r.online = false
+  OR GREATEST(COALESCE(r.position_at, '-infinity'::timestamptz), COALESCE(l.updated_at, '-infinity'::timestamptz)) < now() - ($1::int * interval '1 second')
+  OR (s.state='RIDER_ASSIGNED' AND f.ready_at IS NOT NULL AND f.ready_at < now() - ($2::int * interval '1 second'))
+  OR (s.state='RIDER_ASSIGNED' AND EXISTS (
+   SELECT 1 FROM dispatch_offers o
+   WHERE o.shipment_id=s.id AND o.rider_id=s.rider_id AND o.status='accepted'
+     AND o.accepted_at + ((COALESCE(o.pickup_eta_seconds, 300) + $2::int) * interval '1 second') < now()
+  ))`;
