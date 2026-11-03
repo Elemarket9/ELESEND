@@ -201,8 +201,22 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const fleetRider=await newRider();
   const fleet=await completedEarning(fleetRider,customer,2500);
   await db.query('UPDATE shipments SET company_id=$2 WHERE id=$1',[fleet,companyId]);
+  // Cash commission on a company job is the company's debt, never the rider's, and earnings repay it.
+  const {settleCompletedDelivery,debtState}=await import('../services/api/rider-wallet.mjs');
+  const {companyDebtMinor}=await import('../services/api/company-commission.mjs');
+  const {cashEligible}=await import('../services/api/finance.mjs');
+  await db.query('UPDATE riders SET company_id=$2 WHERE id=$1',[fleetRider,companyId]);
+  const cashJob=await completedEarning(fleetRider,customer,1);
+  await db.query('UPDATE shipments SET company_id=$2 WHERE id=$1',[cashJob,companyId]);
+  await db.tx(c=>settleCompletedDelivery(c,{id:cashJob,rider_id:fleetRider,company_id:companyId,payment_method:'CASH',commission_minor:500}));
+  assert.equal((await db.tx(c=>debtState(c,fleetRider))).debtMinor,0);
+  assert.equal(await db.tx(c=>companyDebtMinor(c,companyId)),0);
+  const ceiling=process.env.COMPANY_COMMISSION_DEBT_LIMIT_MINOR;
+  process.env.COMPANY_COMMISSION_DEBT_LIMIT_MINOR='5';
+  await assert.rejects(db.tx(c=>cashEligible(c,fleetRider,10)),/company commission limit/);
+  if(ceiling===undefined)delete process.env.COMPANY_COMMISSION_DEBT_LIMIT_MINOR;else process.env.COMPANY_COMMISSION_DEBT_LIMIT_MINOR=ceiling;
   const swept=await money.settleBusinessesDue();
-  assert.ok(swept.some(r=>r.status==='paid'&&r.amountMinor===2500));
+  assert.ok(swept.some(r=>r.status==='paid'&&r.amountMinor===2001),JSON.stringify(swept));
   assert.equal(await payable(fleet),0);
   submitted.length=0;
   await money.settleBusinessesDue();
