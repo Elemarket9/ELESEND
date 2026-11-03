@@ -1,10 +1,11 @@
 import {createServer} from 'node:http';
 import {ZodError} from 'zod';
-import {check,limit,equal} from './security.mjs';
+import {check,limit,equal,recordAttempt,assertUnderLimit} from './security.mjs';
+import {ipLimits,memoryRateLimiter} from './rate-limits.mjs';
 import {haversine} from './dispatch-geometry.mjs';
 import {network} from './network.mjs';
 import {vehicleService} from './vehicle.mjs';
-import {clientIp,resolveVerifiedHost} from './client-ip.mjs';
+import {clientIp,rateLimitKey,resolveVerifiedHost} from './client-ip.mjs';
 import {marketService} from './markets.mjs';
 import {ghanaSearch,ghanaReverseGeocode} from './infrastructure/maps/ghana-geocoder.mjs';
 import {searchInformalLocation} from './infrastructure/maps/egia/informal-geocoder.mjs';
@@ -39,6 +40,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const promos=promotionEngine(db);
   const chat=chatEngine(db);
   const mapLifecycle=createMapLifecycleService(db);
+  const ipLimit=ipLimits(),floodGuard=memoryRateLimiter();
   const server=createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192},async(req,res)=>{
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
  res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
@@ -70,16 +72,17 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    check(authorized,404,'Endpoint not found');
    await db.query('SELECT 1');send(200,{status:'ready'});return;
   }
-  await limit(db,'http:'+clientIp(req),300,60);
+  const ipKey=rateLimitKey(clientIp(req));
+  floodGuard.hit('http:'+ipKey,ipLimit.httpPerMinute,60);
   if(method==='GET'&&/^\/track\/[0-9a-f.-]{36,100}$/i.test(path)){
-   await limit(db,'public-track:'+clientIp(req),60,60);
+   floodGuard.hit('public-track:'+ipKey,ipLimit.publicTrackPerMinute,60);
    const rawTok=path.split('/')[2];
    const data=await getPublicTracking(db,rawTok);
    if(!data){res.writeHead(404,{'Content-Type':'text/html'});res.end('<!DOCTYPE html><html><body style="background:#0c1324;color:#fff;font-family:sans-serif;padding:30px;text-align:center;"><h2>Tracking link not found or expired</h2></body></html>');return;}
    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end(renderTrackingHtml(data,rawTok));return;
   }
   if(method==='GET'&&/^\/api\/v1\/public-track\/[0-9a-f.-]{36,100}$/i.test(path)){
-   await limit(db,'public-track:'+clientIp(req),60,60);
+   floodGuard.hit('public-track:'+ipKey,ipLimit.publicTrackPerMinute,60);
    const rawTok=path.split('/')[4];
    const bearer=req.headers.authorization?.replace(/^Bearer /,'');
    let optActor=null;
@@ -122,10 +125,18 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    send(200,await finance.handleWebhook(rawBody,req.headers));return;
   }
   check(body&&typeof body==='object'&&!Array.isArray(body),400,'JSON object required');
-  if(method==='POST'&&path==='/api/v1/auth/register'){await limit(db,'registration-ip:'+clientIp(req),12,3600);send(201,await app.register(body));return;}
-  if(method==='POST'&&path==='/api/v1/auth/login'){await limit(db,'login-ip:'+clientIp(req),40,900);send(200,await app.login(body,{clientIp:clientIp(req)}));return;}
-  if(method==='POST'&&path==='/api/v1/auth/password-recovery'){await limit(db,'pw-recovery-ip:'+clientIp(req),10,900);send(200,await app.passwordRecoveryChallenge(body));return;}
-  if(method==='POST'&&path==='/api/v1/auth/password-reset'){await limit(db,'pw-reset-ip:'+clientIp(req),15,900);send(200,await app.resetPassword(body));return;}
+  if(method==='POST'&&path==='/api/v1/auth/register'){await limit(db,'registration-ip:'+ipKey,ipLimit.registrationsPerHour,3600);send(201,await app.register(body));return;}
+  if(method==='POST'&&path==='/api/v1/auth/login'){
+   await limit(db,'login-ip:'+ipKey,ipLimit.loginAttemptsPer15Min,900);
+   // Failures are counted separately: a shared address full of real users mostly succeeds, while credential stuffing mostly fails.
+   await assertUnderLimit(db,'login-fail-ip:'+ipKey,ipLimit.loginFailuresPer15Min);
+   let session;
+   try{session=await app.login(body,{clientIp:ipKey});}
+   catch(e){if(e.status===401)await recordAttempt(db,'login-fail-ip:'+ipKey,900);throw e;}
+   send(200,session);return;
+  }
+  if(method==='POST'&&path==='/api/v1/auth/password-recovery'){await limit(db,'pw-recovery-ip:'+ipKey,ipLimit.recoveryPer15Min,900);await limit(db,'account-sms-ip:'+ipKey,ipLimit.accountSmsPer15Min,900);send(200,await app.passwordRecoveryChallenge(body));return;}
+  if(method==='POST'&&path==='/api/v1/auth/password-reset'){await limit(db,'pw-reset-ip:'+ipKey,ipLimit.resetPer15Min,900);send(200,await app.resetPassword(body));return;}
   const token=req.headers.authorization?.replace(/^Bearer /,'');const actor=token?.startsWith('es_live_')?await net.authenticateKey(token):await app.authenticate(token);
   net.authorizeKey(actor,method,path);
   await limit(db,'user:'+actor.id,150,60);
@@ -133,7 +144,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   let result;
   if(method==='POST'&&path==='/api/v1/auth/logout'){result=await app.logout(token,body,actor);disconnectRealtimeSession(token,'logged_out');}
   else if(method==='GET'&&path==='/api/v1/me/phone')result=await app.phoneStatus(actor);
-  else if(method==='POST'&&path==='/api/v1/me/phone-challenge')result=await app.phoneChallenge(actor);
+  else if(method==='POST'&&path==='/api/v1/me/phone-challenge'){await limit(db,'account-sms-ip:'+ipKey,ipLimit.accountSmsPer15Min,900);result=await app.phoneChallenge(actor);}
   else if(method==='POST'&&path==='/api/v1/me/phone-verify')result=await app.verifyPhone(actor,body);
   else if(method==='POST'&&path==='/api/v1/me/push-token')result=await app.registerPushToken(actor,body,{sessionToken:token});
   else if(method==='GET'&&path==='/api/v1/me/push-tokens')result=await app.listPushTokens(actor);

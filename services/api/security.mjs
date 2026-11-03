@@ -19,7 +19,13 @@ export const newToken=()=>randomBytes(32).toString('hex');
 export const newCode=()=>randomInt(0,1000000).toString().padStart(6,'0');
 export function mac(secret,fields){return createHmac('sha256',Buffer.from(secret,'hex')).update(JSON.stringify(fields)).digest('hex');}
 export function equal(a,b){if(typeof a!=='string'||typeof b!=='string')return false;const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y);}
-export async function limit(db,subject,max,seconds){
+export async function recordAttempt(db,subject,seconds){
  const r=await db.query(`INSERT INTO rate_limits(subject,count,expires_at) VALUES($1,1,now()+$2*interval '1 second') ON CONFLICT(subject) DO UPDATE SET count=CASE WHEN rate_limits.expires_at<=now() THEN 1 ELSE rate_limits.count+1 END,expires_at=CASE WHEN rate_limits.expires_at<=now() THEN excluded.expires_at ELSE rate_limits.expires_at END RETURNING count`,[subject,seconds]);
- check(r.rows[0].count<=max,429,'Too many requests');
+ return r.rows[0].count;
+}
+export async function limit(db,subject,max,seconds){check(await recordAttempt(db,subject,seconds)<=max,429,'Too many requests');}
+/** Refuses once a counter has reached max, without adding to it. Pair with recordAttempt to count only some outcomes. */
+export async function assertUnderLimit(db,subject,max){
+ const r=await db.query('SELECT count FROM rate_limits WHERE subject=$1 AND expires_at>now()',[subject]);
+ check((r.rows[0]?.count??0)<max,429,'Too many requests');
 }

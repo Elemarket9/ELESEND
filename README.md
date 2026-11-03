@@ -208,6 +208,8 @@ docker compose exec api node scripts/migrate.mjs
 | `ADMIN_HOST` | Isolated hostname restricted to admin access | `admin.elesend.com` |
 | `PAYMENT_PROVIDER` | Active PSP adapter (`gateway`, `hubtel`, `paystack`, `none`) | `none` |
 | `SMS_PROVIDER` | Active SMS provider (`hubtel`, `https_gateway`, `none`) | `auto` |
+| `TRUSTED_PROXY_CIDRS` | Address of the reverse proxy. Without it, all users behind the proxy share one rate limit | *Set behind a proxy* |
+| `IP_LIMIT_MULTIPLIER` | Scales all per-IP rate limits for shared mobile networks (0.1 to 100) | `1` |
 | `ROUTING_OSRM_URL` | OSRM routing server base URL | `http://127.0.0.1:5000` |
 
 ---
