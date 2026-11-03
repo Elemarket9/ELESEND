@@ -102,3 +102,9 @@ test('the API tells apps where the map lives, with no address in the code',async
  assert.deepEqual(publicMapConfig({MAPS_PUBLIC_ORIGIN:'https://maps.example.test/'}),{tileUrl:'https://maps.example.test/tiles/{z}/{x}/{y}.pbf',glyphsUrl:'https://maps.example.test/fonts/{fontstack}/{range}.pbf'});
  assert.deepEqual(publicMapConfig({}),{tileUrl:null,glyphsUrl:null});
 });
+
+test('no deployment domain is stored in the repository',()=>{
+ for(const file of ['.env.example','deploy/runtime/.env.example','apps/mobile/eas.json','compose.yaml','deploy/runtime/compose.yaml','deploy/runtime/Caddyfile','services/api/config.mjs','services/api/map-config.mjs','apps/mobile/src/config.js']){
+  assert.equal(/elevoratrading/i.test(readFileSync(new URL('../'+file,import.meta.url),'utf8')),false,file);
+ }
+});

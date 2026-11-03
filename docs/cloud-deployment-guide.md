@@ -135,4 +135,4 @@ Each part has its own address, so it can move without code changes:
 - **Database and Redis:** set `DOCKER_DATABASE_URL` and the Redis URL.
 - **Admin and web:** set `ADMIN_HOST`, `WEB_HOST` and `WEB_PUBLIC_ORIGIN`.
 
-The apps only have the API address built in. They ask the API for the map address when they open.
+When building the apps, set `EXPO_PUBLIC_ELESEND_API_BASE_URL` to your API address in your build environment. It is not stored in this repository. The apps ask the API for the map address when they open.
