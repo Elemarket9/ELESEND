@@ -347,6 +347,14 @@ export function renderAdminPortalHtml() {
       <div id="riskTab" class="panel">
         <div class="card">
           <div class="card-title">
+            <span>Missing Parcels</span>
+            <button class="action-btn" onclick="loadCustody()">Refresh</button>
+          </div>
+          <div class="card-subtitle">Parcels still with a rider after the time limit. The rider is suspended automatically. Check the facts and try to reach the rider before reporting to the police.</div>
+          <div id="custodyList"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">
             <span>Explainable Risk Signals</span>
             <button class="action-btn" onclick="loadRisk()">Refresh Signals</button>
           </div>
@@ -1060,7 +1068,27 @@ export function renderAdminPortalHtml() {
       }
     }
 
+    async function loadCustody() {
+      const box = document.getElementById('custodyList');
+      try {
+        const rows = await api('/api/v1/admin/custody-incidents');
+        box.innerHTML = !rows?.length ? '<p>No missing parcels.</p>' : rows.map(i => '<details style="margin-bottom:10px"><summary>'
+          + escapeHtml(String(i.shipment_id).slice(0, 8)) + ' • Rider ' + escapeHtml(String(i.evidence?.rider_phone || '')) + ' • ' + escapeHtml(i.outcome || 'OPEN')
+          + (i.police_reference ? ' • Police ref ' + escapeHtml(i.police_reference) : '')
+          + '</summary><pre style="white-space:pre-wrap">' + escapeHtml(JSON.stringify(i.evidence, null, 2)) + '</pre>'
+          + ['police_reported', 'recovered', 'false_alarm'].map(o => '<button class="action-btn" onclick="resolveCustody(\\'' + escapeHtml(i.id) + '\\',\\'' + o + '\\')">' + o.replace('_', ' ') + '</button> ').join('')
+          + '</details>').join('');
+      } catch (e) { box.textContent = e.message; }
+    }
+    async function resolveCustody(id, outcome) {
+      const reason = prompt('Reason for this decision');
+      if (!reason) return;
+      const policeReference = outcome === 'police_reported' ? (prompt('Police report reference') || undefined) : undefined;
+      await api('/api/v1/admin/custody-incidents/' + id + '/resolve', { method: 'POST', body: JSON.stringify({ outcome, reason, policeReference }) });
+      loadCustody();
+    }
     async function loadRisk() {
+      loadCustody();
       try {
         const signals = await api('/api/v1/admin/risk-signals');
         const tb = document.getElementById('riskTable');

@@ -132,3 +132,27 @@ UPDATE weekly_settlement_settings SET grace_hours=24 WHERE grace_hours=0;
 -- The sender's SMS code proves that a failed parcel came back.
 ALTER TABLE challenges DROP CONSTRAINT challenges_purpose_check;
 ALTER TABLE challenges ADD CONSTRAINT challenges_purpose_check CHECK (purpose IN ('pickup','delivery','return'));
+
+-- Parcels held too long after pickup: the rider is suspended and the evidence is frozen for any police report.
+CREATE TABLE IF NOT EXISTS parcel_custody_incidents (
+  id uuid PRIMARY KEY,
+  shipment_id uuid NOT NULL UNIQUE REFERENCES shipments(id),
+  rider_id uuid NOT NULL REFERENCES riders(id),
+  evidence jsonb NOT NULL,
+  outcome text CHECK (outcome IN ('police_reported','recovered','false_alarm')),
+  outcome_reason text,
+  police_reference text,
+  decided_by uuid REFERENCES users(id),
+  decided_at timestamptz,
+  opened_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE OR REPLACE FUNCTION guard_custody_evidence() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' OR NEW.evidence IS DISTINCT FROM OLD.evidence OR NEW.rider_id IS DISTINCT FROM OLD.rider_id
+     OR NEW.shipment_id IS DISTINCT FROM OLD.shipment_id OR NEW.opened_at IS DISTINCT FROM OLD.opened_at THEN
+    RAISE EXCEPTION 'Custody evidence is immutable';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER custody_evidence_guard BEFORE UPDATE OR DELETE ON parcel_custody_incidents
+  FOR EACH ROW EXECUTE FUNCTION guard_custody_evidence();

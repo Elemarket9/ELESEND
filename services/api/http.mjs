@@ -1,3 +1,4 @@
+import {listCustodyIncidents,resolveCustodyIncident} from './custody-incidents.mjs';
 import {createServer} from 'node:http';
 import {randomUUID} from 'node:crypto';
 import {ZodError} from 'zod';
@@ -433,6 +434,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/admin/markets/activate')result=await markets.activate(actor,body);
   else if(method==='GET'&&path==='/api/v1/admin/fleet-batch-preview'){check(dispatcher,503);result=await dispatcher.previewFleetBatch(actor);}
   else if(method==='POST'&&path==='/api/v1/admin/risk-signals/review'){check(dispatcher,503);result=await dispatcher.reviewRisk(actor,body);}
+  else if(method==='GET'&&path==='/api/v1/admin/custody-incidents')result=await listCustodyIncidents(db,actor);
+  else if(method==='POST'&&/^\/api\/v1\/admin\/custody-incidents\/[0-9a-f-]{36}\/resolve$/.test(path))result=await resolveCustodyIncident(db,actor,path.split('/')[5],body);
   else if(method==='GET'&&path==='/api/v1/admin/risk-signals'){check(dispatcher,503);result=await dispatcher.riskSignals(actor);}
   else if(method==='GET'&&path==='/api/v1/admin/algorithm-features'){check(dispatcher,503);result=await dispatcher.algorithmFeatures(actor);}
   else if(method==='POST'&&path==='/api/v1/admin/algorithm-features'){check(dispatcher,503);result=await dispatcher.setAlgorithmFeature(actor,body);}

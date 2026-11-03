@@ -641,7 +641,11 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     const foOwner=(await c.query('SELECT r.owner_id FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id WHERE f.shipment_id=$1',[sid])).rows[0];
     foOwnerReturned=Boolean(foOwner);
     if(foOwner)check(actor?.kind==='admin'||foOwner.owner_id===actor?.id,403,'Only restaurant owner or administrator may confirm physical return');
-    else check(actor?.kind==='admin',409,'The sender must confirm the return with their SMS code');
+    else{
+     check(actor?.kind==='admin',409,'The sender must confirm the return with their SMS code');
+     // A rider under a missing-parcel incident is paid only if it was cleared as a false alarm.
+     check(!(await c.query("SELECT 1 FROM parcel_custody_incidents WHERE shipment_id=$1 AND outcome IS DISTINCT FROM 'false_alarm'",[sid])).rowCount,409,'This parcel has a missing-parcel incident');
+    }
    }else{
     check(s.rider_id===actor.id,403,'Assigned rider required');
     // Before pickup nothing was carried, so the job is released rather than charged as a failed delivery.

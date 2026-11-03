@@ -273,5 +273,29 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   assert.equal((await db.query('SELECT 1 FROM checkout_refund_requests WHERE shipment_id=$1',[failed_parcel])).rowCount,0);
   const returnedBooks=await balances(failed_parcel);
   assert.equal(returnedBooks.customer_delivery_liability,0);assert.equal(returnedBooks.customer_processing_fee_liability,0);
+  // A parcel kept past the limit suspends the rider, blocks withdrawal and freezes the evidence.
+  const {flagOverdueParcels,listCustodyIncidents,resolveCustodyIncident}=await import('../services/api/custody-incidents.mjs');
+  const runner=await newRider();
+  await db.query('INSERT INTO payout_beneficiaries(user_id,provider,recipient_reference) VALUES($1,$2,$3)',[runner,'fixture','RCP_runner']);
+  const stolen=await shipment(customer,'AWAITING_ASSIGNMENT',true);
+  await db.query('INSERT INTO rider_dispatch_plans(rider_id,revision,stops) VALUES($1,1,$2)',[runner,JSON.stringify([{shipmentId:stolen,kind:'pickup',weightG:100,latitude:5.5,longitude:-0.2},{shipmentId:stolen,kind:'dropoff',weightG:100,latitude:5.5,longitude:-0.2}])]);
+  await db.query("UPDATE shipments SET rider_id=$2,state='RIDER_ASSIGNED' WHERE id=$1",[stolen,runner]);
+  const pickupCode=randomUUID();
+  await db.query("INSERT INTO challenges(id,shipment_id,rider_id,purpose,phone,digest,expires_at,sent,consumed_at) VALUES($1,$2,$3,'pickup','+233241234567','x',now()+interval '5 minutes',true,now())",[pickupCode,stolen,runner]);
+  await db.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[stolen]);
+  assert.equal((await flagOverdueParcels(db)).length,0);
+  await db.query("UPDATE challenges SET consumed_at=now()-interval '25 hours' WHERE id=$1",[pickupCode]);
+  assert.equal((await flagOverdueParcels(db)).length,1);
+  assert.equal((await flagOverdueParcels(db)).length,0);
+  assert.equal((await db.query('SELECT status FROM riders WHERE id=$1',[runner])).rows[0].status,'suspended');
+  await assert.rejects(withdraw(key(),{id:runner,kind:'rider'}),/unavailable/);
+  const investigator=await user('admin');
+  await assert.rejects(listCustodyIncidents(db,{id:investigator,kind:'admin'}),/Permission/);
+  await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'verification:write')",[investigator]);
+  const incident=(await listCustodyIncidents(db,{id:investigator,kind:'admin'})).find(i=>i.shipment_id===stolen);
+  assert.equal(incident.evidence.rider_id,runner);assert.ok(incident.evidence.sender_phone);assert.ok(incident.evidence.picked_up_at);
+  await assert.rejects(db.query("UPDATE parcel_custody_incidents SET evidence='{}' WHERE id=$1",[incident.id]),/immutable/);
+  await assert.rejects(app.transition({id:investigator,kind:'admin'},stolen,{action:'fail',reason:'Admin should not change this'}),/Assigned rider/);
+  assert.equal((await resolveCustodyIncident(db,{id:investigator,kind:'admin'},incident.id,{outcome:'police_reported',reason:'Rider unreachable for a day',policeReference:'ACC-123'})).police_reference,'ACC-123');
  }finally{await db.close();}
 });
