@@ -1,3 +1,4 @@
+import {suspendExpiredDocuments} from './rider-documents.mjs';
 import {suspendExpiredLicences,syncOpenIdentityChecks} from './rider-licence.mjs';
 import {flagOverdueParcels} from './custody-incidents.mjs';
 /**
@@ -90,6 +91,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
    // Financial checkout intents, transactions, journals, and audit logs are permanently retained under legal and financial audit requirements.
    await reconcileAndEnforceWeeklyRestrictions(db);
    await suspendExpiredLicences(db);
+   await suspendExpiredDocuments(db);
    await syncOpenIdentityChecks(db);
   })
  };

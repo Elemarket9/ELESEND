@@ -317,6 +317,35 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   assert.equal((await rejectRiderLicence(db,reviewer,applicant,{reason:'Number is not readable'})).status,'rejected');
   await assert.rejects(app.approve(reviewer,'riders',applicant,'approved'),/rejected/);
   await submitRiderLicence(db,applicantActor,licenceForm);
+  // Profile photo and vehicle certificates are required too, through a short-lived link.
+  const {createDocumentUploadLink,uploadRiderDocument,riderDocumentStatus,viewRiderDocument,rejectRiderDocument,suspendExpiredDocuments}=await import('../services/api/rider-documents.mjs');
+  const jpeg=Buffer.concat([Buffer.from([0xff,0xd8,0xff,0xe0]),Buffer.alloc(200,7)]).toString('base64');
+  const uploadAll=async rider=>{
+   const token=(await createDocumentUploadLink(db,{id:rider,kind:'rider'})).path.split('#')[1];
+   await uploadRiderDocument(db,{token,kind:'profile_photo',imageBase64:jpeg});
+   await uploadRiderDocument(db,{token,kind:'insurance',imageBase64:jpeg,expiresOn:nextYear});
+   await uploadRiderDocument(db,{token,kind:'roadworthiness',imageBase64:jpeg,expiresOn:nextYear});
+   return token;
+  };
+  await assert.rejects(app.approve(reviewer,'riders',applicant,'approved'),/not uploaded their profile photo/);
+  const uploadToken=(await createDocumentUploadLink(db,applicantActor)).path.split('#')[1];
+  await assert.rejects(uploadRiderDocument(db,{token:'0'.repeat(64),kind:'profile_photo',imageBase64:jpeg}),/expired/);
+  await assert.rejects(uploadRiderDocument(db,{token:uploadToken,kind:'profile_photo',imageBase64:Buffer.alloc(200,65).toString('base64')}),/upload a photo/);
+  await assert.rejects(uploadRiderDocument(db,{token:uploadToken,kind:'insurance',imageBase64:jpeg,expiresOn:'2020-01-01'}),/expiry/);
+  await uploadAll(applicant);
+  assert.equal((await riderDocumentStatus(db,applicantActor)).documents.length,3);
+  assert.ok(!(await db.query("SELECT data_encrypted FROM rider_documents WHERE rider_id=$1 AND kind='insurance'",[applicant])).rows[0].data_encrypted.includes(jpeg.slice(0,40)));
+  assert.equal((await viewRiderDocument(db,reviewer,applicant,'insurance')).imageBase64,jpeg);
+  await assert.rejects(viewRiderDocument(db,{id:customer,kind:'customer'},applicant,'insurance'),/Permission/);
+  await rejectRiderDocument(db,reviewer,applicant,'insurance',{reason:'Certificate is not readable'});
+  await assert.rejects(app.approve(reviewer,'riders',applicant,'approved'),/insurance was rejected/);
+  await uploadAll(applicant);
+  await app.approve(reviewer,'riders',applicant,'approved');
+  await db.query("UPDATE rider_documents SET valid_until=now()::date-1 WHERE rider_id=$1 AND kind='insurance'",[applicant]);
+  const docExpired=await suspendExpiredDocuments(db);
+  assert.ok(docExpired.includes(applicant));
+  await db.query("UPDATE rider_documents SET valid_until=$2 WHERE rider_id=$1",[applicant,nextYear]);
+  await db.query("UPDATE riders SET status='pending' WHERE id=$1",[applicant]);
   await app.approve(reviewer,'riders',applicant,'approved');
   assert.equal((await db.query('SELECT status FROM riders WHERE id=$1',[applicant])).rows[0].status,'approved');
   assert.equal((await riderLicenceStatus(db,applicantActor)).validUntil,nextYear);
@@ -344,6 +373,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
    decisionBody=decisionOf('GH 99999999',{face_matches:[{status:'Declined'}]});
    assert.equal((await syncIdentityCheck(db,selfie,{provider:didit})).status,'failed');
    await startIdentityCheck(db,{id:selfie,kind:'rider'},{provider:didit});
+   await uploadAll(selfie);
    decisionBody=decisionOf('GH 99999999');
    const raw=Buffer.from(JSON.stringify({session_id:sessionId,status:'Approved'}));
    const stamp=String(Math.floor(Date.now()/1000));

@@ -1048,6 +1048,7 @@ export function renderAdminPortalHtml() {
             <td>
               <button class="action-btn" onclick="reviewRider('\${escapeHtml(r.id)}', 'approved')">Approve</button>
               \${r.licence ? \`<button class="action-btn" onclick="rejectLicence('\${escapeHtml(r.id)}')">Reject Licence</button>\` : ''}
+              \${(r.documents || []).map(d => \`<button class="action-btn" onclick="viewDocument('\${escapeHtml(r.id)}', '\${escapeHtml(d.kind)}')">\${escapeHtml(d.kind.replace('_', ' '))} (\${escapeHtml(d.status)})</button>\`).join(' ')}
               <button class="action-btn btn-danger" onclick="reviewRider('\${escapeHtml(r.id)}', 'suspended')">Reject</button>
             </td>
           </tr>
@@ -1057,6 +1058,32 @@ export function renderAdminPortalHtml() {
       }
     }
 
+    async function viewDocument(id, kind) {
+      const doc = await api('/api/v1/admin/riders/' + id + '/documents/' + kind);
+      const box = document.createElement('div');
+      box.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;overflow:auto;padding:20px;color:#fff';
+      const close = document.createElement('button');
+      close.className = 'action-btn';
+      close.textContent = 'Close';
+      close.onclick = () => box.remove();
+      const reject = document.createElement('button');
+      reject.className = 'action-btn btn-danger';
+      reject.textContent = 'Reject Document';
+      reject.onclick = async () => {
+        const reason = prompt('Why is this document being rejected?');
+        if (!reason) return;
+        await api('/api/v1/admin/riders/' + id + '/documents/' + kind + '/reject', { method: 'POST', body: JSON.stringify({ reason }) });
+        box.remove();
+        loadFleet();
+      };
+      const info = document.createElement('p');
+      info.textContent = kind.replace('_', ' ') + (doc.expiresOn ? ' • Expires ' + doc.expiresOn : '');
+      const img = document.createElement('img');
+      img.src = 'data:image/jpeg;base64,' + doc.imageBase64;
+      img.style.cssText = 'max-width:100%;display:block;margin-top:12px';
+      box.append(close, ' ', reject, info, img);
+      document.body.appendChild(box);
+    }
     async function rejectLicence(id) {
       const reason = prompt('Why is this licence being rejected?');
       if (!reason) return;

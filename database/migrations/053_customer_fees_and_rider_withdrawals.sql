@@ -185,3 +185,24 @@ ALTER TABLE rider_licences
   ADD COLUMN IF NOT EXISTS identity_reason text,
   ADD COLUMN IF NOT EXISTS identity_checked_at timestamptz;
 CREATE INDEX IF NOT EXISTS rider_licences_identity_open ON rider_licences(identity_checked_at) WHERE identity_status='in_progress';
+
+-- Documents Bolt asks of drivers in Ghana. Images are encrypted by the application.
+CREATE TABLE IF NOT EXISTS rider_documents (
+  rider_id uuid NOT NULL REFERENCES riders(id),
+  kind text NOT NULL CHECK (kind IN ('profile_photo','insurance','roadworthiness')),
+  data_encrypted text NOT NULL,
+  byte_size integer NOT NULL CHECK (byte_size > 0),
+  expires_on date,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  rejection_reason text,
+  valid_until date,
+  reviewed_by uuid REFERENCES users(id),
+  reviewed_at timestamptz,
+  uploaded_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (rider_id, kind)
+);
+CREATE TABLE IF NOT EXISTS rider_document_links (
+  token_hash text PRIMARY KEY,
+  rider_id uuid NOT NULL REFERENCES riders(id),
+  expires_at timestamptz NOT NULL
+);

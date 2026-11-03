@@ -56,6 +56,8 @@ There is no limit on the amount a person can withdraw. Keep `WITHDRAWAL_FEE_MINO
 ## Rider identity
 A rider cannot be approved without a current driver's licence, or a Ghana Card for bicycle riders, and a passed photo and selfie check through Didit. Didit stores the images. In its console, create a workflow with ID verification, liveness and face match, and set the webhook URL to `https://<API host>/api/v1/identity/webhook` using webhook version 3. Set `DIDIT_API_KEY`, `DIDIT_WORKFLOW_ID` and `DIDIT_WEBHOOK_SECRET`. Didit reads the photographed document but does not confirm it against a government licence register, so check licences with the DVLA or a registry lookup provider as well. Riders are suspended when the approved document expires. One document cannot back two accounts. Set `RIDER_ID_ENCRYPTION_KEY` to 64 random hexadecimal characters, and back it up, because the numbers cannot be read without it.
 
+Riders also upload a profile photo, and motor vehicle riders add insurance and roadworthiness certificates with their expiry dates. Staff view them in the admin portal, and approval is refused until they are on file. Riders are suspended when a certificate expires. Staff approving a rider are confirming that these photos are readable and genuine.
+
 ## Missing parcels
 A parcel still with its rider `PARCEL_CUSTODY_LIMIT_HOURS` (default 24) after pickup opens an incident. The rider is suspended, withdrawals stop, and the evidence is frozen. It appears in the admin portal under Risk Signals. Staff check the facts, then record the outcome and any police reference. The system never contacts the police itself.
 

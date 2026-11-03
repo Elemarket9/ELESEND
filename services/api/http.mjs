@@ -1,3 +1,4 @@
+import {createDocumentUploadLink,uploadRiderDocument,riderDocumentStatus,rejectRiderDocument,viewRiderDocument,attachDocumentStatuses,renderDocumentUploadPage} from './rider-documents.mjs';
 import {riderLicenceStatus,submitRiderLicence,rejectRiderLicence,attachLicences,startIdentityCheck,identityWebhook} from './rider-licence.mjs';
 import {listCustodyIncidents,resolveCustodyIncident} from './custody-incidents.mjs';
 import {createServer} from 'node:http';
@@ -49,7 +50,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const server=createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192,keepAliveTimeout:65000},async(req,res)=>{
  const requestId=randomUUID();res.setHeader('X-Request-Id',requestId);
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
- res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+ res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
  // Serialize before writing headers: a failure must stay recoverable by the catch block below.
  const send=(code,body)=>{const payload=JSON.stringify(body);res.writeHead(code,{'Content-Type':'application/json'});res.end(payload);};
  try{
@@ -69,6 +70,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});
    res.end('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Return to ELESEND</title></head><body><h1>Return to ELESEND</h1><p>The app will verify your payment status. This page does not confirm a charge or cancellation.</p><p><a href="elesend://payments">Open ELESEND</a></p></body></html>');return;
   }
+  if(method==='GET'&&path==='/rider-documents'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Referrer-Policy':'no-referrer'});res.end(renderDocumentUploadPage());return;}
   if((path==='/ready'||path==='/readyz')&&method==='GET'){
    const secret=readinessToken!==null?readinessToken:(process.env.READINESS_PROBE_TOKEN||'');
    const hdr=req.headers['x-elesend-health-token']||req.headers['x-readiness-token'];
@@ -119,11 +121,12 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   if(!path.startsWith('/api/v1/'))check(false,404,'Endpoint not found');
   let body={},rawBody=Buffer.alloc(0);if(method==='POST'){
    check((req.headers['content-type']??'').split(';')[0]==='application/json',415,'JSON required');let size=0;const parts=[];
-   const bodyLimit=path==='/api/v1/identity/webhook'?1048576:32768;
+   const bodyLimit=path==='/api/v1/identity/webhook'?1048576:path==='/api/v1/rider-documents/upload'?3200000:32768;
    for await(const part of req.iterator({destroyOnReturn:false})){size+=part.length;if(size>bodyLimit){res.setHeader('Connection','close');req.resume();check(false,413,'Request too large');}parts.push(part);}
    rawBody=Buffer.concat(parts);try{body=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(rawBody)||'{}');}catch{check(false,400,'Invalid JSON');}
   }
   if(method==='POST'&&['/api/v1/payments/webhook','/api/v1/payments/checkout-webhook','/api/v1/payments/commission-webhook'].includes(path)&&paymentsWebhook){send(200,await paymentsWebhook(rawBody,req.headers));return;}
+  if(method==='POST'&&path==='/api/v1/rider-documents/upload'){await limit(db,'document-upload-ip:'+ipKey,30,3600);send(200,await uploadRiderDocument(db,body));return;}
   if(method==='POST'&&path==='/api/v1/identity/webhook'){send(200,await identityWebhook(db,rawBody,req.headers));return;}
   if(method==='POST'&&path==='/api/v1/payments/checkout-webhook'){
    check(checkout,503,'Checkout unavailable');send(200,await checkout.webhook(rawBody,req.headers));return;
@@ -411,6 +414,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='GET'&&path==='/api/v1/rider/offers')result=await app.offers(actor);
   else if(method==='GET'&&path==='/api/v1/rider/dispatch-settings'){check(dispatcher,503);result=await dispatcher.trackingSettings(actor);}
   else if(method==='POST'&&path==='/api/v1/rider/licence/identity-check'){await limit(db,'identity-check:'+actor.id,5,3600);result=await startIdentityCheck(db,actor);}
+  else if(method==='GET'&&path==='/api/v1/rider/documents')result=await riderDocumentStatus(db,actor);
+  else if(method==='POST'&&path==='/api/v1/rider/documents/upload-link'){await limit(db,'document-link:'+actor.id,10,3600);result=await createDocumentUploadLink(db,actor);}
   else if(method==='GET'&&path==='/api/v1/rider/licence')result=await riderLicenceStatus(db,actor);
   else if(method==='POST'&&path==='/api/v1/rider/licence'){await limit(db,'licence:'+actor.id,10,3600);result=await submitRiderLicence(db,actor,body);}
   else if(method==='GET'&&path==='/api/v1/rider/vehicle')result=await vehicles.profile(actor);
@@ -512,7 +517,9 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='GET'&&path==='/api/v1/admin/finance/adjustments'){check(finance,503);result=await finance.adjustmentQueue(actor);}
   else if(method==='POST'&&path==='/api/v1/admin/finance/adjustments'){check(finance,503);result=await finance.adjustmentRequest(actor,body);}
   else if(method==='POST'&&/^\/api\/v1\/admin\/finance\/adjustments\/[0-9a-f-]+\/approve$/.test(path)){check(finance,503);result=await finance.approveAdjustment(actor,path.split('/')[6]);}
-  else if(method==='GET'&&path==='/api/v1/admin/review'){result=await app.reviewQueue(actor);result={...result,riders:await attachLicences(db,actor,result.riders)};}
+  else if(method==='GET'&&path==='/api/v1/admin/review'){result=await app.reviewQueue(actor);result={...result,riders:await attachDocumentStatuses(db,await attachLicences(db,actor,result.riders))};}
+  else if(method==='GET'&&/^\/api\/v1\/admin\/riders\/[0-9a-f-]{36}\/documents\/[a-z_]+$/.test(path)){const parts=path.split('/');result=await viewRiderDocument(db,actor,parts[5],parts[7]);}
+  else if(method==='POST'&&/^\/api\/v1\/admin\/riders\/[0-9a-f-]{36}\/documents\/[a-z_]+\/reject$/.test(path)){const parts=path.split('/');result=await rejectRiderDocument(db,actor,parts[5],parts[7],body);}
   else if(method==='POST'&&/^\/api\/v1\/admin\/riders\/[0-9a-f-]{36}\/licence\/reject$/.test(path))result=await rejectRiderLicence(db,actor,path.split('/')[5],body);
   else if(method==='GET'&&path==='/api/v1/admin/system-health'){
    check(actor?.kind==='admin',403,'Administrator required');

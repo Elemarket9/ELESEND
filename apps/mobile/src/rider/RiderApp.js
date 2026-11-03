@@ -92,6 +92,7 @@ export default function RiderApp() {
   const withdrawKey = useRef(null);
   const [licence, setLicence] = useState(null);
   const [licenceModal, setLicenceModal] = useState(false);
+  const [riderDocuments, setRiderDocuments] = useState([]);
   const [licenceForm, setLicenceForm] = useState({ legalName: '', licenceNumber: '', licenceClass: '', expiresOn: '', vehiclePlate: '' });
   const [payoutName, setPayoutName] = useState('');
 
@@ -706,6 +707,11 @@ export default function RiderApp() {
     });
     setLicence(await call('GET', '/api/v1/rider/licence'));
     setError('Details saved. Now take your licence photo and selfie.');
+  }
+
+  async function openDocumentUpload() {
+    const res = await call('POST', '/api/v1/rider/documents/upload-link', {});
+    if (res?.path) await Linking.openURL(`${BASE}${res.path}`);
   }
 
   async function startIdentityPhotos() {
@@ -1588,9 +1594,14 @@ export default function RiderApp() {
                 <Text style={styles.debtSub}>Fleet-company job earnings ({ghc(financeSnapshot.companyEarningsMinor)}) are paid to your company.</Text>
               )}
               <TouchableOpacity
-                onPress={() => execute(async () => { setLicence(await call('GET', '/api/v1/rider/licence')); setLicenceModal(true); })}
+                onPress={() => execute(async () => {
+                  setLicence(await call('GET', '/api/v1/rider/licence'));
+                  const docs = await call('GET', '/api/v1/rider/documents').catch(() => null);
+                  setRiderDocuments(docs?.documents || []);
+                  setLicenceModal(true);
+                })}
                 style={[styles.secondaryBtn, { marginTop: 12 }]}>
-                <Text style={styles.secondaryBtnText}>Driver's Licence</Text>
+                <Text style={styles.secondaryBtnText}>Licence & Documents</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={() => setWithdrawModal(true)}
@@ -1732,6 +1743,14 @@ export default function RiderApp() {
                       <Text style={styles.primaryBtnText}>Take Licence Photo and Selfie</Text>
                     </TouchableOpacity>
                   )}
+                  {riderDocuments.map(d => (
+                    <Text key={d.kind} style={[styles.momoSub, { marginTop: 6 }]}>
+                      {d.kind.replace('_', ' ')}: {d.status}{d.rejectionReason ? ` (${d.rejectionReason})` : ''}
+                    </Text>
+                  ))}
+                  <TouchableOpacity disabled={busy} onPress={() => execute(openDocumentUpload)} style={[styles.secondaryBtn, { marginTop: 10 }]}>
+                    <Text style={styles.secondaryBtnText}>Upload Photo & Certificates</Text>
+                  </TouchableOpacity>
                   <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
                     <TouchableOpacity onPress={() => setLicenceModal(false)} style={[styles.secondaryBtn, { flex: 1 }]}>
                       <Text style={styles.secondaryBtnText}>Close</Text>
