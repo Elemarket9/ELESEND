@@ -5,7 +5,7 @@ import {validateConfig} from '../services/api/config.mjs';
 import {database} from '../services/api/db.mjs';
 import {osrmRouting} from '../services/api/dispatch-routing.mjs';
 import {httpsSmsGateway} from '../services/api/sms-gateway.mjs';
-const base={NODE_ENV:'production',DATABASE_URL:'postgres://test:test@localhost/test',OTP_KEY:'a'.repeat(64),ADMIN_MFA_ENCRYPTION_KEY:'b'.repeat(64),RIDER_ID_ENCRYPTION_KEY:'d'.repeat(64),DIDIT_API_KEY:'didit-key',DIDIT_WORKFLOW_ID:'11111111-1111-4111-8111-111111111111',DIDIT_WEBHOOK_SECRET:'didit-secret',API_PUBLIC_ORIGIN:'https://api.example.test',WEB_PUBLIC_ORIGIN:'https://app.example.test',ROUTING_OSRM_CAR_URL:'http://car:5000',ROUTING_OSRM_MOTORCYCLE_URL:'http://bike:5000'};
+const base={NODE_ENV:'production',DATABASE_URL:'postgres://test:test@localhost/test',OTP_KEY:'a'.repeat(64),ADMIN_MFA_ENCRYPTION_KEY:'b'.repeat(64),RIDER_ID_ENCRYPTION_KEY:'d'.repeat(64),SAFETY_ALERT_PHONE:'+233241234567',DIDIT_API_KEY:'didit-key',DIDIT_WORKFLOW_ID:'11111111-1111-4111-8111-111111111111',DIDIT_WEBHOOK_SECRET:'didit-secret',API_PUBLIC_ORIGIN:'https://api.example.test',WEB_PUBLIC_ORIGIN:'https://app.example.test',ROUTING_OSRM_CAR_URL:'http://car:5000',ROUTING_OSRM_MOTORCYCLE_URL:'http://bike:5000'};
 test('vehicle settings produce working adapter contract',()=>{const r=validateConfig(base);assert.equal(r.ok,true);assert.doesNotThrow(()=>osrmRouting({vehicleRoutes:r.config.routing.vehicleRoutes,profiles:r.config.routing.profiles}));});
 test('production rejects absent origins, malformed origins and malformed port',()=>{
  for(const extra of [{API_PUBLIC_ORIGIN:''},{API_PUBLIC_ORIGIN:'https://user:pass@host/'},{WEB_PUBLIC_ORIGIN:'https://host/path'},{PORT:'3090oops'}])assert.equal(validateConfig({...base,...extra}).ok,false);

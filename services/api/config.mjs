@@ -206,6 +206,9 @@ export function validateConfig(env = process.env) {
     if (!(env.DIDIT_API_KEY || '').trim() || !(env.DIDIT_WORKFLOW_ID || '').trim() || !(env.DIDIT_WEBHOOK_SECRET || '').trim()) {
       errors.push('DIDIT_API_KEY, DIDIT_WORKFLOW_ID and DIDIT_WEBHOOK_SECRET are required in production for rider identity checks.');
     }
+    if (!/^\+233[25]\d{8}$/.test((env.SAFETY_ALERT_PHONE || '').trim())) {
+      errors.push('SAFETY_ALERT_PHONE must be a +233 number that someone answers, for emergency alerts.');
+    }
     if (!/^[a-fA-F0-9]{64}$/.test(adminMfaKey)) {
       errors.push('ADMIN_MFA_ENCRYPTION_KEY must be exactly 64 hexadecimal characters (32 bytes) in production.');
     }

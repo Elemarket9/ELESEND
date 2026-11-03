@@ -143,7 +143,7 @@ export async function syncIdentityCheck(db,riderId,{provider=identityProviderFro
   const licence=(await c.query("SELECT document_type,number_encrypted,identity_session_id,identity_status FROM rider_licences WHERE rider_id=$1 FOR UPDATE",[riderId])).rows[0];
   if(licence?.identity_status!=='in_progress'||licence.identity_session_id!==row.identity_session_id)return null;
   const result=evaluateDecision(decision,{document_type:licence.document_type,number:decryptNumber(licence.number_encrypted,riderId)});
-  await c.query('UPDATE rider_licences SET identity_status=$2,identity_reason=$3,identity_checked_at=now(),expires_on=coalesce($4::date,expires_on) WHERE rider_id=$1',[riderId,result.status,result.reason??null,result.expiresOn??null]);
+  await c.query('UPDATE rider_licences SET identity_status=$2,identity_reason=$3,identity_checked_at=now(),expires_on=coalesce($4::date,expires_on),reverify_due_at=CASE WHEN $2=\'approved\' THEN NULL ELSE reverify_due_at END WHERE rider_id=$1',[riderId,result.status,result.reason??null,result.expiresOn??null]);
   if(result.status!=='in_progress')await c.query('INSERT INTO audit_logs(action,entity_id) VALUES($1,$2)',['rider.identity_'+result.status,riderId]);
   return result;
  });
@@ -164,4 +164,15 @@ export async function syncOpenIdentityChecks(db,{limit=50}={}){
   await db.query("UPDATE rider_licences SET identity_checked_at=now() WHERE rider_id=$1 AND identity_status='in_progress'",[riderId]);
  }
  return rows.length;
+}
+
+/** Riders repeat the selfie check regularly, so an account cannot be handed to someone else. */
+export async function requireIdentityRefresh(db,{everyDays=Number(process.env.RIDER_REVERIFY_DAYS)||90,graceDays=7}={}){
+ if(!identityConfigured())return {requested:0,suspended:0};
+ const requested=await db.query(`UPDATE rider_licences l SET identity_status='not_started',identity_session_id=NULL,reverify_due_at=now()+make_interval(days=>$2)
+   FROM riders r WHERE r.id=l.rider_id AND r.status='approved' AND l.identity_status='approved' AND l.identity_checked_at<now()-make_interval(days=>$1) RETURNING l.rider_id`,[everyDays,graceDays]);
+ const suspended=(await db.query(`UPDATE riders r SET status='suspended',online=false FROM rider_licences l
+   WHERE l.rider_id=r.id AND r.status='approved' AND l.reverify_due_at<now() AND l.identity_status<>'approved' RETURNING r.id`)).rows;
+ for(const {id} of suspended)await db.query("INSERT INTO audit_logs(action,entity_id) VALUES('rider.identity_refresh_suspended',$1)",[id]);
+ return {requested:requested.rowCount,suspended:suspended.length};
 }

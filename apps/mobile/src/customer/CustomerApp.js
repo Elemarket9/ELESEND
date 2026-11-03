@@ -23,6 +23,7 @@ import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline } from '../maps/map-adapter';
 import { call, loadToken, saveToken, clearToken, ghc, BASE } from '../api';
+import { EmergencyButton, RatingPrompts, TrustedContactCard } from '../rider-safety';
 import DeleteAccountModal from '../delete-account';
 import { detectCustomerLocation, buildConfirmedLocation } from '../customer-location';
 import {
@@ -1889,6 +1890,7 @@ export default function CustomerApp() {
         --------------------------------------------------------------------- */}
         {tab === 'Activity' && (
           <ScrollView contentContainerStyle={styles.activityScroll} showsVerticalScrollIndicator={false}>
+            <RatingPrompts />
             <Text style={styles.activitySectionTitle}>Your Active Deliveries</Text>
 
             {/* Active Courier Shipments */}
@@ -2149,6 +2151,7 @@ export default function CustomerApp() {
                 </View>
               </TouchableOpacity>
             </View>
+            <TrustedContactCard />
           </ScrollView>
         )}
       </View>
@@ -2636,6 +2639,7 @@ export default function CustomerApp() {
             </View>
           )}
 
+          <EmergencyButton shipmentId={trackingShipment?.id} />
           {shareToken ? (
             <TouchableOpacity
               accessibilityRole="button"

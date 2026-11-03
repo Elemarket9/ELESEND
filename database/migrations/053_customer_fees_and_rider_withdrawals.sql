@@ -206,3 +206,98 @@ CREATE TABLE IF NOT EXISTS rider_document_links (
   rider_id uuid NOT NULL REFERENCES riders(id),
   expires_at timestamptz NOT NULL
 );
+
+-- Safety and rider tools.
+CREATE TABLE IF NOT EXISTS trusted_contacts (
+  user_id uuid PRIMARY KEY REFERENCES users(id),
+  name text NOT NULL,
+  phone text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS safety_alerts (
+  id uuid PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES users(id),
+  shipment_id uuid REFERENCES shipments(id),
+  latitude double precision,
+  longitude double precision,
+  notified_count integer NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+  resolution_note text,
+  resolved_by uuid REFERENCES users(id),
+  resolved_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS safety_alerts_open ON safety_alerts(user_id,created_at DESC) WHERE status='open';
+CREATE TABLE IF NOT EXISTS delivery_ratings (
+  shipment_id uuid NOT NULL REFERENCES shipments(id),
+  rater_id uuid NOT NULL REFERENCES users(id),
+  ratee_id uuid NOT NULL REFERENCES users(id),
+  stars integer NOT NULL CHECK (stars BETWEEN 1 AND 5),
+  comment text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (shipment_id, rater_id)
+);
+CREATE INDEX IF NOT EXISTS delivery_ratings_ratee ON delivery_ratings(ratee_id,created_at DESC);
+ALTER TABLE riders
+  ADD COLUMN IF NOT EXISTS daily_goal_minor bigint,
+  ADD COLUMN IF NOT EXISTS weekly_goal_minor bigint,
+  ADD COLUMN IF NOT EXISTS referral_code text UNIQUE,
+  ADD COLUMN IF NOT EXISTS shift_started_at timestamptz,
+  ADD COLUMN IF NOT EXISTS last_offline_at timestamptz,
+  ADD COLUMN IF NOT EXISTS rest_until timestamptz;
+-- A shift only restarts after a real rest, so going offline for a minute cannot reset it.
+CREATE OR REPLACE FUNCTION track_rider_shift() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.online AND NOT OLD.online THEN
+    IF NEW.shift_started_at IS NULL OR OLD.last_offline_at IS NULL OR OLD.last_offline_at < now() - interval '6 hours' THEN
+      NEW.shift_started_at := now();
+    END IF;
+  ELSIF OLD.online AND NOT NEW.online THEN
+    NEW.last_offline_at := now();
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER riders_track_shift BEFORE UPDATE OF online ON riders FOR EACH ROW EXECUTE FUNCTION track_rider_shift();
+CREATE TABLE IF NOT EXISTS delivery_stop_watch (
+  shipment_id uuid PRIMARY KEY REFERENCES shipments(id),
+  latitude double precision NOT NULL,
+  longitude double precision NOT NULL,
+  since timestamptz NOT NULL,
+  alerted_at timestamptz
+);
+CREATE TABLE IF NOT EXISTS rider_referrals (
+  referred_id uuid PRIMARY KEY REFERENCES riders(id),
+  referrer_id uuid NOT NULL REFERENCES riders(id),
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','earned')),
+  reward_minor bigint NOT NULL DEFAULT 0,
+  earned_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (referred_id <> referrer_id)
+);
+CREATE TABLE IF NOT EXISTS rider_reward_campaigns (
+  id uuid PRIMARY KEY,
+  title text NOT NULL,
+  target_deliveries integer NOT NULL CHECK (target_deliveries > 0),
+  reward_minor bigint NOT NULL CHECK (reward_minor > 0),
+  starts_at timestamptz NOT NULL,
+  ends_at timestamptz NOT NULL,
+  active boolean NOT NULL DEFAULT true,
+  created_by uuid REFERENCES users(id)
+);
+CREATE TABLE IF NOT EXISTS rider_campaign_awards (
+  campaign_id uuid NOT NULL REFERENCES rider_reward_campaigns(id),
+  rider_id uuid NOT NULL REFERENCES riders(id),
+  reward_minor bigint NOT NULL,
+  awarded_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (campaign_id, rider_id)
+);
+ALTER TABLE rider_licences ADD COLUMN IF NOT EXISTS reverify_due_at timestamptz;
+DO $$
+DECLARE definition text;
+BEGIN
+  SELECT pg_get_constraintdef(oid) INTO definition FROM pg_constraint
+   WHERE conrelid='finance_journals'::regclass AND conname='finance_journals_kind_check';
+  ALTER TABLE finance_journals DROP CONSTRAINT finance_journals_kind_check;
+  EXECUTE 'ALTER TABLE finance_journals ADD CONSTRAINT finance_journals_kind_check ' ||
+    replace(definition, '''credit_apply''::text', '''credit_apply''::text, ''promotion_credit''::text');
+END $$;

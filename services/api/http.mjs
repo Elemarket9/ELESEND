@@ -1,3 +1,5 @@
+import {saveTrustedContact,getTrustedContact,raiseEmergency,listSafetyAlerts,resolveSafetyAlert,createShareLink,rateDelivery,myRating,pendingRatings} from './safety.mjs';
+import {riderEarningsGoals,setEarningsGoals,demandAreas,referralSummary,applyReferralCode,riderCampaigns,createRewardCampaign} from './rider-tools.mjs';
 import {createDocumentUploadLink,uploadRiderDocument,riderDocumentStatus,rejectRiderDocument,viewRiderDocument,attachDocumentStatuses,renderDocumentUploadPage} from './rider-documents.mjs';
 import {riderLicenceStatus,submitRiderLicence,rejectRiderLicence,attachLicences,startIdentityCheck,identityWebhook} from './rider-licence.mjs';
 import {listCustodyIncidents,resolveCustodyIncident} from './custody-incidents.mjs';
@@ -416,6 +418,22 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/rider/licence/identity-check'){await limit(db,'identity-check:'+actor.id,5,3600);result=await startIdentityCheck(db,actor);}
   else if(method==='GET'&&path==='/api/v1/rider/documents')result=await riderDocumentStatus(db,actor);
   else if(method==='POST'&&path==='/api/v1/rider/documents/upload-link'){await limit(db,'document-link:'+actor.id,10,3600);result=await createDocumentUploadLink(db,actor);}
+  else if(method==='POST'&&path==='/api/v1/safety/emergency'){await limit(db,'emergency:'+actor.id,10,3600);result=await raiseEmergency(db,actor,body,{sms:app?.sms});}
+  else if(method==='POST'&&path==='/api/v1/safety/share-link')result=await createShareLink(db,actor,body);
+  else if(method==='GET'&&path==='/api/v1/safety/trusted-contact')result=await getTrustedContact(db,actor);
+  else if(method==='POST'&&path==='/api/v1/safety/trusted-contact'){await limit(db,'trusted-contact:'+actor.id,10,3600);result=await saveTrustedContact(db,actor,body);}
+  else if(method==='GET'&&path==='/api/v1/admin/safety-alerts')result=await listSafetyAlerts(db,actor);
+  else if(method==='POST'&&/^\/api\/v1\/admin\/safety-alerts\/[0-9a-f-]{36}\/resolve$/.test(path))result=await resolveSafetyAlert(db,actor,path.split('/')[5],body);
+  else if(method==='POST'&&path==='/api/v1/admin/reward-campaigns')result=await createRewardCampaign(db,actor,body);
+  else if(method==='GET'&&path==='/api/v1/ratings/pending')result=await pendingRatings(db,actor);
+  else if(method==='POST'&&/^\/api\/v1\/ratings\/[0-9a-f-]{36}$/.test(path))result=await rateDelivery(db,actor,path.split('/')[4],body);
+  else if(method==='GET'&&path==='/api/v1/me/rating')result=await myRating(db,actor);
+  else if(method==='GET'&&path==='/api/v1/rider/goals')result=await riderEarningsGoals(db,actor);
+  else if(method==='POST'&&path==='/api/v1/rider/goals')result=await setEarningsGoals(db,actor,body);
+  else if(method==='GET'&&path==='/api/v1/rider/demand-areas')result=await demandAreas(db,actor);
+  else if(method==='GET'&&path==='/api/v1/rider/referral')result=await referralSummary(db,actor);
+  else if(method==='POST'&&path==='/api/v1/rider/referral'){await limit(db,'referral:'+actor.id,10,3600);result=await applyReferralCode(db,actor,body);}
+  else if(method==='GET'&&path==='/api/v1/rider/campaigns')result=await riderCampaigns(db,actor);
   else if(method==='GET'&&path==='/api/v1/rider/licence')result=await riderLicenceStatus(db,actor);
   else if(method==='POST'&&path==='/api/v1/rider/licence'){await limit(db,'licence:'+actor.id,10,3600);result=await submitRiderLicence(db,actor,body);}
   else if(method==='GET'&&path==='/api/v1/rider/vehicle')result=await vehicles.profile(actor);

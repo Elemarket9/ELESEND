@@ -21,6 +21,7 @@ import {
   TouchableOpacity, Modal, Vibration
 } from 'react-native';
 import * as Location from 'expo-location';
+import { EmergencyButton, RatingPrompts, RiderTools, ShareLiveLocation, TrustedContactCard } from '../rider-safety';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline, openTurnByTurnNavigation } from '../maps/map-adapter';
 import { call, loadToken, saveToken, clearToken, ghc, parseGhs, BASE } from '../api';
@@ -1217,6 +1218,12 @@ export default function RiderApp() {
         {/* TAB 2: ACTIVE MANIFEST & NAVIGATION */}
         {/* ================================================================= */}
         {tab === 'Manifest' && (
+          <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+            <EmergencyButton shipmentId={manifest?.shipments?.[0]?.id} />
+            <ShareLiveLocation shipmentId={manifest?.shipments?.[0]?.id} />
+          </View>
+        )}
+        {tab === 'Manifest' && (
           <View>
             {manifest?.stops && manifest.stops.length > 0 ? (
               <View>
@@ -1568,6 +1575,13 @@ export default function RiderApp() {
         {/* ================================================================= */}
         {/* TAB 3: EARNINGS, CASH COMMISSION & SETTLEMENT */}
         {/* ================================================================= */}
+        {tab === 'Earnings' && (
+          <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+            <RatingPrompts />
+            <RiderTools />
+            <TrustedContactCard />
+          </View>
+        )}
         {tab === 'Earnings' && (
           <View>
             {/* Wallet (server-derived from ELESEND ledgers) */}

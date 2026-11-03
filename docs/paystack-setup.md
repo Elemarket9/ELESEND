@@ -61,6 +61,12 @@ Riders also upload a profile photo, and motor vehicle riders add insurance and r
 ## Missing parcels
 A parcel still with its rider `PARCEL_CUSTODY_LIMIT_HOURS` (default 24) after pickup opens an incident. The rider is suspended, withdrawals stop, and the evidence is frozen. It appears in the admin portal under Risk Signals. Staff check the facts, then record the outcome and any police reference. The system never contacts the police itself.
 
+## Safety and rider tools
+- **Emergency button:** sends an SMS to `SAFETY_ALERT_PHONE` and the user's trusted contact, and offers to call 112. Someone must answer that phone, and resolve alerts in the admin portal.
+- **Safety checks:** riders must rest `RIDER_REST_HOURS` after `RIDER_MAX_ONLINE_HOURS` online, repeat the selfie check every `RIDER_REVERIFY_DAYS` with 7 days' grace, and are flagged after `UNUSUAL_STOP_MINUTES` without moving mid-delivery.
+- **Rewards:** referrals and campaigns pay commission credit, not cash. `REFERRAL_REWARD_MINOR` defaults to 0, which is off.
+- **Not built:** private calls need a paid call-masking provider, so real phone numbers are still used on calls.
+
 ## What needs staff action
 - **A refund in `needs-attention`:** stays pending in ELESEND. Supply the customer's account details in the Paystack dashboard.
 - **Chargebacks and disputes:** not imported. Check the Paystack dashboard, and connect this before high volume.

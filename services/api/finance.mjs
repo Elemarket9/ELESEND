@@ -40,6 +40,7 @@ const commissionEntries = {
  cash_commission:(v)=>[['rider_receivable','debit',v],['platform_revenue','credit',v]],
  credit_purchase:(v)=>[['provider_clearing','debit',v],['prepaid_liability','credit',v]],
  credit_apply:(v)=>[['prepaid_liability','debit',v],['rider_receivable','credit',v]],
+ promotion_credit:(v)=>[['commission_adjustment','debit',v],['prepaid_liability','credit',v]],
  commission_repayment:(v)=>[['provider_clearing','debit',v],['rider_receivable','credit',v]],
  commission_overpayment:(v)=>[['provider_clearing','debit',v],['unapplied_provider_funds','credit',v]],
  waive:(v)=>[['commission_adjustment','debit',v],['rider_receivable','credit',v]],

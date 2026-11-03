@@ -383,5 +383,89 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
    await app.approve(reviewer,'riders',selfie,'approved');
    assert.equal((await db.query('SELECT status FROM riders WHERE id=$1',[selfie])).rows[0].status,'approved');
   }finally{for(const k of ['DIDIT_API_KEY','DIDIT_WORKFLOW_ID','DIDIT_WEBHOOK_SECRET'])delete process.env[k];}
+  // Emergency alerts reach the duty phone and trusted contact, and repeat presses do not spam them.
+  const {raiseEmergency,saveTrustedContact,listSafetyAlerts,resolveSafetyAlert,createShareLink,rateDelivery,myRating,pendingRatings}=await import('../services/api/safety.mjs');
+  const tools=await import('../services/api/rider-tools.mjs');
+  const safetyRider=await newRider(),safetyActor={id:safetyRider,kind:'rider'},customerActor={id:customer,kind:'customer'};
+  const texts=[];
+  const smsFake={sendNotification:async x=>{texts.push(x);return {sent:true};}};
+  await saveTrustedContact(db,safetyActor,{name:'Ama',phone:'0241112222'});
+  const alert=await raiseEmergency(db,safetyActor,{latitude:5.6,longitude:-0.2},{sms:smsFake,dutyPhone:'+233201234567'});
+  assert.equal(alert.notified,2);assert.equal(texts.length,2);assert.match(texts[0].message,/maps\.google/);
+  assert.equal((await raiseEmergency(db,safetyActor,{},{sms:smsFake,dutyPhone:'+233201234567'})).duplicate,true);assert.equal(texts.length,2);
+  await assert.rejects(raiseEmergency(db,customerActor,{shipmentId:held},{sms:smsFake}),/not yours/);
+  const investigatorActor={id:investigator,kind:'admin'};
+  assert.ok((await listSafetyAlerts(db,investigatorActor)).some(a=>a.id===alert.id));
+  await assert.rejects(listSafetyAlerts(db,customerActor),/Permission/);
+  assert.equal((await resolveSafetyAlert(db,investigatorActor,alert.id,{note:'Called the rider, all safe'})).status,'resolved');
+
+  // Ratings work both ways, once, and only after the delivery ends. Poor averages go to staff.
+  const rated=await completedEarning(safetyRider,customer,500);
+  assert.ok((await pendingRatings(db,customerActor)).some(p=>p.id===rated));
+  await rateDelivery(db,customerActor,rated,{stars:4});
+  await assert.rejects(rateDelivery(db,customerActor,rated,{stars:5}),/already rated/);
+  await assert.rejects(rateDelivery(db,customerActor,rated,{stars:9}));
+  await rateDelivery(db,safetyActor,rated,{stars:5});
+  assert.deepEqual(await myRating(db,safetyActor),{average:4,total:1});
+  await assert.rejects(createShareLink(db,safetyActor,{shipmentId:rated}),/finished/);
+
+  // Long shifts force a rest, and a short break does not reset the clock.
+  await db.query('UPDATE riders SET online=false,last_offline_at=NULL WHERE id=$1',[safetyRider]);
+  await db.query('UPDATE riders SET online=true WHERE id=$1',[safetyRider]);
+  const shift=(await db.query('SELECT shift_started_at FROM riders WHERE id=$1',[safetyRider])).rows[0].shift_started_at;
+  assert.ok(shift);
+  await db.query('UPDATE riders SET online=false WHERE id=$1',[safetyRider]);
+  await db.query('UPDATE riders SET online=true WHERE id=$1',[safetyRider]);
+  assert.equal((await db.query('SELECT shift_started_at FROM riders WHERE id=$1',[safetyRider])).rows[0].shift_started_at.getTime(),shift.getTime());
+  await db.query("UPDATE riders SET shift_started_at=now()-interval '13 hours' WHERE id=$1",[safetyRider]);
+  assert.ok((await tools.enforceDrivingLimits(db)).includes(safetyRider));
+  await assert.rejects(app.availability(safetyActor,{online:true}),/driving time limit/);
+
+  // A rider who stays still mid-delivery is flagged once.
+  const stopRider=await newRider();
+  const stopped=await shipment(customer,'AWAITING_ASSIGNMENT',true);
+  await db.query('INSERT INTO rider_dispatch_plans(rider_id,revision,stops) VALUES($1,1,$2)',[stopRider,JSON.stringify([{shipmentId:stopped,kind:'pickup',weightG:100,latitude:5.5,longitude:-0.2},{shipmentId:stopped,kind:'dropoff',weightG:100,latitude:5.5,longitude:-0.2}])]);
+  await db.query("UPDATE shipments SET rider_id=$2,state='RIDER_ASSIGNED' WHERE id=$1",[stopped,stopRider]);
+  await db.query("INSERT INTO challenges(id,shipment_id,rider_id,purpose,phone,digest,expires_at,sent,consumed_at) VALUES($1,$2,$3,'pickup','+233241234567','x',now()+interval '5 minutes',true,now())",[randomUUID(),stopped,stopRider]);
+  await db.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[stopped]);
+  await db.query("UPDATE riders SET current_position=ST_SetSRID(ST_MakePoint(-0.2,5.5),4326)::geography,position_at=now() WHERE id=$1",[stopRider]);
+  assert.match((await createShareLink(db,{id:stopRider,kind:'rider'},{shipmentId:stopped})).path,/^\/track\//);
+  assert.equal((await tools.flagUnusualStops(db)).length,0);
+  await db.query("UPDATE delivery_stop_watch SET since=now()-interval '25 minutes' WHERE shipment_id=$1",[stopped]);
+  assert.deepEqual(await tools.flagUnusualStops(db),[stopped]);
+  assert.equal((await tools.flagUnusualStops(db)).length,0);
+
+  // Goals, referrals and campaigns. Rewards arrive once, as commission credit.
+  const goalsRider={id:safetyRider,kind:'rider'};
+  assert.equal((await tools.setEarningsGoals(db,goalsRider,{dailyGoalMinor:5000,weeklyGoalMinor:null})).dailyGoalMinor,5000);
+  assert.ok((await tools.riderEarningsGoals(db,goalsRider)).todayMinor>=370);
+  const inviter=await newRider(),invited=await newRider();
+  const inviteCode=(await tools.referralSummary(db,{id:inviter,kind:'rider'})).code;
+  await assert.rejects(tools.applyReferralCode(db,{id:inviter,kind:'rider'},{code:inviteCode}),/not valid/);
+  await tools.applyReferralCode(db,{id:invited,kind:'rider'},{code:inviteCode});
+  await assert.rejects(tools.applyReferralCode(db,{id:invited,kind:'rider'},{code:inviteCode}),/already/);
+  const financeAdmin=await user('admin');
+  await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'finance:configure')",[financeAdmin]);
+  await tools.createRewardCampaign(db,{id:financeAdmin,kind:'admin'},{title:'Weekend push',targetDeliveries:1,rewardMinor:700,days:7});
+  await completedEarning(invited,customer,100);
+  process.env.REFERRAL_TARGET_DELIVERIES='1';process.env.REFERRAL_REWARD_MINOR='900';
+  await tools.settleRiderRewards(db);await tools.settleRiderRewards(db);
+  delete process.env.REFERRAL_TARGET_DELIVERIES;delete process.env.REFERRAL_REWARD_MINOR;
+  const {balance}=await import('../services/api/finance.mjs');
+  assert.equal((await balance(db,inviter)).creditMinor,900);
+  assert.equal((await balance(db,invited)).creditMinor,700);
+  assert.ok((await tools.riderCampaigns(db,{id:invited,kind:'rider'})).campaigns.some(k=>k.title==='Weekend push'&&k.completed>=1));
+  assert.ok(Array.isArray((await tools.demandAreas(db,{id:invited,kind:'rider'})).areas));
+
+  // Riders repeat the selfie check, and are suspended if they ignore it.
+  const {requireIdentityRefresh}=await import('../services/api/rider-licence.mjs');
+  for(const [k,v] of [['DIDIT_API_KEY','k'],['DIDIT_WORKFLOW_ID','w'],['DIDIT_WEBHOOK_SECRET','whsec']])process.env[k]=v;
+  try{
+   await db.query("UPDATE rider_licences SET identity_checked_at=now()-interval '100 days' WHERE rider_id=$1",[selfie]);
+   assert.ok((await requireIdentityRefresh(db)).requested>=1);
+   await db.query("UPDATE rider_licences SET reverify_due_at=now()-interval '1 hour' WHERE rider_id=$1",[selfie]);
+   assert.ok((await requireIdentityRefresh(db)).suspended>=1);
+   assert.equal((await db.query('SELECT status FROM riders WHERE id=$1',[selfie])).rows[0].status,'suspended');
+  }finally{for(const k of ['DIDIT_API_KEY','DIDIT_WORKFLOW_ID','DIDIT_WEBHOOK_SECRET'])delete process.env[k];}
  }finally{await db.close();}
 });

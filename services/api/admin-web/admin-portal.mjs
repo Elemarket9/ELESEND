@@ -354,6 +354,16 @@ export function renderAdminPortalHtml() {
           <div id="custodyList"></div>
         </div>
         <div class="card">
+          <div class="card-title"><span>Emergency Alerts</span><button class="action-btn" onclick="loadSafety()">Refresh</button></div>
+          <div id="safetyList"></div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span>Rider Reward Campaign</span></div>
+          <div class="card-subtitle">Rewards are commission credit, used against future cash commission.</div>
+          <input id="rewardTitle" placeholder="Title"> <input id="rewardTarget" type="number" placeholder="Deliveries"> <input id="rewardAmount" type="number" placeholder="Reward (GH₵)"> <input id="rewardDays" type="number" placeholder="Days">
+          <button class="action-btn" onclick="createReward()">Create</button>
+        </div>
+        <div class="card">
           <div class="card-title">
             <span>Explainable Risk Signals</span>
             <button class="action-btn" onclick="loadRisk()">Refresh Signals</button>
@@ -1102,6 +1112,33 @@ export function renderAdminPortalHtml() {
       }
     }
 
+    async function loadSafety() {
+      const box = document.getElementById('safetyList');
+      try {
+        const rows = await api('/api/v1/admin/safety-alerts');
+        box.textContent = '';
+        if (!rows?.length) { box.textContent = 'No emergency alerts.'; return; }
+        rows.forEach(a => {
+          const line = document.createElement('p');
+          line.textContent = [a.status.toUpperCase(), a.kind, a.phone, new Date(a.created_at).toLocaleString(), a.latitude != null ? a.latitude + ',' + a.longitude : 'no location', a.notified_count + ' notified', a.resolution_note || ''].join(' • ') + ' ';
+          if (a.status === 'open') {
+            const b = document.createElement('button');
+            b.className = 'action-btn';
+            b.textContent = 'Resolve';
+            b.onclick = async () => { const note = prompt('What happened?'); if (!note) return; await api('/api/v1/admin/safety-alerts/' + a.id + '/resolve', { method: 'POST', body: JSON.stringify({ note }) }); loadSafety(); };
+            line.appendChild(b);
+          }
+          box.appendChild(line);
+        });
+      } catch (e) { box.textContent = e.message; }
+    }
+    async function createReward() {
+      const value = id => document.getElementById(id).value;
+      try {
+        await api('/api/v1/admin/reward-campaigns', { method: 'POST', body: JSON.stringify({ title: value('rewardTitle'), targetDeliveries: Number(value('rewardTarget')), rewardMinor: Math.round(Number(value('rewardAmount')) * 100), days: Number(value('rewardDays')) }) });
+        alert('Campaign created');
+      } catch (e) { alert(e.message); }
+    }
     async function loadCustody() {
       const box = document.getElementById('custodyList');
       try {
@@ -1123,6 +1160,7 @@ export function renderAdminPortalHtml() {
     }
     async function loadRisk() {
       loadCustody();
+      loadSafety();
       try {
         const signals = await api('/api/v1/admin/risk-signals');
         const tb = document.getElementById('riskTable');

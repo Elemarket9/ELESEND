@@ -447,6 +447,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async availability(actor,input){const v=z.object({online:z.boolean()}).strict().parse(input);return db.tx(async c=>{const r=await rider(c,actor);
    if(v.online&&process.env.NODE_ENV==='production')await requireVerifiedPhone(c,actor);
    if(v.online&&r.vehicle==='car')check((await c.query("SELECT 1 FROM rider_vehicle_registrations WHERE rider_id=$1 AND vehicle='car' AND verification_status='approved'",[actor.id])).rowCount,403,'Car must be manually verified before going online');
+   if(v.online){
+    const rest=(await c.query('SELECT rest_until FROM riders WHERE id=$1 AND rest_until>now()',[actor.id])).rows[0];
+    check(!rest,409,'You have reached your driving time limit. You can go online again after your rest');
+   }
    await c.query('UPDATE riders SET online=$2 WHERE id=$1',[actor.id,v.online]);if(!v.online){await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[actor.id]);getRedisClient().removeRiderLocation(actor.id).catch(()=>{});}return v;});},
  async quote(actor,input){check(['customer','business'].includes(actor.kind),403);
   // Do not accept live bookings when an essential custody-verification provider is absent.
