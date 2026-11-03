@@ -98,6 +98,10 @@ CREATE INDEX IF NOT EXISTS payout_withdrawals_recent ON payout_withdrawals(creat
 CREATE UNIQUE INDEX IF NOT EXISTS payout_withdrawals_one_open ON payout_withdrawals(beneficiary_id)
   WHERE status IN ('initiating','pending','needs_review');
 
+-- One withdrawal per person per day (UTC, which is Ghana time). Failed or reversed ones do not count.
+CREATE UNIQUE INDEX IF NOT EXISTS payout_withdrawals_once_a_day ON payout_withdrawals(beneficiary_id, ((created_at AT TIME ZONE 'UTC')::date))
+  WHERE status NOT IN ('failed','reversed');
+
 -- Who is paid, and how much, can never change. Finished withdrawals cannot restart.
 CREATE OR REPLACE FUNCTION guard_payout_withdrawal() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

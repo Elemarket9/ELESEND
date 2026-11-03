@@ -84,6 +84,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const money=moneyOperations(db,limits);
   const rider=await newRider();const actor={id:rider,kind:'rider'};
   const key=()=>randomUUID();
+  const nextDay=()=>db.query("UPDATE payout_withdrawals SET created_at=created_at-interval '1 day'");
   const withdraw=(idempotencyKey,who=actor,service=money,password='Correct-pass-1')=>service.requestWithdrawal(who,{idempotencyKey,password});
   await assert.rejects(withdraw(key(),actor,money,'wrong-password'),/Incorrect password/);
   await assert.rejects(withdraw(key()),/payout details/);
@@ -106,7 +107,8 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   assert.equal(await payable(first),0);assert.equal(await payable(second),0);
   assert.equal((await withdraw(idempotencyKey)).status,'paid');
   assert.equal(submitted.length,1);
-  await assert.rejects(withdraw(key()),/at least/);
+  await assert.rejects(withdraw(key()),/once a day/);
+  await nextDay();
 
   // An unclear outcome stays locked: nothing further is sent until it is checked.
   const third=await completedEarning(rider,customer,900);
@@ -119,6 +121,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   assert.equal(await payable(third),0);
   assert.equal((await db.query("SELECT status FROM payout_withdrawals WHERE id=$1",[unclear.id])).rows[0].status,'paid');
 
+  await nextDay();
   // The provider has no transfer: the same reference is resent, so it cannot pay twice.
   const missing=await completedEarning(rider,customer,700);
   outcome='missing';submitted.length=0;
@@ -156,7 +159,8 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const partial=await withdraw(key(),other);
   assert.equal(partial.status,'paid');assert.equal(partial.amountMinor,3000);
   assert.equal((await payable(a1))+(await payable(a2)),3000);
-  await assert.rejects(withdraw(key(),other),/limit/);
+  await assert.rejects(withdraw(key(),other),/once a day/);
+  await assert.rejects(db.query("INSERT INTO payout_withdrawals(id,beneficiary_id,idempotency_key,provider,recipient_reference,amount_minor) VALUES($1,$2,$3,'fixture','RCP_second',100)",[randomUUID(),second_rider,key()]),/payout_withdrawals_once_a_day/);
 
   // The platform ceiling and earnings hold both keep money in the balance.
   const third_rider=await newRider(),third_actor={id:third_rider,kind:'rider'};

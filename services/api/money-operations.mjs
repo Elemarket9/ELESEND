@@ -45,7 +45,7 @@ function assertPayoutReceipt(p,record,providerName){
 const envInt=(value,fallback,min=1)=>{const n=Number(value);return value!==undefined&&value!==''&&Number.isSafeInteger(n)&&n>=min?n:fallback;};
 const WITHDRAWAL_SPEND_LOCK=839212,RESUBMIT_AFTER_SECONDS=300,GIVE_UP_AFTER_SECONDS=86400,MAX_DAILY_FAILURES=3;
 export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4,leaseSeconds=120,
- withdrawalMinMinor=envInt(process.env.WITHDRAWAL_MIN_MINOR,500),
+ withdrawalMinMinor=envInt(process.env.WITHDRAWAL_MIN_MINOR,10000),
  riderDailyLimitMinor=envInt(process.env.WITHDRAWAL_RIDER_DAILY_LIMIT_MINOR,50000),
  businessDailyLimitMinor=envInt(process.env.WITHDRAWAL_BUSINESS_DAILY_LIMIT_MINOR,500000),
  platformDailyLimitMinor=envInt(process.env.WITHDRAWAL_PLATFORM_DAILY_LIMIT_MINOR,5000000),
@@ -216,12 +216,12 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   const fresh=await loadWithdrawal(w.id);
   try{return {...await reconcileWithdrawal(fresh),amountMinor};}catch{return {id:w.id,status:'pending_verification',amountMinor};}
  }
- /** Takes whole deliveries, oldest first, up to the limit. A single larger delivery goes alone on a clear day. */
- function withinLimit(earnings,remainingMinor,spentMinor){
+ /** Takes whole deliveries, oldest first, up to the limit. A single larger delivery goes alone. */
+ function withinLimit(earnings,limitMinor){
   const chosen=[];let total=0;
   for(const e of earnings){
    const amount=Number(e.amount);
-   if(total+amount>remainingMinor){if(!chosen.length&&spentMinor===0)chosen.push(e);break;}
+   if(total+amount>limitMinor){if(!chosen.length)chosen.push(e);break;}
    chosen.push(e);total+=amount;
   }
   return chosen;
@@ -242,6 +242,7 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   const prior=(await c.query('SELECT * FROM payout_withdrawals WHERE beneficiary_id=$1 AND idempotency_key=$2',[userId,idempotencyKey])).rows[0];
   if(prior)return {existing:prior};
   check(!(await c.query("SELECT 1 FROM payout_withdrawals WHERE beneficiary_id=$1 AND status IN ('initiating','pending','needs_review')",[userId])).rowCount,409,'You already have a withdrawal in progress');
+  check(!(await c.query("SELECT 1 FROM payout_withdrawals WHERE beneficiary_id=$1 AND status NOT IN ('failed','reversed') AND (created_at AT TIME ZONE 'UTC')::date=(now() AT TIME ZONE 'UTC')::date",[userId])).rowCount,429,'You can withdraw once a day. Please try again tomorrow');
   const user=(await c.query('SELECT phone_verified_at,credentials_changed_at,deleted_at FROM users WHERE id=$1',[userId])).rows[0];
   check(user?.phone_verified_at&&!user.deleted_at,403,'Verify your phone number before withdrawing');
   const holdUntil=changed=>changed?new Date(changed).getTime()+securityHoldHours*3600000:0;
@@ -249,12 +250,10 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   const beneficiary=(await c.query('SELECT * FROM payout_beneficiaries WHERE user_id=$1 AND provider=$2',[userId,provider.name])).rows[0];
   check(beneficiary,409,'Add your payout details first');
   check(holdUntil(beneficiary.destination_changed_at)<=Date.now(),423,`For your security, withdrawals resume ${securityHoldHours} hours after payout details change`);
-  const stats=(await c.query("SELECT coalesce(sum(amount_minor) FILTER(WHERE status NOT IN ('failed','reversed')),0)::bigint AS spent,count(*) FILTER(WHERE status IN ('failed','reversed'))::int AS failures FROM payout_withdrawals WHERE beneficiary_id=$1 AND created_at>now()-interval '24 hours'",[userId])).rows[0];
+  const stats=(await c.query("SELECT count(*) FILTER(WHERE status IN ('failed','reversed'))::int AS failures FROM payout_withdrawals WHERE beneficiary_id=$1 AND created_at>now()-interval '24 hours'",[userId])).rows[0];
   check(stats.failures<MAX_DAILY_FAILURES,429,'Several withdrawals failed today. Check your Mobile Money account and try again tomorrow');
-  const spent=Number(stats.spent);
-  const chosen=withinLimit(earnings,Math.max(0,dailyLimitMinor-spent),spent);
+  const chosen=withinLimit(earnings,dailyLimitMinor);
   const amountMinor=chosen.reduce((sum,e)=>sum+Number(e.amount),0);
-  check(earnings.length===0||chosen.length>0,429,'You have reached today\'s withdrawal limit. Please try again tomorrow');
   check(amountMinor>=withdrawalMinMinor,409,`You need at least GH₵${(withdrawalMinMinor/100).toFixed(2)} available to withdraw`);
   // A platform-wide ceiling limits the damage from a bug or a compromised server. The money stays in the balance.
   await c.query('SELECT pg_advisory_xact_lock($1)',[WITHDRAWAL_SPEND_LOCK]);
