@@ -128,3 +128,7 @@ CREATE INDEX IF NOT EXISTS payout_operations_withdrawal ON payout_operations(wit
 -- Cash commission is due at the weekly Monday cutoff, with 24 hours of grace.
 ALTER TABLE weekly_settlement_settings ALTER COLUMN grace_hours SET DEFAULT 24;
 UPDATE weekly_settlement_settings SET grace_hours=24 WHERE grace_hours=0;
+
+-- The sender's SMS code proves that a failed parcel came back.
+ALTER TABLE challenges DROP CONSTRAINT challenges_purpose_check;
+ALTER TABLE challenges ADD CONSTRAINT challenges_purpose_check CHECK (purpose IN ('pickup','delivery','return'));
