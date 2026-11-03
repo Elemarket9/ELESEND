@@ -200,17 +200,12 @@ export function validateConfig(env = process.env) {
     if (!/^[a-fA-F0-9]{64}$/.test(otpKey)) {
       errors.push('OTP_KEY must be exactly 64 hexadecimal characters (32 bytes) in production.');
     }
-    if (!/^[a-fA-F0-9]{64}$/.test((env.RIDER_ID_ENCRYPTION_KEY || '').trim())) {
-      errors.push('RIDER_ID_ENCRYPTION_KEY must be exactly 64 hexadecimal characters (32 bytes) in production.');
+    const riderIdKey = (env.RIDER_ID_ENCRYPTION_KEY || '').trim();
+    if (riderIdKey && !/^[a-fA-F0-9]{64}$/.test(riderIdKey)) {
+      errors.push('RIDER_ID_ENCRYPTION_KEY, when set, must be exactly 64 hexadecimal characters (32 bytes).');
     }
-    if (!(env.DIDIT_API_KEY || '').trim() || !(env.DIDIT_WORKFLOW_ID || '').trim() || !(env.DIDIT_WEBHOOK_SECRET || '').trim()) {
-      errors.push('DIDIT_API_KEY, DIDIT_WORKFLOW_ID and DIDIT_WEBHOOK_SECRET are required in production for rider identity checks.');
-    }
-    if (!/^\+233[25]\d{8}$/.test((env.SAFETY_ALERT_PHONE || '').trim())) {
-      errors.push('SAFETY_ALERT_PHONE must be a +233 number that someone answers, for emergency alerts.');
-    }
-    if (!/^[a-fA-F0-9]{64}$/.test(adminMfaKey)) {
-      errors.push('ADMIN_MFA_ENCRYPTION_KEY must be exactly 64 hexadecimal characters (32 bytes) in production.');
+    if (env.SAFETY_ALERT_PHONE && !/^\+233[25]\d{8}$/.test(env.SAFETY_ALERT_PHONE.trim())) {
+      errors.push('SAFETY_ALERT_PHONE, when set, must be a +233 number.');
     }
     if (otpKey && adminMfaKey && otpKey.toLowerCase() === adminMfaKey.toLowerCase()) {
       errors.push('OTP_KEY and ADMIN_MFA_ENCRYPTION_KEY must be independent random keys.');
@@ -299,7 +294,8 @@ export function validateConfig(env = process.env) {
 
   const allowSingleEndpoint = parseBoolean(env.ROUTING_ALLOW_SINGLE_ENDPOINT, !isProduction);
 
-  if (isProduction && !assembledVehicleRoutes && !allowSingleEndpoint) {
+  // No routing service is a supported state. The rule only guards a shared endpoint that was actually set.
+  if (isProduction && (env.ROUTING_OSRM_URL || '').trim() && !assembledVehicleRoutes && !allowSingleEndpoint) {
     const hasNonCar = Object.keys(profiles).some(v => v !== 'car');
     if (hasNonCar) {
       errors.push('Use independent OSRM graph endpoints for non-car vehicles (set ROUTING_OSRM_VEHICLES_JSON or ROUTING_OSRM_MOTORCYCLE_URL), or set ROUTING_ALLOW_SINGLE_ENDPOINT=true.');

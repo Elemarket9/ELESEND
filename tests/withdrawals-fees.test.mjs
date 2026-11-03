@@ -298,7 +298,9 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await assert.rejects(app.transition({id:investigator,kind:'admin'},stolen,{action:'fail',reason:'Admin should not change this'}),/Assigned rider/);
   assert.equal((await resolveCustodyIncident(db,{id:investigator,kind:'admin'},incident.id,{outcome:'police_reported',reason:'Rider unreachable for a day',policeReference:'ACC-123'})).police_reference,'ACC-123');
   // No rider is approved without a current licence, and one licence cannot back two accounts.
-  process.env.RIDER_ID_ENCRYPTION_KEY='c'.repeat(64);
+  // The rider data key works with nothing extra set, using the required admin key.
+  delete process.env.RIDER_ID_ENCRYPTION_KEY;
+  process.env.ADMIN_MFA_ENCRYPTION_KEY=process.env.ADMIN_MFA_ENCRYPTION_KEY||'b'.repeat(64);
   const {submitRiderLicence,riderLicenceStatus,rejectRiderLicence,suspendExpiredLicences,attachLicences}=await import('../services/api/rider-licence.mjs');
   const applicant=await newRider(),other_applicant=await newRider();
   await db.query("UPDATE riders SET status='pending' WHERE id=ANY($1::uuid[])",[[applicant,other_applicant]]);
@@ -323,6 +325,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const uploadAll=async rider=>{
    const token=(await createDocumentUploadLink(db,{id:rider,kind:'rider'})).path.split('#')[1];
    await uploadRiderDocument(db,{token,kind:'profile_photo',imageBase64:jpeg});
+   await uploadRiderDocument(db,{token,kind:'licence_photo',imageBase64:jpeg});
    await uploadRiderDocument(db,{token,kind:'insurance',imageBase64:jpeg,expiresOn:nextYear});
    await uploadRiderDocument(db,{token,kind:'roadworthiness',imageBase64:jpeg,expiresOn:nextYear});
    return token;
@@ -333,7 +336,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await assert.rejects(uploadRiderDocument(db,{token:uploadToken,kind:'profile_photo',imageBase64:Buffer.alloc(200,65).toString('base64')}),/upload a photo/);
   await assert.rejects(uploadRiderDocument(db,{token:uploadToken,kind:'insurance',imageBase64:jpeg,expiresOn:'2020-01-01'}),/expiry/);
   await uploadAll(applicant);
-  assert.equal((await riderDocumentStatus(db,applicantActor)).documents.length,3);
+  assert.equal((await riderDocumentStatus(db,applicantActor)).documents.length,4);
   assert.ok(!(await db.query("SELECT data_encrypted FROM rider_documents WHERE rider_id=$1 AND kind='insurance'",[applicant])).rows[0].data_encrypted.includes(jpeg.slice(0,40)));
   assert.equal((await viewRiderDocument(db,reviewer,applicant,'insurance')).imageBase64,jpeg);
   await assert.rejects(viewRiderDocument(db,{id:customer,kind:'customer'},applicant,'insurance'),/Permission/);
@@ -390,6 +393,9 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const texts=[];
   const smsFake={sendNotification:async x=>{texts.push(x);return {sent:true};}};
   await saveTrustedContact(db,safetyActor,{name:'Ama',phone:'0241112222'});
+  // With no SMS or duty phone the alert still saves for staff.
+  const quiet=await raiseEmergency(db,{id:await user('customer'),kind:'customer'},{},{sms:null,dutyPhone:''});
+  assert.equal(quiet.notified,0);assert.equal(quiet.emergencyNumber,'112');
   const alert=await raiseEmergency(db,safetyActor,{latitude:5.6,longitude:-0.2},{sms:smsFake,dutyPhone:'+233201234567'});
   assert.equal(alert.notified,2);assert.equal(texts.length,2);assert.match(texts[0].message,/maps\.google/);
   assert.equal((await raiseEmergency(db,safetyActor,{},{sms:smsFake,dutyPhone:'+233201234567'})).duplicate,true);assert.equal(texts.length,2);

@@ -2,17 +2,21 @@
  * No rider is approved without identity on file: a driver's licence for motor vehicles, or a Ghana Card for
  * bicycles. The document number is encrypted, with a keyed hash so one licence cannot back two accounts.
  */
-import {createCipheriv,createDecipheriv,createHmac,randomBytes} from 'node:crypto';
+import {createCipheriv,createDecipheriv,createHmac,hkdfSync,randomBytes} from 'node:crypto';
 import {z} from 'zod';
 import {check} from './security.mjs';
 import {identityConfigured,identityProviderFromEnv} from './identity-verification.mjs';
 
 const uuid=z.string().uuid();
-function secretKey(){
- const value=process.env.RIDER_ID_ENCRYPTION_KEY||'';
- check(/^[a-fA-F0-9]{64}$/.test(value),503,'RIDER_ID_ENCRYPTION_KEY must be 64 hexadecimal characters');
- return Buffer.from(value,'hex');
+/** Works with no extra setting: unless a key is set, a separate key is derived from the required admin key. */
+export function riderDataKey(){
+ const own=(process.env.RIDER_ID_ENCRYPTION_KEY||'').trim();
+ if(own){check(/^[a-fA-F0-9]{64}$/.test(own),503,'RIDER_ID_ENCRYPTION_KEY must be 64 hexadecimal characters');return Buffer.from(own,'hex');}
+ const root=(process.env.ADMIN_MFA_ENCRYPTION_KEY||process.env.OTP_KEY||'').trim();
+ check(/^[a-fA-F0-9]{64}$/.test(root),503,'Rider data encryption is not configured');
+ return Buffer.from(hkdfSync('sha256',Buffer.from(root,'hex'),Buffer.alloc(0),'elesend:rider-data:v1',32));
 }
+const secretKey=riderDataKey;
 const normalize=number=>number.toUpperCase().replace(/[\s/-]/g,'');
 const numberHash=number=>createHmac('sha256',secretKey()).update('elesend:rider-licence:'+normalize(number)).digest('hex');
 function encryptNumber(number,riderId){
@@ -41,8 +45,8 @@ export async function riderLicenceStatus(db,actor){
  check(actor?.kind==='rider',403,'Rider account required');
  if(identityConfigured())await syncIdentityCheck(db,actor.id).catch(()=>{});
  const row=(await db.query('SELECT document_type,legal_name,licence_class,expires_on::text AS expires_on,vehicle_plate,status,rejection_reason,valid_until::text AS valid_until,identity_status,identity_reason FROM rider_licences WHERE rider_id=$1',[actor.id])).rows[0];
- if(!row)return {status:'missing'};
- return {status:row.status,identityStatus:row.identity_status,identityReason:row.identity_reason,documentType:row.document_type,legalName:row.legal_name,licenceClass:row.licence_class,expiresOn:row.expires_on,vehiclePlate:row.vehicle_plate,rejectionReason:row.rejection_reason,validUntil:row.valid_until};
+ if(!row)return {status:'missing',identityAvailable:identityConfigured()};
+ return {status:row.status,identityAvailable:identityConfigured(),identityStatus:row.identity_status,identityReason:row.identity_reason,documentType:row.document_type,legalName:row.legal_name,licenceClass:row.licence_class,expiresOn:row.expires_on,vehiclePlate:row.vehicle_plate,rejectionReason:row.rejection_reason,validUntil:row.valid_until};
 }
 export async function submitRiderLicence(db,actor,input){
  check(actor?.kind==='rider',403,'Rider account required');
@@ -70,7 +74,8 @@ export async function approveRiderLicence(c,riderId,reviewerId){
  check(row,409,'This rider has not submitted a licence');
  check(row.status!=='rejected',409,'This rider\'s licence was rejected. They must submit it again');
  check(row.expires_on>=ghanaToday(),409,'This rider\'s licence has expired');
- if(identityConfigured()||process.env.NODE_ENV==='production')check(row.identity_status==='approved',409,'This rider has not passed the photo and selfie check');
+ // Without a provider, staff check the licence photo uploaded with the rider's documents.
+ if(identityConfigured())check(row.identity_status==='approved',409,'This rider has not passed the photo and selfie check');
  await c.query("UPDATE rider_licences SET status='approved',valid_until=expires_on,reviewed_by=$2,reviewed_at=now() WHERE rider_id=$1",[riderId,reviewerId]);
 }
 export async function rejectRiderLicence(db,actor,riderId,input){
@@ -167,7 +172,7 @@ export async function syncOpenIdentityChecks(db,{limit=50}={}){
 }
 
 /** Riders repeat the selfie check regularly, so an account cannot be handed to someone else. */
-export async function requireIdentityRefresh(db,{everyDays=Number(process.env.RIDER_REVERIFY_DAYS)||90,graceDays=7}={}){
+export async function requireIdentityRefresh(db,{everyDays=Number(process.env.RIDER_REVERIFY_DAYS)||90,graceDays=Number(process.env.RIDER_REVERIFY_GRACE_DAYS)||7}={}){
  if(!identityConfigured())return {requested:0,suspended:0};
  const requested=await db.query(`UPDATE rider_licences l SET identity_status='not_started',identity_session_id=NULL,reverify_due_at=now()+make_interval(days=>$2)
    FROM riders r WHERE r.id=l.rider_id AND r.status='approved' AND l.identity_status='approved' AND l.identity_checked_at<now()-make_interval(days=>$1) RETURNING l.rider_id`,[everyDays,graceDays]);

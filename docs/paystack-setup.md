@@ -53,8 +53,13 @@ There is no limit on the amount a person can withdraw. Keep `WITHDRAWAL_FEE_MINO
 - **Failed parcel deliveries after pickup:** the sender pays the full fare, with no refund. The rider returns the parcel and gets the sender's SMS code, then earnings and commission settle like a completed delivery. If the fare was cash payable by the recipient, the rider collects it from the sender first.
 - **Parcels never picked up:** the rider releases the job, and the sender can cancel for a full refund.
 
+## Deploying without providers
+ELESEND starts with no Paystack, SMS, Didit, map or routing settings. Features that need a missing provider stay off until you add its settings. Without SMS, bookings and account verification pause. Without a payment provider, only cash is available.
+
 ## Rider identity
-A rider cannot be approved without a current driver's licence, or a Ghana Card for bicycle riders, and a passed photo and selfie check through Didit. Didit stores the images. In its console, create a workflow with ID verification, liveness and face match, and set the webhook URL to `https://<API host>/api/v1/identity/webhook` using webhook version 3. Set `DIDIT_API_KEY`, `DIDIT_WORKFLOW_ID` and `DIDIT_WEBHOOK_SECRET`. Didit reads the photographed document but does not confirm it against a government licence register, so check licences with the DVLA or a registry lookup provider as well. Riders are suspended when the approved document expires. One document cannot back two accounts. Set `RIDER_ID_ENCRYPTION_KEY` to 64 random hexadecimal characters, and back it up, because the numbers cannot be read without it.
+Didit is optional. Without it, riders upload a licence photo and staff compare it with the details before approving. Adding the Didit settings later switches on the automatic check.
+
+A rider cannot be approved without a current driver's licence, or a Ghana Card for bicycle riders, and a passed photo and selfie check through Didit. Didit stores the images. In its console, create a workflow with ID verification, liveness and face match, and set the webhook URL to `https://<API host>/api/v1/identity/webhook` using webhook version 3. Set `DIDIT_API_KEY`, `DIDIT_WORKFLOW_ID` and `DIDIT_WEBHOOK_SECRET`. Didit reads the photographed document but does not confirm it against a government licence register, so check licences with the DVLA or a registry lookup provider as well. Riders are suspended when the approved document expires. One document cannot back two accounts. Numbers and images are encrypted with `RIDER_ID_ENCRYPTION_KEY`, or a key derived from `ADMIN_MFA_ENCRYPTION_KEY` when it is unset. Back up whichever applies and do not change it, because the data cannot be read without it.
 
 Riders also upload a profile photo, and motor vehicle riders add insurance and roadworthiness certificates with their expiry dates. Staff view them in the admin portal, and approval is refused until they are on file. Riders are suspended when a certificate expires. Staff approving a rider are confirming that these photos are readable and genuine.
 
@@ -62,7 +67,7 @@ Riders also upload a profile photo, and motor vehicle riders add insurance and r
 A parcel still with its rider `PARCEL_CUSTODY_LIMIT_HOURS` (default 24) after pickup opens an incident. The rider is suspended, withdrawals stop, and the evidence is frozen. It appears in the admin portal under Risk Signals. Staff check the facts, then record the outcome and any police reference. The system never contacts the police itself.
 
 ## Safety and rider tools
-- **Emergency button:** sends an SMS to `SAFETY_ALERT_PHONE` and the user's trusted contact, and offers to call 112. Someone must answer that phone, and resolve alerts in the admin portal.
+- **Emergency button:** sends an SMS to `SAFETY_ALERT_PHONE` and the user's trusted contact, and offers to call 112. Both are optional, and alerts always appear in the admin portal. Set a number someone answers before relying on it.
 - **Safety checks:** riders must rest `RIDER_REST_HOURS` after `RIDER_MAX_ONLINE_HOURS` online, repeat the selfie check every `RIDER_REVERIFY_DAYS` with 7 days' grace, and are flagged after `UNUSUAL_STOP_MINUTES` without moving mid-delivery.
 - **Rewards:** referrals and campaigns pay commission credit, not cash. `REFERRAL_REWARD_MINOR` defaults to 0, which is off.
 - **Not built:** private calls need a paid call-masking provider, so real phone numbers are still used on calls.

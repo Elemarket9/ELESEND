@@ -103,6 +103,7 @@ export async function riderCampaigns(db,actor){
 /** Long online shifts force a rest. Short breaks do not reset the clock. */
 export async function enforceDrivingLimits(db){
  const hours=envInt(process.env.RIDER_MAX_ONLINE_HOURS,12)||12,rest=envInt(process.env.RIDER_REST_HOURS,6)||6;
+ await db.query('UPDATE riders SET shift_started_at=NULL WHERE NOT online AND shift_started_at IS NOT NULL AND last_offline_at<now()-make_interval(hours=>$1)',[rest]);
  const rows=(await db.query(`UPDATE riders SET online=false,rest_until=now()+make_interval(hours=>$2),shift_started_at=NULL
    WHERE online AND shift_started_at<now()-make_interval(hours=>$1) RETURNING id`,[hours,rest])).rows;
  for(const {id} of rows){

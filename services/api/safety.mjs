@@ -33,7 +33,8 @@ export async function raiseEmergency(db,actor,input,{sms=null,dutyPhone=process.
  const v=emergencySchema.parse(input);
  if(v.shipmentId)await ownShipment(db,actor,v.shipmentId);
  const recent=(await db.query("SELECT id,notified_count FROM safety_alerts WHERE user_id=$1 AND status='open' AND created_at>now()-interval '5 minutes' ORDER BY created_at DESC LIMIT 1",[actor.id])).rows[0];
- if(recent)return {id:recent.id,notified:recent.notified_count,duplicate:true};
+ const emergencyNumber=process.env.EMERGENCY_NUMBER||'112';
+ if(recent)return {id:recent.id,notified:recent.notified_count,duplicate:true,emergencyNumber};
  const id=randomUUID();
  const user=(await db.query('SELECT phone,kind FROM users WHERE id=$1',[actor.id])).rows[0];
  await db.query('INSERT INTO safety_alerts(id,user_id,shipment_id,latitude,longitude) VALUES($1,$2,$3,$4,$5)',[id,actor.id,v.shipmentId??null,v.latitude??null,v.longitude??null]);
@@ -42,13 +43,13 @@ export async function raiseEmergency(db,actor,input,{sms=null,dutyPhone=process.
  const place=v.latitude!==undefined&&v.longitude!==undefined?` Location: https://maps.google.com/?q=${v.latitude},${v.longitude}`:' Location unavailable.';
  const contact=await getTrustedContact(db,actor);
  const targets=[[dutyPhone,`ELESEND EMERGENCY: ${user?.kind||'user'} ${user?.phone||''} pressed the emergency button.${place}`],[contact?.phone,`ELESEND safety alert: ${user?.phone||'Your contact'} pressed the emergency button and named you as a trusted contact.${place}`]].filter(([to])=>to);
- const results=await Promise.allSettled(targets.map(([to,message],i)=>{
+ const results=await Promise.allSettled(targets.map(async([to,message],i)=>{
   check(typeof sms?.sendNotification==='function',503,'SMS unavailable');
   return sms.sendNotification({phone:to,message,clientReference:id.slice(0,35)+i,kind:'safety_alert'});
  }));
  const notified=results.filter(r=>r.status==='fulfilled').length;
  await db.query('UPDATE safety_alerts SET notified_count=$2 WHERE id=$1',[id,notified]);
- return {id,notified,duplicate:false};
+ return {id,notified,duplicate:false,emergencyNumber};
 }
 export async function listSafetyAlerts(db,actor){
  await requireVerifier(db,actor);

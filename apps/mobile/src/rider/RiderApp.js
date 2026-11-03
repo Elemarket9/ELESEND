@@ -707,7 +707,7 @@ export default function RiderApp() {
       ...(form.vehiclePlate.trim() ? { vehiclePlate: form.vehiclePlate.trim() } : {})
     });
     setLicence(await call('GET', '/api/v1/rider/licence'));
-    setError('Details saved. Now take your licence photo and selfie.');
+    setError('Details saved. Now add your photos.');
   }
 
   async function openDocumentUpload() {
@@ -1745,14 +1745,14 @@ export default function RiderApp() {
                   <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.expiresOn} onChangeText={value => setLicenceForm(f => ({ ...f, expiresOn: value }))} />
                   <Text style={[styles.inputLabel, { marginTop: 10 }]}>Vehicle Plate Number</Text>
                   <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.vehiclePlate} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, vehiclePlate: value }))} />
-                  {licence && licence.status !== 'missing' && (
+                  {licence && licence.status !== 'missing' && licence.identityAvailable && (
                     <Text style={[styles.momoSub, { marginTop: 10 }]}>
                       Photo check: {licence.identityStatus === 'approved' ? 'passed'
                         : licence.identityStatus === 'in_progress' ? 'in progress'
                           : licence.identityStatus === 'failed' ? `failed. ${licence.identityReason || ''}` : 'not started'}
                     </Text>
                   )}
-                  {licence && licence.status !== 'missing' && licence.identityStatus !== 'approved' && (
+                  {licence && licence.status !== 'missing' && licence.identityAvailable && licence.identityStatus !== 'approved' && (
                     <TouchableOpacity disabled={busy} onPress={() => execute(startIdentityPhotos)} style={[styles.primaryBtn, { marginTop: 10 }]}>
                       <Text style={styles.primaryBtnText}>Take Licence Photo and Selfie</Text>
                     </TouchableOpacity>

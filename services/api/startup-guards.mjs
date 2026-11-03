@@ -1,6 +1,6 @@
 import {check} from './security.mjs';
 
-export const REQUIRED_MIGRATION='053_customer_fees_and_rider_withdrawals.sql';
+export const REQUIRED_MIGRATION='054_licence_photo_and_rest_tracking.sql';
 
 export async function assertRequiredSchema(db){
  const result=await db.query('SELECT 1 FROM schema_migrations WHERE name=$1',[REQUIRED_MIGRATION]);
