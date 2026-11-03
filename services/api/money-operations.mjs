@@ -46,9 +46,8 @@ const envInt=(value,fallback,min=1)=>{const n=Number(value);return value!==undef
 const WITHDRAWAL_SPEND_LOCK=839212,RESUBMIT_AFTER_SECONDS=300,GIVE_UP_AFTER_SECONDS=86400,MAX_DAILY_FAILURES=3;
 export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4,leaseSeconds=120,
  withdrawalMinMinor=envInt(process.env.WITHDRAWAL_MIN_MINOR,10000),
- riderDailyLimitMinor=envInt(process.env.WITHDRAWAL_RIDER_DAILY_LIMIT_MINOR,50000),
- businessDailyLimitMinor=envInt(process.env.WITHDRAWAL_BUSINESS_DAILY_LIMIT_MINOR,500000),
- platformDailyLimitMinor=envInt(process.env.WITHDRAWAL_PLATFORM_DAILY_LIMIT_MINOR,5000000),
+ withdrawalFeeMinor=envInt(process.env.WITHDRAWAL_FEE_MINOR,100,0),
+ platformDailyLimitMinor=envInt(process.env.WITHDRAWAL_PLATFORM_DAILY_LIMIT_MINOR,0,0),
  earningsHoldHours=envInt(process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS,24,0),
  securityHoldHours=envInt(process.env.WITHDRAWAL_SECURITY_HOLD_HOURS,24,0)}={}){
  async function permit(actor,permissions=['finance:configure']){
@@ -159,7 +158,7 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    const items=(await c.query('SELECT * FROM payout_operations WHERE withdrawal_id=$1 FOR UPDATE',[row.id])).rows;
    const payableAccount=item=>item.kind==='restaurant'?'restaurant_payable':'rider_payable';
    if(target==='paid'){
-    check(items.reduce((sum,item)=>sum+Number(item.amount_minor),0)===Number(row.amount_minor),409,'Withdrawal does not match its deliveries');
+    check(items.reduce((sum,item)=>sum+Number(item.amount_minor),0)===Number(row.amount_minor)+Number(row.fee_minor),409,'Withdrawal does not match its deliveries');
     for(const item of items){
      await checkoutJournal(c,{shipmentId:item.shipment_id,eventKey:'payout:'+item.shipment_id+':'+item.kind+':'+row.id,kind:'payout_completed',entries:[[payableAccount(item),'debit',Number(item.amount_minor)],['provider_receivable','credit',Number(item.amount_minor)]]});
      if(item.kind==='restaurant')await c.query("UPDATE restaurant_settlements SET status='settled',settled_at=now() WHERE order_id IN (SELECT id FROM food_orders WHERE shipment_id=$1)",[item.shipment_id]);
@@ -216,16 +215,6 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   const fresh=await loadWithdrawal(w.id);
   try{return {...await reconcileWithdrawal(fresh),amountMinor};}catch{return {id:w.id,status:'pending_verification',amountMinor};}
  }
- /** Takes whole deliveries, oldest first, up to the limit. A single larger delivery goes alone. */
- function withinLimit(earnings,limitMinor){
-  const chosen=[];let total=0;
-  for(const e of earnings){
-   const amount=Number(e.amount);
-   if(total+amount>limitMinor){if(!chosen.length)chosen.push(e);break;}
-   chosen.push(e);total+=amount;
-  }
-  return chosen;
- }
  async function availableEarnings(c,kind,scope,userId){
   const account=kind==='restaurant'?'restaurant_payable':'rider_payable';
   return (await c.query(`SELECT s.id AS shipment_id,s.company_id,$2::text AS kind,sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)::bigint AS amount
@@ -237,8 +226,8 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
       ${kind==='restaurant'?"AND NOT EXISTS(SELECT 1 FROM food_orders f JOIN restaurant_settlements rs ON rs.order_id=f.id WHERE f.shipment_id=s.id AND rs.status<>'accrued')":''}
     GROUP BY s.id HAVING sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)>0 ORDER BY min(coalesce(s.completed_at,s.created_at)) LIMIT 500`,[userId,kind,account,earningsHoldHours])).rows;
  }
- /** Every automatic safety check lives here. Anything that fails leaves the money safely in the balance. */
- async function createWithdrawal(c,userId,{idempotencyKey,earnings,dailyLimitMinor}){
+ /** Every automatic safety check lives here. Anything that fails leaves the money in the balance. */
+ async function createWithdrawal(c,userId,{idempotencyKey,earnings}){
   const prior=(await c.query('SELECT * FROM payout_withdrawals WHERE beneficiary_id=$1 AND idempotency_key=$2',[userId,idempotencyKey])).rows[0];
   if(prior)return {existing:prior};
   check(!(await c.query("SELECT 1 FROM payout_withdrawals WHERE beneficiary_id=$1 AND status IN ('initiating','pending','needs_review')",[userId])).rowCount,409,'You already have a withdrawal in progress');
@@ -252,19 +241,22 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   check(holdUntil(beneficiary.destination_changed_at)<=Date.now(),423,`For your security, withdrawals resume ${securityHoldHours} hours after payout details change`);
   const stats=(await c.query("SELECT count(*) FILTER(WHERE status IN ('failed','reversed'))::int AS failures FROM payout_withdrawals WHERE beneficiary_id=$1 AND created_at>now()-interval '24 hours'",[userId])).rows[0];
   check(stats.failures<MAX_DAILY_FAILURES,429,'Several withdrawals failed today. Check your Mobile Money account and try again tomorrow');
-  const chosen=withinLimit(earnings,dailyLimitMinor);
-  const amountMinor=chosen.reduce((sum,e)=>sum+Number(e.amount),0);
-  check(amountMinor>=withdrawalMinMinor,409,`You need at least GH₵${(withdrawalMinMinor/100).toFixed(2)} available to withdraw`);
-  // A platform-wide ceiling limits the damage from a bug or a compromised server. The money stays in the balance.
+  const grossMinor=earnings.reduce((sum,e)=>sum+Number(e.amount),0);
+  check(grossMinor>=withdrawalMinMinor&&grossMinor>withdrawalFeeMinor,409,`You need at least GH₵${(withdrawalMinMinor/100).toFixed(2)} available to withdraw`);
+  // The person pays the transfer fee, so what leaves the provider balance equals what they earned.
+  const amountMinor=grossMinor-withdrawalFeeMinor;
+  // An optional platform-wide ceiling, off unless configured.
+  if(platformDailyLimitMinor>0){
   await c.query('SELECT pg_advisory_xact_lock($1)',[WITHDRAWAL_SPEND_LOCK]);
   const platform=Number((await c.query("SELECT coalesce(sum(amount_minor),0)::bigint AS total FROM payout_withdrawals WHERE status NOT IN ('failed','reversed') AND created_at>now()-interval '24 hours'")).rows[0].total);
   if(platform+amountMinor>platformDailyLimitMinor){
    process.stderr.write(JSON.stringify({level:'error',component:'withdrawals',code:'platform_daily_limit_reached'})+'\n');
    check(false,503,'Withdrawals are paused for now. Your money is safe, please try again later');
   }
+  }
   const id=randomUUID();
-  const created=(await c.query("INSERT INTO payout_withdrawals(id,beneficiary_id,idempotency_key,provider,recipient_reference,amount_minor,submitted_at) VALUES($1,$2,$3,$4,$5,$6,now()) RETURNING *",[id,userId,idempotencyKey,provider.name,beneficiary.recipient_reference,amountMinor])).rows[0];
-  for(const e of chosen)await c.query("INSERT INTO payout_operations(id,shipment_id,kind,beneficiary_id,company_id,provider,recipient_reference,amount_minor,proposed_by,status,submitted_at,withdrawal_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$4,'initiating',now(),$9)",[randomUUID(),e.shipment_id,e.kind,userId,e.company_id,provider.name,beneficiary.recipient_reference,Number(e.amount),id]);
+  const created=(await c.query("INSERT INTO payout_withdrawals(id,beneficiary_id,idempotency_key,provider,recipient_reference,amount_minor,fee_minor,submitted_at) VALUES($1,$2,$3,$4,$5,$6,$7,now()) RETURNING *",[id,userId,idempotencyKey,provider.name,beneficiary.recipient_reference,amountMinor,withdrawalFeeMinor])).rows[0];
+  for(const e of earnings)await c.query("INSERT INTO payout_operations(id,shipment_id,kind,beneficiary_id,company_id,provider,recipient_reference,amount_minor,proposed_by,status,submitted_at,withdrawal_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$4,'initiating',now(),$9)",[randomUUID(),e.shipment_id,e.kind,userId,e.company_id,provider.name,beneficiary.recipient_reference,Number(e.amount),id]);
   await c.query("INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,'payout_withdrawal.created',$2)",[userId,id]);
   return {created};
  }
@@ -418,9 +410,9 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
     await recoverDebtFromEarnings(c,actor.id,{trigger:'payout_precheck'});
     check((await debtState(c,actor.id)).debtMinor===0,409,'Your earnings first repay your outstanding commission');
     const earnings=await availableEarnings(c,'rider','s.rider_id=$1 AND s.company_id IS NULL',actor.id);
-    return createWithdrawal(c,actor.id,{idempotencyKey:v.idempotencyKey,earnings,dailyLimitMinor:riderDailyLimitMinor});
+    return createWithdrawal(c,actor.id,{idempotencyKey:v.idempotencyKey,earnings});
    });
-   if(result.existing)return {id:result.existing.id,status:result.existing.status,amountMinor:Number(result.existing.amount_minor)};
+   if(result.existing)return {id:result.existing.id,status:result.existing.status,amountMinor:Number(result.existing.amount_minor),feeMinor:Number(result.existing.fee_minor)};
    return submitWithdrawal(result.created);
   },
   /** Pays restaurants and delivery companies automatically, once per day per owner. */
@@ -438,14 +430,14 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
       const fleet=await availableEarnings(c,'rider',"s.company_id IN (SELECT id FROM companies WHERE owner_id=$1 AND status='approved')",userId);
       const earnings=[...food,...fleet];
       if(!earnings.length)return {};
-      return createWithdrawal(c,userId,{idempotencyKey,earnings,dailyLimitMinor:businessDailyLimitMinor});
+      return createWithdrawal(c,userId,{idempotencyKey,earnings});
      })());
      if(result.created)results.push(await submitWithdrawal(result.created));
     }catch(e){results.push({userId,status:'skipped',reason:e.message});}
    }
    return results;
   },
-  async withdrawals(actor){await permit(actor,READ);return (await db.query('SELECT id,beneficiary_id,amount_minor,currency,status,provider_id,failure_reason,created_at,updated_at FROM payout_withdrawals ORDER BY created_at DESC LIMIT 100')).rows;},
+  async withdrawals(actor){await permit(actor,READ);return (await db.query('SELECT id,beneficiary_id,amount_minor,fee_minor,currency,status,provider_id,failure_reason,created_at,updated_at FROM payout_withdrawals ORDER BY created_at DESC LIMIT 100')).rows;},
   /** Handles a verified provider reversal. Returns null for payouts that are not withdrawals. */
   async reverseWithdrawal(record){
    uuid.parse(record.requestId);

@@ -80,7 +80,8 @@ CREATE TABLE IF NOT EXISTS payout_withdrawals (
   idempotency_key text NOT NULL CHECK (length(idempotency_key) BETWEEN 8 AND 128),
   provider text NOT NULL,
   recipient_reference text NOT NULL,
-  amount_minor bigint NOT NULL CHECK (amount_minor > 0),
+  amount_minor bigint NOT NULL CHECK (amount_minor > 0), -- what the transfer sends, after the fee
+  fee_minor bigint NOT NULL DEFAULT 0 CHECK (fee_minor >= 0),
   currency text NOT NULL DEFAULT 'GHS',
   status text NOT NULL DEFAULT 'initiating' CHECK (status IN ('initiating','pending','needs_review','paid','failed','reversed')),
   provider_id text,
@@ -106,8 +107,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS payout_withdrawals_once_a_day ON payout_withdr
 CREATE OR REPLACE FUNCTION guard_payout_withdrawal() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'Withdrawal records are permanent'; END IF;
-  IF (NEW.id, NEW.beneficiary_id, NEW.provider, NEW.recipient_reference, NEW.amount_minor, NEW.currency)
-     IS DISTINCT FROM (OLD.id, OLD.beneficiary_id, OLD.provider, OLD.recipient_reference, OLD.amount_minor, OLD.currency) THEN
+  IF (NEW.id, NEW.beneficiary_id, NEW.provider, NEW.recipient_reference, NEW.amount_minor, NEW.fee_minor, NEW.currency)
+     IS DISTINCT FROM (OLD.id, OLD.beneficiary_id, OLD.provider, OLD.recipient_reference, OLD.amount_minor, OLD.fee_minor, OLD.currency) THEN
     RAISE EXCEPTION 'Withdrawal terms immutable';
   END IF;
   IF NEW.status IS DISTINCT FROM OLD.status AND (

@@ -80,7 +80,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const provider={name:'fixture',
    createPayout:async x=>{submitted.push(x);if(outcome==='uncertain')throw Error('timeout');return {providerId:'TRF_'+x.requestId};},
    verifyPayout:async x=>outcome==='missing'?{status:'not_found',requestId:x.requestId}:({verified:true,type:'payout',provider:'fixture',status:outcome==='success'?'paid':outcome==='failed'?'failed':'pending',requestId:x.requestId,providerId:'TRF_'+x.requestId,recipientReference:x.recipientReference,amountMinor:x.amountMinor,currency:x.currency,eventId:'transfer:'+randomUUID()+(outcome==='failed'?':failed':''),...(outcome==='failed'?{failureReason:'Wallet rejected'}:{})})};
-  const limits={provider,withdrawalMinMinor:500,riderDailyLimitMinor:5000,businessDailyLimitMinor:5000,earningsHoldHours:0};
+  const limits={provider,withdrawalMinMinor:500,withdrawalFeeMinor:0,earningsHoldHours:0};
   const money=moneyOperations(db,limits);
   const rider=await newRider();const actor={id:rider,kind:'rider'};
   const key=()=>randomUUID();
@@ -154,15 +154,18 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await assert.rejects(db.query("UPDATE payout_withdrawals SET status='paid' WHERE id=$1",[backAgain.id]),/finished/);
   await assert.rejects(db.query('DELETE FROM payout_withdrawals WHERE id=$1',[backAgain.id]),/permanent/);
 
-  // Limits never queue for staff: extra earnings stay in the balance until the next day.
+  // There is no amount limit. The fee comes out of the transfer, and the ledger still balances.
   const second_rider=await newRider(),other={id:second_rider,kind:'rider'};
   await db.query('INSERT INTO payout_beneficiaries(user_id,provider,recipient_reference) VALUES($1,$2,$3)',[second_rider,'fixture','RCP_second']);
-  const a1=await completedEarning(second_rider,customer,3000),a2=await completedEarning(second_rider,customer,3000);
-  const partial=await withdraw(key(),other);
-  assert.equal(partial.status,'paid');assert.equal(partial.amountMinor,3000);
-  assert.equal((await payable(a1))+(await payable(a2)),3000);
+  const a1=await completedEarning(second_rider,customer,300000),a2=await completedEarning(second_rider,customer,300000);
+  submitted.length=0;
+  const charged=await withdraw(key(),other,moneyOperations(db,{...limits,withdrawalFeeMinor:100}));
+  assert.equal(charged.status,'paid');assert.equal(charged.amountMinor,599900);
+  assert.equal(submitted[0].amountMinor,599900);
+  assert.equal((await payable(a1))+(await payable(a2)),0);
   await assert.rejects(withdraw(key(),other),/once a day/);
   await assert.rejects(db.query("INSERT INTO payout_withdrawals(id,beneficiary_id,idempotency_key,provider,recipient_reference,amount_minor) VALUES($1,$2,$3,'fixture','RCP_second',100)",[randomUUID(),second_rider,key()]),/payout_withdrawals_once_a_day/);
+  await assert.rejects(db.query('UPDATE payout_withdrawals SET fee_minor=0 WHERE id=$1',[charged.id]),/immutable/);
 
   // The platform ceiling and earnings hold both keep money in the balance.
   const third_rider=await newRider(),third_actor={id:third_rider,kind:'rider'};

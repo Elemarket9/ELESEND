@@ -1655,7 +1655,7 @@ export default function RiderApp() {
               <View style={styles.modalOverlay}>
                 <View style={styles.momoCard}>
                   <Text style={styles.momoTitle}>Withdraw {ghc(financeSnapshot?.availableNowMinor || 0)}</Text>
-                  <Text style={styles.momoSub}>Enter your password to send this to your Mobile Money ({auth.phone}).</Text>
+                  <Text style={styles.momoSub}>A {ghc(financeSnapshot?.withdrawalFeeMinor || 0)} transfer fee is taken from this. Enter your password to send the rest to your Mobile Money ({auth.phone}).</Text>
                   <TextInput
                     secureTextEntry
                     autoCapitalize="none"

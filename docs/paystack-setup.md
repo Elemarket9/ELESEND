@@ -24,7 +24,7 @@ Production refuses test keys. Enable each method in the admin portal after this.
 
 ## Fees and withdrawals
 - **Customer fee:** digital payments add `PAYSTACK_CUSTOMER_FEE_BPS` (default 195, Paystack's listed 1.95%) on top of the order total. Set it to 0 if your agreed terms or legal advice rule it out. Cancelled orders refund the fee to the customer.
-- **Riders:** they press Withdraw and enter their password. The API sends the transfer with no staff step, and ELESEND pays Paystack's transfer fee.
+- **Riders:** they press Withdraw and enter their password. The API sends the transfer with no staff step, minus the transfer fee.
 - **Restaurants and delivery companies:** their available balance is paid automatically once a day when a payout account is saved.
 - **Unclear results:** the system checks with Paystack and resends only with the same reference, which Paystack treats as the same transfer. If Paystack still has no transfer after 24 hours, or it fails or is reversed, the money returns to the available balance.
 
@@ -37,14 +37,13 @@ Production refuses test keys. Enable each method in the admin portal after this.
 | Hold after a password or payout details change | `WITHDRAWAL_SECURITY_HOLD_HOURS` | 24 |
 | Minimum withdrawal | `WITHDRAWAL_MIN_MINOR` | GH₵100 |
 | One withdrawal per person per day, Ghana time. Failed or reversed ones do not count | | Always on |
-| Limit per rider withdrawal | `WITHDRAWAL_RIDER_DAILY_LIMIT_MINOR` | GH₵500 |
-| Limit per business withdrawal | `WITHDRAWAL_BUSINESS_DAILY_LIMIT_MINOR` | GH₵5,000 |
-| Limit across the whole platform per 24 hours, which pauses withdrawals when reached | `WITHDRAWAL_PLATFORM_DAILY_LIMIT_MINOR` | GH₵50,000 |
+| Transfer fee taken from each withdrawal | `WITHDRAWAL_FEE_MINOR` | GH₵1 |
+| Optional daily ceiling across the platform, which pauses withdrawals when reached | `WITHDRAWAL_PLATFORM_DAILY_LIMIT_MINOR` | Off |
 | Three failed withdrawals in 24 hours blocks more until the count clears | | Always on |
 
-Earnings above a limit stay in the balance for the next day. A single delivery larger than the rider or business limit is paid alone. Raise the platform limit as volume grows.
+There is no limit on the amount a person can withdraw. Keep `WITHDRAWAL_FEE_MINOR` matched to Paystack's Mobile Money transfer fee.
 
-- **Ledger gap:** transfer fees, and processing fees Paystack keeps on refunded orders, are not recorded. Reconcile against your Paystack statements.
+- **Ledger gap:** a fee Paystack keeps on a reversed transfer, and processing fees Paystack keeps on refunded orders, are not recorded. Reconcile against your Paystack statements.
 
 ## What needs staff action
 - **A refund in `needs-attention`:** stays pending in ELESEND. Supply the customer's account details in the Paystack dashboard.

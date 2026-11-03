@@ -267,6 +267,7 @@ export async function walletSummary(db,actor){
   withdrawableMinor,
   availableNowMinor:debtMinor>0?0:Math.max(0,withdrawableMinor-e.onHoldMinor),
   onHoldMinor:e.onHoldMinor,
+  withdrawalFeeMinor:(n=>process.env.WITHDRAWAL_FEE_MINOR&&Number.isSafeInteger(n)&&n>=0?n:100)(Number(process.env.WITHDRAWAL_FEE_MINOR)),
   outstandingDebtMinor:debtMinor,
   debtLimitMinor:debt.limitMinor,
   debtRestricted:debt.restricted,
