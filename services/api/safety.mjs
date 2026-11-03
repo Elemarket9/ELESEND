@@ -16,7 +16,7 @@ async function requireVerifier(c,actor){
 }
 export async function saveTrustedContact(db,actor,input){
  const v=z.object({name:z.string().trim().min(2).max(80),phone:z.string().trim().min(9).max(16)}).strict().parse(input);
- const normalized=phone.parse(v.phone);
+ const normalized=phone(v.phone);
  await db.query('INSERT INTO trusted_contacts(user_id,name,phone) VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET name=excluded.name,phone=excluded.phone,updated_at=now()',[actor.id,v.name,normalized]);
  return {name:v.name,phone:normalized};
 }

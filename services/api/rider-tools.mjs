@@ -32,7 +32,7 @@ export async function demandAreas(db,actor){
    FROM shipments s JOIN quotes q ON q.id=s.quote_id
    WHERE s.created_at>now()-interval '60 minutes' AND s.state<>'CANCELLED' AND q.request->'pickup'->>'latitude' IS NOT NULL
    GROUP BY 1,2 HAVING count(*)>=3 ORDER BY orders DESC LIMIT 10`)).rows;
- return {areas:rows.map(a=>({...a,distanceMeters:me?.latitude!=null?Math.round(haversine(me.latitude,me.longitude,a.latitude,a.longitude)):null}))};
+ return {areas:rows.map(a=>({...a,distanceMeters:me?.latitude!=null?Math.round(haversine(me,a)):null}))};
 }
 export async function referralSummary(db,actor){
  requireRider(actor);
@@ -120,7 +120,7 @@ export async function flagUnusualStops(db,{minutes=envInt(process.env.UNUSUAL_ST
    WHERE s.state IN ('PICKUP_VERIFIED','IN_TRANSIT') AND r.current_position IS NOT NULL AND r.position_at>now()-interval '5 minutes' LIMIT 500`)).rows;
  const flagged=[];
  for(const x of rows){
-  if(x.w_lat===null||haversine(x.w_lat,x.w_lng,x.latitude,x.longitude)>metres){
+  if(x.w_lat===null||haversine({latitude:x.w_lat,longitude:x.w_lng},x)>metres){
    await db.query(`INSERT INTO delivery_stop_watch(shipment_id,latitude,longitude,since) VALUES($1,$2,$3,now())
      ON CONFLICT(shipment_id) DO UPDATE SET latitude=$2,longitude=$3,since=now(),alerted_at=NULL`,[x.id,x.latitude,x.longitude]);
    continue;
