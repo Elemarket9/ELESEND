@@ -1296,7 +1296,7 @@ export function renderAdminPortalHtml() {
       } catch (e) { console.error(e); }
 
       try {
-        const promos = await api('/api/v1/admin/promotions');
+        const promos = (await api('/api/v1/admin/promotions')).campaigns;
         const tb = document.getElementById('adminPromotionsTable');
         if (!promos || promos.length === 0) {
           tb.innerHTML = '<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:16px;">No promotion campaigns created yet.</td></tr>';
@@ -1304,14 +1304,14 @@ export function renderAdminPortalHtml() {
         }
         tb.innerHTML = promos.map(p => \`
           <tr>
-            <td><strong>\${escapeHtml(p.name)}</strong>\${p.promoCode ? '<br><code>' + escapeHtml(p.promoCode) + '</code>' : ''}</td>
-            <td><span class="badge badge-active">\${escapeHtml(p.ownerType.toUpperCase())}</span><br><small>ELESEND \${(p.elesendFundingBps/100).toFixed(0)}% / Rest \${(p.restaurantFundingBps/100).toFixed(0)}%</small></td>
-            <td>\${p.discountType === 'percentage_off' ? (p.discountBps/100).toFixed(1) + '% OFF' : p.discountType === 'free_delivery' ? 'FREE DELIVERY' : ghc(p.discountAmountMinor) + ' OFF'}</td>
-            <td>\${ghc(p.spentBudgetMinor || 0)}\${p.budgetCapMinor ? ' / ' + ghc(p.budgetCapMinor) : ' (Unlimited)'}</td>
-            <td>\${Number(p.redemptionsUsed || 0)}\${p.maxTotalRedemptions ? ' / ' + Number(p.maxTotalRedemptions) : ''}</td>
+            <td><strong>\${escapeHtml(p.name)}</strong>\${p.code ? '<br><code>' + escapeHtml(p.code) + '</code>' : ''}</td>
+            <td><span class="badge badge-active">\${escapeHtml(p.owner_type.toUpperCase())}</span><br><small>ELESEND \${(Number(p.elesend_funding_bps)/100).toFixed(0)}% / Rest \${(Number(p.restaurant_funding_bps)/100).toFixed(0)}%</small></td>
+            <td>\${p.discount_type === 'percentage' ? (Number(p.discount_bps)/100).toFixed(1) + '% OFF' : p.discount_type === 'free_delivery' ? 'FREE DELIVERY' : ghc(p.discount_minor) + ' OFF'}</td>
+            <td>\${ghc(p.spent_budget_minor || 0)}\${p.total_budget_minor ? ' / ' + ghc(p.total_budget_minor) : ' (Unlimited)'}</td>
+            <td>\${Number(p.redeemed_count || 0)}\${p.total_redemption_limit ? ' / ' + Number(p.total_redemption_limit) : ''}</td>
             <td><span class="badge \${p.status === 'active' ? 'badge-active' : 'badge-warn'}">\${escapeHtml(p.status.toUpperCase())}</span></td>
             <td>
-              \${p.ownerType === 'joint' ? \`<button class="action-btn" onclick="inviteRestaurantToPromo('\${escapeHtml(p.id)}')">Invite Merchant</button>\` : ''}
+              \${p.owner_type === 'joint' ? \`<button class="action-btn" onclick="inviteRestaurantToPromo('\${escapeHtml(p.id)}')">Invite Merchant</button>\` : ''}
               \${p.status === 'active' ? \`<button class="action-btn" onclick="setAdminPromoStatus('\${escapeHtml(p.id)}', 'paused')">Pause</button>\` : ''}
               \${p.status === 'paused' ? \`<button class="action-btn" onclick="setAdminPromoStatus('\${escapeHtml(p.id)}', 'active')">Resume</button>\` : ''}
             </td>
@@ -1380,12 +1380,10 @@ export function renderAdminPortalHtml() {
           body: JSON.stringify({
             name,
             ownerType,
-            discountType,
-            fundingSource: ownerType === 'joint' ? 'joint' : 'elesend',
-            discountBps: discountType === 'percentage_off' ? Math.round(val * 100) : null,
-            discountAmountMinor: discountType !== 'percentage_off' && discountType !== 'free_delivery' ? Math.round(val * 100) : null,
-            promoCode,
-            budgetCapMinor: budgetGhc > 0 ? Math.round(budgetGhc * 100) : null,
+            fundingType: ownerType === 'joint' ? 'shared_percentage' : 'elesend_100',
+            ...promoDiscountFields(discountType, val),
+            code: promoCode,
+            totalBudgetMinor: budgetGhc > 0 ? Math.round(budgetGhc * 100) : null,
             elesendFundingBps: elesendBps,
             restaurantFundingBps: restBps,
             commissionConcessionBps: Math.round(commConcessionPct * 100),
@@ -1395,6 +1393,15 @@ export function renderAdminPortalHtml() {
         alert('Promotion campaign created.');
         loadPromotionsTab();
       } catch (err) { alert(err.message); }
+    }
+
+    // Translates the form's discount choice into the API's discount and target fields.
+    function promoDiscountFields(choice, value) {
+      const amount = Math.round(value * 100);
+      if (choice === 'percentage_off') return { discountType: 'percentage', targetType: 'food_subtotal', discountBps: amount };
+      if (choice === 'fixed_amount_off') return { discountType: 'fixed', targetType: 'food_subtotal', discountMinor: amount };
+      if (choice === 'discounted_delivery') return { discountType: 'fixed', targetType: 'delivery_fee', discountMinor: amount };
+      return { discountType: 'free_delivery', targetType: 'delivery_fee' };
     }
 
     async function inviteRestaurantToPromo(campaignId) {
@@ -1415,7 +1422,7 @@ export function renderAdminPortalHtml() {
       try {
         await api(\`/api/v1/admin/promotions/\${campaignId}/status\`, {
           method: 'POST',
-          body: JSON.stringify({ status, reason })
+          body: JSON.stringify({ status, rationale: reason })
         });
         loadPromotionsTab();
       } catch (err) { alert(err.message); }

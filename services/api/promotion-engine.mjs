@@ -1790,7 +1790,9 @@ export function promotionEngine(db) {
                 c.starts_at,
                 c.ends_at,
                 c.status AS campaign_status,
-                c.terms_disclosure
+                c.terms_disclosure,
+                c.elesend_funding_bps AS campaign_elesend_funding_bps,
+                c.restaurant_funding_bps AS campaign_restaurant_funding_bps
          FROM promotion_campaign_restaurants pcr
          JOIN promotion_campaigns c ON c.id = pcr.campaign_id
          WHERE pcr.restaurant_id = $1

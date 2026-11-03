@@ -1416,22 +1416,29 @@
         const prev = await apiRequest('/api/v1/restaurants/' + currentRestaurant.id + '/promotions/preview', {
           method: 'POST',
           body: JSON.stringify({
-            sampleSubtotalMinor: 10000,
+            sampleFoodSubtotalMinor: 10000,
             sampleDeliveryFeeMinor: 1500,
-            discountType,
-            discountBps: discountType === 'percentage_off' ? Math.round(val * 100) : null,
-            discountAmountMinor: discountType !== 'percentage_off' && discountType !== 'free_delivery' ? Math.round(val * 100) : null,
-            restaurantFundingBps: 10000
+            ...promoDiscountFields(discountType, val),
+            fundingType: 'restaurant_100'
           })
         });
         box.innerHTML = `
-          <div>Gross Food Subtotal: <strong>GH₵ ${(prev.sampleSubtotalMinor/100).toFixed(2)}</strong> • Customer Savings: <strong style="color:var(--primary);">GH₵ ${(prev.customerTotalDiscountMinor/100).toFixed(2)}</strong></div>
-          <div>Merchant Promo Share: <strong style="color:var(--warning);">GH₵ ${(prev.restaurantFundedDiscountMinor/100).toFixed(2)}</strong> • Commission (${escapeHtml(prev.commissionRatePercent)}): <strong>GH₵ ${(prev.commissionMinor/100).toFixed(2)}</strong></div>
-          <div>Estimated Net Merchant Payout: <strong style="color:var(--primary);">GH₵ ${(prev.netRestaurantPayoutMinor/100).toFixed(2)}</strong> (vs GH₵ ${(prev.baselineNetPayoutMinor/100).toFixed(2)} without promo)</div>
+          <div>Gross Food Subtotal: <strong>GH₵ ${(prev.sampleFoodSubtotalMinor/100).toFixed(2)}</strong> • Customer Savings: <strong style="color:var(--primary);">GH₵ ${(prev.totalDiscountMinor/100).toFixed(2)}</strong></div>
+          <div>Merchant Promo Share: <strong style="color:var(--warning);">GH₵ ${(prev.restaurantFundedDiscountMinor/100).toFixed(2)}</strong> • Commission (${(prev.commissionRateBps/100).toFixed(2)}%): <strong>GH₵ ${(prev.commissionMinor/100).toFixed(2)}</strong></div>
+          <div>Estimated Net Merchant Payout: <strong style="color:var(--primary);">GH₵ ${(prev.netRestaurantSettlementMinor/100).toFixed(2)}</strong> (vs GH₵ ${(prev.withoutPromotion.netRestaurantSettlementMinor/100).toFixed(2)} without promo)</div>
         `;
       } catch (e) {
         box.textContent = e.message;
       }
+    }
+
+    // Translates the form's discount choice into the API's discount and target fields.
+    function promoDiscountFields(choice, value) {
+      const amount = Math.round(value * 100);
+      if (choice === 'percentage_off') return { discountType: 'percentage', targetType: 'food_subtotal', discountBps: amount };
+      if (choice === 'fixed_amount_off') return { discountType: 'fixed', targetType: 'food_subtotal', discountMinor: amount };
+      if (choice === 'discounted_delivery') return { discountType: 'fixed', targetType: 'delivery_fee', discountMinor: amount };
+      return { discountType: 'free_delivery', targetType: 'delivery_fee' };
     }
 
     async function createRestaurantPromo() {
@@ -1448,12 +1455,10 @@
           method: 'POST',
           body: JSON.stringify({
             name,
-            discountType,
-            discountBps: discountType === 'percentage_off' ? Math.round(val * 100) : null,
-            discountAmountMinor: discountType !== 'percentage_off' && discountType !== 'free_delivery' ? Math.round(val * 100) : null,
-            minOrderSubtotalMinor: Math.round(minOrder * 100),
-            promoCode,
-            budgetCapMinor: budget > 0 ? Math.round(budget * 100) : null,
+            ...promoDiscountFields(discountType, val),
+            minOrderMinor: Math.round(minOrder * 100),
+            code: promoCode,
+            totalBudgetMinor: budget > 0 ? Math.round(budget * 100) : null,
             status: 'active'
           })
         });
@@ -1469,11 +1474,11 @@
       if (!currentRestaurant) return;
       try {
         const analytics = await apiRequest('/api/v1/restaurants/' + currentRestaurant.id + '/promotions/analytics');
-        if (analytics && analytics.summary) {
-          document.getElementById('promoStatOrders').textContent = analytics.summary.promotedOrdersCount || 0;
-          document.getElementById('promoStatGross').textContent = 'GH₵ ' + ((analytics.summary.promotedGrossSalesMinor || 0) / 100).toFixed(2);
-          document.getElementById('promoStatRestDiscount').textContent = 'GH₵ ' + ((analytics.summary.totalRestaurantFundedDiscountMinor || 0) / 100).toFixed(2);
-          document.getElementById('promoStatElesendSubsidy').textContent = 'GH₵ ' + ((analytics.summary.totalElesendSubsidyMinor || 0) / 100).toFixed(2);
+        if (analytics) {
+          document.getElementById('promoStatOrders').textContent = analytics.promotionalOrdersCount || 0;
+          document.getElementById('promoStatGross').textContent = 'GH₵ ' + ((analytics.grossCampaignSalesMinor || 0) / 100).toFixed(2);
+          document.getElementById('promoStatRestDiscount').textContent = 'GH₵ ' + ((analytics.restaurantFundedMinor || 0) / 100).toFixed(2);
+          document.getElementById('promoStatElesendSubsidy').textContent = 'GH₵ ' + ((analytics.elesendFundedMinor || 0) / 100).toFixed(2);
         }
       } catch (e) { console.error(e); }
 
@@ -1487,24 +1492,24 @@
           invBox.innerHTML = invites.map(inv => `
             <div style="background:var(--card); border:1px solid var(--card-border); border-radius:10px; padding:12px;">
               <div style="display:flex; justify-content:space-between; align-items:center;">
-                <strong>${escapeHtml(inv.name)}</strong>
-                <span class="prep-timer-pill">${escapeHtml(inv.consentStatus.toUpperCase())}</span>
+                <strong>${escapeHtml(inv.campaign_name)}</strong>
+                <span class="prep-timer-pill">${escapeHtml(inv.consent_status.toUpperCase())}</span>
               </div>
               <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
-                Split: ELESEND ${(inv.elesendFundingBps/100).toFixed(0)}% / Your Restaurant ${(inv.restaurantFundingBps/100).toFixed(0)}%
-                ${inv.commissionConcessionBps > 0 ? ' • Commission Reduced by ' + (inv.commissionConcessionBps/100).toFixed(1) + '%' : ''}
+                Split: ELESEND ${(Number(inv.campaign_elesend_funding_bps)/100).toFixed(0)}% / Your Restaurant ${(Number(inv.campaign_restaurant_funding_bps)/100).toFixed(0)}%
+                ${inv.commission_concession_bps > 0 ? ' • Commission Reduced by ' + (inv.commission_concession_bps/100).toFixed(1) + '%' : ''}
               </div>
-              ${inv.consentStatus === 'pending' ? `
+              ${inv.consent_status === 'invited' ? `
                 <div style="display:flex; gap:8px; margin-top:8px;">
-                  <button class="btn" style="padding:8px; font-size:12px;" onclick="respondToJointInvite('${escapeHtml(inv.id)}', 'accepted')">Accept & Opt-In</button>
-                  <button class="btn btn-danger" style="padding:8px; font-size:12px;" onclick="respondToJointInvite('${escapeHtml(inv.id)}', 'rejected')">Decline</button>
+                  <button class="btn" style="padding:8px; font-size:12px;" onclick="respondToJointInvite('${escapeHtml(inv.campaign_id)}', 'accepted')">Accept & Opt-In</button>
+                  <button class="btn btn-danger" style="padding:8px; font-size:12px;" onclick="respondToJointInvite('${escapeHtml(inv.campaign_id)}', 'rejected')">Decline</button>
                 </div>
               ` : ''}
             </div>
           `).join('');
         }
 
-        const selfList = data.selfServicePromotions || [];
+        const selfList = (data.campaigns || []).filter(p => p.creator_restaurant_id === currentRestaurant.id);
         const listBox = document.getElementById('restPromosListContainer');
         if (!selfList.length) {
           listBox.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">No self-service promotions created yet.</div>';
@@ -1512,15 +1517,15 @@
           listBox.innerHTML = selfList.map(p => `
             <div style="display:flex; justify-content:space-between; align-items:center; padding:10px; border-bottom:1px solid var(--line);">
               <div>
-                <strong>${escapeHtml(p.name)}</strong> ${p.promoCode ? '<code>(' + escapeHtml(p.promoCode) + ')</code>' : '(Auto-Applied)'}
+                <strong>${escapeHtml(p.name)}</strong> ${p.code ? '<code>(' + escapeHtml(p.code) + ')</code>' : '(Auto-Applied)'}
                 <div style="font-size:12px; color:var(--text-muted);">
-                  Redemptions: ${Number(p.redemptionsUsed || 0)} • Budget Spent: GH₵ ${(p.spentBudgetMinor/100).toFixed(2)} • Status: <strong>${escapeHtml(p.status.toUpperCase())}</strong>
+                  Budget Spent: GH₵ ${(Number(p.spent_budget_minor || 0)/100).toFixed(2)} • Status: <strong>${escapeHtml(p.status.toUpperCase())}</strong>
                 </div>
               </div>
               <div style="display:flex; gap:6px;">
                 ${p.status === 'active' ? `<button class="btn btn-secondary" style="width:auto; padding:6px 12px; font-size:12px;" onclick="setMerchantPromoStatus('${escapeHtml(p.id)}', 'paused')">Pause</button>` : ''}
                 ${p.status === 'paused' ? `<button class="btn" style="width:auto; padding:6px 12px; font-size:12px;" onclick="setMerchantPromoStatus('${escapeHtml(p.id)}', 'active')">Resume</button>` : ''}
-                ${p.status !== 'ended' ? `<button class="btn btn-danger" style="width:auto; padding:6px 12px; font-size:12px;" onclick="setMerchantPromoStatus('${escapeHtml(p.id)}', 'ended')">End</button>` : ''}
+                ${!['expired', 'terminated', 'rejected'].includes(p.status) ? `<button class="btn btn-danger" style="width:auto; padding:6px 12px; font-size:12px;" onclick="setMerchantPromoStatus('${escapeHtml(p.id)}', 'terminated')">End</button>` : ''}
               </div>
             </div>
           `).join('');
@@ -1534,7 +1539,7 @@
       try {
         await apiRequest('/api/v1/restaurants/' + currentRestaurant.id + '/promotions/' + campaignId + '/consent', {
           method: 'POST',
-          body: JSON.stringify({ decision, notes })
+          body: JSON.stringify({ decision, decisionNotes: notes })
         });
         loadPromotions();
       } catch (err) { alert(err.message); }
@@ -1545,7 +1550,7 @@
       try {
         await apiRequest('/api/v1/restaurants/' + currentRestaurant.id + '/promotions/' + campaignId + '/status', {
           method: 'POST',
-          body: JSON.stringify({ status, reason: 'Merchant updated status in portal' })
+          body: JSON.stringify({ status, rationale: 'Merchant updated status in portal' })
         });
         loadPromotions();
       } catch (err) { alert(err.message); }
