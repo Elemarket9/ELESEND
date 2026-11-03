@@ -185,10 +185,10 @@ test('the booking screen no longer shows made-up arrival times',()=>{
  assert.match(app,/deliveryEta\.message/);
 });
 
-test('production includes map services behind a profile, and raw road times stay in routing',()=>{
+test('production starts map services by default, and raw road times stay in routing',()=>{
  const compose=readFileSync(new URL('../deploy/runtime/compose.yaml',import.meta.url),'utf8');
  for(const service of ['osrm:','osrm-motorcycle:','maps:'])assert.ok(compose.includes('  '+service),service);
- assert.equal((compose.match(/profiles: \[maps\]/g)||[]).length,3);
+ assert.ok(!compose.includes('profiles: [maps]'));
  assert.match(readFileSync(new URL('../deploy/runtime/Caddyfile',import.meta.url),'utf8'),/reverse_proxy maps:3145/);
  assert.equal(readFileSync(new URL('../services/api/dispatch-routing.mjs',import.meta.url),'utf8').includes('durationFactors'),false);
 });
