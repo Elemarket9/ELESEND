@@ -2,7 +2,6 @@
 ALTER TABLE companies ADD COLUMN services text[] NOT NULL DEFAULT '{riders}';
 ALTER TABLE companies ADD CONSTRAINT companies_services_valid CHECK (cardinality(services) >= 1 AND services <@ ARRAY['delivery','riders']::text[]);
 
-ALTER TABLE rider_invitations ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
 CREATE INDEX rider_invitations_open_for_rider ON rider_invitations(rider_id) WHERE status='pending';
 CREATE INDEX rider_invitations_for_company ON rider_invitations(company_id, created_at DESC);
 
