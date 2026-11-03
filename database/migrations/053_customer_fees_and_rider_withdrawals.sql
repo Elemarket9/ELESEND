@@ -64,9 +64,15 @@ CREATE TRIGGER users_mark_credentials_changed BEFORE UPDATE OF password_hash, ph
   FOR EACH ROW EXECUTE FUNCTION mark_credentials_changed();
 ALTER TABLE payout_beneficiaries ADD COLUMN IF NOT EXISTS destination_changed_at timestamptz;
 
-ALTER TABLE checkout_accounting_journals DROP CONSTRAINT checkout_accounting_journals_kind_check;
-ALTER TABLE checkout_accounting_journals ADD CONSTRAINT checkout_accounting_journals_kind_check
-  CHECK (kind IN ('psp_verified','delivery_completed','verified_unapplied','refund_requested','refund_completed','payout_completed','rider_debt_recovered','payout_reversed'));
+DO $$
+DECLARE definition text;
+BEGIN
+  SELECT pg_get_constraintdef(oid) INTO definition FROM pg_constraint
+   WHERE conrelid='checkout_accounting_journals'::regclass AND conname='checkout_accounting_journals_kind_check';
+  ALTER TABLE checkout_accounting_journals DROP CONSTRAINT checkout_accounting_journals_kind_check;
+  EXECUTE 'ALTER TABLE checkout_accounting_journals ADD CONSTRAINT checkout_accounting_journals_kind_check ' ||
+    replace(definition, '''payout_completed''::text', '''payout_completed''::text, ''payout_reversed''::text');
+END $$;
 
 CREATE TABLE IF NOT EXISTS payout_withdrawals (
   id uuid PRIMARY KEY,
