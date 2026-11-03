@@ -21,24 +21,22 @@ const LABELS = {
 };
 const when = value => (value ? new Date(value).toLocaleDateString() : '');
 
-export function WalletDashboard() {
-  const [summary, setSummary] = useState(null);
+/** Adds to the existing wallet in the Earnings tab. The balances themselves stay in that wallet card. */
+export function WithdrawalHistory({ refreshKey }) {
   const [history, setHistory] = useState(null);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const load = useCallback(async () => {
     setLoading(true);
-    const [s, h, t] = await Promise.all([
-      call('GET', '/api/v1/rider/wallet/summary').catch(() => null),
+    const [h, t] = await Promise.all([
       call('GET', '/api/v1/rider/wallet/withdrawals').catch(() => null),
       call('GET', '/api/v1/rider/wallet/transactions?limit=20').catch(() => null)
     ]);
-    setSummary(s);
     setHistory(h);
     setItems(t?.items || []);
     setLoading(false);
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, refreshKey]);
 
   async function shareStatement() {
     try {
@@ -51,25 +49,12 @@ export function WalletDashboard() {
     <View>
       <View style={card}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Text style={title}>My Wallet</Text>
+          <Text style={title}>Withdrawals</Text>
           <TouchableOpacity accessibilityRole="button" onPress={load}><Text style={body}>Refresh</Text></TouchableOpacity>
         </View>
-        {loading && !summary && <ActivityIndicator />}
-        {!loading && !summary && <Text style={body}>Your wallet could not be loaded. Tap Refresh to try again.</Text>}
-        {summary && (
-          <View>
-            <View style={row}><Text style={body}>Available now</Text><Text style={strong}>{ghc(summary.availableNowMinor)}</Text></View>
-            <View style={row}><Text style={body}>On hold</Text><Text style={strong}>{ghc(summary.onHoldMinor)}</Text></View>
-            <View style={row}><Text style={body}>Withdrawal in progress</Text><Text style={strong}>{ghc(summary.inPayoutMinor)}</Text></View>
-            <View style={row}><Text style={body}>Commission owed</Text><Text style={strong}>{ghc(summary.outstandingDebtMinor)}</Text></View>
-            {summary.companyEarningsMinor > 0 && <View style={row}><Text style={body}>Paid to your company</Text><Text style={strong}>{ghc(summary.companyEarningsMinor)}</Text></View>}
-          </View>
-        )}
+        {loading && !history && <ActivityIndicator />}
+        {!loading && !history && <Text style={body}>Your withdrawals could not be loaded. Tap Refresh to try again.</Text>}
         {history?.onHold && <Text style={[body, { color: '#B91C1C' }]}>Withdrawals are on hold on this account. Please contact support.</Text>}
-      </View>
-
-      <View style={card}>
-        <Text style={title}>Withdrawals</Text>
         {history && !history.withdrawals.length && <Text style={body}>No withdrawals yet.</Text>}
         {history?.withdrawals.map(w => (
           <View key={w.id} style={{ marginTop: 10 }}>
@@ -87,7 +72,7 @@ export function WalletDashboard() {
         {items.map(item => (
           <View key={`${item.source}-${item.id}`} style={row}>
             <Text style={[body, { flex: 1 }]}>{LABELS[item.type] || item.type} {when(item.at)}</Text>
-            <Text style={strong}>{ghc(item.amountMinor)}</Text>
+            <Text style={strong}>{item.walletEffectMinor < 0 ? '-' : item.walletEffectMinor > 0 ? '+' : ''}{ghc(item.amountMinor)}</Text>
           </View>
         ))}
         <TouchableOpacity accessibilityRole="button" style={button} onPress={shareStatement}>

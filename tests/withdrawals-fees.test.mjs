@@ -172,6 +172,14 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const second_rider=await newRider(),other={id:second_rider,kind:'rider'};
   await db.query('INSERT INTO payout_beneficiaries(user_id,provider,recipient_reference) VALUES($1,$2,$3)',[second_rider,'fixture','RCP_second']);
   const a1=await completedEarning(second_rider,customer,300000),a2=await completedEarning(second_rider,customer,300000);
+  // The wallet's withdrawable figure and the actual withdrawal agree.
+  const {walletSummary}=await import('../services/api/modules/payments/rider-wallet.mjs');
+  process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS='0';
+  assert.equal((await walletSummary(db,other)).availableNowMinor,600000);
+  process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS='24';
+  const heldSummary=await walletSummary(db,other);
+  assert.equal(heldSummary.availableNowMinor,0);assert.equal(heldSummary.onHoldMinor,600000);
+  delete process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS;
   submitted.length=0;
   const charged=await withdraw(key(),other,moneyOperations(db,{...limits,withdrawalFeeMinor:100}));
   assert.equal(charged.status,'paid');assert.equal(charged.amountMinor,599900);
@@ -187,6 +195,8 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const walletPaper=await walletStatement(db,other);
   assert.equal(walletPaper.deliveries,2);assert.equal(walletPaper.withdrawals,1);
   assert.match(walletPaper.csv,/^Type,Date,Reference/);assert.match(walletPaper.csv,/Withdrawal,.*TRF_.*,paid,Mobile Money,,1\.00,5999\.00/);
+  const afterPaid=await walletSummary(db,other);
+  assert.equal(afterPaid.availableNowMinor,0);assert.equal(afterPaid.inPayoutMinor,0);assert.equal(afterPaid.availableEarningsMinor,0);
   await assert.rejects(walletStatement(db,other,{from:'2020-01-01',to:'2026-01-01'}),/up to 92 days/);
   await assert.rejects(walletWithdrawals(db,{id:customer,kind:'customer'}),/Rider account/);
   await assert.rejects(db.query("INSERT INTO payout_withdrawals(id,beneficiary_id,idempotency_key,provider,recipient_reference,amount_minor) VALUES($1,$2,$3,'fixture','RCP_second',100)",[randomUUID(),second_rider,key()]),/payout_withdrawals_once_a_day/);

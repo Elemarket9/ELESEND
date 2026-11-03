@@ -21,7 +21,7 @@ import {
   TouchableOpacity, Modal, Vibration
 } from 'react-native';
 import * as Location from 'expo-location';
-import { WalletDashboard } from '../rider-wallet-dashboard';
+import { WithdrawalHistory } from '../rider-withdrawal-history';
 import { EmergencyButton, RatingPrompts, RiderTools, ShareLiveLocation, TrustedContactCard } from '../rider-safety';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline, openTurnByTurnNavigation } from '../maps/map-adapter';
@@ -1577,14 +1577,6 @@ export default function RiderApp() {
         {/* TAB 3: EARNINGS, CASH COMMISSION & SETTLEMENT */}
         {/* ================================================================= */}
         {tab === 'Earnings' && (
-          <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
-            <WalletDashboard />
-            <RatingPrompts />
-            <RiderTools />
-            <TrustedContactCard />
-          </View>
-        )}
-        {tab === 'Earnings' && (
           <View>
             {/* Wallet (server-derived from ELESEND ledgers) */}
             <View style={styles.walletCard}>
@@ -1598,7 +1590,7 @@ export default function RiderApp() {
               </View>
               <View style={styles.debtRow}>
                 <Text style={styles.debtRowLabel}>Withdrawable now:</Text>
-                <Text style={[styles.debtRowVal, { fontWeight: '800' }]}>{ghc(financeSnapshot?.withdrawableMinor || 0)}</Text>
+                <Text style={[styles.debtRowVal, { fontWeight: '800' }]}>{ghc(availableNow)}</Text>
               </View>
               {(financeSnapshot?.inPayoutMinor || 0) > 0 && (
                 <View style={styles.debtRow}>
@@ -1850,6 +1842,14 @@ export default function RiderApp() {
             <TouchableOpacity onPress={() => setDeleteAccountOpen(true)} style={styles.switchAuthBtn} accessibilityRole="button">
               <Text style={[styles.switchAuthText, { color: '#B91C1C' }]}>Delete Account</Text>
             </TouchableOpacity>
+          </View>
+        )}
+        {tab === 'Earnings' && (
+          <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+            <WithdrawalHistory refreshKey={`${financeSnapshot?.inPayoutMinor}:${availableNow}`} />
+            <RatingPrompts />
+            <RiderTools />
+            <TrustedContactCard />
           </View>
         )}
       </ScrollView>
