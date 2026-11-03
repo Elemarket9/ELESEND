@@ -1,3 +1,4 @@
+import {MARKET_CURRENCY} from './market.mjs';
 import {validatePayer} from './payment-provider.mjs';
 import {validatedCheckoutUrl} from './checkout-policy.mjs';
 import {randomUUID} from 'node:crypto';
@@ -317,7 +318,7 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
        intentId:reserved.id,
        reference:reserved.provider_reference,
        amountMinor:Number(reserved.amount_minor),
-       currency:'GHS',
+       currency:MARKET_CURRENCY,
        riderId:actor.id,
        idempotencyKey:reserved.id,
        email:v.email,
@@ -454,7 +455,7 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
    }
   },
   // INTERNAL adapter entry after cryptographic provider verification; NEVER expose as an unsigned API.
-  async confirmed({providerName,eventId,intentId,amountMinor,currency='GHS'}){UUID.parse(intentId);check(provider?.name===providerName&&typeof eventId==='string'&&eventId.length>=4,403,'Unrecognized provider');check(positive.safeParse(amountMinor).success&&currency==='GHS',400);
+  async confirmed({providerName,eventId,intentId,amountMinor,currency=MARKET_CURRENCY}){UUID.parse(intentId);check(provider?.name===providerName&&typeof eventId==='string'&&eventId.length>=4,403,'Unrecognized provider');check(positive.safeParse(amountMinor).success&&currency===MARKET_CURRENCY,400);
    return withRiderLock('confirm:'+intentId,()=>db.tx(async c=>{
     const intent=(await c.query('SELECT * FROM settlement_intents WHERE id=$1 FOR UPDATE',[intentId])).rows[0];check(intent&&intent.provider===providerName&&Number(intent.amount_minor)===amountMinor,409,'Payment evidence does not match intent');
     const old=(await c.query('SELECT * FROM settlement_provider_events WHERE provider=$1 AND event_id=$2',[providerName,eventId])).rows[0];
@@ -569,7 +570,7 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
    const providerStatus=String(verified?.status??'pending').toLowerCase().slice(0,40);
    if(providerStatus==='success'){
     check(verified.reference===ref,409,'Settlement verification reference mismatch');
-    check(Number(verified.amountMinor)===Number(intent.amount_minor)&&verified.currency==='GHS',409,'Settlement verification amount or currency mismatch');
+    check(Number(verified.amountMinor)===Number(intent.amount_minor)&&verified.currency===MARKET_CURRENCY,409,'Settlement verification amount or currency mismatch');
     check((await getWalletPolicy(db)).repayment_channels.includes(verified.channel),409,'Commission repayment channel not permitted by wallet policy');
     check(typeof verified.eventId==='string'&&verified.eventId.length>=4,409,'Settlement verification missing event ID');
     return this.confirmed({

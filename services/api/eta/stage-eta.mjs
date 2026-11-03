@@ -1,4 +1,5 @@
 import {haversine} from '../dispatch-geometry.mjs';
+import {MARKET_TIME_ZONE} from '../market.mjs';
 
 /** Pure stage-based delivery ETA rules. All inputs are explicit, so every result can be tested. */
 
@@ -155,7 +156,7 @@ export function travelAdjustment({evidence,baselineFactor=1,minFactor=0.5,maxFac
 }
 
 export function timeBucket(date){
- const hour=Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Africa/Accra',hour:'2-digit',hourCycle:'h23'}).format(new Date(date)));
+ const hour=Number(new Intl.DateTimeFormat('en-GB',{timeZone:MARKET_TIME_ZONE,hour:'2-digit',hourCycle:'h23'}).format(new Date(date)));
  if(hour>=6&&hour<10)return 'morning_peak';
  if(hour>=10&&hour<16)return 'midday';
  if(hour>=16&&hour<20)return 'evening_peak';

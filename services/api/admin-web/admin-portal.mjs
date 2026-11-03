@@ -12,9 +12,6 @@ export function renderAdminPortalHtml() {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ELESEND Command Center — Platform Administration</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg: #101827;
@@ -30,7 +27,7 @@ export function renderAdminPortalHtml() {
       --success: #18C6A5;
       --line: #26354D;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', -apple-system, sans-serif; }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, sans-serif; }
     body { background-color: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
     header { background-color: var(--surface); border-bottom: 1px solid var(--card-border); padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; }
     .brand { display: flex; align-items: center; gap: 12px; }

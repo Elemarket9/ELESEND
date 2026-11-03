@@ -76,6 +76,7 @@ export function resolveGlyphsUrl(rawGlyphsUrl, tileUrl) {
 
 // Statically read and validated from embedded Expo environment
 const rawApiBase = process.env.EXPO_PUBLIC_ELESEND_API_BASE_URL || '';
+export const SUPPORT_PHONE = (process.env.EXPO_PUBLIC_ELESEND_SUPPORT_PHONE || '').trim();
 const rawTileUrl = process.env.EXPO_PUBLIC_ELESEND_VECTOR_TILE_URL || '';
 const rawGlyphs = process.env.EXPO_PUBLIC_ELESEND_GLYPHS_URL || '';
 

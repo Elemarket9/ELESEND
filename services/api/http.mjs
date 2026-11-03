@@ -45,7 +45,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const ipLimit=ipLimits(),floodGuard=memoryRateLimiter();
   const server=createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192},async(req,res)=>{
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
- res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+ res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
  // Serialize before writing headers: a failure must stay recoverable by the catch block below.
  const send=(code,body)=>{const payload=JSON.stringify(body);res.writeHead(code,{'Content-Type':'application/json'});res.end(payload);};
  try{

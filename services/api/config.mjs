@@ -304,6 +304,10 @@ export function validateConfig(env = process.env) {
     errors.push('ETA_MOTORCYCLE_BASELINE_FACTOR must be a number from 0.3 to 1.');
   }
 
+  if (parseBoolean(env.GHANAPOSTGPS_LOOKUP_ENABLED, false) && !(env.GHANAPOSTGPS_LOOKUP_URL || '').trim()) {
+    errors.push('GHANAPOSTGPS_LOOKUP_URL is required when GHANAPOSTGPS_LOOKUP_ENABLED is true.');
+  }
+
   const routingConfig = {
     etaBaselineFactors: {motorcycle: motorcycleEtaFactor},
     osrmUrl,
@@ -311,7 +315,7 @@ export function validateConfig(env = process.env) {
     profiles,
     allowSingleEndpoint,
     ghanaPostGpsLookupEnabled: parseBoolean(env.GHANAPOSTGPS_LOOKUP_ENABLED, false),
-    ghanaPostGpsLookupUrl: (env.GHANAPOSTGPS_LOOKUP_URL || 'https://ghanapostgps.sperixlabs.org').trim()
+    ghanaPostGpsLookupUrl: (env.GHANAPOSTGPS_LOOKUP_URL || '').trim()
   };
 
   // --- Payment Provider Selection & Configuration ---

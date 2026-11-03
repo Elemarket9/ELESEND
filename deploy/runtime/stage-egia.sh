@@ -167,7 +167,7 @@ while true; do
     import crypto from "crypto";
 
     const port = process.env.PORT || "3090";
-    const adminHost = (process.env.ADMIN_HOST || "admin.elesend.local").split(":")[0];
+    const adminHost = process.env.ADMIN_HOST.split(":")[0];
 
     const healthRes = await fetch("http://127.0.0.1:" + port + "/health");
     if (!healthRes.ok) throw new Error("Health check returned status " + healthRes.status);

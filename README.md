@@ -204,8 +204,8 @@ docker compose exec api node scripts/migrate.mjs
 | `JWT_SECRET` | 32+ character cryptographic secret for session tokens | *Required in prod* |
 | `ADMIN_MASTER_KEY` | 32+ character separate secret for admin credentials | *Required in prod* |
 | `AUDIT_LOG_SECRET` | 32+ character separate secret for tamper-evident logs | *Required in prod* |
-| `API_PUBLIC_ORIGIN`| Public HTTPS origin for the API server | `https://api.elesend.com` |
-| `ADMIN_HOST` | Isolated hostname restricted to admin access | `admin.elesend.com` |
+| `API_PUBLIC_ORIGIN`| Public HTTPS origin for the API server | `https://api.your-domain.example` |
+| `ADMIN_HOST` | Isolated hostname restricted to admin access | `admin.your-domain.example` |
 | `PAYMENT_PROVIDER` | Active PSP adapter (`gateway`, `hubtel`, `paystack`, `none`) | `none` |
 | `SMS_PROVIDER` | Active SMS provider (`hubtel`, `https_gateway`, `none`) | `auto` |
 | `TRUSTED_PROXY_CIDRS` | Address of the reverse proxy. Without it, all users behind the proxy share one rate limit | *Set behind a proxy* |

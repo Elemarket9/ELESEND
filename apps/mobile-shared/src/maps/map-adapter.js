@@ -38,8 +38,7 @@ export const OFFLINE_MAP_STYLE = Object.freeze({
 
 // Provider-neutral adapter boundaries
 export const MAP_PROVIDERS = Object.freeze({
-  PRIVATE_MAPLIBRE: 'elesend-private',
-  GOOGLE_MAPS: 'google-maps' // Future adapter stub; requires no paid Google dependencies
+  PRIVATE_MAPLIBRE: 'elesend-private'
 });
 
 export const MAP_RENDERER = MAP_PROVIDERS.PRIVATE_MAPLIBRE;
@@ -378,8 +377,9 @@ export function RestaurantClusterLayer({
 
 export function openTurnByTurnNavigation({ latitude, longitude, label = 'Delivery Point' }) {
   const lat = Number(latitude), lon = Number(longitude);
-  const uri = Platform.OS === 'android' ? `geo:${lat},${lon}?q=${lat},${lon}(${encodeURIComponent(label)})` : `https://maps.google.com/?daddr=${lat},${lon}`;
-  return Linking.openURL(uri).catch(() => Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`));
+  // Hands off to whichever maps app the rider's phone is set to use.
+  const uri = Platform.OS === 'android' ? `geo:${lat},${lon}?q=${lat},${lon}(${encodeURIComponent(label)})` : `https://maps.apple.com/?daddr=${lat},${lon}`;
+  return Linking.openURL(uri).catch(() => false);
 }
 
 const styles = StyleSheet.create({
