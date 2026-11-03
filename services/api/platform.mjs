@@ -39,7 +39,7 @@ const audit=(c,actor,action,entity)=>c.query('INSERT INTO audit_logs(actor_id,ac
 async function settleReturnedParcel(c,s){
  const entitlementMinor=Number(BigInt(s.amount_minor)-BigInt(s.commission_minor));
  const rider_id=s.rider_id;
- await c.query('INSERT INTO financial_entries(shipment_id,beneficiary_id,customer_charge_minor,commission_minor,entitlement_minor,payout_status) VALUES($1,$2,$3,$4,$5,$6)',[sid,s.company_id??rider_id,s.amount_minor,s.commission_minor,entitlementMinor,s.payment_method==='CASH'?'cash_rider_reported':'held']);
+ await c.query('INSERT INTO financial_entries(shipment_id,beneficiary_id,customer_charge_minor,commission_minor,entitlement_minor,payout_status) VALUES($1,$2,$3,$4,$5,$6)',[s.id,s.company_id??rider_id,s.amount_minor,s.commission_minor,entitlementMinor,s.payment_method==='CASH'?'cash_rider_reported':'held']);
  await settleCompletedDelivery(c,s);
 }
 export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env.ADMIN_MFA_ENCRYPTION_KEY}={}){

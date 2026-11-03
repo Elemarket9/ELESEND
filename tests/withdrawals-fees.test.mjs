@@ -250,7 +250,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   // A failed parcel is paid by the sender once it is back with them, proved by their SMS code.
   const {platform}=await import('../services/api/platform.mjs');
   const outbox=[];
-  const app=platform(db,{otpKey:'k'.repeat(32),sms:{send:async x=>{outbox.push(x);}}});
+  const app=platform(db,{otpKey:'a'.repeat(64),sms:{send:async x=>{outbox.push(x);}}});
   const returnRider=await newRider(),returning={id:returnRider,kind:'rider'};
   const failed_parcel=await shipment(customer);
   const parcelIntent=await checkout.initiate({id:customer,kind:'customer'},failed_parcel,{idempotencyKey:key()});
