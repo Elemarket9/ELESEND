@@ -19,7 +19,9 @@ import {loadConfig} from './config.mjs';
 import {notificationGateway,notificationWorker} from './notifications.mjs';
 import {backgroundJobs} from './background-jobs.mjs';
 import {etaService} from './eta/eta-service.mjs';
+import {installProcessGuards} from './process-guards.mjs';
 
+installProcessGuards('api');
 enforcePatchedNodeRuntime();
 const config = loadConfig(process.env);
 
@@ -86,6 +88,9 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
       await db.close();
       process.exit(0);
     });
+    server.closeIdleConnections();
+    // Chat streams never finish by themselves, so end them while there is still time to exit cleanly.
+    setTimeout(() => server.closeAllConnections(), 5000).unref();
     setTimeout(() => process.exit(1), 10000).unref();
   });
 }

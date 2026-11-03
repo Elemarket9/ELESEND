@@ -12,6 +12,7 @@
  *   double-entry ledgers, OTP handover security, and offline resilience.
  */
 
+import { SUPPORT_PHONE } from '../config.js';
 import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, TextInput, Pressable, ScrollView, StyleSheet,
@@ -22,6 +23,7 @@ import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline } from '../maps/map-adapter';
 import { call, loadToken, saveToken, clearToken, ghc, BASE } from '../api';
+import DeleteAccountModal from '../delete-account';
 import { detectCustomerLocation, buildConfirmedLocation } from '../customer-location';
 import {
   ENDPOINTS,
@@ -114,6 +116,13 @@ export default function CustomerApp() {
   const [myShipments, setMyShipments] = useState([]);
   const [trackingShipment, setTrackingShipment] = useState(null);
   const [liveCourier, setLiveCourier] = useState(null);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [vehicleTariffs, setVehicleTariffs] = useState([]);
+  // Starting prices come from the live tariff, and are hidden until it loads.
+  const vehicleFromPrice = vehicle => {
+    const tariff = vehicleTariffs.find(row => row.vehicle === vehicle);
+    return tariff ? `from ${ghc(Math.max(Number(tariff.minimum_minor) || 0, Number(tariff.base_minor) || 0))}` : null;
+  };
   const [deliveryEta, setDeliveryEta] = useState(null);
   const [placeQuery, setPlaceQuery] = useState('');
   const [placesList, setPlacesList] = useState([]);
@@ -129,8 +138,8 @@ export default function CustomerApp() {
   const [addressModalVisible, setAddressModalVisible] = useState(false);
   const [addressMode, setAddressMode] = useState('search'); // 'search' | 'gps' | 'manual'
   const [manualForm, setManualForm] = useState({
-    region: 'Greater Accra',
-    city: 'Accra',
+    region: '',
+    city: '',
     community: '',
     landmark: '',
     buildingDescription: '',
@@ -178,15 +187,16 @@ export default function CustomerApp() {
   const [chatText, setChatText] = useState('');
   const [chatSending, setChatSending] = useState(false);
 
-  // Saved / Recent Landmark Shortcuts (Ghana Context)
-  const defaultLandmarks = [
-    { title: 'Als Global Shipping and Logistics', subtitle: 'Greater Accra Region, GA East Municipal', icon: '📍', lat: 5.6820, lon: -0.1980 },
-    { title: 'Old Weija Police station', subtitle: 'Greater Accra Region, GA South Municipal, Weija', icon: '👮', lat: 5.5680, lon: -0.3290 },
-    { title: 'West Hills Mall', subtitle: 'Greater Accra Region, GA South Municipal', icon: '🛍️', lat: 5.5490, lon: -0.3470 },
-    { title: 'KAAF University', subtitle: 'Central Region, Gomoa East', icon: '🎓', lat: 5.5130, lon: -0.4630 },
-    { title: 'Osu Oxford Street Mall', subtitle: 'Osu, Accra Central', icon: '📍', lat: 5.5560, lon: -0.1830 },
-    { title: 'Kotoka International Airport (T3)', subtitle: 'Airport City, Accra', icon: '✈️', lat: 5.6052, lon: -0.1717 }
-  ];
+  // Shortcuts come from this customer's own deliveries, never from a built-in list of places.
+  const recentPlaces = [];
+  for (const shipment of myShipments) {
+    const place = shipment?.destination;
+    if (!place?.address || !Number.isFinite(Number(place.latitude)) || !Number.isFinite(Number(place.longitude))) continue;
+    const title = String(place.address).replace(/\s*\[Instructions:[^\]]*\]/gi, '').trim();
+    if (!title || recentPlaces.some(item => item.title === title)) continue;
+    recentPlaces.push({ title, subtitle: 'Recent delivery', icon: '📍', lat: Number(place.latitude), lon: Number(place.longitude) });
+    if (recentPlaces.length >= 6) break;
+  }
 
   const addressLookupEpoch = useRef(0);
   const quoteSeqRef = useRef(0);
@@ -245,6 +255,10 @@ export default function CustomerApp() {
     call('GET', '/api/v1/payments/methods')
       .then(setPaymentMethods)
       .catch(() => setPaymentMethods([{ method: 'CASH', enabled: true }]));
+
+    call('GET', '/api/v1/pricing/vehicles')
+      .then(rows => setVehicleTariffs(Array.isArray(rows) ? rows : []))
+      .catch(() => setVehicleTariffs([]));
 
     call('GET', '/api/v1/maps/config')
       .then(v => setGhanaAddressLookup(v.ghanaPostGpsLookup === true))
@@ -1324,7 +1338,7 @@ export default function CustomerApp() {
           <Text style={styles.brandTitleText}>ELESEND</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
             <Text style={styles.locationSubtitleText} numberOfLines={1}>
-              {detectedLocation?.address || 'Accra, Greater Accra'}
+              {detectedLocation?.address || 'Set your location'}
             </Text>
             <Text style={{ fontSize: 12, color: colors.textSecondary }}>›</Text>
           </View>
@@ -1399,7 +1413,7 @@ export default function CustomerApp() {
 
             {/* Recent & Saved Landmark Shortcuts */}
             <View style={styles.recentDestinationsGroup}>
-              {defaultLandmarks.slice(0, 3).map((item, idx) => (
+              {recentPlaces.slice(0, 3).map((item, idx) => (
                 <TouchableOpacity
                   key={idx}
                   style={styles.recentDestinationRow}
@@ -1411,7 +1425,7 @@ export default function CustomerApp() {
                     <Text style={styles.landmarkTitle} numberOfLines={1}>{item.title}</Text>
                     <Text style={styles.landmarkSub} numberOfLines={1}>{item.subtitle}</Text>
                   </View>
-                  <Text style={styles.landmarkDistanceBadge}>Popular</Text>
+                  <Text style={styles.landmarkDistanceBadge}>Recent</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -1441,7 +1455,7 @@ export default function CustomerApp() {
                   <Text style={styles.promoTagBadge}>EXPRESS</Text>
                   <Text style={styles.promoHeadline}>FORGOT YOUR KEYS?</Text>
                   <Text style={styles.promoBody}>
-                    Instant door-to-door courier dispatch across Accra & Tema in minutes.
+                    Door-to-door courier delivery from wherever you are.
                   </Text>
                   <TouchableOpacity
                     style={styles.promoActionButton}
@@ -1568,7 +1582,7 @@ export default function CustomerApp() {
                   onPress={() => updateBooking('vehicle', 'motorcycle')}>
                   <Text style={{ fontSize: 26, marginBottom: 4 }}>🏍️</Text>
                   <Text style={styles.vehicleOptionName}>Express</Text>
-                  <Text style={styles.vehicleOptionPrice}>from GH₵ 15</Text>
+                  {vehicleFromPrice('motorcycle') && <Text style={styles.vehicleOptionPrice}>{vehicleFromPrice('motorcycle')}</Text>}
                 </TouchableOpacity>
 
                 {/* Car Delivery */}
@@ -1577,7 +1591,7 @@ export default function CustomerApp() {
                   onPress={() => updateBooking('vehicle', 'car')}>
                   <Text style={{ fontSize: 26, marginBottom: 4 }}>🚗</Text>
                   <Text style={styles.vehicleOptionName}>Standard Car</Text>
-                  <Text style={styles.vehicleOptionPrice}>from GH₵ 25</Text>
+                  {vehicleFromPrice('car') && <Text style={styles.vehicleOptionPrice}>{vehicleFromPrice('car')}</Text>}
                 </TouchableOpacity>
               </ScrollView>
 
@@ -1650,7 +1664,7 @@ export default function CustomerApp() {
                   <View>
                     <Text style={styles.cargoTitle}>Cargo</Text>
                     <Text style={styles.cargoSubBreadcrumb}>
-                      {booking.pickup?.address || 'Kwame Nkrumah Ave F456 ›'}
+                      {booking.pickup?.address || 'Set pickup location ›'}
                     </Text>
                   </View>
                 </View>
@@ -1694,7 +1708,7 @@ export default function CustomerApp() {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.cargoFieldLabel}>Where from</Text>
                     <Text style={styles.cargoFieldValue} numberOfLines={1}>
-                      {booking.pickup?.address || 'Kwame Nkrumah Ave F456'}
+                      {booking.pickup?.address || 'Set pickup location'}
                     </Text>
                   </View>
                   <TouchableOpacity
@@ -1770,7 +1784,6 @@ export default function CustomerApp() {
                   <Text style={{ fontSize: 16 }}>💵</Text>
                   <Text style={styles.cargoPaymentMethod}>Cash</Text>
                 </View>
-                <Text style={styles.cargoPriceValue}>from GH₵ 64</Text>
               </View>
 
               <TouchableOpacity
@@ -1789,7 +1802,7 @@ export default function CustomerApp() {
         {tab === 'Food' && (
           <ScrollView contentContainerStyle={styles.foodScroll} showsVerticalScrollIndicator={false}>
             <View style={styles.foodMarketHeader}>
-              <Text style={styles.foodMarketTitle}>Accra Chop Bars & Eateries</Text>
+              <Text style={styles.foodMarketTitle}>Restaurants & Chop Bars</Text>
               <Text style={styles.foodMarketSubtitle}>Fresh local Ghanaian meals delivered upfront</Text>
             </View>
 
@@ -2018,7 +2031,7 @@ export default function CustomerApp() {
                 <View style={styles.circleIconBox}><Text style={{ fontSize: 18 }}>🕒</Text></View>
                 <Text style={styles.quickActionLabel}>Orders</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.quickActionCircle} onPress={() => Alert.alert('Customer Support', 'Reach ELESEND 24/7 Support via WhatsApp or Phone at +233 24 000 0000.')}>
+              <TouchableOpacity style={styles.quickActionCircle} onPress={() => Alert.alert('Customer Support', SUPPORT_PHONE ? `Contact ELESEND Support on ${SUPPORT_PHONE}.` : 'Open your order in Activity to message ELESEND Support.')}>
                 <View style={styles.circleIconBox}><Text style={{ fontSize: 18 }}>🎧</Text></View>
                 <Text style={styles.quickActionLabel}>Support</Text>
               </TouchableOpacity>
@@ -2056,7 +2069,7 @@ export default function CustomerApp() {
 
               <View style={styles.profileItemDivider} />
 
-              <TouchableOpacity style={styles.profileMenuItem} onPress={() => Alert.alert('Payment Methods', 'Cash on delivery, Mobile Money (MTN, Telecel, AT) and Paystack.')}>
+              <TouchableOpacity style={styles.profileMenuItem} onPress={() => Alert.alert('Payment Methods', 'Available payment methods are shown at checkout.')}>
                 <Text style={styles.menuItemIcon}>💳</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.menuItemTitle}>Payment methods</Text>
@@ -2102,7 +2115,13 @@ export default function CustomerApp() {
 
             {/* Card Group 3: Information & Logout */}
             <View style={styles.profileGroupCard}>
-              <TouchableOpacity style={styles.profileMenuItem} onPress={() => Alert.alert('About ELESEND', 'ELESEND Logistics Platform v0.2.0 (Accra, Ghana). Built for reliable nationwide fulfillment.')}>
+              <TouchableOpacity style={styles.profileMenuItem} accessibilityRole="button" onPress={() => setDeleteAccountOpen(true)}>
+                <Text style={styles.menuItemIcon}>🗑️</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.menuItemTitle, { color: '#B91C1C' }]}>Delete Account</Text>
+                </View>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.profileMenuItem} onPress={() => Alert.alert('About ELESEND', 'ELESEND delivery platform for Ghana.')}>
                 <Text style={styles.menuItemIcon}>ℹ️</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.menuItemTitle}>Information</Text>
@@ -2272,9 +2291,9 @@ export default function CustomerApp() {
                         <Text style={styles.sheetChevron}>›</Text>
                       </TouchableOpacity>
 
-                      {/* Frequent Ghanaian Landmark Hubs */}
-                      <Text style={styles.shortcutSectionTag}>POPULAR GHANAIAN HUBS</Text>
-                      {defaultLandmarks.map((item, idx) => (
+                      {/* This customer's recent delivery places */}
+                      {recentPlaces.length > 0 && <Text style={styles.shortcutSectionTag}>RECENT PLACES</Text>}
+                      {recentPlaces.map((item, idx) => (
                         <TouchableOpacity
                           key={idx}
                           style={styles.landmarkListItem}
@@ -2282,7 +2301,7 @@ export default function CustomerApp() {
                           <Text style={styles.landmarkItemIcon}>{item.icon || '📍'}</Text>
                           <View style={{ flex: 1 }}>
                             <Text style={styles.landmarkItemTitle}>{item.title || item.name}</Text>
-                            <Text style={styles.landmarkItemSub}>{item.subtitle || 'Greater Accra'}</Text>
+                            <Text style={styles.landmarkItemSub}>{item.subtitle || ''}</Text>
                           </View>
                           <Text style={styles.sheetChevron}>›</Text>
                         </TouchableOpacity>
@@ -2653,6 +2672,16 @@ export default function CustomerApp() {
           </View>
         </View>
       </Modal>
+
+      <DeleteAccountModal
+        visible={deleteAccountOpen}
+        onClose={() => setDeleteAccountOpen(false)}
+        onDeleted={async () => {
+          await clearToken();
+          setDeleteAccountOpen(false);
+          setAuth(null);
+        }}
+      />
 
       {/* =====================================================================
           MODAL: DISH CUSTOMIZER (Required modifier checks & Radio vs Checkbox)

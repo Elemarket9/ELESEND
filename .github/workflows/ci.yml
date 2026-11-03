@@ -32,6 +32,8 @@ jobs:
           node-version: '24.22.1'
           cache: npm
       - run: npm ci --ignore-scripts
+      - name: Check production dependencies for known vulnerabilities
+        run: npm audit --omit=dev --audit-level=high
       - name: Run database migrations
         run: npm run migrate
       - name: Run backend, geospatial, security, and mobile logic tests

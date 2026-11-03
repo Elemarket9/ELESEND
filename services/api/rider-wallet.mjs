@@ -1,3 +1,4 @@
+import {MARKET_CURRENCY} from './market.mjs';
 /**
  * Rider wallet: a read/write facade over ELESEND's EXISTING immutable ledgers.
  *
@@ -256,7 +257,7 @@ export async function walletSummary(db,actor){
    coalesce((SELECT sum(l.amount_minor) FROM finance_journals j JOIN finance_lines l ON l.journal_id=j.id WHERE j.rider_id=$1 AND j.kind='commission_repayment' AND l.ledger_code='rider_receivable'),0)::bigint AS repaid,
    coalesce((SELECT sum(l.amount_minor) FROM finance_journals j JOIN finance_lines l ON l.journal_id=j.id WHERE j.rider_id=$1 AND j.kind='cash_commission' AND l.ledger_code='rider_receivable'),0)::bigint AS cash_commission`,[riderId])).rows[0];
  return {
-  currency:'GHS',
+  currency:MARKET_CURRENCY,
   walletBalanceMinor,
   availableEarningsMinor:e.payableMinor,
   inPayoutMinor:e.inPayoutMinor,
@@ -286,7 +287,7 @@ export async function walletDebt(db,actor){
  const weekly=await getRiderWeeklyBalance(db,riderId);
  const obligations=(await outstandingObligations(db,riderId)).map(o=>({obligationId:o.id,originalMinor:Number(o.original_minor),remainingMinor:o.remainingMinor,dueAt:o.due_at,createdAt:o.created_at}));
  const elig=await assignmentEligibility(db,riderId);
- return {currency:'GHS',outstandingDebtMinor:debt.debtMinor,debtLimitMinor:debt.limitMinor,debtRestricted:debt.restricted,overdueMinor:weekly.overdueMinor,currentWeekAccruedMinor:weekly.currentWeekAccruedMinor,obligations,restrictions:elig.restrictions};
+ return {currency:MARKET_CURRENCY,outstandingDebtMinor:debt.debtMinor,debtLimitMinor:debt.limitMinor,debtRestricted:debt.restricted,overdueMinor:weekly.overdueMinor,currentWeekAccruedMinor:weekly.currentWeekAccruedMinor,obligations,restrictions:elig.restrictions};
 }
 
 const TX_TYPES={cash_commission:['cash_commission',-1,1],commission_repayment:['debt_repayment',1,-1],waive:['debt_waiver',1,-1],reinstate:['debt_reinstated',-1,1],earnings_recovery:['debt_recovered_from_earnings',0,-1],commission_overpayment:['overpayment_held_for_refund',0,0],credit_purchase:['prepaid_credit',0,0],credit_apply:['prepaid_credit_applied',1,-1]};
@@ -315,7 +316,7 @@ export async function walletTransactions(db,actor,{limit=100}={}){
   items.push({id:r.id,source:'earnings_ledger',type,shipmentId:r.shipment_id,amountMinor:amt,walletEffectMinor:sign*amt,debtEffectMinor:0,earningsEffectMinor:sign*amt,at:r.created_at});
  }
  items.sort((a,b)=>new Date(b.at)-new Date(a.at));
- return {currency:'GHS',items:items.slice(0,n)};
+ return {currency:MARKET_CURRENCY,items:items.slice(0,n)};
 }
 
 /** Reconciled platform-wide totals for authorized finance roles (no secrets, no client arithmetic). */
@@ -340,7 +341,7 @@ export async function adminWalletOverview(db,actor){
    (SELECT count(*) FROM payout_operations WHERE status IN ('needs_review','failed'))::int AS payouts`);
  const policy=await getWalletPolicy(db);
  return {
-  currency:'GHS',
+  currency:MARKET_CURRENCY,
   recognizedDeliveryCommissionMinor:{digital:Number(digitalCommission.v),cash:Number(cashCommission.v),total:Number(digitalCommission.v)+Number(cashCommission.v)},
   recognizedRestaurantCommissionMinor:Number(foodCommission.v),
   outstandingRiderDebtMinor:Number(debt.outstanding),

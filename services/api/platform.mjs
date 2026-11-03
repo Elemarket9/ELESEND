@@ -1,10 +1,11 @@
 import {randomUUID} from 'node:crypto';
+import {MARKET_CURRENCY,MARKET_TIME_ZONE} from './market.mjs';
 import {decryptAdminSecret,verifyAdminTotp} from './admin-mfa.mjs';
 import {z} from 'zod';
 import {check,phone,hash,passwordHash,passwordMatches,newToken,newCode,mac,equal,limit} from './security.mjs';
 import {carRegistration,registerVehicleInTx} from './vehicle.mjs';
 import {removeStop,removeShipment} from './multi-parcel.mjs';
-import {settleCompletedDelivery} from './rider-wallet.mjs';
+import {settleCompletedDelivery,debtState} from './rider-wallet.mjs';
 import {requestCheckoutRefund} from './checkout-accounting.mjs';
 import {requireFoodPayment} from './food-payment.mjs';
 import {calculateQuote} from './pricing.mjs';
@@ -341,6 +342,34 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    return {ok:true};
   });
  },
+ /** Removes login and contact details. Financial, audit and custody records stay, unlinked from any phone number. */
+ async deleteAccount(actor,input){
+  const v=z.object({password:z.string().min(1).max(128)}).strict().parse(input);
+  check(actor?.id&&actor.kind!=='admin',403,'Administrator accounts are removed by another administrator');
+  return db.tx(async c=>{
+   const user=(await c.query('SELECT id,kind,password_hash FROM users WHERE id=$1 FOR UPDATE',[actor.id])).rows[0];
+   check(user&&await passwordMatches(v.password,user.password_hash),401,'Incorrect password');
+   check(!(await c.query("SELECT 1 FROM shipments WHERE (customer_id=$1 OR rider_id=$1) AND state NOT IN ('COMPLETED','CANCELLED','RETURNED') LIMIT 1",[actor.id])).rowCount,409,'Finish or cancel your active deliveries first');
+   check(!(await c.query("SELECT 1 FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id WHERE r.owner_id=$1 AND f.state NOT IN ('DELIVERED','CANCELLED','REJECTED') LIMIT 1",[actor.id])).rowCount,409,'Finish your open restaurant orders first');
+   if(user.kind==='rider'){
+    const debt=await debtState(c,actor.id);
+    check(debt.debtMinor===0,409,'Settle your outstanding commission first');
+    await c.query("UPDATE riders SET online=false,status='suspended',current_position=NULL,position_at=NULL WHERE id=$1",[actor.id]);
+    await c.query('DELETE FROM rider_location_samples WHERE rider_id=$1',[actor.id]);
+    await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[actor.id]);
+   }
+   await c.query("UPDATE restaurants SET status='suspended' WHERE owner_id=$1",[actor.id]);
+   await c.query('UPDATE api_clients SET revoked_at=now() WHERE owner_id=$1 AND revoked_at IS NULL',[actor.id]);
+   await c.query('DELETE FROM sessions WHERE user_id=$1',[actor.id]);
+   await c.query('DELETE FROM user_push_tokens WHERE user_id=$1',[actor.id]);
+   await c.query('DELETE FROM account_phone_challenges WHERE user_id=$1',[actor.id]);
+   await c.query('DELETE FROM account_recovery_challenges WHERE user_id=$1',[actor.id]);
+   await c.query("UPDATE users SET deleted_at=now(),phone='deleted:'||id::text,password_hash='deleted',phone_verified_at=NULL WHERE id=$1",[actor.id]);
+   await audit(c,actor.id,'auth.account_deleted',actor.id);
+   disconnectRealtimeUser(actor.id,'account_deleted');
+   return {ok:true};
+  });
+ },
  async setPricing(actor,input){const v=z.object({baseMinor:z.number().int().min(1).max(1000000),perKmMinor:z.number().int().min(1).max(100000),commissionBps:z.number().int().min(0).max(10000).default(1300),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null),perMinuteMinor:z.number().int().min(0).max(100000).default(0),waitPerMinuteMinor:z.number().int().min(0).max(100000).default(0),perExtraStopMinor:z.number().int().min(0).max(1000000).default(0)}).strict().parse(input);
   return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');await c.query('UPDATE pricing_policies SET active=false WHERE active AND vehicle IS NULL');const pid=id();await c.query('INSERT INTO pricing_policies(id,base_minor,per_km_minor,commission_bps,commission_mode,commission_fixed_minor,commission_cap_minor,per_minute_minor,wait_per_minute_minor,per_extra_stop_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[pid,v.baseMinor,v.perKmMinor,v.commissionBps,v.commissionMode,v.commissionFixedMinor,v.commissionCapMinor,v.perMinuteMinor,v.waitPerMinuteMinor,v.perExtraStopMinor]);await audit(c,actor.id,'pricing.created',pid);return {id:pid};});
  },
@@ -430,7 +459,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const meters=route.distanceMeters;
   check(Number.isSafeInteger(meters)&&meters>=0,503,'Invalid road distance');
   check(Number.isSafeInteger(route.durationSeconds)&&route.durationSeconds>=0,503,'Invalid road duration');
-  const hour=Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Africa/Accra',hour:'2-digit',hourCycle:'h23'}).format(new Date()));
+  const hour=Number(new Intl.DateTimeFormat('en-GB',{timeZone:MARKET_TIME_ZONE,hour:'2-digit',hourCycle:'h23'}).format(new Date()));
   const scheduledMultiplier=p.rush_hour_enabled?getSurgeMultiplier(v.pickup.latitude,v.pickup.longitude,hour):1;
   const surgeObservation=p.supply_demand_enabled&&v.vehicle?await measuredSurge(db,v.pickup,v.vehicle):{multiplierBps:10000,reason:'disabled'};
   const surgeBps=Math.max(scheduledMultiplier===1.4?14000:10000,surgeObservation.multiplierBps);
@@ -439,7 +468,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const evidence={policyId:p.id,vehicle:v.vehicle??'legacy_unspecified',routeVehicle:v.vehicle??'car',distanceMeters:meters,durationSeconds:route.durationSeconds,source:route.source,surgeBps,scheduledMultiplier,surgeObservation,quotedAt:new Date().toISOString(),commissionBps:p.commission_bps,minimumMinor:p.minimum_minor};
   const r=await db.query("INSERT INTO quotes(id,customer_id,policy_id,request,amount_minor,commission_minor,expires_at,payment_method,pricing_evidence) VALUES($1,$2,$3,$4,$5,$6,now()+interval '15 minutes',$7,$8) RETURNING id,amount_minor,commission_minor,expires_at,payment_method",[qid,actor.id,p.id,JSON.stringify(v),amountMinor,commissionMinor,v.paymentMethod,JSON.stringify(evidence)]);
   const capacity=dispatch?await dispatch.availability({pickup:v.pickup,weightG:v.weightG,vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize}):{status:'unknown',guaranteed:false};
-  return {...r.rows[0],currency:'GHS',vehicle:v.vehicle??null,pricingEvidence:evidence,surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
+  return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEvidence:evidence,surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
  },
  async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business'].includes(actor.kind),403);
   if(process.env.NODE_ENV==='production')check(sms&&typeof sms.send==='function'&&dispatch,503,'Delivery booking paused: dispatch or SMS verification unavailable');
@@ -451,7 +480,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  },
  async paymentConfirmed({provider,eventId,shipmentId,amountMinor,currency}){
   // Internal adapter entry only. Never mounted as an unsigned public route.
-  check(typeof provider==='string'&&provider.length>0&&typeof eventId==='string'&&eventId.length>0,400);uuid.parse(shipmentId);check(Number.isSafeInteger(amountMinor)&&currency==='GHS',400);
+  check(typeof provider==='string'&&provider.length>0&&typeof eventId==='string'&&eventId.length>0,400);uuid.parse(shipmentId);check(Number.isSafeInteger(amountMinor)&&currency===MARKET_CURRENCY,400);
   return db.tx(async c=>{const s=await locked(c,shipmentId);check(s.amount_minor===amountMinor,409,'Payment amount mismatch');
    const previous=(await c.query('SELECT * FROM payment_events WHERE provider=$1 AND event_id=$2',[provider,eventId])).rows[0];
    if(previous){check(previous.shipment_id===shipmentId&&previous.amount_minor===amountMinor,409,'Event conflict');return {duplicate:true};}

@@ -51,6 +51,5 @@ export function ghanaPostGps({endpoint,fetchImpl=fetch,timeoutMs=4000}={}){
 
 export function configuredGhanaPostGps(env=process.env,fetchImpl=fetch){
  if(env.GHANAPOSTGPS_LOOKUP_ENABLED!=='true')return null;
- const endpoint=env.GHANAPOSTGPS_LOOKUP_URL||'https://ghanapostgps.sperixlabs.org';
- return ghanaPostGps({endpoint,fetchImpl});
+ return ghanaPostGps({endpoint:env.GHANAPOSTGPS_LOOKUP_URL,fetchImpl});
 }

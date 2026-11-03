@@ -113,4 +113,15 @@ Before opening public access:
 - [ ] Hostname isolation is active: `ADMIN_HOST` points exclusively to your secure administrative domain.
 - [ ] Explicit payment and SMS providers are configured with validated credentials.
 - [ ] Background worker process (`npm run worker` or server worker) is verified running and acquiring advisory locks cleanly.
+- [ ] All migrations are applied, and the API and worker start without schema errors.
+- [ ] `TRUSTED_PROXY_CIDRS` matches your proxy, so users do not share one rate limit.
+- [ ] Map data is built, `--profile maps` is running, and tiles load over HTTPS on a real phone.
+- [ ] Motorcycle road times have been checked on real Accra and Kumasi trips.
+- [ ] A complete payment adapter or gateway bridge has passed live checkout, refund and payout tests.
+- [ ] Your SMS provider has a spending cap, and live codes arrive on Ghanaian networks.
+- [ ] A backup has been restored to a separate database and checked.
+- [ ] A load test has been run at expected peak traffic.
+- [ ] An independent security review has been completed.
+- [ ] Privacy policy and data retention rules have been reviewed for Ghana's Data Protection Act.
+- [ ] Alerts are set up for API restarts, `fatal` logs, failed jobs and full disks.
 - [ ] Mobile app bundle is exported with matching `EXPO_PUBLIC_ELESEND_API_BASE_URL` pointing to your validated HTTPS API origin.

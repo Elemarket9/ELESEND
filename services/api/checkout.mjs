@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from './security.mjs';
+import {MARKET_CURRENCY} from './market.mjs';
 import {DIGITAL_METHODS,validateVerifiedPayment,validatedCheckoutUrl} from './checkout-policy.mjs';
 import {customerMoneyReceived,customerMoneyUnapplied} from './checkout-accounting.mjs';
 import {validatePayer} from './payment-provider.mjs';
@@ -222,7 +223,7 @@ export function checkoutService(db,options={}){
        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now()+make_interval(secs=>$12),now(),now())
        ON CONFLICT (customer_id,idempotency_key) DO NOTHING
        RETURNING *`,
-      [id,s.id,actor.id,s.payment_method,provider.name,reference,chargeAmount,'GHS',v.idempotencyKey,email,submissionToken,submissionLeaseSeconds]
+      [id,s.id,actor.id,s.payment_method,provider.name,reference,chargeAmount,MARKET_CURRENCY,v.idempotencyKey,email,submissionToken,submissionLeaseSeconds]
      )).rows[0];
      if(!r){
       const concurrent=(await c.query('SELECT * FROM shipment_checkout_intents WHERE customer_id=$1 AND idempotency_key=$2',[actor.id,v.idempotencyKey])).rows[0];

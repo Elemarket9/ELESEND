@@ -14,6 +14,7 @@ import { loadConfig } from './config.mjs';
 import { dispatchEngine } from './dispatch.mjs';
 import { osrmRouting } from './dispatch-routing.mjs';
 import { etaService } from './eta/eta-service.mjs';
+import { installProcessGuards } from './process-guards.mjs';
 import { privateRoutingPriority } from './infrastructure/maps/PrivateRoutingPolicy.mjs';
 import { financeService } from './finance.mjs';
 import { checkoutService } from './checkout.mjs';
@@ -134,6 +135,7 @@ export async function startWorker(options = {}) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  installProcessGuards('worker');
   startWorker().then(worker => {
     for (const signal of ['SIGINT', 'SIGTERM']) {
       process.on(signal, () => {

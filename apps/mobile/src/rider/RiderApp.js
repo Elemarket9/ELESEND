@@ -24,6 +24,7 @@ import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline, openTurnByTurnNavigation } from '../maps/map-adapter';
 import { call, loadToken, saveToken, clearToken, ghc, parseGhs, BASE } from '../api';
+import DeleteAccountModal from '../delete-account';
 import { sample, startShiftTracking, stopShiftTracking, subscribeBackgroundOfferAlerts, acquireDevicePushToken, registerDevicePushChannel } from '../tracking';
 import { cacheJobs, readCachedJobs, readLastCachedJobs, clearCachedJobs } from '../offline';
 import { normalizeGhanaPhone, isValidGhanaPhone } from '../phone';
@@ -45,6 +46,7 @@ const isStationary = speed => speed === null || speed < 2.5;
 
 export default function RiderApp() {
   const [auth, setAuth] = useState(null);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [phoneState, setPhoneState] = useState(null); // { phone, verified }
   const [phoneChallenge, setPhoneChallenge] = useState(null); // { challengeId, expiresInSeconds }
   const [phoneCode, setPhoneCode] = useState('');
@@ -394,6 +396,16 @@ export default function RiderApp() {
     setPhoneChallenge(null);
     setPhoneCode('');
     setTab('Jobs');
+  }
+
+  async function finishAccountDeletion() {
+    try { await stopShiftTracking(); } catch {}
+    await clearCachedJobs();
+    await clearToken();
+    setDeleteAccountOpen(false);
+    setAuth(null);
+    setPhoneState(null);
+    setPhoneChallenge(null);
   }
 
   async function logout() {
@@ -965,8 +977,16 @@ export default function RiderApp() {
               style={styles.switchAuthBtn}>
               <Text style={styles.switchAuthText}>Sign Out / Use Another Account</Text>
             </TouchableOpacity>
+            <TouchableOpacity accessibilityRole="button" onPress={() => setDeleteAccountOpen(true)}>
+              <Text style={[styles.switchAuthText, { color: '#B91C1C' }]}>Delete Account</Text>
+            </TouchableOpacity>
           </View>
         </ScrollView>
+      <DeleteAccountModal
+        visible={deleteAccountOpen}
+        onClose={() => setDeleteAccountOpen(false)}
+        onDeleted={finishAccountDeletion}
+      />
       </View>
     );
   }
@@ -1630,9 +1650,21 @@ export default function RiderApp() {
                 </View>
               </View>
             </Modal>
+
+            <TouchableOpacity onPress={() => execute(logout)} style={styles.switchAuthBtn} accessibilityRole="button">
+              <Text style={styles.switchAuthText}>Sign Out</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setDeleteAccountOpen(true)} style={styles.switchAuthBtn} accessibilityRole="button">
+              <Text style={[styles.switchAuthText, { color: '#B91C1C' }]}>Delete Account</Text>
+            </TouchableOpacity>
           </View>
         )}
       </ScrollView>
+      <DeleteAccountModal
+        visible={deleteAccountOpen}
+        onClose={() => setDeleteAccountOpen(false)}
+        onDeleted={finishAccountDeletion}
+      />
     </View>
   );
 }

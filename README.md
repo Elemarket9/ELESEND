@@ -2,7 +2,7 @@
 
 ELESEND supports cash parcel deliveries and prepaid restaurant orders in Ghana. Food orders require verified upfront payment of the food and delivery total through an enabled digital method. Kitchens cannot accept unpaid orders, and courier dispatch requires kitchen acceptance. It consists of a **Node.js backend** (`services/api`), **PostGIS database** (`database/migrations`), **self-hosted mapping and routing** (`services/maps`), and **React Native / Expo app** (`apps/mobile`).
 
-Apply all migrations (currently through `051_delivery_eta_evidence.sql`, which startup enforces) with `npm run db:migrate` before starting this version. Existing cash food orders are not converted into paid orders; operations must review them. Paid food cancellations enter `/api/v1/admin/payments/exceptions` for refund processing; a queued refund is not a completed provider refund.
+Apply all migrations (currently through `052_account_deletion.sql`, which startup enforces) with `npm run db:migrate` before starting this version. Existing cash food orders are not converted into paid orders; operations must review them. Paid food cancellations enter `/api/v1/admin/payments/exceptions` for refund processing; a queued refund is not a completed provider refund.
 
 Payments use explicit `PAYMENT_PROVIDER` configuration, defaulting to `none`. Native adapters are optional; provider names and API rules are confined to the adapter/configuration boundary. To use another contracted PSP without changing order code, select `gateway` and configure `PAYMENT_GATEWAY_NAME`, `PAYMENT_GATEWAY_ENDPOINT`, `PAYMENT_GATEWAY_ALLOWED_HOST`, `PAYMENT_GATEWAY_TOKEN` (32+ characters), approved hosted `PAYMENT_GATEWAY_CHECKOUT_HOSTS`, `PAYMENT_GATEWAY_METHODS`, and `PAYMENT_PAYER_FIELDS` (empty or `email`). The gateway is an integration bridge you must supply, not an API promised by an arbitrary PSP. Secrets remain server-side. Drain or reconcile outstanding transactions before switching the active adapter.
 
@@ -204,8 +204,8 @@ docker compose exec api node scripts/migrate.mjs
 | `JWT_SECRET` | 32+ character cryptographic secret for session tokens | *Required in prod* |
 | `ADMIN_MASTER_KEY` | 32+ character separate secret for admin credentials | *Required in prod* |
 | `AUDIT_LOG_SECRET` | 32+ character separate secret for tamper-evident logs | *Required in prod* |
-| `API_PUBLIC_ORIGIN`| Public HTTPS origin for the API server | `https://api.elesend.com` |
-| `ADMIN_HOST` | Isolated hostname restricted to admin access | `admin.elesend.com` |
+| `API_PUBLIC_ORIGIN`| Public HTTPS origin for the API server | `https://api.your-domain.example` |
+| `ADMIN_HOST` | Isolated hostname restricted to admin access | `admin.your-domain.example` |
 | `PAYMENT_PROVIDER` | Active PSP adapter (`gateway`, `hubtel`, `paystack`, `none`) | `none` |
 | `SMS_PROVIDER` | Active SMS provider (`hubtel`, `https_gateway`, `none`) | `auto` |
 | `TRUSTED_PROXY_CIDRS` | Address of the reverse proxy. Without it, all users behind the proxy share one rate limit | *Set behind a proxy* |
