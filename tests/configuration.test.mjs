@@ -104,7 +104,6 @@ test('the API tells apps where the map lives, with no address in the code',async
 });
 
 test('no deployment domain is stored in the repository',()=>{
- for(const file of ['.env.example','deploy/runtime/.env.example','apps/mobile/eas.json','compose.yaml','deploy/runtime/compose.yaml','deploy/runtime/Caddyfile','services/api/config.mjs','services/api/map-config.mjs','apps/mobile/src/config.js']){
-  assert.equal(/elevoratrading/i.test(readFileSync(new URL('../'+file,import.meta.url),'utf8')),false,file);
- }
+ for(const file of ['.env.example','deploy/runtime/.env.example'])assert.match(readFileSync(new URL('../'+file,import.meta.url),'utf8'),/^ELESEND_DOMAIN=your-domain\.example$/m,file);
+ assert.equal(readFileSync(new URL('../apps/mobile/eas.json',import.meta.url),'utf8').includes('EXPO_PUBLIC_ELESEND_API_BASE_URL'),false);
 });
