@@ -156,6 +156,8 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    check(LIVE_PAYOUT.includes(row.status)||reversingPaid,409,'Withdrawal not in flight');
    check(!(await c.query('SELECT 1 FROM payment_operation_events WHERE provider=$1 AND event_id=$2',[row.provider,record.eventId])).rowCount,409,'Provider receipt already applied to another operation');
    await recordEvent(c,row,target==='paid'?'payout':'payout_failed',record);
+   // Shipments before payouts, in a fixed order, matching dispute resolution.
+   await c.query('SELECT id FROM shipments WHERE id IN (SELECT shipment_id FROM payout_operations WHERE withdrawal_id=$1) ORDER BY id FOR UPDATE',[row.id]);
    const items=(await c.query('SELECT * FROM payout_operations WHERE withdrawal_id=$1 FOR UPDATE',[row.id])).rows;
    const payableAccount=item=>item.kind==='restaurant'?'restaurant_payable':'rider_payable';
    if(target==='paid'){
@@ -267,6 +269,11 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   if(withdrawal)return applyWithdrawalRecord(withdrawal,record);
   check(typeof record.eventId==='string'&&record.eventId.length>=4,409,'Payout evidence mismatch: event');
   return db.tx(async c=>{
+   // Same lock order as approval and dispute resolution: rider account, shipment, then payout.
+   const pre=(await c.query('SELECT o.kind,o.shipment_id,s.rider_id,s.company_id FROM payout_operations o JOIN shipments s ON s.id=o.shipment_id WHERE o.id=$1',[record.requestId])).rows[0];
+   check(pre,409,'Payout evidence mismatch');
+   if(pre.kind==='rider'&&pre.rider_id&&!pre.company_id)await lockRiderAccount(c,pre.rider_id);
+   await c.query('SELECT id FROM shipments WHERE id=$1 FOR UPDATE',[pre.shipment_id]);
    const p=(await c.query('SELECT * FROM payout_operations WHERE id=$1 FOR UPDATE',[record.requestId])).rows[0];
    check(p,409,'Payout evidence mismatch');
    assertPayoutReceipt(p,record,provider?.name);
