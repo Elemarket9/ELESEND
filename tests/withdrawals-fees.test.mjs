@@ -393,7 +393,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const alert=await raiseEmergency(db,safetyActor,{latitude:5.6,longitude:-0.2},{sms:smsFake,dutyPhone:'+233201234567'});
   assert.equal(alert.notified,2);assert.equal(texts.length,2);assert.match(texts[0].message,/maps\.google/);
   assert.equal((await raiseEmergency(db,safetyActor,{},{sms:smsFake,dutyPhone:'+233201234567'})).duplicate,true);assert.equal(texts.length,2);
-  await assert.rejects(raiseEmergency(db,customerActor,{shipmentId:held},{sms:smsFake}),/not yours/);
+  await assert.rejects(raiseEmergency(db,{id:await user('customer'),kind:'customer'},{shipmentId:held},{sms:smsFake}),/not yours/);
   const investigatorActor={id:investigator,kind:'admin'};
   assert.ok((await listSafetyAlerts(db,investigatorActor)).some(a=>a.id===alert.id));
   await assert.rejects(listSafetyAlerts(db,customerActor),/Permission/);
