@@ -21,6 +21,20 @@ const tempReferenceSchema = z.object({
  * coordinates match the quoted destination so a reference can never silently override
  * the priced destination without a new quote and booking.
  */
+const referenceFields=row=>({
+  id: row.id,
+  shipmentId: row.shipment_id,
+  customerId: row.customer_id,
+  latitude: Number(row.latitude),
+  longitude: Number(row.longitude),
+  description: row.description,
+  landmarkContext: row.landmark_context,
+  entranceInstructions: row.entrance_instructions,
+  accuracyMeters: row.accuracy_m ? Number(row.accuracy_m) : null,
+  pinConfirmed: row.pin_confirmed,
+  createdAt: row.created_at
+});
+
 export async function createTemporaryDeliveryReference(db, actor, input) {
   check(actor && actor.id, 401, 'Authentication required');
   check(['customer', 'business', 'admin'].includes(actor.kind), 403, 'Customer account required');
@@ -114,17 +128,7 @@ export async function createTemporaryDeliveryReference(db, actor, input) {
     const row = res.rows[0];
 
     return {
-      id: row.id,
-      shipmentId: row.shipment_id,
-      customerId: row.customer_id,
-      latitude: Number(row.latitude),
-      longitude: Number(row.longitude),
-      description: row.description,
-      landmarkContext: row.landmark_context,
-      entranceInstructions: row.entrance_instructions,
-      accuracyMeters: row.accuracy_m ? Number(row.accuracy_m) : null,
-      pinConfirmed: row.pin_confirmed,
-      createdAt: row.created_at,
+      ...referenceFields(row),
       systemNote: 'Temporary delivery reference created. Scoped exclusively to order, not published as public landmark.'
     };
   });
@@ -162,16 +166,6 @@ export async function getTemporaryDeliveryReference(db, actor, refId) {
   }
 
   return {
-    id: row.id,
-    shipmentId: row.shipment_id,
-    customerId: row.customer_id,
-    latitude: Number(row.latitude),
-    longitude: Number(row.longitude),
-    description: row.description,
-    landmarkContext: row.landmark_context,
-    entranceInstructions: row.entrance_instructions,
-    accuracyMeters: row.accuracy_m ? Number(row.accuracy_m) : null,
-    pinConfirmed: row.pin_confirmed,
-    createdAt: row.created_at
+    ...referenceFields(row)
   };
 }

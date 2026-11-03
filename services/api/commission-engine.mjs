@@ -1,3 +1,4 @@
+import {requireAnyPermission} from './permissions.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from './security.mjs';
@@ -146,13 +147,7 @@ export function computeRestaurantCommissionBreakdown({
 
 export function commissionEngine(db) {
   async function requireAdminPermission(c, actor, permissions) {
-    check(actor?.kind === 'admin', 403, 'Administrator access required');
-    const list = Array.isArray(permissions) ? permissions : [permissions];
-    const has = (await c.query(
-      'SELECT 1 FROM permissions WHERE user_id = $1 AND permission = ANY($2::text[])',
-      [actor.id, list]
-    )).rowCount;
-    check(has, 403, 'Commission configuration permission required');
+    return requireAnyPermission(c, actor, permissions, 'Commission configuration permission required');
   }
 
   async function loadGlobalRestaurantSettings(c = db) {

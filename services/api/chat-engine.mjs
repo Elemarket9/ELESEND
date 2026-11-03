@@ -347,16 +347,20 @@ export function disconnectRevokedUserFromConversation(userId, conversationId, re
   broadcastCrossInstance({ type: 'revoke_conversation', userId: String(userId), conversationId, reason });
 }
 
+function notifyRevoked(conn, reason) {
+  try {
+    conn.send('session.revoked', { reason, timestamp: new Date().toISOString() });
+    if (typeof conn.close === 'function') conn.close();
+  } catch {}
+}
+
 function disconnectLocalRealtimeSession(sessionToken, reason = 'session_revoked') {
   if (!sessionToken) return 0;
   let closed = 0;
   for (const [uid, conns] of realtimeClients.entries()) {
     for (const conn of [...conns]) {
       if (conn.sessionToken === sessionToken) {
-        try {
-          conn.send('session.revoked', { reason, timestamp: new Date().toISOString() });
-          if (typeof conn.close === 'function') conn.close();
-        } catch {}
+        notifyRevoked(conn, reason);
         conns.delete(conn);
         closed++;
       }
@@ -378,10 +382,7 @@ function disconnectLocalRealtimeUser(userId, reason = 'account_suspended') {
   if (!conns) return 0;
   let closed = 0;
   for (const conn of [...conns]) {
-    try {
-      conn.send('session.revoked', { reason, timestamp: new Date().toISOString() });
-      if (typeof conn.close === 'function') conn.close();
-    } catch {}
+    notifyRevoked(conn, reason);
     conns.delete(conn);
     closed++;
   }

@@ -290,14 +290,20 @@ export function restaurantService(db) {
     )).rows[0];
   }
 
-  async function updateCategory(actor, categoryId, input, expectedRestaurantId = null) {
-    uuid.parse(categoryId);
+  /** Loads a menu record and confirms the actor may change it. `table` is one of two fixed names. */
+  async function loadOwnedRecord(actor, table, recordId, expectedRestaurantId, label) {
+    uuid.parse(recordId);
     if (expectedRestaurantId) uuid.parse(expectedRestaurantId);
-    const cat = (await db.query('SELECT * FROM menu_categories WHERE id = $1', [categoryId])).rows[0];
-    check(cat, 404, 'Category not found');
-    if (expectedRestaurantId) check(cat.restaurant_id === expectedRestaurantId, 404, 'Category does not belong to this restaurant');
-    const r = await getRestaurant(cat.restaurant_id);
-    check(actor && (actor.kind === 'admin' || r.owner_id === actor.id), 403, 'Permission denied');
+    const record = (await db.query(`SELECT * FROM ${table} WHERE id = $1`, [recordId])).rows[0];
+    check(record, 404, `${label} not found`);
+    if (expectedRestaurantId) check(record.restaurant_id === expectedRestaurantId, 404, `${label} does not belong to this restaurant`);
+    const restaurant = await getRestaurant(record.restaurant_id);
+    check(actor && (actor.kind === 'admin' || restaurant.owner_id === actor.id), 403, 'Permission denied');
+    return {record, restaurant};
+  }
+
+  async function updateCategory(actor, categoryId, input, expectedRestaurantId = null) {
+    const {record: cat, restaurant: r} = await loadOwnedRecord(actor, 'menu_categories', categoryId, expectedRestaurantId, 'Category');
 
     const schema = z.object({
       name: z.string().trim().min(1).max(100).optional(),
@@ -317,13 +323,7 @@ export function restaurantService(db) {
   }
 
   async function deleteCategory(actor, categoryId, expectedRestaurantId = null) {
-    uuid.parse(categoryId);
-    if (expectedRestaurantId) uuid.parse(expectedRestaurantId);
-    const cat = (await db.query('SELECT * FROM menu_categories WHERE id = $1', [categoryId])).rows[0];
-    check(cat, 404, 'Category not found');
-    if (expectedRestaurantId) check(cat.restaurant_id === expectedRestaurantId, 404, 'Category does not belong to this restaurant');
-    const r = await getRestaurant(cat.restaurant_id);
-    check(actor && (actor.kind === 'admin' || r.owner_id === actor.id), 403, 'Permission denied');
+    const {record: cat, restaurant: r} = await loadOwnedRecord(actor, 'menu_categories', categoryId, expectedRestaurantId, 'Category');
     await db.query('DELETE FROM menu_categories WHERE id = $1', [categoryId]);
     return { ok: true };
   }
@@ -364,13 +364,7 @@ export function restaurantService(db) {
   }
 
   async function updateMenuItem(actor, itemId, input, expectedRestaurantId = null) {
-    uuid.parse(itemId);
-    if (expectedRestaurantId) uuid.parse(expectedRestaurantId);
-    const item = (await db.query('SELECT * FROM menu_items WHERE id = $1', [itemId])).rows[0];
-    check(item, 404, 'Menu item not found');
-    if (expectedRestaurantId) check(item.restaurant_id === expectedRestaurantId, 404, 'Menu item does not belong to this restaurant');
-    const r = await getRestaurant(item.restaurant_id);
-    check(actor && (actor.kind === 'admin' || r.owner_id === actor.id), 403, 'Permission denied');
+    const {record: item, restaurant: r} = await loadOwnedRecord(actor, 'menu_items', itemId, expectedRestaurantId, 'Menu item');
 
     const schema = z.object({
       categoryId: z.string().uuid().optional().nullable(),
@@ -407,13 +401,7 @@ export function restaurantService(db) {
   }
 
   async function deleteMenuItem(actor, itemId, expectedRestaurantId = null) {
-    uuid.parse(itemId);
-    if (expectedRestaurantId) uuid.parse(expectedRestaurantId);
-    const item = (await db.query('SELECT * FROM menu_items WHERE id = $1', [itemId])).rows[0];
-    check(item, 404, 'Menu item not found');
-    if (expectedRestaurantId) check(item.restaurant_id === expectedRestaurantId, 404, 'Menu item does not belong to this restaurant');
-    const r = await getRestaurant(item.restaurant_id);
-    check(actor && (actor.kind === 'admin' || r.owner_id === actor.id), 403, 'Permission denied');
+    const {record: item, restaurant: r} = await loadOwnedRecord(actor, 'menu_items', itemId, expectedRestaurantId, 'Menu item');
     await db.query('DELETE FROM menu_items WHERE id = $1', [itemId]);
     return { ok: true };
   }

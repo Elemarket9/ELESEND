@@ -1,3 +1,4 @@
+import {ACTIVE_PUSH_TOKEN_FILTER} from './notifications.mjs';
 import {approveVehicleRecord} from './vehicle.mjs';
 import {ensureCommissionAccount,paymentMethodEnabled,findPaymentEvent,recordPaymentEvent,recordFinancialEntry,earningsEntriesFor,senderCashCollectedInFull,cashCollectionFor,accrueRestaurantSettlement} from './modules/payments/index.mjs';
 import {approveRiderDocuments} from './rider-documents.mjs';
@@ -263,17 +264,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   return (await db.query(
    `SELECT id,platform,app_scope,push_token,channel_id,device_id,app_state,battery_saver_enabled,background_location_enabled,active,last_seen_at
       FROM user_push_tokens t
-     WHERE t.user_id=$1
-       AND t.active=true
-       AND (
-         t.session_token_hash IS NULL
-         OR EXISTS (
-           SELECT 1 FROM sessions s
-            WHERE s.token_hash=t.session_token_hash
-              AND s.user_id=t.user_id
-              AND s.expires_at>now()
-         )
-       )
+     WHERE ${ACTIVE_PUSH_TOKEN_FILTER}
      ORDER BY t.updated_at DESC`,
    [actor.id]
   )).rows;

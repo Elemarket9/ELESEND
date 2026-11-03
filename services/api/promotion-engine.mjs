@@ -1,3 +1,4 @@
+import {requireAnyPermission} from './permissions.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check, limit} from './security.mjs';
@@ -310,13 +311,7 @@ export function promotionEngine(db) {
   const commissions = commissionEngine(db);
 
   async function requireAdminPermission(c, actor, permissions = ['promotions:manage', 'finance:configure', 'pricing:write']) {
-    check(actor?.kind === 'admin', 403, 'Administrator access required');
-    const list = Array.isArray(permissions) ? permissions : [permissions];
-    const has = (await c.query(
-      'SELECT 1 FROM permissions WHERE user_id = $1 AND permission = ANY($2::text[])',
-      [actor.id, list]
-    )).rowCount;
-    check(has, 403, 'Promotion management permission required');
+    return requireAnyPermission(c, actor, permissions, 'Promotion management permission required');
   }
 
   async function verifyRestaurantOwnership(c, actor, restaurantId) {
