@@ -19,11 +19,11 @@ function Build-Graph([string]$ProfileLua, [string]$GraphBase) {
     return
   }
   Write-Output "Extracting $GraphBase with $ProfileLua..."
-  & docker.exe run --rm --network none --mount $mount $image osrm-extract -p $ProfileLua /data/ghana-latest.osm.pbf
+  # OSRM names its output after the input, so extract from a copy to keep other graphs intact.
+  if($GraphBase -ne 'ghana-latest'){Copy-Item -Path (Join-Path $data 'ghana-latest.osm.pbf') -Destination (Join-Path $data "$GraphBase.osm.pbf") -Force}
+  & docker.exe run --rm --network none --mount $mount $image osrm-extract -p $ProfileLua "/data/$GraphBase.osm.pbf"
   if($LASTEXITCODE -ne 0){throw "OSRM extraction for $GraphBase failed"}
-  if($GraphBase -ne 'ghana-latest'){
-    Move-Item -Path (Join-Path $data 'ghana-latest.osrm*') -Destination { $_.FullName -replace 'ghana-latest', $GraphBase } -Force
-  }
+  if($GraphBase -ne 'ghana-latest'){Remove-Item -Path (Join-Path $data "$GraphBase.osm.pbf") -Force}
   & docker.exe run --rm --network none --mount $mount $image osrm-partition "/data/$GraphBase.osrm"
   if($LASTEXITCODE -ne 0){throw "OSRM partition for $GraphBase failed"}
   & docker.exe run --rm --network none --mount $mount $image osrm-customize "/data/$GraphBase.osrm"

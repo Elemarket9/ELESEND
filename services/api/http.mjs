@@ -335,7 +335,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
     const s=(await db.query('SELECT s.*,q.request AS quote_request,ST_Y(l.coordinates::geometry) as dest_lat,ST_X(l.coordinates::geometry) as dest_lon FROM shipments s LEFT JOIN quotes q ON q.id=s.quote_id LEFT JOIN temporary_delivery_references l ON l.shipment_id=s.id WHERE s.id=$1',[sid])).rows[0];
     check(s,404,'Shipment not found');
     check(actor?.kind==='rider'&&s.rider_id===actor.id,403,'Assigned rider required');
-    const r=(await db.query('SELECT ST_Y(current_position::geometry) as lat,ST_X(current_position::geometry) as lon FROM riders WHERE id=$1',[actor.id])).rows[0];
+    const r=(await db.query('SELECT vehicle,ST_Y(current_position::geometry) as lat,ST_X(current_position::geometry) as lon FROM riders WHERE id=$1',[actor.id])).rows[0];
     check(r&&Number.isFinite(Number(r.lat))&&Number.isFinite(Number(r.lon)),400,'Rider position unavailable');
     const qDest=s.quote_request?.destination||s.quote_request?.dropoff||null;
     const qLat=Number(qDest?.latitude),qLon=Number(qDest?.longitude),refLat=Number(s.dest_lat),refLon=Number(s.dest_lon);
@@ -355,7 +355,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
       routingAdapter:app?.routing||{route:async()=>null},
       riderPosition:{latitude:Number(r.lat),longitude:Number(r.lon)},
       confirmedDestination:destCoords,
-      vehicle:s.vehicle||'motorcycle',
+      vehicle:s.quote_request?.vehicle||r.vehicle||'motorcycle',
       db
     });
    }
@@ -367,6 +367,9 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    }
    else if(method==='POST'&&path==='/api/v1/admin/geo-intelligence/rollback-road'){
     result=await mapLifecycle.rollbackRoad(actor,body?.versionTag);
+   }
+   else if(method==='POST'&&path==='/api/v1/admin/geo-intelligence/rollback-landmark'){
+    result=await mapLifecycle.rollbackLandmark(actor,body?.versionTag);
    }
    else if(method==='POST'&&path==='/api/v1/admin/geo-intelligence/publish-landmark'){
     result=await mapLifecycle.publishLandmark(actor,body?.landmarkId,body?.notes);

@@ -2,7 +2,7 @@ import {check} from './security.mjs';
 import {haversine} from './dispatch-geometry.mjs';
 
 /** Distances and durations are ONLY from a configured road-network routing service. */
-export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,maxSnapMeters=2500,fetchImpl=fetch}){
+export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,maxSnapMeters=2500,maxInFlight=48,fetchImpl=fetch}){
  function base(value){const u=new URL(value);check(['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash,500,'Routing base URL must not contain secrets/query');return u;}
  check(endpoint||vehicleRoutes,500,'OSRM graph configuration required');
  const origin=endpoint?base(endpoint):null;
@@ -24,7 +24,7 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,m
   try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));}catch{check(false,503,'Invalid routing JSON');}
  }
  async function request(path,vehicle){const configured=vehicleRoutes?base(vehicleRoutes[vehicle].endpoint):origin;const url=new URL(configured.toString());const split=path.indexOf('?');url.pathname=configured.pathname.replace(/\/$/,'')+(split===-1?path:path.slice(0,split));if(split!==-1)url.search=path.slice(split+1);
-  check(inFlight<8,503,'Routing service admission limit reached');inFlight++;
+  check(inFlight<maxInFlight,503,'Routing service admission limit reached');inFlight++;
   try{const response=await fetchImpl(url,{redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{Accept:'application/json','Accept-Encoding':'gzip, deflate'}});
    check(response.status!==429,429,'Routing service rate limited');check(response.ok,503,'Routing service unavailable');const body=await decode(response);check(body&&typeof body==='object'&&!Array.isArray(body),503,'Invalid routing response');
    check(!['NoRoute','NoTable'].includes(body.code),422,'No connected road path');check(body.code==='Ok',503,'Routing service could not resolve road path');return body;

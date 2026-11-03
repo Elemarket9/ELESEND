@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { check } from '../../../security.mjs';
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const requireId = id => check(typeof id === 'string' && UUID_PATTERN.test(id), 400, 'Valid candidate id required');
+
 /**
  * Manages the publication lifecycle, approval, rollback and coverage audit for EGIA (Phases 7, 13 & Priority 2).
  */
@@ -22,11 +25,13 @@ export function createMapLifecycleService(db) {
    */
   async function publishRoad(actor, roadId, notes = '') {
     await requireAdmin(actor);
+    requireId(roadId);
 
     return db.tx(async c => {
       const road = (await c.query(`SELECT * FROM candidate_roads WHERE id = $1 FOR UPDATE`, [roadId])).rows[0];
       check(road, 404, 'Candidate road not found');
       check(road.status !== 'PUBLISHED', 409, 'Road is already published');
+      check(!['REJECTED', 'RETIRED'].includes(road.status), 409, 'Rejected or retired roads cannot be published');
 
       // Topology & geometry validation checks (Priority 2)
       const topo = (await c.query(`
@@ -88,12 +93,14 @@ export function createMapLifecycleService(db) {
    */
   async function rollbackRoad(actor, versionTag) {
     await requireAdmin(actor);
+    check(typeof versionTag === 'string' && versionTag.length > 0, 400, 'Version tag required');
 
     return db.tx(async c => {
       const updateVer = (await c.query(`
         SELECT * FROM map_update_versions WHERE version_tag = $1 FOR UPDATE
       `, [versionTag])).rows[0];
       check(updateVer, 404, 'Map update version not found');
+      check(updateVer.change_type === 'road_publish', 409, 'This version is not a road update');
       check(!updateVer.rolled_back, 409, 'Update is already rolled back');
 
       await c.query(`
@@ -124,11 +131,13 @@ export function createMapLifecycleService(db) {
    */
   async function publishLandmark(actor, landmarkId, notes = '') {
     await requireAdmin(actor);
+    requireId(landmarkId);
 
     return db.tx(async c => {
       const cand = (await c.query(`SELECT * FROM candidate_landmarks WHERE id = $1 FOR UPDATE`, [landmarkId])).rows[0];
       check(cand, 404, 'Candidate landmark not found');
       check(cand.verification_status !== 'PUBLISHED', 409, 'Landmark is already published');
+      check(!['REJECTED', 'RETIRED'].includes(cand.verification_status), 409, 'Rejected or retired landmarks cannot be published');
       check(!cand.is_private, 422, 'Private residence cannot be published to public map');
 
       const versionTag = `lmk-pub-${cand.id.slice(0, 8)}-${Date.now()}`;
@@ -144,20 +153,17 @@ export function createMapLifecycleService(db) {
         INSERT INTO spatial_landmarks (
           id, name, search_name, category, subcategory, region, locality, city,
           latitude, longitude, geom, source, source_id, license, verification_status
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8,
-          ST_Y(location::geometry), ST_X(location::geometry), location,
-          $9, $10, $11, 'community_verified'
         )
+        SELECT id::text, name, search_name, category, subcategory, region, locality, city,
+               ST_Y(location::geometry), ST_X(location::geometry), location,
+               source, source_id, license, 'community_verified'
+        FROM candidate_landmarks
+        WHERE id = $1
         ON CONFLICT (id) DO UPDATE SET
           name = EXCLUDED.name,
           verification_status = 'community_verified',
           updated_at = now()
-      `, [
-        cand.id, cand.name, cand.search_name, cand.category, cand.subcategory,
-        cand.region, cand.locality, cand.city,
-        cand.source, cand.source_id, cand.license
-      ]);
+      `, [landmarkId]);
 
       await c.query(`
         INSERT INTO map_update_versions (
@@ -186,12 +192,14 @@ export function createMapLifecycleService(db) {
    */
   async function rollbackLandmark(actor, versionTag) {
     await requireAdmin(actor);
+    check(typeof versionTag === 'string' && versionTag.length > 0, 400, 'Version tag required');
 
     return db.tx(async c => {
       const updateVer = (await c.query(`
         SELECT * FROM map_update_versions WHERE version_tag = $1 FOR UPDATE
       `, [versionTag])).rows[0];
       check(updateVer, 404, 'Map update version not found');
+      check(updateVer.change_type === 'landmark_publish', 409, 'This version is not a landmark update');
       check(!updateVer.rolled_back, 409, 'Update is already rolled back');
 
       await c.query(`
@@ -350,7 +358,7 @@ export function createMapLifecycleService(db) {
     const type = String(body?.type || '').toLowerCase();
     const id = body?.id || body?.roadId || body?.landmarkId;
     const notes = typeof body?.notes === 'string' ? body.notes.trim() : '';
-    check(id && typeof id === 'string', 400, 'Candidate id required');
+    requireId(id);
     check(type === 'road' || type === 'landmark', 400, 'type must be road or landmark');
 
     return db.tx(async c => {

@@ -2,6 +2,10 @@ import { sanitizeTrajectory, extractCandidateRoadCorridor } from './gps-quality-
 import { validatePublicLandmarkCandidate, deduplicateLandmark } from './deduplicator.mjs';
 import { calculateBearing, angleDifference } from './unmapped-navigation.mjs';
 import { randomUUID } from 'node:crypto';
+import { ghanaReverseGeocode } from '../ghana-geocoder.mjs';
+
+// Learning may advance a road under review, but never reverses an administrator's decision.
+const LOCKED_ROAD_STATUSES = new Set(['VERIFIED', 'PUBLISHED', 'REJECTED', 'RETIRED']);
 
 /**
  * Continuous Geographic Learning Runner (EGIA Phase 11 & Priority 1 & 3).
@@ -45,6 +49,7 @@ export async function runGeographicLearningCycle(db) {
 
       const val = validatePublicLandmarkCandidate(candidateObj);
       if (val.eligible) {
+        const place = ghanaReverseGeocode(candidateObj.latitude, candidateObj.longitude);
         const dedup = await deduplicateLandmark(db, candidateObj);
         if (!dedup.isDuplicate) {
           await db.query(`
@@ -52,7 +57,7 @@ export async function runGeographicLearningCycle(db) {
               id, name, search_name, category, region, locality, city,
               location, confidence, source, verification_status
             ) VALUES (
-              $1, $2, $3, $4, 'Greater Accra', 'Discovered', 'Ghana',
+              $1, $2, $3, $4, $7, $8, $9,
               ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography, 65, 'rider_corroboration', 'CORROBORATED'
             )
             ON CONFLICT DO NOTHING
@@ -62,7 +67,10 @@ export async function runGeographicLearningCycle(db) {
             candidateObj.name.toLowerCase(),
             val.category,
             candidateObj.longitude,
-            candidateObj.latitude
+            candidateObj.latitude,
+            place.region || 'Unknown',
+            place.locality || 'Unknown',
+            place.city || 'Unknown'
           ]);
 
           result.landmarksCorroborated++;
@@ -128,7 +136,7 @@ export async function runGeographicLearningCycle(db) {
       const existingRoad = await db.query(`
         SELECT id, status, confidence, observation_count, distinct_riders,
                created_at, updated_at, temporal_span_seconds, bidirectional,
-               mean_accuracy_m, is_private_access,
+               mean_accuracy_m, is_private_access, contributor_rider_ids,
                ST_AsGeoJSON(corridor::geometry) AS existing_geojson
         FROM candidate_roads
         WHERE ST_DWithin(corridor, ST_SetSRID(ST_GeomFromGeoJSON($1), 4326)::geography, 35)
@@ -138,6 +146,9 @@ export async function runGeographicLearningCycle(db) {
 
       if (existingRoad.rows.length > 0) {
         const cur = existingRoad.rows[0];
+        if (LOCKED_ROAD_STATUSES.has(cur.status)) continue;
+        // The learning window overlaps between cycles, so the same rider is seen again and again.
+        if ((cur.contributor_rider_ids || []).includes(row.rider_id)) continue;
 
         // Temporal separation check: Time elapsed between previous observations and current
         const lastUpdated = new Date(cur.updated_at || cur.created_at).getTime();
@@ -184,9 +195,10 @@ export async function runGeographicLearningCycle(db) {
               temporal_span_seconds = $6,
               bidirectional = $7,
               mean_accuracy_m = $8,
+              contributor_rider_ids = array_append(contributor_rider_ids, $9::uuid),
               updated_at = now()
           WHERE id = $1
-        `, [cur.id, newObsCount, newDistinctRiders, newConfidence, newStatus, cumulativeSpan, isBidirectional, combinedMeanAcc]);
+        `, [cur.id, newObsCount, newDistinctRiders, newConfidence, newStatus, cumulativeSpan, isBidirectional, combinedMeanAcc, row.rider_id]);
 
         if (newStatus === 'CORROBORATED' && cur.status !== 'CORROBORATED') {
           result.roadsCorroborated++;
@@ -197,13 +209,13 @@ export async function runGeographicLearningCycle(db) {
         await db.query(`
           INSERT INTO candidate_roads (
             id, name, corridor, status, confidence, observation_count, distinct_riders,
-            mean_accuracy_m, source
+            mean_accuracy_m, source, contributor_rider_ids
           ) VALUES (
             $1, 'Discovered Road Segment', ST_SetSRID(ST_GeomFromGeoJSON($2), 4326)::geography,
-            'OBSERVED', 35, $3, 1, $4, 'rider_gps_cluster'
+            'OBSERVED', 35, $3, 1, $4, 'rider_gps_cluster', ARRAY[$5::uuid]
           )
           ON CONFLICT DO NOTHING
-        `, [roadId, lineGeoJson, corridor.pointCount, meanAcc]);
+        `, [roadId, lineGeoJson, corridor.pointCount, meanAcc, row.rider_id]);
 
         result.roadsDiscovered++;
       }

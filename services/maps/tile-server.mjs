@@ -193,7 +193,9 @@ export function generateGlyphsPbf(fontstack,start,end){
   ...glyphFields
  ]);
  const pbf=encodeFieldBytes(1,stackInner);
- if(rangePbfCache.size<256)rangePbfCache.set(cacheKey,pbf);
+ // Evict the oldest entry so requests for made-up font names cannot permanently fill the cache.
+ if(rangePbfCache.size>=256)rangePbfCache.delete(rangePbfCache.keys().next().value);
+ rangePbfCache.set(cacheKey,pbf);
  return pbf;
 }
 

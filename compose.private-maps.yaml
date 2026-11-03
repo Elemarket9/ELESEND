@@ -52,4 +52,5 @@ services:
         target: /data
         read_only: true
     ports: ['127.0.0.1:3145:3145']
-    networks: [private]
+    # Docker does not publish ports for containers only on an internal network.
+    networks: [egress]
