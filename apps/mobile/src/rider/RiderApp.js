@@ -23,6 +23,7 @@ import {
 } from 'react-native';
 import * as Location from 'expo-location';
 import { WithdrawalHistory } from '../rider-withdrawal-history';
+import { CompanyInvitations } from '../rider-company-invitations';
 import { EmergencyButton, RatingPrompts, RiderTools, ShareLiveLocation, TrustedContactCard } from '../rider-safety';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline, openTurnByTurnNavigation } from '../maps/map-adapter';
@@ -1779,6 +1780,7 @@ export default function RiderApp() {
         )}
         {tab === 'Earnings' && (
           <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+            <CompanyInvitations />
             <WithdrawalHistory refreshKey={`${financeSnapshot?.inPayoutMinor}:${availableNow}`} />
             <RatingPrompts />
             <RiderTools />

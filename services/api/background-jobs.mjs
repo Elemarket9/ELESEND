@@ -2,6 +2,7 @@ import {suspendExpiredDocuments} from './rider-documents.mjs';
 import {suspendExpiredLicences,syncOpenIdentityChecks,requireIdentityRefresh} from './rider-licence.mjs';
 import {enforceDrivingLimits,flagUnusualStops,settleRiderRewards} from './rider-tools.mjs';
 import {flagOverdueParcels} from './custody-incidents.mjs';
+import {webhookService} from './api-webhooks.mjs';
 /**
  * Shared background job scheduling for the API process and the dedicated worker.
  * Food deadlines never wait on payment-provider calls: expiry and financial
@@ -41,6 +42,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
  const jobs={
   notifications:guarded('notifications',null,async()=>{await notifications?.tick();}),
   chatOutbox:guarded('chat_outbox',null,async()=>{await chatSvc?.flushRealtimeOutbox();}),
+  apiWebhooks:guarded('api_webhooks',null,async()=>{await webhookService(db).tick();}),
   foodExpiry:guarded('food_expiry',LOCKS.foodExpiry,async()=>{await restOrders?.expireUnfulfilledOrders();}),
   deliveryWatchdog:guarded('delivery_watchdog',LOCKS.deliveryWatchdog,async()=>{
    if(restOrders&&typeof restOrders.monitorAssignedDeliveries==='function')await restOrders.monitorAssignedDeliveries({onlyDueReviews:true});
@@ -104,6 +106,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
   const every=(fn,ms,enabled=true)=>{if(!enabled)return;const t=setInterval(()=>{fn();},ms);if(unref)t.unref();timers.push(t);};
   every(jobs.notifications,3000,!!notifications);
   every(jobs.chatOutbox,3000,!!chatSvc);
+  every(jobs.apiWebhooks,5000);
   every(jobs.foodExpiry,15000,!!restOrders);
   every(jobs.deliveryWatchdog,15000,!!restOrders||!!dispatch);
   every(jobs.moneyRecon,30000,!!money&&!!paymentProvider);

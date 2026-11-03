@@ -146,7 +146,7 @@ export function checkoutService(db,options={}){
    return db.tx(async c=>{await admin(c,actor);await c.query('UPDATE checkout_method_policies SET enabled=$2,updated_by=$3,updated_at=now() WHERE method=$1',[method,enabled,actor.id]);await c.query('INSERT INTO audit_logs(actor_id,action) VALUES($1,$2)',[actor.id,'checkout.method.'+method+'.'+(enabled?'enabled':'disabled')]);return {method,enabled};});
   },
   async initiate(actor,shipmentId,input){uuid.parse(shipmentId);const v=payer.parse(input);
-   check(['customer','business'].includes(actor?.kind),403,'Customer or business account required');
+   check(['customer','business','company'].includes(actor?.kind),403,'Customer or business account required');
    const email=v.email??null;
    const {intent,task}=await withShipmentLock(shipmentId,async()=>{
     if(provider&&typeof provider.verifyPayment==='function'){
@@ -301,7 +301,7 @@ export function checkoutService(db,options={}){
     inFlightInitiations.delete(intent.id);
    }
   },
-  async status(actor,shipmentId){uuid.parse(shipmentId);check(['customer','business'].includes(actor?.kind),403);
+  async status(actor,shipmentId){uuid.parse(shipmentId);check(['customer','business','company'].includes(actor?.kind),403);
    const initial=(await db.query(`SELECT i.* FROM shipment_checkout_intents i JOIN shipments s ON s.id=i.shipment_id WHERE i.shipment_id=$1 AND s.customer_id=$2 ORDER BY i.created_at DESC LIMIT 1`,[shipmentId,actor.id])).rows[0];
    check(initial,404,'Checkout not found');
    if(['initiating','pending','expired','failed'].includes(initial.status)&&initial.provider_terminal_at===null&&provider&&typeof provider.verifyPayment==='function'&&!isSubmissionCallActive(initial)){

@@ -1067,9 +1067,29 @@ export function renderAdminPortalHtml() {
               <button class="action-btn btn-danger" onclick="reviewRider('\${escapeHtml(r.id)}', 'suspended')">Reject</button>
             </td>
           </tr>
+        \`).join('') + (queue.companies || []).map(c => \`
+          <tr>
+            <td>\${escapeHtml(c.phone || c.id.slice(0, 8))}</td>
+            <td>COMPANY</td>
+            <td><strong>\${escapeHtml(c.name)}</strong><br>\${escapeHtml((c.services || []).join(' and '))}</td>
+            <td><span class="badge badge-warn">\${escapeHtml(c.status.toUpperCase())}</span></td>
+            <td>
+              \${c.status === 'approved' ? '' : \`<button class="action-btn" onclick="reviewCompany('\${escapeHtml(c.id)}', 'approved')">Approve</button>\`}
+              <button class="action-btn btn-danger" onclick="reviewCompany('\${escapeHtml(c.id)}', '\${c.status === 'approved' ? 'suspended' : 'rejected'}')">\${c.status === 'approved' ? 'Suspend' : 'Reject'}</button>
+            </td>
+          </tr>
         \`).join('');
       } catch (e) {
         console.error(e);
+      }
+    }
+
+    async function reviewCompany(id, status) {
+      try {
+        await api(\`/api/v1/admin/companies/\${id}\`, { method: 'POST', body: JSON.stringify({ status }) });
+        loadFleet();
+      } catch (e) {
+        alert(e.message);
       }
     }
 

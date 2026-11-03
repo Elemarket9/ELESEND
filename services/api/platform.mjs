@@ -1,5 +1,6 @@
 import {ACTIVE_PUSH_TOKEN_FILTER} from './notifications.mjs';
 import {approveVehicleRecord} from './vehicle.mjs';
+import {ACCEPTED_SERVICES,assertCompanyDelivery} from './company.mjs';
 import {ensureCommissionAccount,paymentMethodEnabled,findPaymentEvent,recordPaymentEvent,recordFinancialEntry,earningsEntriesFor,senderCashCollectedInFull,cashCollectionFor,accrueRestaurantSettlement} from './modules/payments/index.mjs';
 import {approveRiderDocuments} from './rider-documents.mjs';
 import {approveRiderLicence} from './rider-licence.mjs';
@@ -25,7 +26,7 @@ import {promotionEngine} from './promotion-engine.mjs';
 import {disconnectRealtimeUser} from './chat-engine.mjs';
 const id=()=>randomUUID();
 const uuid=z.string().uuid();
-const registration=z.object({phone:z.string().max(30),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional()}).strict();
+const registration=z.object({phone:z.string().max(30),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
 const address=z.object({address:z.string().min(5).max(400),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict();
 const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(['motorcycle','car','van']).optional(),recipientPhone:z.string().max(30),weightG:z.number().int().min(1).max(10000000),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
 const ACCOUNT_SMS_PER_NUMBER=5,ACCOUNT_SMS_BLOCK_SECONDS=900;
@@ -277,7 +278,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     await ensureCommissionAccount(c,uid);
     if(type==='car')await registerVehicleInTx(c,uid,{vehicle:type,maxWeightG:v.maxWeightG??20000,car:v.car});
    }
-   if(v.kind==='company'){check(v.name,400,'Company name required');await c.query('INSERT INTO companies(id,owner_id,name) VALUES($1,$2,$3)',[id(),uid,v.name]);}
+   if(v.kind==='company'){check(v.name,400,'Company name required');await c.query('INSERT INTO companies(id,owner_id,name,services) VALUES($1,$2,$3,$4)',[id(),uid,v.name,[...new Set(v.services??['riders'])]]);}
    await audit(c,uid,'registered',uid);
   });return {id:uid,kind:v.kind,phone:p,phoneVerified:false};
  },
@@ -381,7 +382,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await audit(c,actor.id,'pricing.vehicle_version_created',pid);return {id:pid,...v};
   });
  },
- async vehicleTariffs(actor){check(['customer','business','admin'].includes(actor.kind),403);return (await db.query('SELECT id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled FROM pricing_policies WHERE active AND vehicle IS NOT NULL ORDER BY vehicle')).rows;},
+ async vehicleTariffs(actor){check(['customer','business','company','admin'].includes(actor.kind),403);return (await db.query('SELECT id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled FROM pricing_policies WHERE active AND vehicle IS NOT NULL ORDER BY vehicle')).rows;},
  async getPricing(actor){check(actor?.kind==='admin',403);check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])",[actor.id,['pricing:write','finance:read','finance:approve','finance:configure']])).rowCount,403,'Pricing permission required');return (await db.query('SELECT * FROM pricing_policies WHERE active ORDER BY vehicle NULLS FIRST')).rows;},
  async configureCommission(actor,input){
   const v=z.object({vehicle:z.enum(['motorcycle','car','van']).nullable().optional(),commissionBps:z.number().int().min(0).max(10000),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null)}).strict().parse(input);
@@ -443,7 +444,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     check(!rest,409,'You have reached your driving time limit. You can go online again after your rest');
    }
    await c.query('UPDATE riders SET online=$2 WHERE id=$1',[actor.id,v.online]);if(!v.online){await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[actor.id]);getRedisClient().removeRiderLocation(actor.id).catch(()=>{});}return v;});},
- async quote(actor,input){check(['customer','business'].includes(actor.kind),403);
+ async quote(actor,input){check(['customer','business','company'].includes(actor.kind),403);await assertCompanyDelivery(db,actor);
   // Do not accept live bookings when an essential custody-verification provider is absent.
   if(process.env.NODE_ENV==='production'){
    check(sms&&typeof sms.send==='function'&&dispatch,503,'Delivery booking paused: dispatch or SMS verification unavailable');
@@ -475,7 +476,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const capacity=dispatch?await dispatch.availability({pickup:v.pickup,weightG:v.weightG,vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize}):{status:'unknown',guaranteed:false};
   return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEvidence:evidence,surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
  },
- async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business'].includes(actor.kind),403);
+ async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business','company'].includes(actor.kind),403);await assertCompanyDelivery(db,actor);
   if(process.env.NODE_ENV==='production')check(sms&&typeof sms.send==='function'&&dispatch,503,'Delivery booking paused: dispatch or SMS verification unavailable');
   return db.tx(async c=>{if(process.env.NODE_ENV==='production')await requireVerifiedPhone(c,actor);await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[actor.id+key]);
    const old=(await c.query('SELECT * FROM shipments WHERE customer_id=$1 AND idempotency_key=$2',[actor.id,key])).rows[0];if(old){check(old.quote_id===v.quoteId,409,'Idempotency key reused with different request');return old;}
@@ -497,9 +498,9 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async offers(actor){check(dispatch,503,'Dispatch engine unavailable');return dispatch.offers(actor);},
  async accept(actor,sid,offerId){check(dispatch,503,'Dispatch engine unavailable');return dispatch.accept(actor,sid,offerId);},
  async get(actor,sid){uuid.parse(sid);const s=(await db.query('SELECT * FROM shipments WHERE id=$1',[sid])).rows[0];check(s,404);await access(db,actor,s);const q=(await db.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];return {...s,details:q.request};},
- async list(actor){
+ async list(actor,{asClient=Boolean(actor.api_client_id)}={}){
   const baseQuery=`SELECT s.*, (SELECT id FROM food_orders WHERE shipment_id=s.id) AS food_order_id, (SELECT phone FROM users WHERE id=s.rider_id) AS rider_phone, q.request AS details, q.request->'pickup' AS pickup, q.request->'destination' AS destination FROM shipments s JOIN quotes q ON q.id=s.quote_id`;
-  if(['customer','business'].includes(actor.kind))return (await db.query(`${baseQuery} WHERE s.customer_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
+  if(['customer','business'].includes(actor.kind)||(actor.kind==='company'&&asClient))return (await db.query(`${baseQuery} WHERE s.customer_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
   if(actor.kind==='rider')return (await db.query(`${baseQuery} WHERE s.rider_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
   if(actor.kind==='company')return (await db.query(`${baseQuery} JOIN companies c ON c.id=s.company_id WHERE c.owner_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
   await permission(db,actor,'shipments:read');return (await db.query(`${baseQuery} ORDER BY s.created_at DESC LIMIT 100`)).rows;
@@ -736,7 +737,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   });
  },
  async earnings(actor){return earningsEntriesFor(db,actor.id);},
- async reviewQueue(actor){await permission(db,actor,'verification:write');return {riders:(await db.query('SELECT r.id,u.phone,r.company_id,r.status,r.vehicle,r.max_weight_g FROM riders r LEFT JOIN users u ON u.id=r.id ORDER BY r.id LIMIT 100')).rows,companies:(await db.query('SELECT id,name,status FROM companies ORDER BY name LIMIT 100')).rows,vehicles:(await db.query('SELECT * FROM rider_vehicle_registrations ORDER BY submitted_at DESC LIMIT 100')).rows};}
+ async reviewQueue(actor){await permission(db,actor,'verification:write');return {riders:(await db.query('SELECT r.id,u.phone,r.company_id,r.status,r.vehicle,r.max_weight_g FROM riders r LEFT JOIN users u ON u.id=r.id ORDER BY r.id LIMIT 100')).rows,companies:(await db.query('SELECT c.id,c.name,c.status,c.services,u.phone FROM companies c JOIN users u ON u.id=c.owner_id ORDER BY c.name LIMIT 100')).rows,vehicles:(await db.query('SELECT * FROM rider_vehicle_registrations ORDER BY submitted_at DESC LIMIT 100')).rows};}
  ,
   routing,
   dispatch,

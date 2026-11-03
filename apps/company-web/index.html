@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELESEND for Companies</title>
+<style>
+:root{--ink:#0f172a;--muted:#475569;--line:#e2e8f0;--bg:#f8fafc;--card:#fff;--brand:#0f766e;--warn:#92400e;--warnbg:#fef3c7;--bad:#b91c1c}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);background:var(--bg)}
+header{display:flex;justify-content:space-between;align-items:center;padding:14px 20px;background:var(--card);border-bottom:1px solid var(--line)}
+h1{font-size:17px;margin:0}h2{font-size:16px;margin:0 0 10px}main{max-width:980px;margin:0 auto;padding:16px}
+nav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}nav button{background:none;color:var(--muted);border:1px solid var(--line)}nav button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}.stat b{display:block;font-size:20px}.stat span,.muted{color:var(--muted);font-size:13px}
+label{display:block;font-size:13px;font-weight:600;margin:10px 0 4px}label.check{display:flex;gap:8px;font-weight:400;font-size:14px;align-items:flex-start}
+input,select{width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:7px;font:inherit}label.check input{width:auto;margin-top:4px}
+button{padding:9px 14px;border:0;border-radius:7px;background:var(--brand);color:#fff;font:inherit;font-weight:600;cursor:pointer}button.plain{background:none;color:var(--ink);border:1px solid #cbd5e1}button.danger{background:none;color:var(--bad);border:1px solid #fecaca}button:disabled{opacity:.5;cursor:default}
+.table{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}th{font-size:12px;color:var(--muted)}
+.notice{background:var(--warnbg);color:var(--warn);padding:10px 12px;border-radius:8px;margin-bottom:14px}.error{color:var(--bad);min-height:20px;margin-top:8px;font-size:14px}.ok{color:var(--brand);margin-top:8px;font-size:14px}
+pre{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow-x:auto;font-size:13px}code.secret{display:block;word-break:break-all;background:var(--warnbg);padding:10px;border-radius:7px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.row input{flex:1;min-width:180px}.results button{display:block;width:100%;text-align:left;background:none;color:var(--ink);border:0;border-bottom:1px solid var(--line);border-radius:0;font-weight:400}.hidden{display:none}
+.auth{max-width:420px;margin:32px auto}
+</style>
+</head>
+<body>
+<header><h1>ELESEND for Companies</h1><button id="out" class="plain hidden">Sign out</button></header>
+<main id="app"></main>
+<script>
+const app=document.getElementById('app');let token=null;try{token=localStorage.getItem('elesend_company_token');}catch{}
+let profile=null,tab='overview',authMode='in',challenge=null;
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ghc=m=>'GH₵'+(Number(m||0)/100).toFixed(2);
+const when=v=>v?new Date(v).toLocaleString():'';
+const save=t=>{token=t;try{t?localStorage.setItem('elesend_company_token',t):localStorage.removeItem('elesend_company_token');}catch{}};
+async function api(path,method='GET',body,headers={}){
+ const res=await fetch(path,{method,headers:{...(body!==undefined?{'Content-Type':'application/json'}:{}),...(token?{Authorization:'Bearer '+token}:{}),...headers},body:body!==undefined?JSON.stringify(body):undefined});
+ const data=await res.json().catch(()=>({}));
+ if(res.status===401&&token){save(null);profile=null;render();}
+ if(!res.ok)throw new Error(data.error||data.message||'Something went wrong. Please try again.');
+ return data;
+}
+const has=s=>profile?.services?.includes(s);
+const ready=()=>profile?.status==='approved';
+function field(id,label,type='text',extra=''){return `<label for="${id}">${label}</label><input id="${id}" type="${type}" ${extra}>`;}
+const val=id=>document.getElementById(id).value.trim();
+const show=(id,msg,ok)=>{const e=document.getElementById(id);if(e){e.className=ok?'ok':'error';e.textContent=msg;}};
+function guard(fn,msgId){return async(...a)=>{try{await fn(...a);}catch(e){if(msgId)show(msgId,e.message);else alert(e.message);}};}
+
+function renderAuth(){
+ const up=authMode==='up';
+ app.innerHTML=`<div class="auth card"><h2>${up?'Register your company':'Sign in'}</h2>
+ <form id="f">${up?field('name','Company name','text','required minlength="2" maxlength="160" autocomplete="organization"'):''}
+ ${field('phone','Phone number','tel','required autocomplete="tel" placeholder="024 123 4567"')}
+ ${field('password','Password','password',`required ${up?'minlength="12"':''} autocomplete="${up?'new-password':'current-password'}"`)}
+ ${up?`<label>What will you use ELESEND for?</label>
+ <label class="check"><input type="checkbox" id="svcD" checked><span><b>Send our deliveries</b><br><span class="muted">Book deliveries here or connect your own system by API.</span></span></label>
+ <label class="check"><input type="checkbox" id="svcR"><span><b>Provide riders</b><br><span class="muted">Your riders take ELESEND jobs and their earnings are paid to your company.</span></span></label>`:''}
+ <div class="error" id="m"></div><button>${up?'Register':'Sign in'}</button></form>
+ <p class="muted"><a href="#" id="sw">${up?'Already registered? Sign in':'New company? Register'}</a></p></div>`;
+ document.getElementById('sw').onclick=e=>{e.preventDefault();authMode=up?'in':'up';render();};
+ document.getElementById('f').onsubmit=guard(async e=>{e.preventDefault();
+  const phone=val('phone'),password=document.getElementById('password').value;
+  if(up){const services=[document.getElementById('svcD').checked&&'delivery',document.getElementById('svcR').checked&&'riders'].filter(Boolean);
+   if(!services.length)throw new Error('Choose at least one service');
+   await api('/api/v1/auth/register','POST',{kind:'company',name:val('name'),phone,password,services});}
+  const r=await api('/api/v1/auth/login','POST',{phone,password});
+  if(r.user.kind!=='company')throw new Error('This account is not a company account. Please use the matching ELESEND app.');
+  save(r.token);await start();
+ },'m');
+}
+function renderPhone(ps){
+ app.innerHTML=`<div class="auth card"><h2>Verify your phone</h2><p class="muted">Enter the code we sent to ${esc(ps.phone)}.</p>
+ <form id="f">${field('code','Verification code','text','required inputmode="numeric" autocomplete="one-time-code"')}<div class="error" id="m"></div>
+ <div class="row"><button>Verify</button><button type="button" id="again" class="plain">Send a new code</button></div></form></div>`;
+ const send=guard(async()=>{challenge=await api('/api/v1/me/phone-challenge','POST',{});show('m','Code sent.',true);},'m');
+ document.getElementById('again').onclick=send;
+ if(!challenge)send();
+ document.getElementById('f').onsubmit=guard(async e=>{e.preventDefault();
+  await api('/api/v1/me/phone-verify','POST',{challengeId:challenge?.challengeId,code:val('code')});challenge=null;await start();},'m');
+}
+const TABS=[['overview','Overview',()=>true],['send','Book a delivery',()=>has('delivery')],['deliveries','Our deliveries',()=>has('delivery')],['riders','Riders',()=>has('riders')],['jobs','Rider jobs',()=>has('riders')],['api','API access',()=>has('delivery')]];
+function renderShell(){
+ const tabs=TABS.filter(t=>t[2]());if(!tabs.some(t=>t[0]===tab))tab='overview';
+ app.innerHTML=`${ready()?'':`<div class="notice">${profile.status==='pending'?'ELESEND is reviewing your company. Bookings, riders and API access open once you are approved.':'Your company is '+esc(profile.status)+'. Please contact ELESEND support.'}</div>`}
+ <nav>${tabs.map(t=>`<button class="${t[0]===tab?'on':''}" data-t="${t[0]}">${t[1]}</button>`).join('')}</nav><div id="panel"></div>`;
+ app.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;renderShell();});
+ ({overview:overview,send:sendForm,deliveries:deliveries,riders:riders,jobs:jobs,api:apiAccess})[tab]();
+}
+const panel=()=>document.getElementById('panel');
+function overview(){
+ const b=profile.balance||{};
+ panel().innerHTML=`<div class="card"><h2>${esc(profile.name)}</h2><div class="grid">
+ ${has('riders')?`<div class="stat"><b>${profile.riders?.total??0}</b><span>Riders (${profile.riders?.online??0} online)</span></div>
+ <div class="stat"><b>${ghc(b.unpaidEarningsMinor)}</b><span>Earnings not yet paid</span></div>
+ <div class="stat"><b>${ghc(b.debtMinor)}</b><span>Cash commission owed (limit ${ghc(b.debtLimitMinor)})</span></div>
+ <div class="stat"><b>${ghc(b.nextPayoutMinor)}</b><span>Next payout after commission</span></div>`:'<div class="stat"><span>Your account is set up to send deliveries.</span></div>'}</div></div>
+ <div class="card"><h2>Services</h2>
+ <label class="check"><input type="checkbox" id="svcD" ${has('delivery')?'checked':''}><span><b>Send our deliveries</b><br><span class="muted">Turning this off also cancels your API keys.</span></span></label>
+ <label class="check"><input type="checkbox" id="svcR" ${has('riders')?'checked':''}><span><b>Provide riders</b></span></label>
+ <div class="error" id="m"></div><button id="saveS">Save services</button></div>
+ ${has('riders')?`<div class="card"><h2>Payout account</h2><p class="muted">Earnings are paid automatically once a day to this Mobile Money account, after any commission owed is taken out.</p>
+ <form id="pay"><label for="net">Network</label><select id="net"><option>MTN</option><option>TELECEL</option><option>AT</option></select>
+ ${field('acct','Account name','text','required minlength="2" maxlength="100"')}<div class="error" id="pm"></div><button>Save payout account</button></form></div>`:''}`;
+ document.getElementById('saveS').onclick=guard(async()=>{const services=[document.getElementById('svcD').checked&&'delivery',document.getElementById('svcR').checked&&'riders'].filter(Boolean);
+  if(!services.length)throw new Error('Choose at least one service');await api('/api/v1/company/services','PUT',{services});profile=await api('/api/v1/company/profile');renderShell();},'m');
+ const pay=document.getElementById('pay');if(pay)pay.onsubmit=guard(async e=>{e.preventDefault();await api('/api/v1/me/payout-beneficiary','POST',{momoNetwork:val('net'),accountName:val('acct')});show('pm','Payout account saved.',true);},'pm');
+}
+const place={pickup:null,destination:null};
+function placePicker(key,label){return `<label for="${key}">${label}</label><input id="${key}" autocomplete="off" placeholder="Search for a place"><div class="results" id="${key}R"></div>`;}
+function wirePicker(key){let timer;const input=document.getElementById(key),out=document.getElementById(key+'R');
+ input.oninput=()=>{place[key]=null;clearTimeout(timer);const q=input.value.trim();if(q.length<2){out.innerHTML='';return;}
+  timer=setTimeout(async()=>{try{const list=await api('/api/v1/maps/search?q='+encodeURIComponent(q));
+   out.innerHTML=(list||[]).slice(0,6).map((p,i)=>`<button type="button" data-i="${i}">${esc(p.label||p.name)}</button>`).join('');
+   out.querySelectorAll('button').forEach(b=>b.onclick=()=>{const p=list[b.dataset.i];const text=String(p.label||p.name);place[key]={address:text.length>=5?text:text+', Ghana',latitude:p.latitude,longitude:p.longitude};input.value=text;out.innerHTML='';});}catch{}},300);};}
+function sendForm(){
+ if(!ready()){panel().innerHTML='<div class="card muted">Booking opens once your company is approved.</div>';return;}
+ place.pickup=place.destination=null;
+ panel().innerHTML=`<div class="card"><h2>Book a delivery</h2><form id="f">${placePicker('pickup','Pickup')}${placePicker('destination','Destination')}
+ ${field('rp','Recipient phone','tel','required')}${field('desc','What is being sent?','text','required minlength="2" maxlength="500"')}${field('w','Weight in kilograms','number','required min="0.1" step="0.1" value="1"')}
+ <label for="veh">Vehicle</label><select id="veh"><option value="motorcycle">Motorcycle</option><option value="car">Car</option><option value="van">Van</option></select>
+ <div class="error" id="m"></div><button>Get price</button></form><div id="q"></div></div>`;
+ wirePicker('pickup');wirePicker('destination');
+ document.getElementById('f').onsubmit=guard(async e=>{e.preventDefault();
+  if(!place.pickup||!place.destination)throw new Error('Choose the pickup and destination from the search results');
+  const q=await api('/api/v1/quotes','POST',{pickup:place.pickup,destination:place.destination,vehicle:val('veh'),recipientPhone:val('rp'),weightG:Math.round(Number(val('w'))*1000),description:val('desc'),paymentMethod:'DIGITAL'});
+  const total=q.amount_minor;
+  const box=document.getElementById('q');box.innerHTML=`<p><b>${total!=null?ghc(total):'Price ready'}</b></p><div class="error" id="bm"></div><button id="book">Book and pay</button>`;
+  const key=crypto.randomUUID();
+  document.getElementById('book').onclick=guard(async ev=>{ev.target.disabled=true;
+   try{const s=await api('/api/v1/shipments','POST',{quoteId:q.id},{'Idempotency-Key':key});
+    const pay=await api('/api/v1/shipments/'+s.id+'/checkout','POST',{idempotencyKey:key});
+    const url=pay.checkoutUrl;
+    if(url&&/^https:\/\//.test(url))location.assign(url);else box.innerHTML='<p class="ok">Delivery booked. See it under Our deliveries.</p>';
+   }finally{ev.target.disabled=false;}
+  },'bm');
+ },'m');
+}
+function shipmentTable(list,empty){
+ return list.length?`<div class="table"><table><tr><th>Created</th><th>Status</th><th>Price</th><th>Reference</th></tr>${list.map(s=>`<tr><td>${esc(when(s.created_at))}</td><td>${esc(String(s.state).replace(/_/g,' '))}</td><td>${ghc(s.amount_minor)}</td><td>${esc(String(s.id).slice(0,8))}</td></tr>`).join('')}</table></div>`:`<p class="muted">${empty}</p>`;
+}
+async function deliveries(){panel().innerHTML='<div class="card muted">Loading…</div>';const list=await api('/api/v1/company/deliveries').catch(()=>[]);panel().innerHTML=`<div class="card"><h2>Our deliveries</h2>${shipmentTable(list,'You have not booked a delivery yet.')}</div>`;}
+async function jobs(){panel().innerHTML='<div class="card muted">Loading…</div>';const list=await api('/api/v1/shipments').catch(()=>[]);panel().innerHTML=`<div class="card"><h2>Jobs your riders handled</h2>${shipmentTable(list,'Your riders have not taken a job yet.')}</div>`;}
+async function riders(){
+ if(!ready()){panel().innerHTML='<div class="card muted">Rider management opens once your company is approved.</div>';return;}
+ const [fleet,open]=await Promise.all([api('/api/v1/company/riders').catch(()=>[]),api('/api/v1/company/invitations').catch(()=>[])]);
+ panel().innerHTML=`<div class="card"><h2>Invite a rider</h2><p class="muted">Riders must already be approved by ELESEND. They accept in the Rider app, and their licence and documents stay checked by ELESEND.</p>
+ <form id="f" class="row"><input id="ph" type="tel" required placeholder="Rider phone number" aria-label="Rider phone number"><button>Send invitation</button></form><div class="error" id="m"></div></div>
+ <div class="card"><h2>Riders</h2>${fleet.length?`<div class="table"><table><tr><th>Phone</th><th>Vehicle</th><th>Status</th><th>Online</th><th>Completed</th><th></th></tr>${fleet.map(r=>`<tr><td>${esc(r.phone)}</td><td>${esc(r.vehicle)}</td><td>${esc(r.status)}</td><td>${r.online?'Yes':'No'}</td><td>${Number(r.completed_jobs||0)}</td><td><button class="danger" data-rm="${esc(r.id)}">Remove</button></td></tr>`).join('')}</table></div>`:'<p class="muted">No riders yet.</p>'}</div>
+ ${open.length?`<div class="card"><h2>Waiting for an answer</h2><div class="table"><table><tr><th>Phone ending</th><th>Expires</th><th></th></tr>${open.map(i=>`<tr><td>${esc(i.rider_phone_ending)}</td><td>${esc(when(i.expires_at))}</td><td><button class="plain" data-rev="${esc(i.id)}">Cancel</button></td></tr>`).join('')}</table></div></div>`:''}`;
+ document.getElementById('f').onsubmit=guard(async e=>{e.preventDefault();const r=await api('/api/v1/company/invitations','POST',{phone:val('ph')});await riders();show('m',r.message,true);},'m');
+ panel().querySelectorAll('[data-rm]').forEach(b=>b.onclick=guard(async()=>{if(!confirm('Remove this rider? They go back to ELESEND review before they can ride again.'))return;await api('/api/v1/company/riders/'+b.dataset.rm+'/remove','POST',{});profile=await api('/api/v1/company/profile');riders();}));
+ panel().querySelectorAll('[data-rev]').forEach(b=>b.onclick=guard(async()=>{await api('/api/v1/company/invitations/'+b.dataset.rev+'/revoke','POST',{});riders();}));
+}
+async function apiAccess(){
+ if(!ready()){panel().innerHTML='<div class="card muted">API access opens once your company is approved.</div>';return;}
+ const [keys,hook]=await Promise.all([api('/api/v1/business/api-keys').catch(()=>[]),api('/api/v1/business/webhook').catch(()=>null)]);
+ const base=location.origin;
+ panel().innerHTML=`<div class="card"><h2>API keys</h2><p class="muted">Keys last 90 days. Each key is shown once, so store it in your system's secret storage.</p>
+ <form id="k" class="row"><input id="kn" required minlength="2" maxlength="100" placeholder="Key name, for example Warehouse system" aria-label="Key name"><button>Create key</button></form><div class="error" id="km"></div><div id="kNew"></div>
+ ${keys.length?`<div class="table"><table><tr><th>Name</th><th>Expires</th><th>Status</th><th></th></tr>${keys.map(k=>`<tr><td>${esc(k.name)}</td><td>${esc(when(k.expires_at))}</td><td>${k.revoked_at?'Cancelled':'Active'}</td><td>${k.revoked_at?'':`<button class="danger" data-kr="${esc(k.id)}">Cancel</button>`}</td></tr>`).join('')}</table></div>`:''}</div>
+ <div class="card"><h2>Status updates to your system</h2><p class="muted">We send a signed POST to your https address whenever one of your deliveries changes status.</p>
+ <form id="h" class="row"><input id="hu" type="url" required placeholder="https://your-system.example/elesend" aria-label="Webhook address" value="${esc(hook?.url||'')}"><button>${hook?'Replace':'Save'}</button>${hook?'<button type="button" id="hx" class="danger">Remove</button>':''}</form><div class="error" id="hm"></div><div id="hNew"></div>
+ ${hook?.recent?.length?`<div class="table"><table><tr><th>Event</th><th>Time</th><th>Result</th></tr>${hook.recent.map(d=>`<tr><td>${esc(d.event)}</td><td>${esc(when(d.occurred_at))}</td><td>${d.delivered_at?'Delivered':d.abandoned_at?'Gave up':'Retrying ('+Number(d.attempts)+')'}</td></tr>`).join('')}</table></div>`:''}</div>
+ <div class="card"><h2>How to connect</h2>
+ <pre>curl -X POST ${esc(base)}/api/v1/quotes \\
+  -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \\
+  -d '{"pickup":{"address":"…","latitude":0,"longitude":0},"destination":{"address":"…","latitude":0,"longitude":0},"recipientPhone":"…","weightG":1000,"description":"…"}'
+
+POST ${esc(base)}/api/v1/shipments            {"quoteId":"…"}  plus an Idempotency-Key header
+POST ${esc(base)}/api/v1/shipments/ID/checkout {"idempotencyKey":"…"}
+GET  ${esc(base)}/api/v1/shipments/ID/tracking</pre>
+ <p class="muted">To check a status update, compute HMAC-SHA256 of <code>t.body</code> with your signing secret and compare it to <code>v1</code> in the <code>X-Elesend-Signature</code> header. Reject old timestamps, and ignore repeats of the same <code>id</code>.</p></div>`;
+ document.getElementById('k').onsubmit=guard(async e=>{e.preventDefault();const r=await api('/api/v1/business/api-keys','POST',{name:val('kn'),scopes:['quotes:write','shipments:write','shipments:read','payments:write']});await apiAccess();document.getElementById('kNew').innerHTML=`<p class="ok">Copy this key now. It will not be shown again.</p><code class="secret">${esc(r.key)}</code>`;},'km');
+ panel().querySelectorAll('[data-kr]').forEach(b=>b.onclick=guard(async()=>{if(!confirm('Cancel this key? Systems using it will stop working.'))return;await api('/api/v1/business/api-keys/'+b.dataset.kr+'/revoke','POST',{});apiAccess();}));
+ document.getElementById('h').onsubmit=guard(async e=>{e.preventDefault();const r=await api('/api/v1/business/webhook','PUT',{url:val('hu')});await apiAccess();document.getElementById('hNew').innerHTML=`<p class="ok">Copy this signing secret now. It will not be shown again.</p><code class="secret">${esc(r.secret)}</code>`;},'hm');
+ const hx=document.getElementById('hx');if(hx)hx.onclick=guard(async()=>{await api('/api/v1/business/webhook','DELETE');apiAccess();},'hm');
+}
+function render(){document.getElementById('out').classList.toggle('hidden',!token);if(!token)renderAuth();else if(profile)renderShell();}
+document.getElementById('out').onclick=async()=>{await api('/api/v1/auth/logout','POST',{}).catch(()=>{});save(null);profile=null;render();};
+async function start(){
+ try{
+  const ps=await api('/api/v1/me/phone').catch(()=>({verified:true}));
+  if(!ps.verified){document.getElementById('out').classList.remove('hidden');renderPhone(ps);return;}
+  profile=await api('/api/v1/company/profile');render();
+ }catch(e){save(null);profile=null;render();const m=document.getElementById('m');if(m)m.textContent=e.message;}
+}
+token?start():render();
+</script>
+</body>
+</html>
