@@ -699,6 +699,8 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   await this.get(actor,sid);
   return db.tx(async c=>{
    await locked(c,sid);
+   const refundClaim=['lost','damaged','missing_items','quality','payment'].includes(v.category)||v.items?.length||v.requestedRefundMinor;
+   if(refundClaim&&(await c.query("SELECT 1 FROM food_orders f JOIN shipments s ON s.id=f.shipment_id WHERE f.shipment_id=$1 AND s.state='COMPLETED'",[sid])).rowCount)check(false,409,'Delivered food orders are handled by the restaurant. Please chat with the restaurant from your order');
    const did=id();
    await c.query(
     'INSERT INTO disputes(id,shipment_id,reporter_id,category,detail,items_json,requested_refund_minor) VALUES($1,$2,$3,$4,$5,$6,$7)',

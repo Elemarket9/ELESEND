@@ -84,6 +84,10 @@ export default function RiderApp() {
   const [momoAmount, setMomoAmount] = useState('');
   const [withdrawModal, setWithdrawModal] = useState(false);
   const [confirmWithdraw, setConfirmWithdraw] = useState(false);
+  const availableNow = financeSnapshot?.availableNowMinor || 0;
+  const withdrawalMin = financeSnapshot?.withdrawalMinMinor || 0;
+  const withdrawalFee = financeSnapshot?.withdrawalFeeMinor || 0;
+  const canWithdraw = availableNow > 0 && availableNow >= withdrawalMin && availableNow > withdrawalFee;
   const [withdrawPassword, setWithdrawPassword] = useState('');
   const withdrawKey = useRef(null);
   const [payoutName, setPayoutName] = useState('');
@@ -1558,11 +1562,20 @@ export default function RiderApp() {
                 <Text style={styles.primaryBtnText}>Payout Account</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                disabled={busy || !(financeSnapshot?.availableNowMinor > 0)}
+                disabled={busy || !canWithdraw}
                 onPress={() => setConfirmWithdraw(true)}
-                style={[styles.primaryBtn, { marginTop: 8, opacity: financeSnapshot?.availableNowMinor > 0 ? 1 : 0.5 }]}>
-                <Text style={styles.primaryBtnText}>Withdraw {ghc(financeSnapshot?.availableNowMinor || 0)}</Text>
+                style={[styles.primaryBtn, { marginTop: 8, opacity: canWithdraw ? 1 : 0.5 }]}>
+                <Text style={styles.primaryBtnText}>
+                  {canWithdraw
+                    ? `Withdraw ${ghc(availableNow)}`
+                    : availableNow > 0
+                      ? `${ghc(withdrawalMin - availableNow)} more to withdraw`
+                      : 'Nothing to withdraw yet'}
+                </Text>
               </TouchableOpacity>
+              {canWithdraw && (
+                <Text style={[styles.momoSub, { marginTop: 6 }]}>You receive {ghc(availableNow - withdrawalFee)} after the {ghc(withdrawalFee)} transfer fee.</Text>
+              )}
               {financeSnapshot?.onHoldMinor > 0 && (
                 <Text style={[styles.momoSub, { marginTop: 6 }]}>{ghc(financeSnapshot.onHoldMinor)} on hold from recent deliveries.</Text>
               )}
@@ -1654,8 +1667,8 @@ export default function RiderApp() {
             <Modal visible={confirmWithdraw} animationType="fade" transparent>
               <View style={styles.modalOverlay}>
                 <View style={styles.momoCard}>
-                  <Text style={styles.momoTitle}>Withdraw {ghc(financeSnapshot?.availableNowMinor || 0)}</Text>
-                  <Text style={styles.momoSub}>A {ghc(financeSnapshot?.withdrawalFeeMinor || 0)} transfer fee is taken from this. Enter your password to send the rest to your Mobile Money ({auth.phone}).</Text>
+                  <Text style={styles.momoTitle}>Withdraw {ghc(availableNow)}</Text>
+                  <Text style={styles.momoSub}>You receive {ghc(availableNow - withdrawalFee)} on Mobile Money ({auth.phone}) after the {ghc(withdrawalFee)} transfer fee. Enter your password to confirm.</Text>
                   <TextInput
                     secureTextEntry
                     autoCapitalize="none"

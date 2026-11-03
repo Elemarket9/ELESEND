@@ -45,6 +45,11 @@ There is no limit on the amount a person can withdraw. Keep `WITHDRAWAL_FEE_MINO
 
 - **Ledger gap:** a fee Paystack keeps on a reversed transfer, and processing fees Paystack keeps on refunded orders, are not recorded. Reconcile against your Paystack statements.
 
+## Commission and refund rules
+- **Independent riders' cash commission:** becomes the rider's debt, due at the Monday cutoff plus 24 hours. It is repaid from earnings first, then by Mobile Money.
+- **Company riders' cash commission:** the company owes it, and it is recovered from the company's unpaid earnings. At `COMPANY_COMMISSION_DEBT_LIMIT_MINOR` (default GH₵500), its riders stop receiving cash jobs until digital earnings clear the debt.
+- **Delivered food orders:** ELESEND does not refund them or give up commission. The customer chats with the restaurant.
+
 ## What needs staff action
 - **A refund in `needs-attention`:** stays pending in ELESEND. Supply the customer's account details in the Paystack dashboard.
 - **Chargebacks and disputes:** not imported. Check the Paystack dashboard, and connect this before high volume.

@@ -16,7 +16,8 @@ import {
  normalizeMomoNetwork,
  normalizeGhanaPhone,
  recordSettlementNotification
-} from './weekly-settlement.mjs';
+,getGhanaWeekRange,getWeeklySettlementSettings} from './weekly-settlement.mjs';
+import {companyDebtMinor,companyDebtLimitMinor} from './company-commission.mjs';
 import {getWalletPolicy,recoverDebtFromEarnings,debtState,emitDebtTransition} from './rider-wallet.mjs';
 const UUID=z.string().uuid();
 const positive=z.number().int().min(1).max(1000000000);
@@ -86,6 +87,8 @@ export async function allocateFifo(c,riderId,journalId,value){
  check(remaining===0,409,'Allocation evidence insufficient for requested repayment');
 }
 export async function cashEligible(c,riderId,newCommission=0,{includeActive=true}={}){
+ const companyId=(await c.query('SELECT company_id FROM riders WHERE id=$1',[riderId])).rows[0]?.company_id;
+ if(companyId)check(await companyDebtMinor(c,companyId)+Number(newCommission)<=companyDebtLimitMinor(),409,'Rider commission eligibility: company commission limit reached');
  const account=await lockAccount(c,riderId);check(!account.blocked,403,'Commission account restricted');
  const weekly=await evaluateRiderWeeklyEligibility(c,riderId);
  check(weekly.eligible,409,`Rider commission eligibility: ${weekly.reason}`);
@@ -112,7 +115,10 @@ export async function postCashCommission(c,shipment){
  if(base.duplicate)return base;
  const obligationId=randomUUID();
  const weekKey=getGhanaWeekKey(new Date());
- await c.query("INSERT INTO commission_obligations(id,shipment_id,rider_id,original_minor,due_at,week_key) VALUES($1,$2,$3,$4,now()+($5::int*interval '1 day'),$6)",[obligationId,shipment.id,shipment.rider_id,shipment.commission_minor,account.settlement_due_days,weekKey]);
+ // One deadline everywhere: the weekly cutoff plus its grace period.
+ const settings=await getWeeklySettlementSettings(c);
+ const dueAt=getGhanaWeekRange(new Date(),{graceHours:settings.grace_hours,cutoffDayOfWeek:settings.cutoff_day_of_week,cutoffTimeUtc:settings.cutoff_time_utc}).cutoff;
+ await c.query("INSERT INTO commission_obligations(id,shipment_id,rider_id,original_minor,due_at,week_key) VALUES($1,$2,$3,$4,$5,$6)",[obligationId,shipment.id,shipment.rider_id,shipment.commission_minor,dueAt,weekKey]);
  const b=await balance(c,shipment.rider_id);
  const applied=Math.min(shipment.commission_minor,b.creditMinor);
  if(applied>0){

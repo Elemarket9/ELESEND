@@ -1,3 +1,4 @@
+import {recoverCompanyDebt} from './company-commission.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check,passwordMatches} from './security.mjs';
@@ -221,7 +222,7 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
     FROM shipments s JOIN checkout_accounting_journals j ON j.shipment_id=s.id JOIN checkout_accounting_lines l ON l.journal_id=j.id AND l.account=$3
     WHERE ${scope} AND s.state='COMPLETED' AND s.paid AND s.payment_method<>'CASH'
       AND coalesce(s.completed_at,s.created_at)<=now()-make_interval(hours=>$4)
-      AND NOT EXISTS(SELECT 1 FROM disputes d WHERE d.shipment_id=s.id AND d.status='open')
+      AND NOT EXISTS(SELECT 1 FROM disputes d WHERE d.shipment_id=s.id AND d.status='open' AND NOT EXISTS(SELECT 1 FROM food_orders f WHERE f.shipment_id=s.id))
       AND NOT EXISTS(SELECT 1 FROM payout_operations p WHERE p.shipment_id=s.id AND p.kind=$2 AND p.status NOT IN ('failed','superseded'))
       ${kind==='restaurant'?"AND NOT EXISTS(SELECT 1 FROM food_orders f JOIN restaurant_settlements rs ON rs.order_id=f.id WHERE f.shipment_id=s.id AND rs.status<>'accrued')":''}
     GROUP BY s.id HAVING sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)>0 ORDER BY min(coalesce(s.completed_at,s.created_at)) LIMIT 500`,[userId,kind,account,earningsHoldHours])).rows;
@@ -426,6 +427,7 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    for(const {user_id:userId} of owners){
     try{
      const result=await db.tx(c=>(async()=>{
+      for(const co of (await c.query("SELECT id FROM companies WHERE owner_id=$1 AND status='approved'",[userId])).rows)await recoverCompanyDebt(c,co.id);
       const food=await availableEarnings(c,'restaurant','s.id IN (SELECT f.shipment_id FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id WHERE r.owner_id=$1)',userId);
       const fleet=await availableEarnings(c,'rider',"s.company_id IN (SELECT id FROM companies WHERE owner_id=$1 AND status='approved')",userId);
       const earnings=[...food,...fleet];
@@ -635,6 +637,8 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
     const remainingOrderRefundable=Number(intent.amount_minor)-priorCancelRefund-priorDisputeRefund;
     check(remainingOrderRefundable>0,409,'Order has already been refunded in full');
     const fo=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[s.id])).rows[0];
+    // ELESEND does not refund delivered food orders or give up commission: the customer and restaurant settle it.
+    check(!fo,409,'Delivered food orders are not refunded by ELESEND. The customer should chat with the restaurant');
     const requestedItems=v.items?.length?v.items:(Array.isArray(d.items_json)&&d.items_json.length?d.items_json:[]);
     const resolvedItems=[];
     let foodRefundMinor=0;
@@ -642,79 +646,7 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
     let merchantDeductionMinor=0;
     const deliveryRefundMinor=Number(v.deliveryFeeRefundMinor||0);
     const entries=[];
-    if(fo){
-     const settlement=(await c.query('SELECT * FROM restaurant_settlements WHERE order_id=$1 FOR UPDATE',[fo.id])).rows[0];
-     check(!settlement||settlement.status!=='settled',409,'Restaurant settlement already paid out; manual adjustment required');
-     const inFlightRestPayout=lockedPayouts.some(p=>p.kind==='restaurant'&&['initiating','pending','needs_review','paid'].includes(p.status));
-     check(!inFlightRestPayout,409,'Restaurant payout already submitted or paid; cannot deduct from settled restaurant payable');
-     const orderItems=(await c.query('SELECT * FROM food_order_items WHERE order_id=$1 ORDER BY id ASC FOR UPDATE',[fo.id])).rows;
-     let itemsGrossMinor=0;
-     for(const reqItem of requestedItems){
-      const targetOrderItemId=reqItem.orderItemId||reqItem.foodOrderItemId;
-      const targetMenuItemId=reqItem.itemId||reqItem.menuItemId;
-      const oi=orderItems.find(x=>(targetOrderItemId&&x.id===targetOrderItemId)||(targetMenuItemId&&x.item_id===targetMenuItemId));
-      check(oi,400,'Disputed item does not belong to this food order');
-      const remainingQty=Number(oi.quantity)-Number(oi.refunded_quantity||0);
-      check(reqItem.quantity<=remainingQty,409,`Refund quantity for "${oi.name}" exceeds remaining unrefunded quantity (${remainingQty})`);
-      const lineMinor=Number(oi.unit_price_minor)*reqItem.quantity;
-      itemsGrossMinor+=lineMinor;
-      oi.refunded_quantity=Number(oi.refunded_quantity||0)+reqItem.quantity;
-      await c.query('UPDATE food_order_items SET refunded_quantity=refunded_quantity+$2 WHERE id=$1',[oi.id,reqItem.quantity]);
-      resolvedItems.push({
-       orderItemId:oi.id,
-       itemId:oi.item_id,
-       name:oi.name,
-       quantity:reqItem.quantity,
-       unitPriceMinor:Number(oi.unit_price_minor),
-       refundMinor:lineMinor
-      });
-     }
-     const restPayableAvail=await payableOrZero(c,s.id,'restaurant');
-     const foodCommAvail=Number((await c.query(`SELECT coalesce(sum(CASE WHEN side='credit' THEN amount_minor ELSE -amount_minor END),0)::bigint AS amount FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id WHERE j.shipment_id=$1 AND l.account='platform_food_commission_revenue'`,[s.id])).rows[0].amount);
-     const maxFoodRefundAvail=restPayableAvail+foodCommAvail;
-     if(v.refundAmountMinor!==undefined){
-      foodRefundMinor=v.refundAmountMinor-deliveryRefundMinor;
-     }else if(itemsGrossMinor>0){
-      const subtotal=Number(fo.subtotal_minor);
-      const netFoodCustomerPaid=Number(fo.customer_food_payable_minor??(subtotal-Number(fo.food_discount_minor||0)));
-      foodRefundMinor=subtotal>0?Math.min(maxFoodRefundAvail,Math.round((itemsGrossMinor*netFoodCustomerPaid)/subtotal)):itemsGrossMinor;
-     }else if(d.requested_refund_minor){
-      foodRefundMinor=Number(d.requested_refund_minor)-deliveryRefundMinor;
-     }
-     check(Number.isSafeInteger(foodRefundMinor)&&foodRefundMinor>=0,400,'Specify disputed items or a valid refundAmountMinor');
-     check(foodRefundMinor<=maxFoodRefundAvail,409,'Requested food refund exceeds remaining food settlement balance');
-     if(foodRefundMinor>0){
-      const bps=Number(fo.food_commission_bps||1000);
-      commRefundMinor=Math.min(foodCommAvail,Math.round((foodRefundMinor*bps)/10000));
-      merchantDeductionMinor=foodRefundMinor-commRefundMinor;
-      if(merchantDeductionMinor>restPayableAvail){
-       merchantDeductionMinor=restPayableAvail;
-       commRefundMinor=foodRefundMinor-merchantDeductionMinor;
-      }
-      check(merchantDeductionMinor<=restPayableAvail&&commRefundMinor<=foodCommAvail,409,'Insufficient food accounting balances for refund split');
-      if(merchantDeductionMinor>0)entries.push(['restaurant_payable','debit',merchantDeductionMinor]);
-      if(commRefundMinor>0)entries.push(['platform_food_commission_revenue','debit',commRefundMinor]);
-      if(settlement){
-       await c.query(`
-        UPDATE restaurant_settlements
-           SET refunded_gross_minor = refunded_gross_minor + $2,
-               commission_minor = commission_minor - $3,
-               net_payable_minor = net_payable_minor - $4
-         WHERE order_id = $1
-       `,[settlement.order_id,foodRefundMinor,commRefundMinor,merchantDeductionMinor]);
-      }
-      const proposedRestPayout=lockedPayouts.find(p=>p.kind==='restaurant'&&p.status==='proposed');
-      if(proposedRestPayout){
-       const nextRestPayable=restPayableAvail-merchantDeductionMinor;
-       if(nextRestPayable<=0){
-        await c.query("UPDATE payout_operations SET status='superseded',failure_reason='Superseded by full dispute refund of restaurant payable',updated_at=now() WHERE id=$1",[proposedRestPayout.id]);
-       }else{
-        await c.query('UPDATE payout_operations SET amount_minor=$2,updated_at=now() WHERE id=$1',[proposedRestPayout.id,nextRestPayable]);
-       }
-      }
-     }
-    }
-    const nonFoodRefundMinor=fo?deliveryRefundMinor:(v.refundAmountMinor??Number(d.requested_refund_minor||0));
+    const nonFoodRefundMinor=v.refundAmountMinor??Number(d.requested_refund_minor||0);
     if(nonFoodRefundMinor>0){
      const inFlightRiderPayout=lockedPayouts.some(p=>p.kind==='rider'&&['initiating','pending','needs_review','paid'].includes(p.status));
      check(!inFlightRiderPayout,409,'Rider payout already submitted or paid; cannot refund delivery fee from rider payable');

@@ -48,7 +48,7 @@ BEGIN
    WHERE conrelid='checkout_accounting_lines'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%provider_receivable%';
   EXECUTE format('ALTER TABLE checkout_accounting_lines DROP CONSTRAINT %I', constraint_name);
   EXECUTE 'ALTER TABLE checkout_accounting_lines ADD CONSTRAINT checkout_accounting_lines_account_check ' ||
-    replace(definition, '''provider_receivable''::text', '''provider_receivable''::text, ''customer_processing_fee_liability''::text');
+    replace(definition, '''provider_receivable''::text', '''provider_receivable''::text, ''customer_processing_fee_liability''::text, ''company_commission_receivable''::text');
 END $$;
 
 -- Sign-in or destination changes start a security hold on withdrawals.
@@ -71,7 +71,7 @@ BEGIN
    WHERE conrelid='checkout_accounting_journals'::regclass AND conname='checkout_accounting_journals_kind_check';
   ALTER TABLE checkout_accounting_journals DROP CONSTRAINT checkout_accounting_journals_kind_check;
   EXECUTE 'ALTER TABLE checkout_accounting_journals ADD CONSTRAINT checkout_accounting_journals_kind_check ' ||
-    replace(definition, '''payout_completed''::text', '''payout_completed''::text, ''payout_reversed''::text');
+    replace(definition, '''payout_completed''::text', '''payout_completed''::text, ''payout_reversed''::text, ''company_commission_assessed''::text, ''company_commission_recovered''::text');
 END $$;
 
 CREATE TABLE IF NOT EXISTS payout_withdrawals (
@@ -124,3 +124,7 @@ CREATE TRIGGER payout_withdrawal_guard BEFORE UPDATE OR DELETE ON payout_withdra
 -- Each delivery keeps its own ledger row, linked to the single transfer that pays it.
 ALTER TABLE payout_operations ADD COLUMN IF NOT EXISTS withdrawal_id uuid REFERENCES payout_withdrawals(id);
 CREATE INDEX IF NOT EXISTS payout_operations_withdrawal ON payout_operations(withdrawal_id) WHERE withdrawal_id IS NOT NULL;
+
+-- Cash commission is due at the weekly Monday cutoff, with 24 hours of grace.
+ALTER TABLE weekly_settlement_settings ALTER COLUMN grace_hours SET DEFAULT 24;
+UPDATE weekly_settlement_settings SET grace_hours=24 WHERE grace_hours=0;
