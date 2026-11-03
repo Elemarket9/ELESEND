@@ -169,20 +169,16 @@ test('logins are capped across all sources for one account',async()=>{
  await assert.rejects(attempt('source-final'),e=>e.status===429);
 });
 
-test('a password reset revokes API keys for business accounts',async()=>{
- for(const [kind,expected] of [['business',2],['customer',0]]){
-  const userId='00000000-0000-4000-8000-000000000006',challengeId='00000000-0000-4000-8000-000000000007',phone='+233241234567';
-  const digest=mac(OTP_KEY,['account-recovery-v1',challengeId,userId,phone,'123456']);
-  const db=permissive(sql=>{
-   if(sql.includes('rate_limits'))return {rowCount:1,rows:[{count:1}]};
-   if(sql.includes('FROM users WHERE phone'))return {rowCount:1,rows:[{id:userId,phone,kind}]};
-   if(sql.includes('FROM account_recovery_challenges'))return {rowCount:1,rows:[{id:challengeId,digest,sent:true,live:true,consumed_at:null,attempts:0,phone}]};
-   if(sql.includes('api_clients'))return {rowCount:2,rows:[]};
-   return null;
-  });
-  const app=platform(db,{otpKey:OTP_KEY});
-  const result=await app.resetPassword({phone,challengeId,code:'123456',newPassword:'a-new-strong-password'});
-  assert.equal(result.revokedApiKeys,expected,kind);
-  assert.equal(db.calls.some(c=>c.sql.includes('api_clients')),kind==='business');
- }
+test('a password reset leaves API keys working',async()=>{
+ const userId='00000000-0000-4000-8000-000000000006',challengeId='00000000-0000-4000-8000-000000000007',phone='+233241234567';
+ const digest=mac(OTP_KEY,['account-recovery-v1',challengeId,userId,phone,'123456']);
+ const db=permissive(sql=>{
+  if(sql.includes('rate_limits'))return {rowCount:1,rows:[{count:1}]};
+  if(sql.includes('FROM users WHERE phone'))return {rowCount:1,rows:[{id:userId,phone,kind:'business'}]};
+  if(sql.includes('FROM account_recovery_challenges'))return {rowCount:1,rows:[{id:challengeId,digest,sent:true,live:true,consumed_at:null,attempts:0,phone}]};
+  return null;
+ });
+ const result=await platform(db,{otpKey:OTP_KEY}).resetPassword({phone,challengeId,code:'123456',newPassword:'a-new-strong-password'});
+ assert.equal(result.ok,true);
+ assert.equal(db.calls.some(c=>c.sql.includes('api_clients')),false);
 });

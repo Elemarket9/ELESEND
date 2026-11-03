@@ -156,12 +156,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await c.query('UPDATE account_recovery_challenges SET consumed_at=now() WHERE id=$1',[ch.id]);
    await c.query('UPDATE users SET password_hash=$2,phone_verified_at=COALESCE(phone_verified_at,now()) WHERE id=$1',[u.id,pw]);
    const revoked=await c.query('DELETE FROM sessions WHERE user_id=$1',[u.id]);
-   // A reset may be responding to account compromise, so keys created by an attacker must stop working too.
-   const revokedKeys=u.kind==='business'?await c.query('UPDATE api_clients SET revoked_at=now() WHERE owner_id=$1 AND revoked_at IS NULL',[u.id]):{rowCount:0};
    await c.query('UPDATE user_push_tokens SET active=false,session_token_hash=NULL,updated_at=now() WHERE user_id=$1 AND active=true',[u.id]);
    disconnectRealtimeUser(u.id,'password_reset');
    await audit(c,u.id,'auth.password_reset_completed',u.id);
-   return {ok:true,revokedSessions:revoked.rowCount,revokedApiKeys:revokedKeys.rowCount};
+   return {ok:true,revokedSessions:revoked.rowCount};
   });
   check(!result.invalid,400,'Incorrect or expired recovery code');
   return result;
