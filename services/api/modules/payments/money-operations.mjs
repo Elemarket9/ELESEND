@@ -157,7 +157,6 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    if(target==='paid'&&['failed','reversed'].includes(row.status)){
     const held=await c.query('INSERT INTO payout_holds(user_id,withdrawal_id,reason) VALUES($1,$2,$3) ON CONFLICT(user_id) DO NOTHING RETURNING user_id',[row.beneficiary_id,row.id,'Provider paid a withdrawal already released to the balance']);
     if(held.rowCount){
-     await c.query("INSERT INTO operational_risk_signals(signal_code,severity,evidence) VALUES('PAID_AFTER_RELEASE','high',$1)",[JSON.stringify({withdrawalId:row.id,userId:row.beneficiary_id,amountMinor:Number(row.amount_minor)})]);
      await c.query("INSERT INTO audit_logs(action,entity_id) VALUES('payout_withdrawal.paid_after_release',$1)",[row.id]);
     }
     return {id:row.id,status:'paid_after_release',duplicate:!held.rowCount};
@@ -206,7 +205,6 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   // Never released automatically: "not found" could be wrong, and a second payment could follow. Staff are told.
   if(age>GIVE_UP_AFTER_SECONDS&&!w.stuck_flagged_at){
    await db.query("UPDATE payout_withdrawals SET stuck_flagged_at=now() WHERE id=$1",[w.id]);
-   await db.query("INSERT INTO operational_risk_signals(shipment_id,signal_code,severity,evidence) VALUES(NULL,'WITHDRAWAL_STUCK','high',$1)",[JSON.stringify({withdrawalId:w.id,userId:w.beneficiary_id})]);
   }
   if(idle<RESUBMIT_AFTER_SECONDS)return {id:w.id,status:w.status};
   return submitWithdrawal(w);
@@ -480,7 +478,7 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    await db.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[actor.id,'payout_withdrawal.manual_release:'+reason,id]);
    return failLocally(w,'Released by finance: '+reason);
   },
-  async withdrawals(actor){await permit(actor,READ);return (await db.query('SELECT id,beneficiary_id,amount_minor,fee_minor,currency,status,provider_id,failure_reason,stuck_flagged_at,created_at,updated_at FROM payout_withdrawals ORDER BY created_at DESC LIMIT 100')).rows;},
+  async withdrawals(actor){await permit(actor,READ);return (await db.query('SELECT id,beneficiary_id,amount_minor,fee_minor,currency,status,provider_id,failure_reason,stuck_flagged_at,created_at,updated_at,(SELECT reason FROM payout_holds h WHERE h.withdrawal_id=payout_withdrawals.id) AS hold_reason FROM payout_withdrawals ORDER BY created_at DESC LIMIT 100')).rows;},
   /** Handles a verified provider reversal. Returns null for payouts that are not withdrawals. */
   async reverseWithdrawal(record){
    uuid.parse(record.requestId);

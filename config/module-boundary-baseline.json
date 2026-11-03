@@ -83,7 +83,6 @@
   "modules/payments/food-payment.mjs: shipments",
   "modules/payments/money-operations.mjs: companies",
   "modules/payments/money-operations.mjs: food_orders",
-  "modules/payments/money-operations.mjs: operational_risk_signals",
   "modules/payments/money-operations.mjs: permissions",
   "modules/payments/money-operations.mjs: restaurants",
   "modules/payments/money-operations.mjs: riders",

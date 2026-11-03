@@ -1147,11 +1147,12 @@ export function renderAdminPortalHtml() {
     async function loadStuckWithdrawals() {
       const box = document.getElementById('stuckList');
       try {
-        const rows = (await api('/api/v1/admin/payments/withdrawals')).filter(w => w.stuck_flagged_at && ['initiating', 'pending', 'needs_review'].includes(w.status));
+        const rows = (await api('/api/v1/admin/payments/withdrawals')).filter(w => w.hold_reason || (w.stuck_flagged_at && ['initiating', 'pending', 'needs_review'].includes(w.status)));
         box.textContent = rows.length ? '' : 'No stuck withdrawals.';
         rows.forEach(w => {
           const line = document.createElement('p');
-          line.textContent = String(w.id).slice(0, 8) + ' • GH₵' + (Number(w.amount_minor) / 100).toFixed(2) + ' • ' + (w.failure_reason || w.status) + ' ';
+          line.textContent = String(w.id).slice(0, 8) + ' • GH₵' + (Number(w.amount_minor) / 100).toFixed(2) + ' • ' + (w.hold_reason ? 'ON HOLD: ' + w.hold_reason : (w.failure_reason || w.status)) + ' ';
+          if (w.hold_reason) { box.appendChild(line); return; }
           const b = document.createElement('button');
           b.className = 'action-btn btn-danger';
           b.textContent = 'Release to Balance';

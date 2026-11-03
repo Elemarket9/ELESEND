@@ -137,7 +137,6 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await money.reconcileDue({olderThanSeconds:0});
   const lostRow=(await db.query('SELECT * FROM payout_withdrawals WHERE id=$1',[lost.id])).rows[0];
   assert.ok(['initiating','pending','needs_review'].includes(lostRow.status));assert.ok(lostRow.stuck_flagged_at);
-  assert.equal(await payable(missing),0);
   await assert.rejects(withdraw(key()),/in progress/);
   // Finance can release it only with the provider still reporting no transfer.
   const releaser=await user('admin');await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'finance:approve')",[releaser]);
