@@ -84,7 +84,9 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const money=moneyOperations(db,limits);
   const rider=await newRider();const actor={id:rider,kind:'rider'};
   const key=()=>randomUUID();
-  const nextDay=()=>db.query("UPDATE payout_withdrawals SET created_at=created_at-interval '1 day'");
+  // Moves today's withdrawals to a date no earlier call has used, as one person can hold one per day.
+  let daysBack=0;
+  const nextDay=()=>db.query("UPDATE payout_withdrawals SET created_at=created_at-make_interval(days=>$1) WHERE (created_at AT TIME ZONE 'UTC')::date=(now() AT TIME ZONE 'UTC')::date",[++daysBack]);
   const withdraw=(idempotencyKey,who=actor,service=money,password='Correct-pass-1')=>service.requestWithdrawal(who,{idempotencyKey,password});
   await assert.rejects(withdraw(key(),actor,money,'wrong-password'),/Incorrect password/);
   await assert.rejects(withdraw(key()),/payout details/);
