@@ -998,7 +998,7 @@ export function restaurantOrderService(db, options = {}) {
           const accOffer=(await c.query("SELECT id,accepted_at,pickup_eta_seconds FROM dispatch_offers WHERE shipment_id=$1 AND rider_id=$2 AND status='accepted' ORDER BY accepted_at DESC LIMIT 1",[s.id,s.rider_id])).rows[0];
           const pickedUp=s.state!=='RIDER_ASSIGNED'||f.state==='IN_TRANSIT'||
             Boolean((await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount);
-          const {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,nowMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f.ready_at,offer:accOffer,deliveryDeadlineMs:dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():new Date(f.ready_at||f.accepted_at||f.created_at).getTime()+45*60*1000});
+          const {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,latestGpsMs,nowMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f.ready_at,offer:accOffer,deliveryDeadlineMs:dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():new Date(f.ready_at||f.accepted_at||f.created_at).getTime()+45*60*1000});
           if(!reasons.length)return null;
           const oldRiderId=s.rider_id;
           for(const sig of signals){

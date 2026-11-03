@@ -587,7 +587,7 @@ export function dispatchEngine(db,{routing}={}){
       Boolean((await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount)||
       await cashAlreadyReported(c,s.id)||
       f?.state==='IN_TRANSIT';
-     const {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,nowMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f?.ready_at,offer:accOffer,deliveryDeadlineMs:dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():NaN});
+     const {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,latestGpsMs,nowMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f?.ready_at,offer:accOffer,deliveryDeadlineMs:dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():NaN});
      if(!reasons.length)return null;
      const oldRiderId=s.rider_id;
      for(const sig of signals){

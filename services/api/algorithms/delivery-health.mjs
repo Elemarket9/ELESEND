@@ -12,5 +12,5 @@ export function assessDeliveryHealth({pickedUp,rider,location,staleSec,pickupGra
  if(isStaleGps){reasons.push('stale_gps');signals.push({code:'STALE_GPS',severity:pickedUp?'high':'medium'});}
  if(isOverduePickup){reasons.push('overdue_pickup');signals.push({code:'OVERDUE_PICKUP',severity:'medium'});}
  if(isOverdueDelivery){reasons.push('overdue_delivery');signals.push({code:'OVERDUE_DELIVERY',severity:'high'});}
- return {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,nowMs};
+ return {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,latestGpsMs,nowMs};
 }
