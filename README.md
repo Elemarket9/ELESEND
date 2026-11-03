@@ -2,11 +2,11 @@
 
 ELESEND supports cash parcel deliveries and prepaid restaurant orders in Ghana. Food orders require verified upfront payment of the food and delivery total through an enabled digital method. Kitchens cannot accept unpaid orders, and courier dispatch requires kitchen acceptance. It consists of a **Node.js backend** (`services/api`), **PostGIS database** (`database/migrations`), **self-hosted mapping and routing** (`services/maps`), and **React Native / Expo app** (`apps/mobile`).
 
-Apply migrations through `033_provider_neutral_operations.sql` before starting this version. Existing cash food orders are not converted into paid orders; operations must review them. Paid food cancellations enter `/api/v1/admin/payments/exceptions` for refund processing; a queued refund is not a completed provider refund.
+Apply all migrations (currently through `048_operational_reliability_and_recovery.sql`, which startup enforces) with `npm run db:migrate` before starting this version. Existing cash food orders are not converted into paid orders; operations must review them. Paid food cancellations enter `/api/v1/admin/payments/exceptions` for refund processing; a queued refund is not a completed provider refund.
 
 Payments use explicit `PAYMENT_PROVIDER` configuration, defaulting to `none`. Native adapters are optional; provider names and API rules are confined to the adapter/configuration boundary. To use another contracted PSP without changing order code, select `gateway` and configure `PAYMENT_GATEWAY_NAME`, `PAYMENT_GATEWAY_ENDPOINT`, `PAYMENT_GATEWAY_ALLOWED_HOST`, `PAYMENT_GATEWAY_TOKEN` (32+ characters), approved hosted `PAYMENT_GATEWAY_CHECKOUT_HOSTS`, `PAYMENT_GATEWAY_METHODS`, and `PAYMENT_PAYER_FIELDS` (empty or `email`). The gateway is an integration bridge you must supply, not an API promised by an arbitrary PSP. Secrets remain server-side. Drain or reconcile outstanding transactions before switching the active adapter.
 
-Production API and worker startup reject a selected payment adapter unless it implements checkout, payment verification, refunds, beneficiary verification, and payouts with verification. The current native Paystack and Hubtel adapters are incomplete for this requirement; use a fully implemented gateway bridge or complete those adapters before enabling production payments. This startup check verifies method availability, not live provider behavior. Both processes also require migration 039 before starting.
+Production API and worker startup reject a selected payment adapter unless it implements checkout, payment verification, refunds, beneficiary verification, and payouts with verification. The current native Paystack and Hubtel adapters are incomplete for this requirement; use a fully implemented gateway bridge or complete those adapters before enabling production payments. This startup check verifies method availability, not live provider behavior.
 
 The bridge uses authenticated JSON POST requests to `/checkout`, `/verify`, `/commission-checkout`, `/webhooks/verify`, `/refunds`, `/refunds/verify`, `/beneficiaries/verify`, `/payouts`, and `/payouts/verify`. Creation requests carry stable `Idempotency-Key` values. Checkout returns `{reference,checkoutUrl}` on an approved HTTPS domain. Verification must independently query the PSP and return `verified:true`, original reference, exact integer `amountMinor`, currency, normalized status, and unique `eventId`. Commission receipts supply `commissionIntentId`; refund and payout receipts supply `type` and `requestId`; payout receipts also identify `recipientReference`. Refund completion is `status:refunded`, payout completion is `status:paid`. Beneficiary verification must independently prove ownership and return matching `beneficiaryId` and `recipientReference`. Never implement verification by echoing client claims. An uncertain charge is never retried automatically; the bridge may return verified `status:not_created,definitiveNoCharge:true` only after establishing that no charge exists. Gateway submission failures are definitive only when its authenticated response explicitly provides `verified:true,definitiveNoCharge:true`.
 
@@ -64,7 +64,7 @@ Deployment requires explicit `API_PUBLIC_ORIGIN` and `WEB_PUBLIC_ORIGIN`. Config
 - **Integer Pesewas Accounting**: All monetary values are strictly computed and stored as integer pesewas (`1 GH₵ = 100 pesewas`), eliminating floating-point errors.
 - **Rider Cash Custody & Double-Entry Journal**: Cash collections on delivery are recorded with verified OTP handovers. Cash collected creates an auditable receivable owed to ELESEND without claiming uncollected digital revenue.
 - **Weekly Rider Settlement**: Unpaid cash commissions close every Sunday at midnight (UTC). Couriers exceeding cutoff terms are automatically restricted from accepting new jobs until debts are settled via Mobile Money or audited two-person admin waiver.
-- **Multiple Payment Channels**: Native checkout supports `CASH`, Mobile Money (`MOMO` via Hubtel), card payments (`CARD` via Paystack), and dynamic `QR` hosted checkout.
+- **Multiple Payment Channels**: Checkout is designed for `CASH`, Mobile Money (`MOMO`), card (`CARD`), and hosted `QR` payments. Digital methods need a complete payment adapter in production; see the payment notes above.
 
 ### 2. Intelligent Dispatch & Restaurant Marketplace
 - **Vehicle-Aware Dispatch**: Supports distinct profiles (motorcycle, car, van) with route ETA calculations, road-corridor validation, and capacity limits.
@@ -180,7 +180,7 @@ Deployment requires explicit `API_PUBLIC_ORIGIN` and `WEB_PUBLIC_ORIGIN`. Config
 
 ### 3. Docker Deployment
 
-To launch the full stack (API, PostGIS database, and tile server) using Docker:
+To launch the API, PostGIS database, and Redis using Docker (the private map stack is defined separately in `compose.private-maps.yaml`):
 
 ```bash
 docker compose up -d
@@ -206,7 +206,7 @@ docker compose exec api node scripts/migrate.mjs
 | `AUDIT_LOG_SECRET` | 32+ character separate secret for tamper-evident logs | *Required in prod* |
 | `API_PUBLIC_ORIGIN`| Public HTTPS origin for the API server | `https://api.elesend.com` |
 | `ADMIN_HOST` | Isolated hostname restricted to admin access | `admin.elesend.com` |
-| `PAYMENT_PROVIDER` | Active PSP adapter (`hubtel`, `paystack`, `none`, `auto`) | `auto` |
+| `PAYMENT_PROVIDER` | Active PSP adapter (`gateway`, `hubtel`, `paystack`, `none`) | `none` |
 | `SMS_PROVIDER` | Active SMS provider (`hubtel`, `https_gateway`, `none`) | `auto` |
 | `ROUTING_OSRM_URL` | OSRM routing server base URL | `http://127.0.0.1:5000` |
 
