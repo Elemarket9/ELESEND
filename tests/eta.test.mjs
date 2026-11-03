@@ -210,7 +210,11 @@ test('timeline records and measured accuracy work against PostgreSQL',{skip:!pro
   const request={vehicle:'motorcycle',pickup:{address:'A',latitude:5.5,longitude:-0.2},destination:{address:'B',latitude:5.6,longitude:-0.2},recipientPhone:'+233241234567',weightG:100,description:'Test'};
   await db.query("INSERT INTO quotes(id,customer_id,policy_id,request,amount_minor,commission_minor,expires_at,payment_method) VALUES($1,$2,$3,$4,1000,130,now()+interval '1 hour','CASH')",[quote,customer,policy,JSON.stringify(request)]);
   await db.query("INSERT INTO shipments(id,customer_id,quote_id,idempotency_key,state,recipient_phone,amount_minor,commission_minor,payment_method,cash_payer) VALUES($1,$2,$3,$4,'AWAITING_ASSIGNMENT','+233241234567',1000,130,'CASH','recipient')",[shipment,customer,quote,randomUUID()]);
+  const stop=kind=>({shipmentId:shipment,kind,weightG:100,latitude:5.5,longitude:-0.2});
+  await db.query('INSERT INTO rider_dispatch_plans(rider_id,revision,stops) VALUES($1,1,$2)',[rider,JSON.stringify([stop('pickup'),stop('dropoff')])]);
   await db.query("UPDATE shipments SET rider_id=$2,state='RIDER_ASSIGNED' WHERE id=$1",[shipment,rider]);
+  const consumedChallenge=purpose=>db.query("INSERT INTO challenges(id,shipment_id,rider_id,purpose,phone,digest,expires_at,sent,consumed_at) VALUES($1,$2,$3,$4,'+233241234567','x',now()+interval '5 minutes',true,now())",[randomUUID(),shipment,rider,purpose]);
+  await consumedChallenge('pickup');
   await db.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[shipment]);
   await db.query('INSERT INTO locations(shipment_id,rider_id,latitude,longitude,updated_at) VALUES($1,$2,5.55,-0.2,now())',[shipment,rider]);
   await db.query('UPDATE riders SET position_accuracy_m=10 WHERE id=$1',[rider]);
@@ -221,6 +225,9 @@ test('timeline records and measured accuracy work against PostgreSQL',{skip:!pro
   const diagnostics=await service.diagnostics({id:admin,kind:'admin'},shipment);
   assert.equal(diagnostics.diagnostics.routeRecalculated,false);
   assert.equal(diagnostics.predictions.length,1);
+  await db.query("UPDATE shipments SET state='IN_TRANSIT' WHERE id=$1",[shipment]);
+  await db.query("UPDATE shipments SET state='AWAITING_DELIVERY_OTP' WHERE id=$1",[shipment]);
+  await consumedChallenge('delivery');
   await db.query("UPDATE shipments SET state='COMPLETED',completed_at=now() WHERE id=$1",[shipment]);
   const milestones=(await db.query('SELECT milestone FROM delivery_milestones WHERE shipment_id=$1',[shipment])).rows.map(r=>r.milestone).sort();
   assert.deepEqual(milestones,['order_created','otp_completed','picked_up','rider_assigned']);
