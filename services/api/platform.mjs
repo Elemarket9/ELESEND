@@ -156,10 +156,12 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await c.query('UPDATE account_recovery_challenges SET consumed_at=now() WHERE id=$1',[ch.id]);
    await c.query('UPDATE users SET password_hash=$2,phone_verified_at=COALESCE(phone_verified_at,now()) WHERE id=$1',[u.id,pw]);
    const revoked=await c.query('DELETE FROM sessions WHERE user_id=$1',[u.id]);
+   // A reset may be responding to account compromise, so keys created by an attacker must stop working too.
+   const revokedKeys=u.kind==='business'?await c.query('UPDATE api_clients SET revoked_at=now() WHERE owner_id=$1 AND revoked_at IS NULL',[u.id]):{rowCount:0};
    await c.query('UPDATE user_push_tokens SET active=false,session_token_hash=NULL,updated_at=now() WHERE user_id=$1 AND active=true',[u.id]);
    disconnectRealtimeUser(u.id,'password_reset');
    await audit(c,u.id,'auth.password_reset_completed',u.id);
-   return {ok:true,revokedSessions:revoked.rowCount};
+   return {ok:true,revokedSessions:revoked.rowCount,revokedApiKeys:revokedKeys.rowCount};
   });
   check(!result.invalid,400,'Incorrect or expired recovery code');
   return result;
@@ -266,7 +268,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await audit(c,uid,'registered',uid);
   });return {id:uid,kind:v.kind,phone:p,phoneVerified:false};
  },
- async login(input){const v=z.object({phone:z.string().max(30),password:z.string().max(128),totpCode:z.string().regex(/^\d{6}$/).optional()}).strict().parse(input);const p=phone(v.phone);await limit(db,'login:'+hash(p),10,900);
+ async login(input,{clientIp='unknown'}={}){const v=z.object({phone:z.string().max(30),password:z.string().max(128),totpCode:z.string().regex(/^\d{6}$/).optional()}).strict().parse(input);const p=phone(v.phone);
+  // Attempts are limited per source so one attacker cannot lock the real owner out of an account.
+  // The higher account-wide cap still bounds guessing spread across many addresses.
+  await limit(db,'login-source:'+hash(p+'|'+clientIp),10,900);await limit(db,'login:'+hash(p),100,900);
   const u=(await db.query('SELECT * FROM users WHERE phone=$1',[p])).rows[0];
   // Spend equivalent password derivation work for unknown identities.
   const ok=await passwordMatches(v.password,u?.password_hash??('0'.repeat(32)+':'+ '0'.repeat(128)));check(u&&ok,401,'Invalid credentials');

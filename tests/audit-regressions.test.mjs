@@ -7,6 +7,8 @@ import {equal} from '../services/api/security.mjs';
 import {paymentWebhook} from '../services/api/payment-provider.mjs';
 import {adminWalletReconciliation} from '../services/api/rider-wallet.mjs';
 import {promotionEngine} from '../services/api/promotion-engine.mjs';
+import {platform} from '../services/api/platform.mjs';
+import {mac} from '../services/api/security.mjs';
 
 const SESSION='a'.repeat(64);
 const permissive=(overrides=()=>null)=>{
@@ -69,7 +71,7 @@ test('API keys cannot open the chat WebSocket',async()=>{
  const db=permissive(sql=>sql.includes('api_clients')?{rowCount:1,rows:[{id:'00000000-0000-4000-8000-000000000002',kind:'business',scopes:['quotes:write'],api_client_id:'k'}]}:null);
  await withServer(db,async port=>{
   const reply=await new Promise((resolve,reject)=>{
-   const socket=net.connect(port,'127.0.0.1',()=>socket.write(`GET /api/v1/chat/ws?token=es_live_${'b'.repeat(64)} HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+   const socket=net.connect(port,'127.0.0.1',()=>socket.write(`GET /api/v1/chat/ws HTTP/1.1\r\nAuthorization: Bearer es_live_${'b'.repeat(64)}\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`));
    let data='';socket.on('data',d=>{data+=d;});socket.on('close',()=>resolve(data));socket.on('error',reject);
   });
   assert.match(reply,/^HTTP\/1\.1 403/);
@@ -127,4 +129,60 @@ test('the promotion payloads the portals send pass API validation',async()=>{
 test('root compose healthcheck escapes its shell variables',()=>{
  const compose=readFileSync(new URL('../compose.yaml',import.meta.url),'utf8');
  assert.match(compose,/pg_isready -U "\$\$POSTGRES_USER" -d "\$\$POSTGRES_DB"/);
+});
+
+const upgradeStatus=(port,target)=>new Promise((resolve,reject)=>{
+ const socket=net.connect(port,'127.0.0.1',()=>socket.write(`GET ${target} HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+ let data='';socket.on('data',d=>{data+=d;});socket.on('close',()=>resolve(Number(data.split(' ')[1])));socket.on('error',reject);
+});
+
+test('chat refuses session tokens in the URL',async()=>{
+ await withServer(permissive(),async port=>{
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/v1/chat/stream?token=${SESSION}`)).status,401);
+  assert.equal(await upgradeStatus(port,`/api/v1/chat/ws?token=${SESSION}`),401);
+ });
+});
+
+const OTP_KEY='c'.repeat(64);
+function countingDb(){
+ const counts=new Map();
+ return permissive((sql,params)=>{
+  if(!sql.includes('rate_limits'))return null;
+  const count=(counts.get(params[0])??0)+1;counts.set(params[0],count);
+  return {rowCount:1,rows:[{count}]};
+ });
+}
+
+test('failed logins from one source do not lock out the account elsewhere',async()=>{
+ const app=platform(countingDb(),{otpKey:OTP_KEY});
+ const attempt=clientIp=>app.login({phone:'0241234567',password:'wrong-password-1'},{clientIp});
+ for(let i=0;i<10;i++)await assert.rejects(attempt('198.51.100.1'),e=>e.status===401);
+ await assert.rejects(attempt('198.51.100.1'),e=>e.status===429);
+ await assert.rejects(attempt('203.0.113.7'),e=>e.status===401);
+});
+
+test('logins are capped across all sources for one account',async()=>{
+ const db=countingDb();
+ const app=platform(db,{otpKey:OTP_KEY});
+ const attempt=clientIp=>app.login({phone:'0241234567',password:'wrong-password-1'},{clientIp});
+ for(let i=0;i<100;i++){await assert.rejects(attempt('source-'+i),e=>e.status===401);}
+ await assert.rejects(attempt('source-final'),e=>e.status===429);
+});
+
+test('a password reset revokes API keys for business accounts',async()=>{
+ for(const [kind,expected] of [['business',2],['customer',0]]){
+  const userId='00000000-0000-4000-8000-000000000006',challengeId='00000000-0000-4000-8000-000000000007',phone='+233241234567';
+  const digest=mac(OTP_KEY,['account-recovery-v1',challengeId,userId,phone,'123456']);
+  const db=permissive(sql=>{
+   if(sql.includes('rate_limits'))return {rowCount:1,rows:[{count:1}]};
+   if(sql.includes('FROM users WHERE phone'))return {rowCount:1,rows:[{id:userId,phone,kind}]};
+   if(sql.includes('FROM account_recovery_challenges'))return {rowCount:1,rows:[{id:challengeId,digest,sent:true,live:true,consumed_at:null,attempts:0,phone}]};
+   if(sql.includes('api_clients'))return {rowCount:2,rows:[]};
+   return null;
+  });
+  const app=platform(db,{otpKey:OTP_KEY});
+  const result=await app.resetPassword({phone,challengeId,code:'123456',newPassword:'a-new-strong-password'});
+  assert.equal(result.revokedApiKeys,expected,kind);
+  assert.equal(db.calls.some(c=>c.sql.includes('api_clients')),kind==='business');
+ }
 });
