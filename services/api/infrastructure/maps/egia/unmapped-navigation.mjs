@@ -23,7 +23,7 @@ export function calculateBearing(lat1, lon1, lat2, lon2) {
   const Δλ = ((lon2 - lon1) * Math.PI) / 180;
 
   const y = Math.sin(Δλ) * Math.cos(φ2);
-  const x = Math.cos(φ1) * Math.sin(φ2) - Math.cos(φ1) * Math.cos(Δλ);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
   const θ = Math.atan2(y, x);
 
   return ((θ * 180) / Math.PI + 360) % 360;
@@ -71,12 +71,15 @@ export async function buildUnmappedCommunityRoute({
   }
 
   // 2. Extract road network endpoint and geometry
-  let roadEndpoint = destPoint;
+  // Without a road route the rider's own position is the only honest starting point.
+  let roadEndpoint = riderPosition;
   let roadDistanceMeters = 0;
   let roadDurationSeconds = 0;
   let baseCoordinates = [];
 
-  if (roadRoute && roadRoute.distanceMeters !== undefined) {
+  const hasRoadRoute = Boolean(roadRoute && roadRoute.distanceMeters !== undefined);
+  if (hasRoadRoute) {
+    roadEndpoint = destPoint;
     roadDistanceMeters = roadRoute.distanceMeters;
     roadDurationSeconds = roadRoute.durationSeconds;
     
@@ -158,7 +161,7 @@ export async function buildUnmappedCommunityRoute({
 
         // Snapping / continuity validation: Must connect within 50m of current endpoint
         const snapDist = Math.min(distFromFirst, distFromLast);
-        if (snapDist > 50 && candidateSegmentsUsed.length === 0) {
+        if (snapDist > 50) {
           // Disconnected floating line cannot be traversed from road network
           continue;
         }
@@ -231,7 +234,9 @@ export async function buildUnmappedCommunityRoute({
     turnInstructions.push({
       step: turnInstructions.length + 1,
       type: 'final_unmapped_approach',
-      text: `Depart road terminus heading approximately ${finalGapMeters}m ${cardinal} via compound entrance/pathway. Tap 'Call Customer' if gate is not visible.`,
+      text: hasRoadRoute || candidateSegmentsUsed.length > 0
+        ? `Depart road terminus heading approximately ${finalGapMeters}m ${cardinal} via compound entrance/pathway. Tap 'Call Customer' if gate is not visible.`
+        : `No road route is available. The destination is approximately ${finalGapMeters}m ${cardinal} in a straight line. Tap 'Call Customer' for directions.`,
       distanceMeters: finalGapMeters,
       durationSeconds: walkingDurationSec,
       bearingDegrees: Math.round(bearing),
@@ -276,7 +281,9 @@ export async function buildUnmappedCommunityRoute({
       bearingDegrees: Math.round(bearing),
       cardinalDirection: cardinal,
       guidanceText: isUnmappedApproach
-        ? candidateSegmentsUsed.length > 0
+        ? !hasRoadRoute && candidateSegmentsUsed.length === 0
+          ? `No road route is available. The destination is approximately ${finalGapMeters}m ${cardinal} in a straight line. Tap 'Call Customer' for directions.`
+          : candidateSegmentsUsed.length > 0
           ? `Proceed along verified road '${candidateSegmentsUsed[0].name}'. Final approach: ${finalGapMeters}m ${cardinal} to destination pin.`
           : `Navigate to mapped road terminus. Then proceed approximately ${finalGapMeters}m ${cardinal} via pathway/compound entrance. Tap 'Call Customer' if entrance is unclear.`
         : 'Destination is directly accessible from road.'

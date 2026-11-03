@@ -27,11 +27,10 @@ fi
 
 # 2. Motorcycle Graph
 if [ ! -e "$task_data/ghana-motorcycle.osrm" ]; then
-  docker run --rm --network none --mount "type=bind,source=$task_data,target=/data" "$task_image" osrm-extract -p /opt/bicycle.lua /data/ghana-latest.osm.pbf
-  # rename output files to ghana-motorcycle
-  for f in "$task_data"/ghana-latest.osrm*; do
-    mv "$f" "${f/ghana-latest/ghana-motorcycle}"
-  done
+  # OSRM names its output after the input, so extract from a copy to keep the car graph intact.
+  cp "$task_data/ghana-latest.osm.pbf" "$task_data/ghana-motorcycle.osm.pbf"
+  docker run --rm --network none --mount "type=bind,source=$task_data,target=/data" "$task_image" osrm-extract -p /opt/bicycle.lua /data/ghana-motorcycle.osm.pbf
+  rm -f "$task_data/ghana-motorcycle.osm.pbf"
   docker run --rm --network none --mount "type=bind,source=$task_data,target=/data" "$task_image" osrm-partition /data/ghana-motorcycle.osrm
   docker run --rm --network none --mount "type=bind,source=$task_data,target=/data" "$task_image" osrm-customize /data/ghana-motorcycle.osrm
   echo 'Motorcycle graph prepared.'
