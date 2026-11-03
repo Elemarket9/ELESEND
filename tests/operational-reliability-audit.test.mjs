@@ -7,8 +7,8 @@ import { migrate } from '../scripts/migrate.mjs';
 import { platform as platformService } from '../services/api/platform.mjs';
 import { dispatchEngine } from '../services/api/dispatch.mjs';
 import { restaurantOrderService } from '../services/api/restaurant-orders.mjs';
-import { checkoutService } from '../services/api/checkout.mjs';
-import { moneyOperations } from '../services/api/money-operations.mjs';
+import { checkoutService } from '../services/api/modules/payments/checkout.mjs';
+import { moneyOperations } from '../services/api/modules/payments/money-operations.mjs';
 import {
   chatEngine,
   registerRealtimeConnection,

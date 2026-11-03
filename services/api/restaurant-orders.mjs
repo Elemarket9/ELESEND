@@ -1,6 +1,7 @@
+import {restaurantFinanceSummary,firstConfirmedPaymentAt} from './modules/payments/index.mjs';
 import {randomUUID,createHash} from 'node:crypto';
-import {lockFoodOrder,requireFoodPayment,restaurantOpenNow} from './food-payment.mjs';
-import {requestCheckoutRefund} from './checkout-accounting.mjs';
+import {lockFoodOrder,requireFoodPayment,restaurantOpenNow} from './modules/payments/index.mjs';
+import {requestCheckoutRefund} from './modules/payments/index.mjs';
 import {z} from 'zod';
 import {marketService} from './markets.mjs';
 import {check} from './security.mjs';
@@ -922,64 +923,12 @@ export function restaurantOrderService(db, options = {}) {
     check(r, 404, 'Restaurant not found');
     check(actor && (actor.kind === 'admin' || r.owner_id === actor.id), 403, 'Permission denied');
 
-    const settlements = (await db.query(
-      `SELECT s.*, o.created_at AS order_date, o.payment_method
-       FROM restaurant_settlements s
-       JOIN food_orders o ON o.id = s.order_id
-       WHERE s.restaurant_id = $1
-       ORDER BY s.created_at DESC LIMIT 100`,
-      [restaurantId]
-    )).rows;
-
-    const totals = (await db.query(
-      `SELECT
-        COALESCE(SUM(gross_sales_minor), 0)::bigint AS gross_sales_minor,
-        COALESCE(SUM(restaurant_discount_minor), 0)::bigint AS restaurant_discount_minor,
-        COALESCE(SUM(elesend_subsidy_minor), 0)::bigint AS elesend_subsidy_minor,
-        COALESCE(SUM(commission_minor), 0)::bigint AS commission_minor,
-        COALESCE(SUM(net_payable_minor), 0)::bigint AS net_payable_minor,
-        COUNT(*)::int AS count
-       FROM restaurant_settlements
-       WHERE restaurant_id = $1`,
-      [restaurantId]
-    )).rows[0];
-
-    // What is owed comes from the ledger. `totals` above is lifetime history and includes paid orders.
-    const holdHours = (() => { const n = Number(process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS); return process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS && Number.isSafeInteger(n) && n >= 0 ? n : 24; })();
-    const owed = (await db.query(
-      `SELECT coalesce(sum(payable) FILTER (WHERE in_progress), 0)::bigint AS in_progress,
-              coalesce(sum(payable) FILTER (WHERE NOT in_progress AND on_hold), 0)::bigint AS on_hold,
-              coalesce(sum(payable) FILTER (WHERE NOT in_progress AND NOT on_hold), 0)::bigint AS available
-       FROM (
-         SELECT sum(CASE WHEN l.side = 'credit' THEN l.amount_minor ELSE -l.amount_minor END) AS payable,
-                EXISTS(SELECT 1 FROM payout_operations p WHERE p.shipment_id = s.id AND p.kind = 'restaurant' AND p.status IN ('proposed', 'initiating', 'pending', 'needs_review')) AS in_progress,
-                (coalesce(s.completed_at, s.created_at) > now() - make_interval(hours => $2)
-                  OR EXISTS(SELECT 1 FROM restaurant_settlements rs WHERE rs.order_id = f.id AND rs.status = 'withheld')) AS on_hold
-         FROM food_orders f
-         JOIN shipments s ON s.id = f.shipment_id
-         JOIN checkout_accounting_journals j ON j.shipment_id = s.id
-         JOIN checkout_accounting_lines l ON l.journal_id = j.id AND l.account = 'restaurant_payable'
-         WHERE f.restaurant_id = $1
-         GROUP BY s.id, f.id
-       ) unpaid WHERE payable > 0`,
-      [restaurantId, holdHours]
-    )).rows[0];
-    const paid = (await db.query(
-      `SELECT coalesce(sum(p.amount_minor), 0)::bigint AS total
-       FROM payout_operations p JOIN food_orders f ON f.shipment_id = p.shipment_id
-       WHERE f.restaurant_id = $1 AND p.kind = 'restaurant' AND p.status = 'paid'`,
-      [restaurantId]
-    )).rows[0];
+    const {settlements,totals,balance}=await restaurantFinanceSummary(db,restaurantId);
 
     return {
       restaurantId,
       restaurantName: r.name,
-      balance: {
-        availableMinor: Number(owed.available),
-        onHoldMinor: Number(owed.on_hold),
-        inProgressMinor: Number(owed.in_progress),
-        paidMinor: Number(paid.total)
-      },
+      balance,
       foodCommissionBps: r.food_commission_bps,
       totals: {
         grossSalesMinor: Number(totals.gross_sales_minor),
@@ -1132,7 +1081,7 @@ export function restaurantOrderService(db, options = {}) {
         const f=await lockFoodOrder(c,id);
         const s=(await c.query('SELECT * FROM shipments WHERE id=$1',[f.shipment_id])).rows[0];
         if(!s||!['AWAITING_PAYMENT','AWAITING_ASSIGNMENT'].includes(s.state)||s.rider_id)return {id,status:'changed'};
-        const receipt=(await c.query("SELECT confirmed_at FROM shipment_checkout_intents WHERE shipment_id=$1 AND status='confirmed' ORDER BY confirmed_at LIMIT 1",[s.id])).rows[0];
+        const receipt=await firstConfirmedPaymentAt(c,s.id);
         const now=Date.now();
         const dispatchOriginMs=Math.min(...[f.dispatch_started_at,f.ready_at,s.next_dispatch_at].filter(Boolean).map(v=>new Date(v).getTime()));
         const reason=f.state==='SUBMITTED'&&f.payment_status==='PENDING'&&new Date(f.created_at).getTime()<now-unpaidTimeoutSeconds*1000?'payment_deadline':

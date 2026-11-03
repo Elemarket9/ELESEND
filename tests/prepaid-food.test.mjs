@@ -4,17 +4,17 @@ import {randomUUID,randomInt} from 'node:crypto';
 import {database} from '../services/api/db.mjs';
 import {migrate} from '../scripts/migrate.mjs';
 import {restaurantOrderService} from '../services/api/restaurant-orders.mjs';
-import {checkoutService} from '../services/api/checkout.mjs';
-import {digitalDeliveryCompleted} from '../services/api/checkout-accounting.mjs';
-import {foodDispatchAllowed} from '../services/api/food-payment.mjs';
+import {checkoutService} from '../services/api/modules/payments/checkout.mjs';
+import {digitalDeliveryCompleted} from '../services/api/modules/payments/checkout-accounting.mjs';
+import {foodDispatchAllowed} from '../services/api/modules/payments/food-payment.mjs';
 import {notificationWorker} from '../services/api/notifications.mjs';
-import {moneyOperations} from '../services/api/money-operations.mjs';
+import {moneyOperations} from '../services/api/modules/payments/money-operations.mjs';
 import {restaurantService} from '../services/api/restaurant.mjs';
-import {financeService,balance,journal,postCashCommission} from '../services/api/finance.mjs';
+import {financeService,balance,journal,postCashCommission} from '../services/api/modules/payments/finance.mjs';
 import {backgroundJobs} from '../services/api/background-jobs.mjs';
 import {dispatchEngine} from '../services/api/dispatch.mjs';
 import {platform as platformService} from '../services/api/platform.mjs';
-import {paymentWebhook} from '../services/api/payment-provider.mjs';
+import {paymentWebhook} from '../services/api/modules/payments/payment-provider.mjs';
 import {commissionEngine} from '../services/api/commission-engine.mjs';
 import {
  getGhanaWeekKey,
@@ -24,7 +24,7 @@ import {
  getRiderWeeklySummary,
  getAdminSettlementOverview,
  updateWeeklySettlementSettings
-} from '../services/api/weekly-settlement.mjs';
+} from '../services/api/modules/payments/weekly-settlement.mjs';
 
 const url=process.env.TEST_DATABASE_URL;
 test('prepaid food database controls',{skip:!url},async t=>{

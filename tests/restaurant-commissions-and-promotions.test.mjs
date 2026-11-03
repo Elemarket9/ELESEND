@@ -6,8 +6,8 @@ import { migrate } from '../scripts/migrate.mjs';
 import { commissionEngine, computeRestaurantCommissionBreakdown } from '../services/api/commission-engine.mjs';
 import { promotionEngine } from '../services/api/promotion-engine.mjs';
 import { restaurantOrderService } from '../services/api/restaurant-orders.mjs';
-import { checkoutService } from '../services/api/checkout.mjs';
-import { digitalDeliveryCompleted } from '../services/api/checkout-accounting.mjs';
+import { checkoutService } from '../services/api/modules/payments/checkout.mjs';
+import { digitalDeliveryCompleted } from '../services/api/modules/payments/checkout-accounting.mjs';
 import { restaurantService } from '../services/api/restaurant.mjs';
 
 const url = process.env.TEST_DATABASE_URL;

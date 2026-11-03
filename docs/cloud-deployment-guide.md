@@ -136,3 +136,6 @@ Each part has its own address, so it can move without code changes:
 - **Admin and web:** set `ADMIN_HOST`, `WEB_HOST` and `WEB_PUBLIC_ORIGIN`.
 
 When building the apps, set `EXPO_PUBLIC_ELESEND_API_BASE_URL` to your API address in your build environment. It is not stored in this repository. The apps ask the API for the map address when they open.
+
+## Module boundaries
+`config/modules.json` lists each module's files and tables. `tests/module-boundaries.test.mjs` fails on any new import or SQL that crosses a module, and `config/module-boundary-baseline.json` lists the existing crossings still to remove. After removing one, run `node scripts/module-boundaries.mjs --write`. Payments lives in `services/api/modules/payments`, and other code may import only its `index.mjs`.

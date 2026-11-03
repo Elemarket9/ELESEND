@@ -3,17 +3,17 @@ import assert from 'node:assert/strict';
 import {randomUUID,randomInt} from 'node:crypto';
 import {database} from '../services/api/db.mjs';
 import {migrate} from '../scripts/migrate.mjs';
-import {financeService,balance} from '../services/api/finance.mjs';
-import {moneyOperations} from '../services/api/money-operations.mjs';
+import {financeService,balance} from '../services/api/modules/payments/finance.mjs';
+import {moneyOperations} from '../services/api/modules/payments/money-operations.mjs';
 import {platform as platformService} from '../services/api/platform.mjs';
-import {paymentWebhook} from '../services/api/payment-provider.mjs';
+import {paymentWebhook} from '../services/api/modules/payments/payment-provider.mjs';
 import {calculateQuote} from '../services/api/pricing.mjs';
 import {calculateCommissionBreakdown} from '../services/api/commission-engine.mjs';
-import {digitalDeliveryCompleted} from '../services/api/checkout-accounting.mjs';
+import {digitalDeliveryCompleted} from '../services/api/modules/payments/checkout-accounting.mjs';
 import {
  settleCompletedDelivery,walletSummary,walletDebt,walletTransactions,assignmentEligibility,requireDebtEligible,
  updateWalletPolicy,walletPolicyView,walletReconciliation,runScheduledRecovery,adminWalletOverview,adminWalletReconciliation,debtState
-} from '../services/api/rider-wallet.mjs';
+} from '../services/api/modules/payments/rider-wallet.mjs';
 
 const url=process.env.TEST_DATABASE_URL;
 const phone=()=>'+2332'+String(randomInt(10000000,99999999));

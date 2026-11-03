@@ -1,7 +1,7 @@
 import {recoverCompanyDebt} from './company-commission.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {check,passwordMatches} from './security.mjs';
+import {check,passwordMatches} from '../../security.mjs';
 import {checkoutJournal} from './checkout-accounting.mjs';
 import {recoverDebtFromEarnings,debtState,lockRiderAccount} from './rider-wallet.mjs';
 const uuid=z.string().uuid();

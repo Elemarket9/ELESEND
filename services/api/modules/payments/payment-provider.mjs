@@ -1,4 +1,4 @@
-import {check} from './security.mjs';
+import {check} from '../../security.mjs';
 import {hubtelCheckout} from './providers/hubtel-payment.mjs';
 import {paystackCheckout} from './paystack-checkout-adapter.mjs';
 import {paymentGateway} from './providers/payment-gateway.mjs';

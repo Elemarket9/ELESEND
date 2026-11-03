@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {createPaymentProvider,paymentWebhook,validatePayer} from '../services/api/payment-provider.mjs';
+import {createPaymentProvider,paymentWebhook,validatePayer} from '../services/api/modules/payments/payment-provider.mjs';
 import {validateConfig} from '../services/api/config.mjs';
-import {restaurantOpenNow} from '../services/api/food-payment.mjs';
-import {paymentGateway} from '../services/api/providers/payment-gateway.mjs';
-import {paystackCheckout} from '../services/api/paystack-checkout-adapter.mjs';
+import {restaurantOpenNow} from '../services/api/modules/payments/food-payment.mjs';
+import {paymentGateway} from '../services/api/modules/payments/providers/payment-gateway.mjs';
+import {paystackCheckout} from '../services/api/modules/payments/paystack-checkout-adapter.mjs';
 test('provider is explicitly selected; installing another adapter does not change checkout',()=>{
  const p=createPaymentProvider({provider:'different',options:{merchant:'example'}},{adapters:{different:options=>({name:'different',...options})}});
  assert.equal(p.name,'different');assert.equal(p.merchant,'example');

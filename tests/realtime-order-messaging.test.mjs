@@ -5,7 +5,7 @@ import { database } from '../services/api/db.mjs';
 import { migrate } from '../scripts/migrate.mjs';
 import { chatEngine } from '../services/api/chat-engine.mjs';
 import { restaurantOrderService } from '../services/api/restaurant-orders.mjs';
-import { checkoutService } from '../services/api/checkout.mjs';
+import { checkoutService } from '../services/api/modules/payments/checkout.mjs';
 
 const url = process.env.TEST_DATABASE_URL;
 

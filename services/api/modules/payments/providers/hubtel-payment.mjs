@@ -1,4 +1,4 @@
-import {check} from '../security.mjs';
+import {check} from '../../../security.mjs';
 import {validatedCheckoutUrl} from '../checkout-policy.mjs';
 
 /**

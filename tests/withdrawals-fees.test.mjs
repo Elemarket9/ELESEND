@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID,randomInt} from 'node:crypto';
-import {processingFeeMinor} from '../services/api/checkout-policy.mjs';
-import {paystackCheckout} from '../services/api/paystack-checkout-adapter.mjs';
+import {processingFeeMinor} from '../services/api/modules/payments/checkout-policy.mjs';
+import {paystackCheckout} from '../services/api/modules/payments/paystack-checkout-adapter.mjs';
 import {validateConfig} from '../services/api/config.mjs';
 
 test('the customer fee leaves the full price after Paystack takes its percentage',()=>{
@@ -37,9 +37,9 @@ test('Paystack final statuses release money, and an unknown transfer is reported
 test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.TEST_DATABASE_URL},async()=>{
  const {database}=await import('../services/api/db.mjs');
  const {migrate}=await import('../scripts/migrate.mjs');
- const {moneyOperations}=await import('../services/api/money-operations.mjs');
- const {checkoutService}=await import('../services/api/checkout.mjs');
- const {checkoutJournal,digitalDeliveryCompleted,requestCheckoutRefund}=await import('../services/api/checkout-accounting.mjs');
+ const {moneyOperations}=await import('../services/api/modules/payments/money-operations.mjs');
+ const {checkoutService}=await import('../services/api/modules/payments/checkout.mjs');
+ const {checkoutJournal,digitalDeliveryCompleted,requestCheckoutRefund}=await import('../services/api/modules/payments/checkout-accounting.mjs');
  const configured=new URL(process.env.TEST_DATABASE_URL);
  assert.match(configured.pathname,/^\/elesend_test/);
  const db=database(configured.toString());
@@ -198,9 +198,9 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const fleet=await completedEarning(fleetRider,customer,2500);
   await db.query('UPDATE shipments SET company_id=$2 WHERE id=$1',[fleet,companyId]);
   // Cash commission on a company job is the company's debt, never the rider's, and earnings repay it.
-  const {settleCompletedDelivery,debtState}=await import('../services/api/rider-wallet.mjs');
-  const {companyDebtMinor}=await import('../services/api/company-commission.mjs');
-  const {cashEligible}=await import('../services/api/finance.mjs');
+  const {settleCompletedDelivery,debtState}=await import('../services/api/modules/payments/rider-wallet.mjs');
+  const {companyDebtMinor}=await import('../services/api/modules/payments/company-commission.mjs');
+  const {cashEligible}=await import('../services/api/modules/payments/finance.mjs');
   await db.query('UPDATE riders SET company_id=$2 WHERE id=$1',[fleetRider,companyId]);
   const cashJob=await completedEarning(fleetRider,customer,1);
   await db.query('UPDATE shipments SET company_id=$2 WHERE id=$1',[cashJob,companyId]);
@@ -457,7 +457,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   process.env.REFERRAL_TARGET_DELIVERIES='1';process.env.REFERRAL_REWARD_MINOR='900';
   await tools.settleRiderRewards(db);await tools.settleRiderRewards(db);
   delete process.env.REFERRAL_TARGET_DELIVERIES;delete process.env.REFERRAL_REWARD_MINOR;
-  const {balance}=await import('../services/api/finance.mjs');
+  const {balance}=await import('../services/api/modules/payments/finance.mjs');
   assert.equal((await balance(db,inviter)).creditMinor,900);
   assert.equal((await balance(db,invited)).creditMinor,700);
   assert.ok((await tools.riderCampaigns(db,{id:invited,kind:'rider'})).campaigns.some(k=>k.title==='Weekend push'&&k.completed>=1));

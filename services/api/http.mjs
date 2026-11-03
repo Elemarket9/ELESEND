@@ -1,3 +1,4 @@
+import {settlementIntentForRider} from './modules/payments/index.mjs';
 import {publicMapConfig} from './map-config.mjs';
 import {saveTrustedContact,getTrustedContact,raiseEmergency,listSafetyAlerts,resolveSafetyAlert,createShareLink,rateDelivery,myRating,pendingRatings} from './safety.mjs';
 import {riderEarningsGoals,setEarningsGoals,demandAreas,referralSummary,applyReferralCode,riderCampaigns,createRewardCampaign} from './rider-tools.mjs';
@@ -37,8 +38,8 @@ import {
   evaluateRiderWeeklyEligibility,
   getWeeklySettlementSettings,
   updateWeeklySettlementSettings
-} from './weekly-settlement.mjs';
-import {walletSummary,walletDebt,walletTransactions,adminWalletOverview,adminWalletReconciliation,walletPolicyView,updateWalletPolicy} from './rider-wallet.mjs';
+} from './modules/payments/index.mjs';
+import {walletSummary,walletDebt,walletTransactions,adminWalletOverview,adminWalletReconciliation,walletPolicyView,updateWalletPolicy} from './modules/payments/index.mjs';
 import {getSystemHealthReport} from './infrastructure/monitoring/system-health.mjs';
 export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null,readinessToken=null,etaBaselineFactors={}}={}){
   const net=network(db),vehicles=vehicleService(db),markets=marketService(db);
@@ -503,7 +504,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    if(finance&&typeof finance.paymentStatus==='function'){
     result=await finance.paymentStatus(actor,intentId);
    }else{
-    const row=(await db.query('SELECT id, provider, provider_reference, amount_minor, status, receipt_number, momo_network, momo_phone, confirmed_at, created_at FROM settlement_intents WHERE id=$1 AND rider_id=$2',[intentId,actor.id])).rows[0];
+    const row=await settlementIntentForRider(db,intentId,actor.id);
     check(row,404,'Settlement intent not found');
     result={...row,intentId:row.id,reference:row.provider_reference,amountMinor:Number(row.amount_minor)};
    }
