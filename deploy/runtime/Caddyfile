@@ -16,6 +16,19 @@
   }
 }
 
+# Web return pages and the restaurant portal.
+{$WEB_HOST} {
+  encode gzip
+  @blocked path /api/v1/debug* /admin* /.env*
+  respond @blocked 404
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options nosniff
+    -Server
+  }
+  reverse_proxy api:3090
+}
+
 {$ADMIN_HOST} {
   encode gzip
   header {
@@ -28,8 +41,8 @@
   reverse_proxy api:3090
 }
 
-# Public map tiles. Tiles are already compressed. Set MAPS_HOST once you have a domain.
-{$MAPS_HOST:maps.localhost} {
+# Public map tiles. Tiles are already compressed.
+{$MAPS_HOST} {
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains"
     -Server

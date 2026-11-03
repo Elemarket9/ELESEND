@@ -1,3 +1,4 @@
+import {publicMapConfig} from './map-config.mjs';
 import {saveTrustedContact,getTrustedContact,raiseEmergency,listSafetyAlerts,resolveSafetyAlert,createShareLink,rateDelivery,myRating,pendingRatings} from './safety.mjs';
 import {riderEarningsGoals,setEarningsGoals,demandAreas,referralSummary,applyReferralCode,riderCampaigns,createRewardCampaign} from './rider-tools.mjs';
 import {createDocumentUploadLink,uploadRiderDocument,riderDocumentStatus,rejectRiderDocument,viewRiderDocument,attachDocumentStatuses,renderDocumentUploadPage} from './rider-documents.mjs';
@@ -129,6 +130,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   }
   if(method==='POST'&&['/api/v1/payments/webhook','/api/v1/payments/checkout-webhook','/api/v1/payments/commission-webhook'].includes(path)&&paymentsWebhook){send(200,await paymentsWebhook(rawBody,req.headers));return;}
   if(method==='POST'&&path==='/api/v1/rider-documents/upload'){await limit(db,'document-upload-ip:'+ipKey,30,3600);send(200,await uploadRiderDocument(db,body));return;}
+  // Public, because the map must load before sign-in.
+  if(method==='GET'&&path==='/api/v1/maps/config'){send(200,{renderer:'private',routing:'osrm',ghanaPostGpsLookup:Boolean(ghanaPostGps),...publicMapConfig()});return;}
   if(method==='POST'&&path==='/api/v1/identity/webhook'){send(200,await identityWebhook(db,rawBody,req.headers));return;}
   if(method==='POST'&&path==='/api/v1/payments/checkout-webhook'){
    check(checkout,503,'Checkout unavailable');send(200,await checkout.webhook(rawBody,req.headers));return;
@@ -185,7 +188,6 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&/^\/api\/v1\/shipments\/[0-9a-f-]+\/checkout$/.test(path)){check(checkout,503);result=await checkout.initiate(actor,path.split('/')[4],body);}
   else if(method==='GET'&&/^\/api\/v1\/shipments\/[0-9a-f-]+\/checkout$/.test(path)){check(checkout,503);result=await checkout.status(actor,path.split('/')[4]);}
   else if(method==='GET'&&path==='/api/v1/me'){const {sessionTokenHash:_omitted,...profile}=actor;result=profile;}
-  else if(method==='GET'&&path==='/api/v1/maps/config')result={renderer:'private',routing:'osrm',ghanaPostGpsLookup:Boolean(ghanaPostGps)};
   else if(method==='POST'&&path==='/api/v1/maps/ghana-address'){
    check(ghanaPostGps,503,'GhanaPostGPS address lookup is disabled');
    check(['customer','business'].includes(actor.kind)&&!actor.api_client_id,403,'Customer or business account required');

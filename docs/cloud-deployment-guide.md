@@ -125,3 +125,14 @@ Before opening public access:
 - [ ] Privacy policy and data retention rules have been reviewed for Ghana's Data Protection Act.
 - [ ] Alerts are set up for API restarts, `fatal` logs, failed jobs and full disks.
 - [ ] Mobile app bundle is exported with matching `EXPO_PUBLIC_ELESEND_API_BASE_URL` pointing to your validated HTTPS API origin.
+
+## One domain, one server, separate later
+Set `ELESEND_DOMAIN` and point these DNS records at the server: `api`, `app`, `admin` and `maps`.
+
+Each part has its own address, so it can move without code changes:
+- **Map tiles:** host them elsewhere, point the `maps` record there, or set `MAPS_PUBLIC_ORIGIN`.
+- **Road routing:** set `ROUTING_OSRM_CAR_URL` and `ROUTING_OSRM_MOTORCYCLE_URL`.
+- **Database and Redis:** set `DOCKER_DATABASE_URL` and the Redis URL.
+- **Admin and web:** set `ADMIN_HOST`, `WEB_HOST` and `WEB_PUBLIC_ORIGIN`.
+
+The apps only have the API address built in. They ask the API for the map address when they open.

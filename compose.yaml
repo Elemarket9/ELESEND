@@ -78,9 +78,10 @@ services:
       READINESS_PROBE_TOKEN: ${READINESS_PROBE_TOKEN:-}
       HOST: 0.0.0.0
       PORT: '3090'
-      API_PUBLIC_ORIGIN: ${API_PUBLIC_ORIGIN:?Set public API HTTPS origin}
-      WEB_PUBLIC_ORIGIN: ${WEB_PUBLIC_ORIGIN:?Set public web HTTPS origin}
-      ADMIN_HOST: ${ADMIN_HOST:?Set admin hostname}
+      API_PUBLIC_ORIGIN: ${API_PUBLIC_ORIGIN:-https://api.${ELESEND_DOMAIN:?Set your domain, for example example.com}}
+      MAPS_PUBLIC_ORIGIN: ${MAPS_PUBLIC_ORIGIN:-https://maps.${ELESEND_DOMAIN:?Set your domain, for example example.com}}
+      WEB_PUBLIC_ORIGIN: ${WEB_PUBLIC_ORIGIN:-https://app.${ELESEND_DOMAIN:?Set your domain, for example example.com}}
+      ADMIN_HOST: ${ADMIN_HOST:-admin.${ELESEND_DOMAIN:?Set your domain, for example example.com}}
       ENABLE_PREPAID_CREDITS: ${ENABLE_PREPAID_CREDITS:-false}
       ROUTING_OSRM_URL: ${ROUTING_OSRM_URL:-}
       ROUTING_OSRM_MOTORCYCLE_URL: ${ROUTING_OSRM_MOTORCYCLE_URL:-}

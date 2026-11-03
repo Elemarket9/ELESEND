@@ -96,3 +96,9 @@ test('production still requires ELESEND own secrets',()=>{
  const r=validateConfig({NODE_ENV:'production',DATABASE_URL:'postgres://test:test@localhost/test',OTP_KEY:'a'.repeat(64),API_PUBLIC_ORIGIN:'https://api.example.test',WEB_PUBLIC_ORIGIN:'https://app.example.test'});
  assert.ok(r.errors.some(e=>e.includes('ADMIN_MFA_ENCRYPTION_KEY must be exactly')));
 });
+
+test('the API tells apps where the map lives, with no address in the code',async()=>{
+ const {publicMapConfig}=await import('../services/api/map-config.mjs');
+ assert.deepEqual(publicMapConfig({MAPS_PUBLIC_ORIGIN:'https://maps.example.test/'}),{tileUrl:'https://maps.example.test/tiles/{z}/{x}/{y}.pbf',glyphsUrl:'https://maps.example.test/fonts/{fontstack}/{range}.pbf'});
+ assert.deepEqual(publicMapConfig({}),{tileUrl:null,glyphsUrl:null});
+});

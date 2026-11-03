@@ -2,7 +2,7 @@ import React, { forwardRef, useId, useImperativeHandle, useMemo, useRef } from '
 import { View, Text, Platform, Linking, StyleSheet } from 'react-native';
 import { MapView as NativeMap, Camera, MarkerView, PointAnnotation, ShapeSource, LineLayer, CircleLayer, SymbolLayer } from '@maplibre/maplibre-react-native';
 import { privateTileUrl, privateMapStyle, OSM_ATTRIBUTION } from './private-map-style.mjs';
-import { VECTOR_TILE_URL, GLYPHS_URL, isDevelopmentEnvironment } from '../config.js';
+import { API_BASE_URL, VECTOR_TILE_URL, GLYPHS_URL, isDevelopmentEnvironment } from '../config.js';
 
 let tileUrl = null;
 try {
@@ -12,6 +12,26 @@ try {
 }
 const glyphsUrl = GLYPHS_URL || (tileUrl ? tileUrl.replace(/\/tiles\/.+$/, '/fonts/{fontstack}/{range}.pbf') : null);
 const mapStyle = privateMapStyle(tileUrl, { glyphsUrl });
+
+// The API says where the map lives, so moving it needs no app release. A build-time address still wins.
+let remoteSource = null;
+let remoteRequest = null;
+function loadRemoteMapSource() {
+  if (remoteSource) return Promise.resolve(remoteSource);
+  if (!remoteRequest) {
+    remoteRequest = fetch(`${API_BASE_URL}/api/v1/maps/config`)
+      .then(response => response.json())
+      .then(config => {
+        if (!config?.tileUrl) return null;
+        const url = privateTileUrl(config.tileUrl, { development: isDevelopmentEnvironment() });
+        remoteSource = { tileUrl: url, style: privateMapStyle(url, { glyphsUrl: config.glyphsUrl }) };
+        return remoteSource;
+      })
+      .catch(() => null)
+      .finally(() => { remoteRequest = null; });
+  }
+  return remoteRequest;
+}
 
 // Defensive coordinate helper: guarantees [lon, lat] array and prevents crashes on undefined/null
 export const coordinate = p => {
@@ -55,6 +75,13 @@ export const MARKER_PRIORITY = Object.freeze({
 export default forwardRef(function MapView({ initialRegion, children, onPress, onMapReady, onPanDrag, style, accessibilityLabel }, ref) {
   const camera = useRef(null);
   const [styleError, setStyleError] = React.useState(false);
+  const [mapSource, setMapSource] = React.useState(remoteSource);
+  React.useEffect(() => {
+    if (tileUrl || !API_BASE_URL) return undefined;
+    let active = true;
+    loadRemoteMapSource().then(source => { if (active && source) setMapSource(source); });
+    return () => { active = false; };
+  }, []);
   const styleRetries = useRef(0);
 
   const initial = useMemo(() => {
@@ -117,7 +144,7 @@ export default forwardRef(function MapView({ initialRegion, children, onPress, o
     }
   }), []);
 
-  const activeMapStyle = styleError ? OFFLINE_MAP_STYLE : mapStyle;
+  const activeMapStyle = styleError ? OFFLINE_MAP_STYLE : (mapSource?.style || mapStyle);
 
   // Bounded, user-initiated retry of the private style (no automatic retry loop).
   const retryPrivateStyle = () => {
@@ -155,7 +182,7 @@ export default forwardRef(function MapView({ initialRegion, children, onPress, o
         {children}
       </NativeMap>
       <Text style={styles.attribution}>{OSM_ATTRIBUTION}</Text>
-      {(!tileUrl || styleError) && (
+      {((!tileUrl && !mapSource) || styleError) && (
         <View pointerEvents={styleError ? 'auto' : 'none'} style={styles.noTileBanner}>
           <Text
             style={styles.noTileText}
