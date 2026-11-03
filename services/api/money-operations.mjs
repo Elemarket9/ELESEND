@@ -222,9 +222,8 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   const account=kind==='restaurant'?'restaurant_payable':'rider_payable';
   return (await c.query(`SELECT s.id AS shipment_id,s.company_id,$2::text AS kind,sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)::bigint AS amount
     FROM shipments s JOIN checkout_accounting_journals j ON j.shipment_id=s.id JOIN checkout_accounting_lines l ON l.journal_id=j.id AND l.account=$3
-    WHERE ${scope} AND s.state='COMPLETED' AND s.paid AND s.payment_method<>'CASH'
+    WHERE ${scope} AND s.state IN ('COMPLETED','RETURNED') AND s.paid AND s.payment_method<>'CASH'
       AND coalesce(s.completed_at,s.created_at)<=now()-make_interval(hours=>$4)
-      AND NOT EXISTS(SELECT 1 FROM disputes d WHERE d.shipment_id=s.id AND d.status='open' AND NOT EXISTS(SELECT 1 FROM food_orders f WHERE f.shipment_id=s.id))
       AND NOT EXISTS(SELECT 1 FROM payout_operations p WHERE p.shipment_id=s.id AND p.kind=$2 AND p.status NOT IN ('failed','superseded'))
       ${kind==='restaurant'?"AND NOT EXISTS(SELECT 1 FROM food_orders f JOIN restaurant_settlements rs ON rs.order_id=f.id WHERE f.shipment_id=s.id AND rs.status<>'accrued')":''}
     GROUP BY s.id HAVING sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)>0 ORDER BY min(coalesce(s.completed_at,s.created_at)) LIMIT 500`,[userId,kind,account,earningsHoldHours])).rows;
@@ -633,101 +632,9 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
      await c.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[actor.id,'dispute.dismissed:'+v.reason,d.id]);
      return {disputeId:d.id,status:'dismissed',approvedRefundMinor:0,refundOperationId:null,duplicate:false};
     }
-    check(s&&s.paid&&s.payment_method!=='CASH',409,'Dispute refund requires a verified prepaid shipment');
-    check(s.state==='COMPLETED',409,'Item-level and partial dispute refunds require a completed delivery; use order cancellation/return for undelivered orders');
-    // Lock all payout operations for this shipment upfront before inspecting status or payable balances.
-    const lockedPayouts=(await c.query('SELECT * FROM payout_operations WHERE shipment_id=$1 ORDER BY id ASC FOR UPDATE',[s.id])).rows;
-    const intent=(await c.query("SELECT * FROM shipment_checkout_intents WHERE shipment_id=$1 AND status='confirmed' ORDER BY confirmed_at LIMIT 1 FOR UPDATE",[s.id])).rows[0];
-    check(intent,409,'Verified checkout payment intent required for dispute refund');
-    const priorCancelRefund=Number((await c.query('SELECT coalesce(sum(amount_minor),0)::bigint AS total FROM checkout_refund_requests WHERE shipment_id=$1',[s.id])).rows[0].total);
-    const priorDisputeRefund=Number((await c.query('SELECT coalesce(sum(amount_minor),0)::bigint AS total FROM dispute_refund_requests WHERE shipment_id=$1',[s.id])).rows[0].total);
-    const remainingOrderRefundable=Number(intent.amount_minor)-priorCancelRefund-priorDisputeRefund;
-    check(remainingOrderRefundable>0,409,'Order has already been refunded in full');
-    const fo=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[s.id])).rows[0];
-    // ELESEND does not refund delivered food orders or give up commission: the customer and restaurant settle it.
-    check(!fo,409,'Delivered food orders are not refunded by ELESEND. The customer should chat with the restaurant');
-    const requestedItems=v.items?.length?v.items:(Array.isArray(d.items_json)&&d.items_json.length?d.items_json:[]);
-    const resolvedItems=[];
-    let foodRefundMinor=0;
-    let commRefundMinor=0;
-    let merchantDeductionMinor=0;
-    const deliveryRefundMinor=Number(v.deliveryFeeRefundMinor||0);
-    const entries=[];
-    const nonFoodRefundMinor=v.refundAmountMinor??Number(d.requested_refund_minor||0);
-    if(nonFoodRefundMinor>0){
-     const inFlightRiderPayout=lockedPayouts.some(p=>p.kind==='rider'&&['initiating','pending','needs_review','paid'].includes(p.status));
-     check(!inFlightRiderPayout,409,'Rider payout already submitted or paid; cannot refund delivery fee from rider payable');
-     const riderPayableAvail=await payableOrZero(c,s.id,'rider');
-     const delivCommAvail=Number((await c.query(`SELECT coalesce(sum(CASE WHEN side='credit' THEN amount_minor ELSE -amount_minor END),0)::bigint AS amount FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id WHERE j.shipment_id=$1 AND l.account='platform_commission_revenue'`,[s.id])).rows[0].amount);
-     check(nonFoodRefundMinor<=riderPayableAvail+delivCommAvail,409,'Requested delivery refund exceeds remaining delivery settlement balance');
-     const delivCommDeduction=Math.min(delivCommAvail,nonFoodRefundMinor);
-     const riderDeduction=nonFoodRefundMinor-delivCommDeduction;
-     if(delivCommDeduction>0)entries.push(['platform_commission_revenue','debit',delivCommDeduction]);
-     if(riderDeduction>0){
-      entries.push(['rider_payable','debit',riderDeduction]);
-      const proposedRiderPayout=lockedPayouts.find(p=>p.kind==='rider'&&p.status==='proposed');
-      if(proposedRiderPayout){
-       const nextRiderPayable=riderPayableAvail-riderDeduction;
-       if(nextRiderPayable<=0){
-        await c.query("UPDATE payout_operations SET status='superseded',failure_reason='Superseded by dispute refund of rider payable',updated_at=now() WHERE id=$1",[proposedRiderPayout.id]);
-       }else{
-        await c.query('UPDATE payout_operations SET amount_minor=$2,updated_at=now() WHERE id=$1',[proposedRiderPayout.id,nextRiderPayable]);
-       }
-      }
-     }
-    }
-    const totalRefundMinor=foodRefundMinor+nonFoodRefundMinor;
-    check(Number.isSafeInteger(totalRefundMinor)&&totalRefundMinor>0,400,'Approved refund amount must be greater than zero');
-    check(totalRefundMinor<=remainingOrderRefundable,409,'Approved refund exceeds remaining refundable customer payment');
-    entries.push(['customer_refund_liability','credit',totalRefundMinor]);
-    await checkoutJournal(c,{
-     shipmentId:s.id,
-     eventKey:'dispute:'+d.id,
-     kind:'dispute_refund_requested',
-     entries
-    });
-    const reqRow=(await c.query(`
-     INSERT INTO dispute_refund_requests(
-      dispute_id,shipment_id,food_order_id,intent_id,amount_minor,
-      items_subtotal_refund_minor,commission_refund_minor,merchant_net_deduction_minor,
-      delivery_fee_refund_minor,items_json,reason,approved_by
-     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-     RETURNING *
-    `,[
-     d.id,s.id,fo?.id??null,intent.id,totalRefundMinor,
-     foodRefundMinor,commRefundMinor,merchantDeductionMinor,
-     nonFoodRefundMinor,JSON.stringify(resolvedItems),v.reason,actor.id
-    ])).rows[0];
-    const opRow=(await c.query(`
-     INSERT INTO refund_operations(id,source_key,shipment_id,provider,reference,amount_minor,currency)
-     VALUES($1,$2,$3,$4,$5,$6,$7)
-     ON CONFLICT(source_key) DO UPDATE SET amount_minor=EXCLUDED.amount_minor
-     RETURNING *
-    `,[randomUUID(),'dispute:'+d.id,s.id,intent.provider,intent.reference,totalRefundMinor,intent.currency])).rows[0];
-    await c.query(`
-     UPDATE disputes
-        SET status='resolved',
-            approved_refund_minor=$2,
-            items_json=CASE WHEN jsonb_array_length($3::jsonb)>0 THEN $3::jsonb ELSE items_json END,
-            resolution_notes=$4,
-            resolved_by=$5,
-            resolved_at=now()
-      WHERE id=$1
-    `,[d.id,totalRefundMinor,JSON.stringify(resolvedItems),v.reason,actor.id]);
-    await c.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[actor.id,`dispute.refund_approved:${totalRefundMinor}:${v.reason}`,d.id]);
-    return {
-     disputeId:d.id,
-     status:'resolved',
-     approvedRefundMinor:totalRefundMinor,
-     foodRefundMinor,
-     commissionRefundMinor:commRefundMinor,
-     merchantNetDeductionMinor:merchantDeductionMinor,
-     deliveryFeeRefundMinor:nonFoodRefundMinor,
-     items:resolvedItems,
-     disputeRefundRequestId:reqRow.id,
-     refundOperationId:opRow.id,
-     duplicate:false
-    };
+    // Delivery confirmed by SMS, and failed deliveries, are never refunded and commission is never given up.
+    const food=(await c.query('SELECT 1 FROM food_orders WHERE shipment_id=$1',[d.shipment_id])).rowCount;
+    check(false,409,food?'Delivered food orders are not refunded by ELESEND. The customer should chat with the restaurant':'Parcels confirmed by SMS and failed deliveries are not refunded');
    });
    return result;
   }

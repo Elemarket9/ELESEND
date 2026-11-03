@@ -174,11 +174,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await assert.rejects(withdraw(key(),third_actor,moneyOperations(db,{...limits,platformDailyLimitMinor:1})),/paused/);
   await assert.rejects(withdraw(key(),third_actor,moneyOperations(db,{...limits,earningsHoldHours:1})),/at least/);
 
-  // Open disputes, password changes and payout detail changes all block withdrawal.
-  const dispute=randomUUID();
-  await db.query("INSERT INTO disputes(id,shipment_id,reporter_id,category,detail) VALUES($1,$2,$3,'other','Test dispute')",[dispute,held,customer]);
-  await assert.rejects(withdraw(key(),third_actor),/at least/);
-  await db.query("UPDATE disputes SET status='dismissed' WHERE id=$1",[dispute]);
+  // Password changes and payout detail changes block withdrawal.
   await db.query("UPDATE users SET password_hash=password_hash||'' WHERE id=$1",[third_rider]);
   assert.equal((await db.query('SELECT credentials_changed_at FROM users WHERE id=$1',[third_rider])).rows[0].credentials_changed_at,null);
   const changed=await passwordHash('Correct-pass-1');
@@ -251,5 +247,31 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   assert.equal(refund.amountMinor,1020);
   books=await balances(cancelled);
   assert.equal(books.customer_refund_liability,1020);assert.equal(books.customer_processing_fee_liability,0);assert.equal(books.customer_delivery_liability,0);
+  // A failed parcel is paid by the sender once it is back with them, proved by their SMS code.
+  const {platform}=await import('../services/api/platform.mjs');
+  const outbox=[];
+  const app=platform(db,{otpKey:'k'.repeat(32),sms:{send:async x=>{outbox.push(x);}}});
+  const returnRider=await newRider(),returning={id:returnRider,kind:'rider'};
+  const failed_parcel=await shipment(customer);
+  const parcelIntent=await checkout.initiate({id:customer,kind:'customer'},failed_parcel,{idempotencyKey:key()});
+  verification={reference:parcelIntent.reference,status:'success',amountMinor:1020,currency:'GHS',channel:'mobile_money',eventId:'evt_'+randomUUID()};
+  await checkout.confirmVerified(verification);
+  const stop=kind=>({shipmentId:failed_parcel,kind,weightG:100,latitude:5.5,longitude:-0.2});
+  await db.query('INSERT INTO rider_dispatch_plans(rider_id,revision,stops) VALUES($1,1,$2)',[returnRider,JSON.stringify([stop('pickup'),stop('dropoff')])]);
+  await db.query("UPDATE shipments SET rider_id=$2,state='RIDER_ASSIGNED' WHERE id=$1",[failed_parcel,returnRider]);
+  await db.query("INSERT INTO challenges(id,shipment_id,rider_id,purpose,phone,digest,expires_at,sent,consumed_at) VALUES($1,$2,$3,'pickup','+233241234567','x',now()+interval '5 minutes',true,now())",[randomUUID(),failed_parcel,returnRider]);
+  await db.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[failed_parcel]);
+  await app.transition(returning,failed_parcel,{action:'fail',reason:'Recipient unreachable'});
+  await app.transition(returning,failed_parcel,{action:'return',reason:'Returning to sender'});
+  await assert.rejects(app.transition(returning,failed_parcel,{action:'returned',reason:'Rider alone says so'}),/SMS code/);
+  await assert.rejects(app.dispute({id:customer,kind:'customer'},failed_parcel,{category:'lost',detail:'Please refund this order',requestedRefundMinor:1000}),/not refunded/);
+  const returnChallenge=await app.challenge(returning,failed_parcel,'return');
+  assert.equal(outbox.at(-1).phone,(await db.query('SELECT phone FROM users WHERE id=$1',[customer])).rows[0].phone);
+  await app.verify(returning,failed_parcel,{challengeId:returnChallenge.challengeId,code:outbox.at(-1).code});
+  assert.equal((await db.query('SELECT state FROM shipments WHERE id=$1',[failed_parcel])).rows[0].state,'RETURNED');
+  assert.equal(await payable(failed_parcel),870);
+  assert.equal((await db.query('SELECT 1 FROM checkout_refund_requests WHERE shipment_id=$1',[failed_parcel])).rowCount,0);
+  const returnedBooks=await balances(failed_parcel);
+  assert.equal(returnedBooks.customer_delivery_liability,0);assert.equal(returnedBooks.customer_processing_fee_liability,0);
  }finally{await db.close();}
 });

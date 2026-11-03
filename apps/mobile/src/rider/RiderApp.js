@@ -542,9 +542,17 @@ export default function RiderApp() {
     setOtp('');
   }
 
+  async function initiateReturnVerification(shipment) {
+    const c = await call('POST', `/api/v1/shipments/${shipment.id}/return-challenge`, {});
+    setActiveParcel({ ...shipment, kind: 'return' });
+    setChallenge(c);
+    setOtp('');
+  }
+
   async function submitOtpVerification() {
     if (!activeParcel || !challenge) return;
     if (otp.trim().length !== 6) throw Error('Enter the exact 6-digit handover OTP');
+    const verifiedKind = activeParcel.kind;
 
     await call('POST', `/api/v1/shipments/${activeParcel.id}/verify`, {
       challengeId: challenge.challengeId,
@@ -556,7 +564,9 @@ export default function RiderApp() {
     setOtp('');
     const m = await call('GET', '/api/v1/rider/manifest').catch(() => null);
     setManifest(m);
-    setError('Delivery verified and completed! Earnings credited to your wallet.');
+    setError(verifiedKind === 'return'
+      ? 'Return confirmed by the sender. Your earnings have been recorded.'
+      : 'Delivery verified and completed! Earnings credited to your wallet.');
   }
 
   async function releaseAssignment(shipmentId, reason = 'Unable to complete pickup before custody') {
@@ -1346,9 +1356,9 @@ export default function RiderApp() {
 
                     {s.state === 'RETURN_REQUESTED' && (
                       <TouchableOpacity
-                        onPress={() => execute(() => transitionShipment(s.id, 'returned', 'Package returned to sender/kitchen'))}
+                        onPress={() => execute(() => initiateReturnVerification(s))}
                         style={[styles.primaryBtn, { marginTop: 10 }]}>
-                        <Text style={styles.primaryBtnText}>Confirm Returned to Origin</Text>
+                        <Text style={styles.primaryBtnText}>Get Sender's Return Code</Text>
                       </TouchableOpacity>
                     )}
                   </View>

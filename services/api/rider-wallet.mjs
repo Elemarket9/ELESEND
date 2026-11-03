@@ -232,7 +232,7 @@ async function earningsBreakdown(c,riderId){
  const rows=(await c.query(`SELECT j.shipment_id,s.company_id,
     sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)::bigint AS payable_minor,
     (SELECT p.status FROM payout_operations p WHERE p.shipment_id=j.shipment_id AND p.kind='rider' AND p.status NOT IN ('failed','superseded') ORDER BY p.created_at DESC LIMIT 1) AS payout_status,
-    (coalesce(s.completed_at,s.created_at)>now()-make_interval(hours=>$2) OR EXISTS(SELECT 1 FROM disputes d WHERE d.shipment_id=j.shipment_id AND d.status='open' AND NOT EXISTS(SELECT 1 FROM food_orders f WHERE f.shipment_id=j.shipment_id))) AS on_hold
+    (coalesce(s.completed_at,s.created_at)>now()-make_interval(hours=>$2)) AS on_hold
    FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id JOIN shipments s ON s.id=j.shipment_id
   WHERE l.account='rider_payable' AND s.rider_id=$1 GROUP BY j.shipment_id,s.company_id,s.completed_at,s.created_at`,[riderId,earningsHoldHours()])).rows;
  let payable=0,inPayout=0,company=0,onHold=0;

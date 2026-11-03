@@ -33,7 +33,7 @@ Production refuses test keys. Enable each method in the admin portal after this.
 | --- | --- | --- |
 | Destination locked to the SMS-verified phone, and checked again before sending | | Always on |
 | Password required for each rider withdrawal, 5 attempts per hour | | Always on |
-| Hold on new earnings, and on any delivery with an open dispute | `WITHDRAWAL_EARNINGS_HOLD_HOURS` | 24 |
+| Hold on new earnings | `WITHDRAWAL_EARNINGS_HOLD_HOURS` | 24 |
 | Hold after a password or payout details change | `WITHDRAWAL_SECURITY_HOLD_HOURS` | 24 |
 | Minimum withdrawal | `WITHDRAWAL_MIN_MINOR` | GH₵100 |
 | One withdrawal per person per day, Ghana time. Failed or reversed ones do not count | | Always on |
@@ -49,6 +49,9 @@ There is no limit on the amount a person can withdraw. Keep `WITHDRAWAL_FEE_MINO
 - **Independent riders' cash commission:** becomes the rider's debt, due at the Monday cutoff plus 24 hours. It is repaid from earnings first, then by Mobile Money.
 - **Company riders' cash commission:** the company owes it, and it is recovered from the company's unpaid earnings. At `COMPANY_COMMISSION_DEBT_LIMIT_MINOR` (default GH₵500), its riders stop receiving cash jobs until digital earnings clear the debt.
 - **Delivered food orders:** ELESEND does not refund them or give up commission. The customer chats with the restaurant.
+- **Parcels confirmed by SMS:** never refunded.
+- **Failed parcel deliveries after pickup:** the sender pays the full fare, with no refund. The rider returns the parcel and gets the sender's SMS code, then earnings and commission settle like a completed delivery. If the fare was cash payable by the recipient, the rider collects it from the sender first.
+- **Parcels never picked up:** the rider releases the job, and the sender can cancel for a full refund.
 
 ## What needs staff action
 - **A refund in `needs-attention`:** stays pending in ELESEND. Supply the customer's account details in the Paystack dashboard.
