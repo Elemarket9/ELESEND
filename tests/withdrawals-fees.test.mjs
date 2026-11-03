@@ -133,7 +133,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await money.reconcileDue({olderThanSeconds:0});
   assert.equal(submitted.length,2);assert.equal(submitted[0].requestId,submitted[1].requestId);
   // After a day with no transfer at Paystack, the money comes back by itself.
-  await db.query("UPDATE payout_withdrawals SET created_at=now()-interval '25 hours',last_reconciled_at=now()-interval '10 minutes' WHERE id=$1",[lost.id]);
+  await db.query("UPDATE payout_withdrawals SET created_at=now()-interval '30 days',last_reconciled_at=now()-interval '10 minutes' WHERE id=$1",[lost.id]);
   await money.reconcileDue({olderThanSeconds:0});
   assert.equal((await db.query('SELECT status FROM payout_withdrawals WHERE id=$1',[lost.id])).rows[0].status,'failed');
   assert.equal(await payable(missing),700);
