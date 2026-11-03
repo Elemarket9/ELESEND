@@ -91,3 +91,8 @@ test('production starts with no provider settings',()=>{
  const r=validateConfig({NODE_ENV:'production',DATABASE_URL:'postgres://test:test@localhost/test',OTP_KEY:'a'.repeat(64),ADMIN_MFA_ENCRYPTION_KEY:'b'.repeat(64),API_PUBLIC_ORIGIN:'https://api.example.test',WEB_PUBLIC_ORIGIN:'https://app.example.test'});
  assert.deepEqual(r.errors,[]);assert.equal(r.ok,true);
 });
+
+test('production still requires ELESEND own secrets',()=>{
+ const r=validateConfig({NODE_ENV:'production',DATABASE_URL:'postgres://test:test@localhost/test',OTP_KEY:'a'.repeat(64),API_PUBLIC_ORIGIN:'https://api.example.test',WEB_PUBLIC_ORIGIN:'https://app.example.test'});
+ assert.ok(r.errors.some(e=>e.includes('ADMIN_MFA_ENCRYPTION_KEY must be exactly')));
+});
