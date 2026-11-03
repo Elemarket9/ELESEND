@@ -200,6 +200,9 @@ export function validateConfig(env = process.env) {
     if (!/^[a-fA-F0-9]{64}$/.test(otpKey)) {
       errors.push('OTP_KEY must be exactly 64 hexadecimal characters (32 bytes) in production.');
     }
+    if (!/^[a-fA-F0-9]{64}$/.test((env.RIDER_ID_ENCRYPTION_KEY || '').trim())) {
+      errors.push('RIDER_ID_ENCRYPTION_KEY must be exactly 64 hexadecimal characters (32 bytes) in production.');
+    }
     if (!/^[a-fA-F0-9]{64}$/.test(adminMfaKey)) {
       errors.push('ADMIN_MFA_ENCRYPTION_KEY must be exactly 64 hexadecimal characters (32 bytes) in production.');
     }
@@ -219,6 +222,7 @@ export function validateConfig(env = process.env) {
     const keyList = [
       { name: 'OTP_KEY', val: otpKey.toLowerCase() },
       { name: 'ADMIN_MFA_ENCRYPTION_KEY', val: adminMfaKey.toLowerCase() },
+      { name: 'RIDER_ID_ENCRYPTION_KEY', val: (env.RIDER_ID_ENCRYPTION_KEY || '').trim().toLowerCase() },
       { name: 'JWT_SECRET', val: jwtSecret },
       { name: 'ADMIN_MASTER_KEY', val: adminMasterKey },
       { name: 'AUDIT_LOG_SECRET', val: auditLogSecret }

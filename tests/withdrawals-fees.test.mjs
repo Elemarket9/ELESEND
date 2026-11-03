@@ -297,5 +297,31 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await assert.rejects(db.query("UPDATE parcel_custody_incidents SET evidence='{}' WHERE id=$1",[incident.id]),/immutable/);
   await assert.rejects(app.transition({id:investigator,kind:'admin'},stolen,{action:'fail',reason:'Admin should not change this'}),/Assigned rider/);
   assert.equal((await resolveCustodyIncident(db,{id:investigator,kind:'admin'},incident.id,{outcome:'police_reported',reason:'Rider unreachable for a day',policeReference:'ACC-123'})).police_reference,'ACC-123');
+  // No rider is approved without a current licence, and one licence cannot back two accounts.
+  process.env.RIDER_ID_ENCRYPTION_KEY='c'.repeat(64);
+  const {submitRiderLicence,riderLicenceStatus,rejectRiderLicence,suspendExpiredLicences,attachLicences}=await import('../services/api/rider-licence.mjs');
+  const applicant=await newRider(),other_applicant=await newRider();
+  await db.query("UPDATE riders SET status='pending' WHERE id=ANY($1::uuid[])",[[applicant,other_applicant]]);
+  const reviewer={id:investigator,kind:'admin'},applicantActor={id:applicant,kind:'rider'};
+  await assert.rejects(app.approve(reviewer,'riders',applicant,'approved'),/not submitted a licence/);
+  const nextYear=`${new Date().getUTCFullYear()+1}-01-31`;
+  const licenceForm={legalName:'Kofi Mensah',licenceNumber:'GH-12345678',licenceClass:'A',expiresOn:nextYear,vehiclePlate:'GR 1234-26'};
+  await assert.rejects(submitRiderLicence(db,applicantActor,{...licenceForm,expiresOn:'2020-01-01'}),/expired/);
+  await assert.rejects(submitRiderLicence(db,applicantActor,{...licenceForm,vehiclePlate:undefined}),/plate/);
+  assert.equal((await submitRiderLicence(db,applicantActor,licenceForm)).status,'pending');
+  await assert.rejects(submitRiderLicence(db,{id:other_applicant,kind:'rider'},{...licenceForm,licenceNumber:'gh 12345678'}),/another rider/);
+  const stored=(await db.query('SELECT number_encrypted FROM rider_licences WHERE rider_id=$1',[applicant])).rows[0];
+  assert.ok(!stored.number_encrypted.includes('12345678'));
+  const shown=await attachLicences(db,reviewer,[{id:applicant}]);
+  assert.equal(shown[0].licence.number,'GH-12345678');assert.equal(shown[0].licence.number_encrypted,undefined);
+  assert.equal((await rejectRiderLicence(db,reviewer,applicant,{reason:'Number is not readable'})).status,'rejected');
+  await assert.rejects(app.approve(reviewer,'riders',applicant,'approved'),/rejected/);
+  await submitRiderLicence(db,applicantActor,licenceForm);
+  await app.approve(reviewer,'riders',applicant,'approved');
+  assert.equal((await db.query('SELECT status FROM riders WHERE id=$1',[applicant])).rows[0].status,'approved');
+  assert.equal((await riderLicenceStatus(db,applicantActor)).validUntil,nextYear);
+  await db.query("UPDATE rider_licences SET valid_until=now()::date-1 WHERE rider_id=$1",[applicant]);
+  assert.ok((await suspendExpiredLicences(db)).includes(applicant));
+  assert.equal((await db.query('SELECT status FROM riders WHERE id=$1',[applicant])).rows[0].status,'suspended');
  }finally{await db.close();}
 });

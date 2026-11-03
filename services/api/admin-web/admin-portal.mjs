@@ -1043,10 +1043,11 @@ export function renderAdminPortalHtml() {
           <tr>
             <td>\${escapeHtml(r.phone || r.id.slice(0, 8))}</td>
             <td>COURIER</td>
-            <td>\${escapeHtml(r.vehicle || 'motorcycle')}</td>
+            <td>\${escapeHtml(r.vehicle || 'motorcycle')}\${r.licence ? '<br><strong>' + escapeHtml(r.licence.legal_name) + '</strong><br>' + escapeHtml(r.licence.document_type) + ' ' + escapeHtml(r.licence.number) + (r.licence.licence_class ? ' • Class ' + escapeHtml(r.licence.licence_class) : '') + '<br>Expires ' + escapeHtml(r.licence.expires_on) + (r.licence.vehicle_plate ? ' • Plate ' + escapeHtml(r.licence.vehicle_plate) : '') + ' • ' + escapeHtml(r.licence.status) : '<br><em>No licence submitted</em>'}</td>
             <td><span class="badge badge-warn">\${escapeHtml(r.status.toUpperCase())}</span></td>
             <td>
               <button class="action-btn" onclick="reviewRider('\${escapeHtml(r.id)}', 'approved')">Approve</button>
+              \${r.licence ? \`<button class="action-btn" onclick="rejectLicence('\${escapeHtml(r.id)}')">Reject Licence</button>\` : ''}
               <button class="action-btn btn-danger" onclick="reviewRider('\${escapeHtml(r.id)}', 'suspended')">Reject</button>
             </td>
           </tr>
@@ -1056,6 +1057,12 @@ export function renderAdminPortalHtml() {
       }
     }
 
+    async function rejectLicence(id) {
+      const reason = prompt('Why is this licence being rejected?');
+      if (!reason) return;
+      await api('/api/v1/admin/riders/' + id + '/licence/reject', { method: 'POST', body: JSON.stringify({ reason }) });
+      loadFleet();
+    }
     async function reviewRider(id, status) {
       try {
         await api(\`/api/v1/admin/riders/\${id}\`, {

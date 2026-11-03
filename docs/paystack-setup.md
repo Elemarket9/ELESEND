@@ -53,6 +53,9 @@ There is no limit on the amount a person can withdraw. Keep `WITHDRAWAL_FEE_MINO
 - **Failed parcel deliveries after pickup:** the sender pays the full fare, with no refund. The rider returns the parcel and gets the sender's SMS code, then earnings and commission settle like a completed delivery. If the fare was cash payable by the recipient, the rider collects it from the sender first.
 - **Parcels never picked up:** the rider releases the job, and the sender can cancel for a full refund.
 
+## Rider identity
+A rider cannot be approved without a current driver's licence on file, or a Ghana Card for bicycle riders. Staff compare the details in the admin portal against the original document before approving. Riders are suspended when the approved document expires. One document cannot back two accounts. Set `RIDER_ID_ENCRYPTION_KEY` to 64 random hexadecimal characters, and back it up, because the numbers cannot be read without it.
+
 ## Missing parcels
 A parcel still with its rider `PARCEL_CUSTODY_LIMIT_HOURS` (default 24) after pickup opens an incident. The rider is suspended, withdrawals stop, and the evidence is frozen. It appears in the admin portal under Risk Signals. Staff check the facts, then record the outcome and any police reference. The system never contacts the police itself.
 

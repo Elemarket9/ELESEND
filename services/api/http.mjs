@@ -1,3 +1,4 @@
+import {riderLicenceStatus,submitRiderLicence,rejectRiderLicence,attachLicences} from './rider-licence.mjs';
 import {listCustodyIncidents,resolveCustodyIncident} from './custody-incidents.mjs';
 import {createServer} from 'node:http';
 import {randomUUID} from 'node:crypto';
@@ -407,6 +408,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='GET'&&path==='/api/v1/shipments')result=await app.list(actor);
   else if(method==='GET'&&path==='/api/v1/rider/offers')result=await app.offers(actor);
   else if(method==='GET'&&path==='/api/v1/rider/dispatch-settings'){check(dispatcher,503);result=await dispatcher.trackingSettings(actor);}
+  else if(method==='GET'&&path==='/api/v1/rider/licence')result=await riderLicenceStatus(db,actor);
+  else if(method==='POST'&&path==='/api/v1/rider/licence'){await limit(db,'licence:'+actor.id,10,3600);result=await submitRiderLicence(db,actor,body);}
   else if(method==='GET'&&path==='/api/v1/rider/vehicle')result=await vehicles.profile(actor);
   else if(method==='POST'&&path==='/api/v1/rider/vehicle')result=await vehicles.submit(actor,body);
   else if(method==='GET'&&path==='/api/v1/rider/manifest'){check(dispatcher,503);result=await dispatcher.manifest(actor);}
@@ -434,7 +437,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/admin/markets/activate')result=await markets.activate(actor,body);
   else if(method==='GET'&&path==='/api/v1/admin/fleet-batch-preview'){check(dispatcher,503);result=await dispatcher.previewFleetBatch(actor);}
   else if(method==='POST'&&path==='/api/v1/admin/risk-signals/review'){check(dispatcher,503);result=await dispatcher.reviewRisk(actor,body);}
-  else if(method==='GET'&&path==='/api/v1/admin/custody-incidents')result=await listCustodyIncidents(db,actor);
+  else if(method==='GET'&&path==='/api/v1/admin/custody-incidents')result=await attachLicences(db,actor,await listCustodyIncidents(db,actor),'rider_id');
   else if(method==='POST'&&/^\/api\/v1\/admin\/custody-incidents\/[0-9a-f-]{36}\/resolve$/.test(path))result=await resolveCustodyIncident(db,actor,path.split('/')[5],body);
   else if(method==='GET'&&path==='/api/v1/admin/risk-signals'){check(dispatcher,503);result=await dispatcher.riskSignals(actor);}
   else if(method==='GET'&&path==='/api/v1/admin/algorithm-features'){check(dispatcher,503);result=await dispatcher.algorithmFeatures(actor);}
@@ -506,7 +509,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='GET'&&path==='/api/v1/admin/finance/adjustments'){check(finance,503);result=await finance.adjustmentQueue(actor);}
   else if(method==='POST'&&path==='/api/v1/admin/finance/adjustments'){check(finance,503);result=await finance.adjustmentRequest(actor,body);}
   else if(method==='POST'&&/^\/api\/v1\/admin\/finance\/adjustments\/[0-9a-f-]+\/approve$/.test(path)){check(finance,503);result=await finance.approveAdjustment(actor,path.split('/')[6]);}
-  else if(method==='GET'&&path==='/api/v1/admin/review')result=await app.reviewQueue(actor);
+  else if(method==='GET'&&path==='/api/v1/admin/review'){result=await app.reviewQueue(actor);result={...result,riders:await attachLicences(db,actor,result.riders)};}
+  else if(method==='POST'&&/^\/api\/v1\/admin\/riders\/[0-9a-f-]{36}\/licence\/reject$/.test(path))result=await rejectRiderLicence(db,actor,path.split('/')[5],body);
   else if(method==='GET'&&path==='/api/v1/admin/system-health'){
    check(actor?.kind==='admin',403,'Administrator required');
    result=await getSystemHealthReport(db);

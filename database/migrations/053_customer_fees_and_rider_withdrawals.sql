@@ -156,3 +156,23 @@ BEGIN
 END $$;
 CREATE TRIGGER custody_evidence_guard BEFORE UPDATE OR DELETE ON parcel_custody_incidents
   FOR EACH ROW EXECUTE FUNCTION guard_custody_evidence();
+
+-- Identity is required before a rider can be approved.
+CREATE TABLE IF NOT EXISTS rider_licences (
+  rider_id uuid PRIMARY KEY REFERENCES riders(id),
+  document_type text NOT NULL CHECK (document_type IN ('drivers_licence','ghana_card')),
+  legal_name text NOT NULL,
+  number_encrypted text NOT NULL,
+  number_hash text NOT NULL UNIQUE,
+  licence_class text,
+  expires_on date NOT NULL,
+  vehicle_plate text,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  rejection_reason text,
+  valid_until date,
+  reviewed_by uuid REFERENCES users(id),
+  reviewed_at timestamptz,
+  submitted_at timestamptz NOT NULL DEFAULT now()
+);
+-- Riders approved before this check must submit a licence and be reviewed again.
+UPDATE riders SET status='pending',online=false WHERE status='approved';

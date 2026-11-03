@@ -1,3 +1,4 @@
+import {suspendExpiredLicences} from './rider-licence.mjs';
 import {flagOverdueParcels} from './custody-incidents.mjs';
 /**
  * Shared background job scheduling for the API process and the dedicated worker.
@@ -88,6 +89,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
    }
    // Financial checkout intents, transactions, journals, and audit logs are permanently retained under legal and financial audit requirements.
    await reconcileAndEnforceWeeklyRestrictions(db);
+   await suspendExpiredLicences(db);
   })
  };
  const timers=[];

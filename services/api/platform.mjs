@@ -1,3 +1,4 @@
+import {approveRiderLicence} from './rider-licence.mjs';
 import {randomUUID} from 'node:crypto';
 import {MARKET_CURRENCY,MARKET_TIME_ZONE} from './market.mjs';
 import {decryptAdminSecret,verifyAdminTotp} from './admin-mfa.mjs';
@@ -420,6 +421,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async approve(actor,type,target,status){check(['riders','companies'].includes(type),400);uuid.parse(target);check(['approved','suspended','rejected'].includes(status),400);
   return db.tx(async c=>{await permission(c,actor,'verification:write');
    if(type==='riders'){
+    if(status==='approved')await approveRiderLicence(c,target,actor.id);
     const result=await c.query('UPDATE riders SET status=$2,online=CASE WHEN $2=\'approved\' THEN online ELSE false END WHERE id=$1 RETURNING id',[target,status]);check(result.rowCount,404);
     if(status!=='approved'){
      await c.query('DELETE FROM sessions WHERE user_id = $1',[target]);disconnectRealtimeUser(target,'account_'+status);await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[target]);

@@ -90,6 +90,9 @@ export default function RiderApp() {
   const canWithdraw = availableNow > 0 && availableNow >= withdrawalMin && availableNow > withdrawalFee;
   const [withdrawPassword, setWithdrawPassword] = useState('');
   const withdrawKey = useRef(null);
+  const [licence, setLicence] = useState(null);
+  const [licenceModal, setLicenceModal] = useState(false);
+  const [licenceForm, setLicenceForm] = useState({ legalName: '', licenceNumber: '', licenceClass: '', expiresOn: '', vehiclePlate: '' });
   const [payoutName, setPayoutName] = useState('');
 
   // Active Handover & OTP State
@@ -690,6 +693,20 @@ export default function RiderApp() {
     ]);
     if (cs) setCommSummary(cs);
     if (w) setFinanceSnapshot(w);
+  }
+
+  async function submitLicence() {
+    const form = licenceForm;
+    await call('POST', '/api/v1/rider/licence', {
+      legalName: form.legalName.trim(),
+      licenceNumber: form.licenceNumber.trim(),
+      expiresOn: form.expiresOn.trim(),
+      ...(form.licenceClass.trim() ? { licenceClass: form.licenceClass.trim() } : {}),
+      ...(form.vehiclePlate.trim() ? { vehiclePlate: form.vehiclePlate.trim() } : {})
+    });
+    setLicenceModal(false);
+    setLicence(await call('GET', '/api/v1/rider/licence'));
+    setError('Licence submitted for review.');
   }
 
   async function requestWithdrawal() {
@@ -1567,6 +1584,11 @@ export default function RiderApp() {
                 <Text style={styles.debtSub}>Fleet-company job earnings ({ghc(financeSnapshot.companyEarningsMinor)}) are paid to your company.</Text>
               )}
               <TouchableOpacity
+                onPress={() => execute(async () => { setLicence(await call('GET', '/api/v1/rider/licence')); setLicenceModal(true); })}
+                style={[styles.secondaryBtn, { marginTop: 12 }]}>
+                <Text style={styles.secondaryBtnText}>Driver's Licence</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
                 onPress={() => setWithdrawModal(true)}
                 style={[styles.primaryBtn, { marginTop: 12 }]}>
                 <Text style={styles.primaryBtnText}>Payout Account</Text>
@@ -1674,6 +1696,38 @@ export default function RiderApp() {
             </Modal>
 
             {/* Withdrawal Modal */}
+            <Modal visible={licenceModal} animationType="fade" transparent>
+              <View style={styles.modalOverlay}>
+                <View style={styles.momoCard}>
+                  <Text style={styles.momoTitle}>Driver's Licence</Text>
+                  <Text style={styles.momoSub}>
+                    {licence?.status === 'approved' ? `Approved, valid until ${licence.validUntil}.`
+                      : licence?.status === 'pending' ? 'Waiting for review. You can start deliveries once it is approved.'
+                        : licence?.status === 'rejected' ? `Rejected: ${licence.rejectionReason}. Please correct it and submit again.`
+                          : 'Required before you can take deliveries. Bicycle riders enter their Ghana Card instead.'}
+                  </Text>
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Full Legal Name</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.legalName} onChangeText={value => setLicenceForm(f => ({ ...f, legalName: value }))} />
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Licence Number</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceNumber} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceNumber: value }))} />
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Licence Class</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceClass} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceClass: value }))} />
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Expiry Date (YYYY-MM-DD)</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.expiresOn} onChangeText={value => setLicenceForm(f => ({ ...f, expiresOn: value }))} />
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Vehicle Plate Number</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.vehiclePlate} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, vehiclePlate: value }))} />
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
+                    <TouchableOpacity onPress={() => setLicenceModal(false)} style={[styles.secondaryBtn, { flex: 1 }]}>
+                      <Text style={styles.secondaryBtnText}>Close</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity disabled={busy} onPress={() => execute(submitLicence)} style={[styles.primaryBtn, { flex: 2 }]}>
+                      <Text style={styles.primaryBtnText}>Submit Licence</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+
             <Modal visible={confirmWithdraw} animationType="fade" transparent>
               <View style={styles.modalOverlay}>
                 <View style={styles.momoCard}>
