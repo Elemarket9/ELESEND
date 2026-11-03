@@ -1911,105 +1911,28 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
         await platform.transition(rider1, order.shipmentId, { action: 'start' });
         await verifyHandover(rider1, order.shipmentId, 'delivery');
 
-        // Customer opens missing_items dispute on completed order
-        const dispute = await platform.dispute(customer, order.shipmentId, {
-          category: 'missing_items',
-          detail: 'One Jollof Chicken was missing from the sealed bag',
-          requestedRefundMinor: 4000,
-          items: [{ menuItemId: item1Id, quantity: 1, amountMinor: 4000 }]
-        });
-        assert.ok(dispute.id);
-
-        const openDisputes = await money.disputes(admin, { status: 'open' });
-        assert.ok(openDisputes.some(d => d.id === dispute.id));
-
-        // Unauthorized user cannot resolve dispute
+        // After delivery the customer settles with the restaurant, and ELESEND keeps its commission.
         await assert.rejects(
-          () => money.resolveDispute(customer, dispute.id, { decision: 'approve_refund', reason: 'Self approve' }),
-          /Forbidden|Permission|Administrator/i
+          () => platform.dispute(customer, order.shipmentId, {
+            category: 'missing_items',
+            detail: 'One Jollof Chicken was missing from the sealed bag',
+            requestedRefundMinor: 4000,
+            items: [{ menuItemId: item1Id, quantity: 1, amountMinor: 4000 }]
+          }),
+          /chat with the restaurant/i
         );
-
-        // Reject refund exceeding remaining item quantity (ordered 2, requesting 5)
+        const legacyDispute = randomUUID();
+        await db.query(
+          "INSERT INTO disputes(id,shipment_id,reporter_id,category,detail,requested_refund_minor) VALUES($1,$2,$3,'missing_items','Opened before the rule changed',4000)",
+          [legacyDispute, order.shipmentId, customer.id]
+        );
         await assert.rejects(
-          () =>
-            money.resolveDispute(admin, dispute.id, {
-              decision: 'approve_refund',
-              reason: 'Too many items',
-              items: [{ itemId: item1Id, quantity: 5 }]
-            }),
-          /exceeds remaining unrefunded quantity/
+          () => money.resolveDispute(admin, legacyDispute, { decision: 'approve_refund', reason: 'Attempted refund after delivery' }),
+          /chat with the restaurant/i
         );
-
-        // Reject duplicate item entries in the same request whose combined quantity (1 + 2 = 3) exceeds ordered quantity (2)
-        await assert.rejects(
-          () =>
-            money.resolveDispute(admin, dispute.id, {
-              decision: 'approve_refund',
-              reason: 'Duplicate entries exceeding quantity',
-              items: [
-                { itemId: item1Id, quantity: 1 },
-                { itemId: item1Id, quantity: 2 }
-              ]
-            }),
-          /exceeds remaining unrefunded quantity/
-        );
-
-        // Authorized admin resolves dispute using the dispute's recorded items_json (menuItemId) without re-specifying items
-        const resolved = await money.resolveDispute(admin, dispute.id, {
-          decision: 'approve_refund',
-          reason: 'Verified missing 1x Jollof Chicken with kitchen'
-        });
-
-        assert.equal(resolved.status, 'resolved');
-        assert.equal(Number(resolved.approvedRefundMinor), 4000);
-        assert.ok(resolved.refundOperationId, 'Must create refund_operation for provider execution');
-
-        // Verify food_order_items refunded_quantity updated
-        const orderItem = await db.query(
-          'SELECT quantity, refunded_quantity FROM food_order_items WHERE order_id = $1 AND item_id = $2',
-          [order.id, item1Id]
-        );
-        assert.equal(Number(orderItem.rows[0].refunded_quantity), 1);
-
-        // Verify restaurant_settlements reduced proportionally and balance constraint holds
-        const settlement = await db.query('SELECT * FROM restaurant_settlements WHERE order_id = $1', [order.id]);
-        assert.equal(Number(settlement.rows[0].refunded_gross_minor), 4000);
-        assert.equal(
-          Number(settlement.rows[0].gross_sales_minor) -
-            Number(settlement.rows[0].restaurant_discount_minor) -
-            Number(settlement.rows[0].refunded_gross_minor),
-          Number(settlement.rows[0].commission_minor) + Number(settlement.rows[0].net_payable_minor),
-          'Restaurant settlement invariant must remain balanced after partial refund'
-        );
-
-        // Verify double-entry checkout_accounting_lines are strictly balanced
-        const journalBalance = await db.query(
-          `SELECT COALESCE(SUM(CASE WHEN side = 'debit' THEN amount_minor ELSE -amount_minor END), 0) AS diff
-           FROM checkout_accounting_lines`
-        );
-        assert.equal(Number(journalBalance.rows[0].diff), 0, 'Double-entry checkout accounting lines must remain balanced');
-
-        // Submit and verify refund via money.submitRefund -> confirms refund and transitions food_order payment_status to PARTIALLY_REFUNDED
-        const submitRes = await money.submitRefund(admin, resolved.refundOperationId);
-        assert.equal(submitRes.status, 'refunded');
-
-        const updatedOrder = await db.query('SELECT state, payment_status FROM food_orders WHERE id = $1', [order.id]);
-        assert.equal(updatedOrder.rows[0].payment_status, 'PARTIALLY_REFUNDED');
-
-        // Subsequent dispute requesting 2x of the same item (when only 1x remains unrefunded) is rejected with 409
-        const secondDispute = await platform.dispute(customer, order.shipmentId, {
-          category: 'missing_items',
-          detail: 'Claiming 2 more items',
-          items: [{ menuItemId: item1Id, quantity: 2, amountMinor: 8000 }]
-        });
-        await assert.rejects(
-          () =>
-            money.resolveDispute(admin, secondDispute.id, {
-              decision: 'approve_refund',
-              reason: 'Exceeds remaining 1 item'
-            }),
-          /exceeds remaining unrefunded quantity/
-        );
+        const refunds = await db.query('SELECT 1 FROM refund_operations WHERE shipment_id = $1', [order.shipmentId]);
+        assert.equal(refunds.rowCount, 0);
+        assert.equal((await money.resolveDispute(admin, legacyDispute, { decision: 'dismiss', reason: 'Customer referred to the restaurant' })).status, 'dismissed');
       });
     });
 
@@ -2444,12 +2367,11 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
         assert.equal(payout.status, 'proposed');
         assert.equal(Number(payout.amount_minor), 9000); // 10000 food gross - 10% (1000) commission = 9000
 
-        const dispute = await platform.dispute(customer, order.shipment_id, {
-          category: 'missing_items',
-          detail: 'Missing 1x Jollof Chicken',
-          requestedRefundMinor: 4000,
-          items: [{ menuItemId: item1Id, quantity: 1, amountMinor: 4000 }]
-        });
+        const dispute = { id: randomUUID() };
+        await root.query(
+          "INSERT INTO disputes(id,shipment_id,reporter_id,category,detail,requested_refund_minor) VALUES($1,$2,$3,'missing_items','Missing 1x Jollof Chicken',4000)",
+          [dispute.id, order.shipment_id, customer.id]
+        );
         return { order, payout, dispute };
       }
 
@@ -2465,82 +2387,16 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
         })
       ]);
 
-      // Verify invariant: Either
-      // (A) resolveDispute acquired the shipment lock first -> refund succeeded (deducting 3600 from restaurant_payable) AND approvePayout submitted the reduced amount (5400), OR
-      // (B) approvePayout acquired the shipment lock first -> approvePayout submitted 9000 AND resolveDispute was rejected with 409 because payout was already initiating/paid!
+      // A delivered food order is never refunded by ELESEND, whichever call wins the lock.
       const finalPayout = (await root.query('SELECT * FROM payout_operations WHERE id = $1', [payout.id])).rows[0];
       const finalDispute = (await root.query('SELECT * FROM disputes WHERE id = $1', [dispute.id])).rows[0];
-      const restCreditPaid = (await root.query(
-        `SELECT coalesce(sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END),0)::bigint AS balance
-         FROM checkout_accounting_lines l
-         JOIN checkout_accounting_journals j ON j.id = l.journal_id
-         WHERE j.shipment_id = $1 AND l.account = 'restaurant_payable'`,
-        [order.shipment_id]
-      )).rows[0];
-
       assert.equal(approveOutcome.status, 'fulfilled', 'approvePayout should complete under serialized lock');
-      if (refundOutcome.status === 'fulfilled') {
-        // Case A: Refund ran before approval -> payout amount was reduced from 9000 to 5400 before provider submission!
-        assert.equal(finalDispute.status, 'resolved');
-        assert.equal(Number(finalPayout.amount_minor), 5400, 'Approved payout must reflect reduced payable after concurrent refund');
-        assert.equal(payoutsSubmitted.length, 1);
-        assert.equal(Number(payoutsSubmitted[0].amountMinor), 5400, 'Provider must never be asked to pay the unreduced 9000 amount');
-        assert.equal(Number(restCreditPaid.balance), 0, 'Remaining restaurant_payable after 3600 refund deduction and 5400 payout must be exactly 0');
-      } else {
-        // Case B: Approval ran before refund -> payout submitted 9000 and refund rejected with 409!
-        assert.match(
-          String(refundOutcome.reason?.message || ''),
-          /Restaurant (payout already submitted or paid|settlement already paid out)/i
-        );
-        assert.equal(finalDispute.status, 'open');
-        assert.equal(Number(finalPayout.amount_minor), 9000);
-        assert.equal(Number(restCreditPaid.balance), 0, 'Remaining restaurant_payable after 9000 payout must be exactly 0');
-      }
-
-      // Deterministic row-lock barrier test for the reverse race ordering:
-      // Hold a row lock on food_order_items so resolveDispute acquires shipments FOR UPDATE + payout_operations FOR UPDATE and waits;
-      // launch approvePayout so it queues on shipments FOR UPDATE while resolveDispute is in-flight; then release the barrier.
-      const second = await createCompletedOrderWithProposedPayoutAndDispute();
-      payoutsSubmitted.length = 0;
-
-      const barrierClient = await root.pool.connect();
-      try {
-        await barrierClient.query('BEGIN');
-        await barrierClient.query('SELECT id FROM food_order_items WHERE order_id = $1 FOR UPDATE', [second.order.id]);
-
-        const refundPromise = money.resolveDispute(proposer, second.dispute.id, {
-          decision: 'approve_refund',
-          reason: 'Refund holds shipment lock while payout approval queues behind it'
-        });
-
-        // Wait until resolveDispute is actively waiting on the food_order_items lock (meaning it already holds shipments FOR UPDATE)
-        for (let i = 0; i < 40; i++) {
-          const waiting = await root.query(
-            "SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%food_order_items%'"
-          );
-          if (waiting.rowCount > 0) break;
-          await new Promise(r => setTimeout(r, 10));
-        }
-
-        // Launch approvePayout while resolveDispute holds shipments FOR UPDATE
-        const approvePromise = money.approvePayout(approver, second.payout.id);
-        await new Promise(r => setTimeout(r, 30));
-
-        // Release barrier so resolveDispute commits and hands off the shipment lock to approvePayout
-        await barrierClient.query('ROLLBACK');
-
-        const [refundFirstOutcome, approveSecondOutcome] = await Promise.allSettled([refundPromise, approvePromise]);
-        assert.equal(refundFirstOutcome.status, 'fulfilled');
-        assert.equal(approveSecondOutcome.status, 'fulfilled');
-      } finally {
-        await barrierClient.query('ROLLBACK').catch(() => {});
-        barrierClient.release();
-      }
-
-      const secondPayout = (await root.query('SELECT * FROM payout_operations WHERE id = $1', [second.payout.id])).rows[0];
-      assert.equal(Number(secondPayout.amount_minor), 5400, 'Approval after concurrent refund must reduce payout from 9000 to 5400');
+      assert.equal(refundOutcome.status, 'rejected');
+      assert.match(String(refundOutcome.reason?.message || ''), /chat with the restaurant/i);
+      assert.equal(finalDispute.status, 'open');
+      assert.equal(Number(finalPayout.amount_minor), 9000);
       assert.equal(payoutsSubmitted.length, 1);
-      assert.equal(Number(payoutsSubmitted[0].amountMinor), 5400);
+      assert.equal(Number(payoutsSubmitted[0].amountMinor), 9000);
 
       // Also verify real PostgreSQL concurrency between an in-progress old-password login and resetPassword:
       // Hold FOR UPDATE on the user row, start login with old password (it reads the old hash and blocks on users FOR UPDATE),

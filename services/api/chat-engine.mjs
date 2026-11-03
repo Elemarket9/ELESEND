@@ -741,7 +741,11 @@ export function chatEngine(db, options = {}) {
         (foodOrder && foodOrder.state === 'DELIVERED');
 
       if (isCompleted && !conv.restricted_after) {
-        const resAfter = new Date((shipment?.completed_at || foodOrder?.completed_at || now).getTime() + policy.post_delivery_resolution_minutes * 60 * 1000);
+        // Delivered food problems are settled here, so this chat stays open for a full day.
+        const resolutionMinutes = conv.conversation_type === 'CUSTOMER_RESTAURANT'
+          ? Math.max(policy.post_delivery_resolution_minutes, 1440)
+          : policy.post_delivery_resolution_minutes;
+        const resAfter = new Date((shipment?.completed_at || foodOrder?.completed_at || now).getTime() + resolutionMinutes * 60 * 1000);
         await c.query(
           `UPDATE chat_conversations SET restricted_after = $2, updated_at = now() WHERE id = $1`,
           [conv.id, resAfter]

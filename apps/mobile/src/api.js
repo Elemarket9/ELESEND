@@ -32,3 +32,9 @@ export async function call(method, path, body = null, {token = null, idempotency
 }
 
 export const ghc = minor => `GH₵${(Number(minor ?? 0) / 100).toFixed(2)}`;
+
+export const parseGhs = v => {
+  const m = /^(\d{1,9})(?:\.(\d{1,2}))?$/.exec((v || '').trim());
+  if (!m) throw Error('Enter Ghana cedis as 30 or 30.00');
+  return Number(m[1]) * 100 + Number((m[2] || '').padEnd(2, '0'));
+};

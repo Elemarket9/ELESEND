@@ -101,7 +101,7 @@ export async function getWeeklySettlementSettings(c) {
   return {
     cutoff_day_of_week: 1,
     cutoff_time_utc: '00:00:00',
-    grace_hours: 0,
+    grace_hours: 24,
     default_commission_bps: 1300,
     reminders_enabled: true
   };
@@ -391,7 +391,7 @@ export async function getRiderWeeklySummary(db, riderId, {now = new Date()} = {}
     const hoursUntilCutoff = Math.floor(msUntilCutoff / 3600000);
     const deadlineDescription = bal.overdueMinor > 0
       ? 'OVERDUE — Immediate settlement required'
-      : `Due Monday 00:00 GMT (${hoursUntilCutoff}h remaining)`;
+      : `Due ${weekRange.cutoff.toUTCString().slice(0, 22)} GMT (${hoursUntilCutoff}h remaining)`;
 
     return {
       riderId,

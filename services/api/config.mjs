@@ -200,6 +200,15 @@ export function validateConfig(env = process.env) {
     if (!/^[a-fA-F0-9]{64}$/.test(otpKey)) {
       errors.push('OTP_KEY must be exactly 64 hexadecimal characters (32 bytes) in production.');
     }
+    if (!/^[a-fA-F0-9]{64}$/.test((env.RIDER_ID_ENCRYPTION_KEY || '').trim())) {
+      errors.push('RIDER_ID_ENCRYPTION_KEY must be exactly 64 hexadecimal characters (32 bytes) in production.');
+    }
+    if (!(env.DIDIT_API_KEY || '').trim() || !(env.DIDIT_WORKFLOW_ID || '').trim() || !(env.DIDIT_WEBHOOK_SECRET || '').trim()) {
+      errors.push('DIDIT_API_KEY, DIDIT_WORKFLOW_ID and DIDIT_WEBHOOK_SECRET are required in production for rider identity checks.');
+    }
+    if (!/^\+233[25]\d{8}$/.test((env.SAFETY_ALERT_PHONE || '').trim())) {
+      errors.push('SAFETY_ALERT_PHONE must be a +233 number that someone answers, for emergency alerts.');
+    }
     if (!/^[a-fA-F0-9]{64}$/.test(adminMfaKey)) {
       errors.push('ADMIN_MFA_ENCRYPTION_KEY must be exactly 64 hexadecimal characters (32 bytes) in production.');
     }
@@ -219,6 +228,7 @@ export function validateConfig(env = process.env) {
     const keyList = [
       { name: 'OTP_KEY', val: otpKey.toLowerCase() },
       { name: 'ADMIN_MFA_ENCRYPTION_KEY', val: adminMfaKey.toLowerCase() },
+      { name: 'RIDER_ID_ENCRYPTION_KEY', val: (env.RIDER_ID_ENCRYPTION_KEY || '').trim().toLowerCase() },
       { name: 'JWT_SECRET', val: jwtSecret },
       { name: 'ADMIN_MASTER_KEY', val: adminMasterKey },
       { name: 'AUDIT_LOG_SECRET', val: auditLogSecret }
@@ -326,6 +336,9 @@ export function validateConfig(env = process.env) {
   const hubtelClientSecret = (env.HUBTEL_CLIENT_SECRET || '').trim();
   const hubtelMerchantNo = (env.HUBTEL_MERCHANT_ACCOUNT_NUMBER || '').trim();
   const paystackSecretKey = (env.PAYSTACK_SECRET_KEY || '').trim();
+  // Paystack's Ghana rate, added to customer payments. Update it if your agreed rate changes; 0 means ELESEND absorbs it.
+  const paystackFeeBps = (env.PAYSTACK_CUSTOMER_FEE_BPS ?? '').trim() === '' ? 195 : Number(env.PAYSTACK_CUSTOMER_FEE_BPS);
+  if (!Number.isInteger(paystackFeeBps) || paystackFeeBps < 0 || paystackFeeBps > 1000) errors.push('PAYSTACK_CUSTOMER_FEE_BPS must be a whole number from 0 to 1000.');
 
   if (rawPaymentProvider === 'hubtel') {
     paymentProviderName = 'hubtel';
@@ -376,6 +389,7 @@ export function validateConfig(env = process.env) {
     ? {
         secretKey: paystackSecretKey,
         allowedMethods: (env.PAYSTACK_ENABLED_METHODS || 'MOMO,CARD').split(',').map(s => s.trim()).filter(Boolean),
+        processingFeeBps: paystackFeeBps,
         recipientType: (env.SETTLEMENT_PAYSTACK_RECIPIENT_TYPE || '').trim() || null,
         providerChannel: (env.SETTLEMENT_PAYSTACK_PROVIDER_CHANNEL || '').trim() || null
       }

@@ -25,11 +25,13 @@ export function httpsSmsGateway({endpoint,allowedHost,token,fetchImpl=fetch,time
    let normalized=phone.trim().replace(/\s+/g,'');
    if(/^0[25]\d{8}$/.test(normalized))normalized='+233'+normalized.slice(1);
    else if(/^233[25]\d{8}$/.test(normalized))normalized='+'+normalized;
-   check(/^\+233[25]\d{8}$/.test(normalized)&&/^\d{6}$/.test(code)&&['pickup','delivery','account','account_recovery'].includes(purpose)&&/^[0-9a-f-]{36}$/i.test(challengeId),400,'Invalid OTP delivery request');
+   check(/^\+233[25]\d{8}$/.test(normalized)&&/^\d{6}$/.test(code)&&['pickup','delivery','return','account','account_recovery'].includes(purpose)&&/^[0-9a-f-]{36}$/i.test(challengeId),400,'Invalid OTP delivery request');
    const msg=purpose==='account'
     ?`ELESEND account phone verification: ${code}. Do not share this code with anyone.`
     :purpose==='account_recovery'
     ?`ELESEND password recovery code: ${code}. Expires in 10 minutes. Do not share this code with anyone.`
+    :purpose==='return'
+    ?`ELESEND parcel return code: ${code}. Your parcel could not be delivered and the delivery fee still applies. Give this code to your rider when you get it back, after paying any unpaid cash fare.`
     :purpose==='pickup'
     ?`ELESEND parcel pickup verification: ${code}. Never share with anyone except your assigned rider at handover.`
     :`ELESEND parcel delivery verification: ${code}. Give this to your assigned rider only when receiving the parcel.`;

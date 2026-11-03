@@ -21,6 +21,7 @@ import {z} from 'zod';
 import {check} from './security.mjs';
 import {journal,balance,postCashCommission,outstandingObligations,allocateFifo} from './finance.mjs';
 import {checkoutJournal,digitalDeliveryCompleted} from './checkout-accounting.mjs';
+import {assessCompanyCashCommission,recoverCompanyDebt} from './company-commission.mjs';
 import {getGhanaWeekKey,getRiderWeeklyBalance,recordSettlementNotification,evaluateRiderWeeklyEligibility} from './weekly-settlement.mjs';
 
 export const REPAYMENT_CHANNELS=['mobile_money','card','bank_transfer','ussd'];
@@ -216,29 +217,33 @@ export async function settleCompletedDelivery(c,shipment){
  const independent=!shipment.company_id;
  const before=await debtState(c,shipment.rider_id,{lock:true});
  const out={};
- if(shipment.payment_method==='CASH')out.cashCommission=await postCashCommission(c,shipment);
+ if(shipment.payment_method==='CASH')out.cashCommission=independent?await postCashCommission(c,shipment):await assessCompanyCashCommission(c,shipment);
  else out.digitalSettlement=await digitalDeliveryCompleted(c,shipment);
- if(independent)out.recovery=await recoverDebtFromEarnings(c,shipment.rider_id,{trigger:shipment.payment_method==='CASH'?'new_commission_debt':'delivery_earnings'});
+ if(!independent)out.recovery=await recoverCompanyDebt(c,shipment.company_id);
+ else out.recovery=await recoverDebtFromEarnings(c,shipment.rider_id,{trigger:shipment.payment_method==='CASH'?'new_commission_debt':'delivery_earnings'});
  const after=await debtState(c,shipment.rider_id);
  await emitDebtTransition(c,shipment.rider_id,before,after);
  out.debt=after;
  return out;
 }
 
+const earningsHoldHours=()=>{const n=Number(process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS);return process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS&&Number.isSafeInteger(n)&&n>=0?n:24;};
 async function earningsBreakdown(c,riderId){
  const rows=(await c.query(`SELECT j.shipment_id,s.company_id,
     sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)::bigint AS payable_minor,
-    (SELECT p.status FROM payout_operations p WHERE p.shipment_id=j.shipment_id AND p.kind='rider' AND p.status NOT IN ('failed','superseded') ORDER BY p.created_at DESC LIMIT 1) AS payout_status
+    (SELECT p.status FROM payout_operations p WHERE p.shipment_id=j.shipment_id AND p.kind='rider' AND p.status NOT IN ('failed','superseded') ORDER BY p.created_at DESC LIMIT 1) AS payout_status,
+    (coalesce(s.completed_at,s.created_at)>now()-make_interval(hours=>$2)) AS on_hold
    FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id JOIN shipments s ON s.id=j.shipment_id
-  WHERE l.account='rider_payable' AND s.rider_id=$1 GROUP BY j.shipment_id,s.company_id`,[riderId])).rows;
- let payable=0,inPayout=0,company=0;
+  WHERE l.account='rider_payable' AND s.rider_id=$1 GROUP BY j.shipment_id,s.company_id,s.completed_at,s.created_at`,[riderId,earningsHoldHours()])).rows;
+ let payable=0,inPayout=0,company=0,onHold=0;
  for(const r of rows){
   const amt=Number(r.payable_minor);if(amt<=0)continue;
   if(r.company_id){company+=amt;continue;}
   payable+=amt;
   if(IN_FLIGHT_PAYOUT.includes(r.payout_status))inPayout+=amt;
+  else if(r.on_hold)onHold+=amt;
  }
- return {payableMinor:payable,inPayoutMinor:inPayout,companyEarningsMinor:company};
+ return {payableMinor:payable,inPayoutMinor:inPayout,onHoldMinor:onHold,companyEarningsMinor:company};
 }
 
 export async function walletSummary(db,actor){
@@ -262,6 +267,10 @@ export async function walletSummary(db,actor){
   availableEarningsMinor:e.payableMinor,
   inPayoutMinor:e.inPayoutMinor,
   withdrawableMinor,
+  availableNowMinor:debtMinor>0?0:Math.max(0,withdrawableMinor-e.onHoldMinor),
+  onHoldMinor:e.onHoldMinor,
+  withdrawalMinMinor:(n=>process.env.WITHDRAWAL_MIN_MINOR&&Number.isSafeInteger(n)&&n>=1?n:10000)(Number(process.env.WITHDRAWAL_MIN_MINOR)),
+  withdrawalFeeMinor:(n=>process.env.WITHDRAWAL_FEE_MINOR&&Number.isSafeInteger(n)&&n>=0?n:100)(Number(process.env.WITHDRAWAL_FEE_MINOR)),
   outstandingDebtMinor:debtMinor,
   debtLimitMinor:debt.limitMinor,
   debtRestricted:debt.restricted,
@@ -302,7 +311,7 @@ export async function walletTransactions(db,actor,{limit=100}={}){
  const earn=(await db.query(`SELECT j.id,j.kind,j.shipment_id,j.created_at,
     sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)::bigint AS net_minor
    FROM checkout_accounting_journals j JOIN checkout_accounting_lines l ON l.journal_id=j.id JOIN shipments s ON s.id=j.shipment_id
-  WHERE l.account='rider_payable' AND s.rider_id=$1 AND s.company_id IS NULL AND j.kind IN ('delivery_completed','payout_completed')
+  WHERE l.account='rider_payable' AND s.rider_id=$1 AND s.company_id IS NULL AND j.kind IN ('delivery_completed','payout_completed','payout_reversed')
   GROUP BY j.id ORDER BY j.created_at DESC LIMIT $2`,[riderId,n])).rows;
  const items=[];
  for(const r of fin){
@@ -311,8 +320,8 @@ export async function walletTransactions(db,actor,{limit=100}={}){
  }
  for(const r of earn){
   const amt=Math.abs(Number(r.net_minor));if(!amt)continue;
-  const type=r.kind==='delivery_completed'?'digital_delivery_earnings':'withdrawal_paid';
-  const sign=r.kind==='delivery_completed'?1:-1;
+  const type=r.kind==='delivery_completed'?'digital_delivery_earnings':r.kind==='payout_reversed'?'withdrawal_reversed':'withdrawal_paid';
+  const sign=r.kind==='payout_completed'?-1:1;
   items.push({id:r.id,source:'earnings_ledger',type,shipmentId:r.shipment_id,amountMinor:amt,walletEffectMinor:sign*amt,debtEffectMinor:0,earningsEffectMinor:sign*amt,at:r.created_at});
  }
  items.sort((a,b)=>new Date(b.at)-new Date(a.at));

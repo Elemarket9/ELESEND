@@ -499,7 +499,7 @@
       <div id="tabSettlements" style="display: none;">
         <div class="order-card" style="margin-bottom: 14px;">
           <strong>Payout Details</strong>
-          <div style="font-size: 12px; color: var(--text-muted); margin: 4px 0 10px;">Payouts go to Mobile Money on your verified phone number.</div>
+          <div style="font-size: 12px; color: var(--text-muted); margin: 4px 0 10px;">Your available balance is paid automatically once a day to Mobile Money on your verified phone number.</div>
           <div class="field">
             <label for="payoutNetwork">Network</label>
             <select id="payoutNetwork" class="input">
@@ -532,8 +532,24 @@
             <div class="stat-value" id="statCommission">GH₵ 0.00</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">Net Payable Balance</div>
-            <div class="stat-value primary" id="statNetPayable">GH₵ 0.00</div>
+            <div class="stat-label">Total Earned (All Time)</div>
+            <div class="stat-value" id="statNetPayable">GH₵ 0.00</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Available Now</div>
+            <div class="stat-value primary" id="statAvailable">GH₵ 0.00</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">On Hold</div>
+            <div class="stat-value" id="statOnHold">GH₵ 0.00</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Payout In Progress</div>
+            <div class="stat-value" id="statInProgress">GH₵ 0.00</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Paid Out</div>
+            <div class="stat-value" id="statPaidOut">GH₵ 0.00</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Completed Orders</div>
@@ -1372,6 +1388,10 @@
         if (tblCommHeader) tblCommHeader.textContent = 'Commission (' + commRate + '%)';
         document.getElementById('statCommission').textContent = 'GH₵ ' + (Number(totals.commissionMinor ?? totals.commission_minor ?? 0) / 100).toFixed(2);
         document.getElementById('statNetPayable').textContent = 'GH₵ ' + (Number(totals.netPayableMinor ?? totals.net_payable_minor ?? 0) / 100).toFixed(2);
+        const balance = data.balance || {};
+        for (const [id, value] of [['statAvailable', balance.availableMinor], ['statOnHold', balance.onHoldMinor], ['statInProgress', balance.inProgressMinor], ['statPaidOut', balance.paidMinor]]) {
+          document.getElementById(id).textContent = 'GH₵ ' + (Number(value || 0) / 100).toFixed(2);
+        }
         document.getElementById('statOrderCount').textContent = totals.totalOrders ?? totals.count ?? 0;
 
         const tbody = document.getElementById('settlementsTableBody');

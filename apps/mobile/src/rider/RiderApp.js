@@ -21,6 +21,7 @@ import {
   TouchableOpacity, Modal, Vibration
 } from 'react-native';
 import * as Location from 'expo-location';
+import { EmergencyButton, RatingPrompts, RiderTools, ShareLiveLocation, TrustedContactCard } from '../rider-safety';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline, openTurnByTurnNavigation } from '../maps/map-adapter';
 import { call, loadToken, saveToken, clearToken, ghc, parseGhs, BASE } from '../api';
@@ -83,6 +84,17 @@ export default function RiderApp() {
   const [momoPhone, setMomoPhone] = useState('');
   const [momoAmount, setMomoAmount] = useState('');
   const [withdrawModal, setWithdrawModal] = useState(false);
+  const [confirmWithdraw, setConfirmWithdraw] = useState(false);
+  const availableNow = financeSnapshot?.availableNowMinor || 0;
+  const withdrawalMin = financeSnapshot?.withdrawalMinMinor || 0;
+  const withdrawalFee = financeSnapshot?.withdrawalFeeMinor || 0;
+  const canWithdraw = availableNow > 0 && availableNow >= withdrawalMin && availableNow > withdrawalFee;
+  const [withdrawPassword, setWithdrawPassword] = useState('');
+  const withdrawKey = useRef(null);
+  const [licence, setLicence] = useState(null);
+  const [licenceModal, setLicenceModal] = useState(false);
+  const [riderDocuments, setRiderDocuments] = useState([]);
+  const [licenceForm, setLicenceForm] = useState({ legalName: '', licenceNumber: '', licenceClass: '', expiresOn: '', vehiclePlate: '' });
   const [payoutName, setPayoutName] = useState('');
 
   // Active Handover & OTP State
@@ -535,9 +547,17 @@ export default function RiderApp() {
     setOtp('');
   }
 
+  async function initiateReturnVerification(shipment) {
+    const c = await call('POST', `/api/v1/shipments/${shipment.id}/return-challenge`, {});
+    setActiveParcel({ ...shipment, kind: 'return' });
+    setChallenge(c);
+    setOtp('');
+  }
+
   async function submitOtpVerification() {
     if (!activeParcel || !challenge) return;
     if (otp.trim().length !== 6) throw Error('Enter the exact 6-digit handover OTP');
+    const verifiedKind = activeParcel.kind;
 
     await call('POST', `/api/v1/shipments/${activeParcel.id}/verify`, {
       challengeId: challenge.challengeId,
@@ -549,7 +569,9 @@ export default function RiderApp() {
     setOtp('');
     const m = await call('GET', '/api/v1/rider/manifest').catch(() => null);
     setManifest(m);
-    setError('Delivery verified and completed! Earnings credited to your wallet.');
+    setError(verifiedKind === 'return'
+      ? 'Return confirmed by the sender. Your earnings have been recorded.'
+      : 'Delivery verified and completed! Earnings credited to your wallet.');
   }
 
   async function releaseAssignment(shipmentId, reason = 'Unable to complete pickup before custody') {
@@ -673,6 +695,46 @@ export default function RiderApp() {
     ]);
     if (cs) setCommSummary(cs);
     if (w) setFinanceSnapshot(w);
+  }
+
+  async function submitLicence() {
+    const form = licenceForm;
+    await call('POST', '/api/v1/rider/licence', {
+      legalName: form.legalName.trim(),
+      licenceNumber: form.licenceNumber.trim(),
+      expiresOn: form.expiresOn.trim(),
+      ...(form.licenceClass.trim() ? { licenceClass: form.licenceClass.trim() } : {}),
+      ...(form.vehiclePlate.trim() ? { vehiclePlate: form.vehiclePlate.trim() } : {})
+    });
+    setLicence(await call('GET', '/api/v1/rider/licence'));
+    setError('Details saved. Now take your licence photo and selfie.');
+  }
+
+  async function openDocumentUpload() {
+    const res = await call('POST', '/api/v1/rider/documents/upload-link', {});
+    if (res?.path) await Linking.openURL(`${BASE}${res.path}`);
+  }
+
+  async function startIdentityPhotos() {
+    const res = await call('POST', '/api/v1/rider/licence/identity-check', {});
+    if (res?.url) await Linking.openURL(res.url);
+  }
+
+  async function requestWithdrawal() {
+    // The key survives a lost connection, so a repeat press cannot start a second withdrawal.
+    withdrawKey.current = withdrawKey.current || Crypto.randomUUID();
+    const res = await call('POST', '/api/v1/rider/wallet/withdraw', { idempotencyKey: withdrawKey.current, password: withdrawPassword });
+    withdrawKey.current = null;
+    setConfirmWithdraw(false);
+    setWithdrawPassword('');
+    const amount = ghc(res?.amountMinor || 0);
+    setError(res?.status === 'paid'
+      ? `${amount} sent to your Mobile Money.`
+      : res?.status === 'failed'
+        ? `Your withdrawal of ${amount} failed and the money is back in your balance.`
+        : `Your withdrawal of ${amount} is processing.`);
+    const fin = await call('GET', '/api/v1/rider/wallet/summary').catch(() => null);
+    if (fin) setFinanceSnapshot(fin);
   }
 
   async function submitWithdrawalRequest() {
@@ -1156,6 +1218,12 @@ export default function RiderApp() {
         {/* TAB 2: ACTIVE MANIFEST & NAVIGATION */}
         {/* ================================================================= */}
         {tab === 'Manifest' && (
+          <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+            <EmergencyButton shipmentId={manifest?.shipments?.[0]?.id} />
+            <ShareLiveLocation shipmentId={manifest?.shipments?.[0]?.id} />
+          </View>
+        )}
+        {tab === 'Manifest' && (
           <View>
             {manifest?.stops && manifest.stops.length > 0 ? (
               <View>
@@ -1322,9 +1390,9 @@ export default function RiderApp() {
 
                     {s.state === 'RETURN_REQUESTED' && (
                       <TouchableOpacity
-                        onPress={() => execute(() => transitionShipment(s.id, 'returned', 'Package returned to sender/kitchen'))}
+                        onPress={() => execute(() => initiateReturnVerification(s))}
                         style={[styles.primaryBtn, { marginTop: 10 }]}>
-                        <Text style={styles.primaryBtnText}>Confirm Returned to Origin</Text>
+                        <Text style={styles.primaryBtnText}>Get Sender's Return Code</Text>
                       </TouchableOpacity>
                     )}
                   </View>
@@ -1508,6 +1576,13 @@ export default function RiderApp() {
         {/* TAB 3: EARNINGS, CASH COMMISSION & SETTLEMENT */}
         {/* ================================================================= */}
         {tab === 'Earnings' && (
+          <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+            <RatingPrompts />
+            <RiderTools />
+            <TrustedContactCard />
+          </View>
+        )}
+        {tab === 'Earnings' && (
           <View>
             {/* Wallet (server-derived from ELESEND ledgers) */}
             <View style={styles.walletCard}>
@@ -1533,10 +1608,38 @@ export default function RiderApp() {
                 <Text style={styles.debtSub}>Fleet-company job earnings ({ghc(financeSnapshot.companyEarningsMinor)}) are paid to your company.</Text>
               )}
               <TouchableOpacity
+                onPress={() => execute(async () => {
+                  setLicence(await call('GET', '/api/v1/rider/licence'));
+                  const docs = await call('GET', '/api/v1/rider/documents').catch(() => null);
+                  setRiderDocuments(docs?.documents || []);
+                  setLicenceModal(true);
+                })}
+                style={[styles.secondaryBtn, { marginTop: 12 }]}>
+                <Text style={styles.secondaryBtnText}>Licence & Documents</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
                 onPress={() => setWithdrawModal(true)}
                 style={[styles.primaryBtn, { marginTop: 12 }]}>
                 <Text style={styles.primaryBtnText}>Payout Account</Text>
               </TouchableOpacity>
+              <TouchableOpacity
+                disabled={busy || !canWithdraw}
+                onPress={() => setConfirmWithdraw(true)}
+                style={[styles.primaryBtn, { marginTop: 8, opacity: canWithdraw ? 1 : 0.5 }]}>
+                <Text style={styles.primaryBtnText}>
+                  {canWithdraw
+                    ? `Withdraw ${ghc(availableNow)}`
+                    : availableNow > 0
+                      ? `${ghc(withdrawalMin - availableNow)} more to withdraw`
+                      : 'Nothing to withdraw yet'}
+                </Text>
+              </TouchableOpacity>
+              {canWithdraw && (
+                <Text style={[styles.momoSub, { marginTop: 6 }]}>You receive {ghc(availableNow - withdrawalFee)} after the {ghc(withdrawalFee)} transfer fee.</Text>
+              )}
+              {financeSnapshot?.onHoldMinor > 0 && (
+                <Text style={[styles.momoSub, { marginTop: 6 }]}>{ghc(financeSnapshot.onHoldMinor)} on hold from recent deliveries.</Text>
+              )}
             </View>
 
             {/* Commission debt and assignment eligibility */}
@@ -1622,6 +1725,84 @@ export default function RiderApp() {
             </Modal>
 
             {/* Withdrawal Modal */}
+            <Modal visible={licenceModal} animationType="fade" transparent>
+              <View style={styles.modalOverlay}>
+                <View style={styles.momoCard}>
+                  <Text style={styles.momoTitle}>Driver's Licence</Text>
+                  <Text style={styles.momoSub}>
+                    {licence?.status === 'approved' ? `Approved, valid until ${licence.validUntil}.`
+                      : licence?.status === 'pending' ? 'Waiting for review. You can start deliveries once it is approved.'
+                        : licence?.status === 'rejected' ? `Rejected: ${licence.rejectionReason}. Please correct it and submit again.`
+                          : 'Required before you can take deliveries. Bicycle riders enter their Ghana Card instead.'}
+                  </Text>
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Full Legal Name</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.legalName} onChangeText={value => setLicenceForm(f => ({ ...f, legalName: value }))} />
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Licence Number</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceNumber} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceNumber: value }))} />
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Licence Class</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceClass} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceClass: value }))} />
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Expiry Date (YYYY-MM-DD)</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.expiresOn} onChangeText={value => setLicenceForm(f => ({ ...f, expiresOn: value }))} />
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Vehicle Plate Number</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.vehiclePlate} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, vehiclePlate: value }))} />
+                  {licence && licence.status !== 'missing' && (
+                    <Text style={[styles.momoSub, { marginTop: 10 }]}>
+                      Photo check: {licence.identityStatus === 'approved' ? 'passed'
+                        : licence.identityStatus === 'in_progress' ? 'in progress'
+                          : licence.identityStatus === 'failed' ? `failed. ${licence.identityReason || ''}` : 'not started'}
+                    </Text>
+                  )}
+                  {licence && licence.status !== 'missing' && licence.identityStatus !== 'approved' && (
+                    <TouchableOpacity disabled={busy} onPress={() => execute(startIdentityPhotos)} style={[styles.primaryBtn, { marginTop: 10 }]}>
+                      <Text style={styles.primaryBtnText}>Take Licence Photo and Selfie</Text>
+                    </TouchableOpacity>
+                  )}
+                  {riderDocuments.map(d => (
+                    <Text key={d.kind} style={[styles.momoSub, { marginTop: 6 }]}>
+                      {d.kind.replace('_', ' ')}: {d.status}{d.rejectionReason ? ` (${d.rejectionReason})` : ''}
+                    </Text>
+                  ))}
+                  <TouchableOpacity disabled={busy} onPress={() => execute(openDocumentUpload)} style={[styles.secondaryBtn, { marginTop: 10 }]}>
+                    <Text style={styles.secondaryBtnText}>Upload Photo & Certificates</Text>
+                  </TouchableOpacity>
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
+                    <TouchableOpacity onPress={() => setLicenceModal(false)} style={[styles.secondaryBtn, { flex: 1 }]}>
+                      <Text style={styles.secondaryBtnText}>Close</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity disabled={busy} onPress={() => execute(submitLicence)} style={[styles.primaryBtn, { flex: 2 }]}>
+                      <Text style={styles.primaryBtnText}>Save Details</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+
+            <Modal visible={confirmWithdraw} animationType="fade" transparent>
+              <View style={styles.modalOverlay}>
+                <View style={styles.momoCard}>
+                  <Text style={styles.momoTitle}>Withdraw {ghc(availableNow)}</Text>
+                  <Text style={styles.momoSub}>You receive {ghc(availableNow - withdrawalFee)} on Mobile Money ({auth.phone}) after the {ghc(withdrawalFee)} transfer fee. Enter your password to confirm.</Text>
+                  <TextInput
+                    secureTextEntry
+                    autoCapitalize="none"
+                    placeholder="Password"
+                    placeholderTextColor={colors.textMuted}
+                    style={[styles.input, { marginTop: 12 }]}
+                    value={withdrawPassword}
+                    onChangeText={setWithdrawPassword}
+                  />
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
+                    <TouchableOpacity onPress={() => { setConfirmWithdraw(false); setWithdrawPassword(''); }} style={[styles.secondaryBtn, { flex: 1 }]}>
+                      <Text style={styles.secondaryBtnText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity disabled={busy || !withdrawPassword} onPress={() => execute(requestWithdrawal)} style={[styles.primaryBtn, { flex: 2 }]}>
+                      <Text style={styles.primaryBtnText}>Withdraw</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+
             <Modal visible={withdrawModal} animationType="fade" transparent>
               <View style={styles.modalOverlay}>
                 <View style={styles.momoCard}>

@@ -56,7 +56,7 @@ test('payouts send the documented request with a stable, valid reference',async(
 
 test('transfer statuses map safely, and unknown ones stay pending',async()=>{
  const requestId=randomUUID();
- for(const [status,expected] of [['success','paid'],['failed','failed'],['reversed','failed'],['pending','pending'],['otp','pending'],['abandoned','pending'],['something_new','pending']]){
+ for(const [status,expected] of [['success','paid'],['failed','failed'],['reversed','failed'],['pending','pending'],['otp','pending'],['abandoned','failed'],['blocked','failed'],['rejected','failed'],['something_new','pending']]){
   const record=await fake(()=>transfer(requestId,{status})).adapter.verifyPayout({requestId});
   assert.equal(record.status,expected,status);assert.equal(record.requestId,requestId);assert.equal(record.recipientReference,RCP);
  }

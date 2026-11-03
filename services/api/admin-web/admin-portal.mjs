@@ -347,6 +347,24 @@ export function renderAdminPortalHtml() {
       <div id="riskTab" class="panel">
         <div class="card">
           <div class="card-title">
+            <span>Missing Parcels</span>
+            <button class="action-btn" onclick="loadCustody()">Refresh</button>
+          </div>
+          <div class="card-subtitle">Parcels still with a rider after the time limit. The rider is suspended automatically. Check the facts and try to reach the rider before reporting to the police.</div>
+          <div id="custodyList"></div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span>Emergency Alerts</span><button class="action-btn" onclick="loadSafety()">Refresh</button></div>
+          <div id="safetyList"></div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span>Rider Reward Campaign</span></div>
+          <div class="card-subtitle">Rewards are commission credit, used against future cash commission.</div>
+          <input id="rewardTitle" placeholder="Title"> <input id="rewardTarget" type="number" placeholder="Deliveries"> <input id="rewardAmount" type="number" placeholder="Reward (GH₵)"> <input id="rewardDays" type="number" placeholder="Days">
+          <button class="action-btn" onclick="createReward()">Create</button>
+        </div>
+        <div class="card">
+          <div class="card-title">
             <span>Explainable Risk Signals</span>
             <button class="action-btn" onclick="loadRisk()">Refresh Signals</button>
           </div>
@@ -1035,10 +1053,12 @@ export function renderAdminPortalHtml() {
           <tr>
             <td>\${escapeHtml(r.phone || r.id.slice(0, 8))}</td>
             <td>COURIER</td>
-            <td>\${escapeHtml(r.vehicle || 'motorcycle')}</td>
+            <td>\${escapeHtml(r.vehicle || 'motorcycle')}\${r.licence ? '<br><strong>' + escapeHtml(r.licence.legal_name) + '</strong><br>' + escapeHtml(r.licence.document_type) + ' ' + escapeHtml(r.licence.number) + (r.licence.licence_class ? ' • Class ' + escapeHtml(r.licence.licence_class) : '') + '<br>Expires ' + escapeHtml(r.licence.expires_on) + (r.licence.vehicle_plate ? ' • Plate ' + escapeHtml(r.licence.vehicle_plate) : '') + ' • ' + escapeHtml(r.licence.status) + '<br>Photo check: ' + escapeHtml(r.licence.identity_status) + (r.licence.identity_reason ? ' (' + escapeHtml(r.licence.identity_reason) + ')' : '') : '<br><em>No licence submitted</em>'}</td>
             <td><span class="badge badge-warn">\${escapeHtml(r.status.toUpperCase())}</span></td>
             <td>
               <button class="action-btn" onclick="reviewRider('\${escapeHtml(r.id)}', 'approved')">Approve</button>
+              \${r.licence ? \`<button class="action-btn" onclick="rejectLicence('\${escapeHtml(r.id)}')">Reject Licence</button>\` : ''}
+              \${(r.documents || []).map(d => \`<button class="action-btn" onclick="viewDocument('\${escapeHtml(r.id)}', '\${escapeHtml(d.kind)}')">\${escapeHtml(d.kind.replace('_', ' '))} (\${escapeHtml(d.status)})</button>\`).join(' ')}
               <button class="action-btn btn-danger" onclick="reviewRider('\${escapeHtml(r.id)}', 'suspended')">Reject</button>
             </td>
           </tr>
@@ -1048,6 +1068,38 @@ export function renderAdminPortalHtml() {
       }
     }
 
+    async function viewDocument(id, kind) {
+      const doc = await api('/api/v1/admin/riders/' + id + '/documents/' + kind);
+      const box = document.createElement('div');
+      box.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;overflow:auto;padding:20px;color:#fff';
+      const close = document.createElement('button');
+      close.className = 'action-btn';
+      close.textContent = 'Close';
+      close.onclick = () => box.remove();
+      const reject = document.createElement('button');
+      reject.className = 'action-btn btn-danger';
+      reject.textContent = 'Reject Document';
+      reject.onclick = async () => {
+        const reason = prompt('Why is this document being rejected?');
+        if (!reason) return;
+        await api('/api/v1/admin/riders/' + id + '/documents/' + kind + '/reject', { method: 'POST', body: JSON.stringify({ reason }) });
+        box.remove();
+        loadFleet();
+      };
+      const info = document.createElement('p');
+      info.textContent = kind.replace('_', ' ') + (doc.expiresOn ? ' • Expires ' + doc.expiresOn : '');
+      const img = document.createElement('img');
+      img.src = 'data:image/jpeg;base64,' + doc.imageBase64;
+      img.style.cssText = 'max-width:100%;display:block;margin-top:12px';
+      box.append(close, ' ', reject, info, img);
+      document.body.appendChild(box);
+    }
+    async function rejectLicence(id) {
+      const reason = prompt('Why is this licence being rejected?');
+      if (!reason) return;
+      await api('/api/v1/admin/riders/' + id + '/licence/reject', { method: 'POST', body: JSON.stringify({ reason }) });
+      loadFleet();
+    }
     async function reviewRider(id, status) {
       try {
         await api(\`/api/v1/admin/riders/\${id}\`, {
@@ -1060,7 +1112,55 @@ export function renderAdminPortalHtml() {
       }
     }
 
+    async function loadSafety() {
+      const box = document.getElementById('safetyList');
+      try {
+        const rows = await api('/api/v1/admin/safety-alerts');
+        box.textContent = '';
+        if (!rows?.length) { box.textContent = 'No emergency alerts.'; return; }
+        rows.forEach(a => {
+          const line = document.createElement('p');
+          line.textContent = [a.status.toUpperCase(), a.kind, a.phone, new Date(a.created_at).toLocaleString(), a.latitude != null ? a.latitude + ',' + a.longitude : 'no location', a.notified_count + ' notified', a.resolution_note || ''].join(' • ') + ' ';
+          if (a.status === 'open') {
+            const b = document.createElement('button');
+            b.className = 'action-btn';
+            b.textContent = 'Resolve';
+            b.onclick = async () => { const note = prompt('What happened?'); if (!note) return; await api('/api/v1/admin/safety-alerts/' + a.id + '/resolve', { method: 'POST', body: JSON.stringify({ note }) }); loadSafety(); };
+            line.appendChild(b);
+          }
+          box.appendChild(line);
+        });
+      } catch (e) { box.textContent = e.message; }
+    }
+    async function createReward() {
+      const value = id => document.getElementById(id).value;
+      try {
+        await api('/api/v1/admin/reward-campaigns', { method: 'POST', body: JSON.stringify({ title: value('rewardTitle'), targetDeliveries: Number(value('rewardTarget')), rewardMinor: Math.round(Number(value('rewardAmount')) * 100), days: Number(value('rewardDays')) }) });
+        alert('Campaign created');
+      } catch (e) { alert(e.message); }
+    }
+    async function loadCustody() {
+      const box = document.getElementById('custodyList');
+      try {
+        const rows = await api('/api/v1/admin/custody-incidents');
+        box.innerHTML = !rows?.length ? '<p>No missing parcels.</p>' : rows.map(i => '<details style="margin-bottom:10px"><summary>'
+          + escapeHtml(String(i.shipment_id).slice(0, 8)) + ' • Rider ' + escapeHtml(String(i.evidence?.rider_phone || '')) + ' • ' + escapeHtml(i.outcome || 'OPEN')
+          + (i.police_reference ? ' • Police ref ' + escapeHtml(i.police_reference) : '')
+          + '</summary><pre style="white-space:pre-wrap">' + escapeHtml(JSON.stringify(i.evidence, null, 2)) + '</pre>'
+          + ['police_reported', 'recovered', 'false_alarm'].map(o => '<button class="action-btn" onclick="resolveCustody(\\'' + escapeHtml(i.id) + '\\',\\'' + o + '\\')">' + o.replace('_', ' ') + '</button> ').join('')
+          + '</details>').join('');
+      } catch (e) { box.textContent = e.message; }
+    }
+    async function resolveCustody(id, outcome) {
+      const reason = prompt('Reason for this decision');
+      if (!reason) return;
+      const policeReference = outcome === 'police_reported' ? (prompt('Police report reference') || undefined) : undefined;
+      await api('/api/v1/admin/custody-incidents/' + id + '/resolve', { method: 'POST', body: JSON.stringify({ outcome, reason, policeReference }) });
+      loadCustody();
+    }
     async function loadRisk() {
+      loadCustody();
+      loadSafety();
       try {
         const signals = await api('/api/v1/admin/risk-signals');
         const tb = document.getElementById('riskTable');

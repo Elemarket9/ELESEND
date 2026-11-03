@@ -944,9 +944,42 @@ export function restaurantOrderService(db, options = {}) {
       [restaurantId]
     )).rows[0];
 
+    // What is owed comes from the ledger. `totals` above is lifetime history and includes paid orders.
+    const holdHours = (() => { const n = Number(process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS); return process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS && Number.isSafeInteger(n) && n >= 0 ? n : 24; })();
+    const owed = (await db.query(
+      `SELECT coalesce(sum(payable) FILTER (WHERE in_progress), 0)::bigint AS in_progress,
+              coalesce(sum(payable) FILTER (WHERE NOT in_progress AND on_hold), 0)::bigint AS on_hold,
+              coalesce(sum(payable) FILTER (WHERE NOT in_progress AND NOT on_hold), 0)::bigint AS available
+       FROM (
+         SELECT sum(CASE WHEN l.side = 'credit' THEN l.amount_minor ELSE -l.amount_minor END) AS payable,
+                EXISTS(SELECT 1 FROM payout_operations p WHERE p.shipment_id = s.id AND p.kind = 'restaurant' AND p.status IN ('proposed', 'initiating', 'pending', 'needs_review')) AS in_progress,
+                (coalesce(s.completed_at, s.created_at) > now() - make_interval(hours => $2)
+                  OR EXISTS(SELECT 1 FROM restaurant_settlements rs WHERE rs.order_id = f.id AND rs.status = 'withheld')) AS on_hold
+         FROM food_orders f
+         JOIN shipments s ON s.id = f.shipment_id
+         JOIN checkout_accounting_journals j ON j.shipment_id = s.id
+         JOIN checkout_accounting_lines l ON l.journal_id = j.id AND l.account = 'restaurant_payable'
+         WHERE f.restaurant_id = $1
+         GROUP BY s.id, f.id
+       ) unpaid WHERE payable > 0`,
+      [restaurantId, holdHours]
+    )).rows[0];
+    const paid = (await db.query(
+      `SELECT coalesce(sum(p.amount_minor), 0)::bigint AS total
+       FROM payout_operations p JOIN food_orders f ON f.shipment_id = p.shipment_id
+       WHERE f.restaurant_id = $1 AND p.kind = 'restaurant' AND p.status = 'paid'`,
+      [restaurantId]
+    )).rows[0];
+
     return {
       restaurantId,
       restaurantName: r.name,
+      balance: {
+        availableMinor: Number(owed.available),
+        onHoldMinor: Number(owed.on_hold),
+        inProgressMinor: Number(owed.in_progress),
+        paidMinor: Number(paid.total)
+      },
       foodCommissionBps: r.food_commission_bps,
       totals: {
         grossSalesMinor: Number(totals.gross_sales_minor),

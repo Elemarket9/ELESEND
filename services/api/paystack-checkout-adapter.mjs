@@ -5,7 +5,7 @@ import {validatedCheckoutUrl} from './checkout-policy.mjs';
  * QR renders a provider-hosted checkout URL as a QR code (not GHQR merchant QR).
  * Requires active Ghana merchant account with the chosen checkout channels.
  */
-export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://api.paystack.co',allowedMethods=['MOMO','CARD','QR'],production=process.env.NODE_ENV==='production'}={}){
+export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://api.paystack.co',allowedMethods=['MOMO','CARD','QR'],processingFeeBps=195,production=process.env.NODE_ENV==='production'}={}){
  check(typeof secretKey==='string'&&/^sk_(live|test)_/.test(secretKey),503,'Valid server-only PSP key required');
  if(production)check(secretKey.startsWith('sk_live_'),503,'Live PSP key required for production');
  check(endpoint==='https://api.paystack.co',500,'Only official PSP endpoint is accepted');
@@ -14,7 +14,7 @@ export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://ap
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
   try{
    const response=await fetchImpl(endpoint+path,{...options,headers:{Authorization:`Bearer ${secretKey}`,'Accept-Encoding':'gzip, deflate',...options.headers},signal:controller.signal,redirect:'error'});
-   check(response.ok,502,`PSP request failed (${response.status})`);
+   if(!response.ok){const error=Object.assign(new Error(`PSP request failed (${response.status})`),{status:502,providerStatus:response.status});throw error;}
    const raw=await response.json();check(raw?.status===true,502,'PSP rejected request');return raw.data;
   }finally{clearTimeout(timer);}
  }
@@ -36,7 +36,8 @@ export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://ap
   const d=await remote('/transfer/verify/'+encodeURIComponent(reference));
   if(production)check(d?.domain==='live',409,'Transfer is not live');
   check(d?.reference===reference&&Number.isSafeInteger(Number(d?.amount))&&(typeof d?.id==='number'||typeof d?.id==='string'),502,'Invalid transfer verification response');
-  const failed=d.status==='failed'||d.status==='reversed';
+  // Paystack lists these as final: the transfer will never complete.
+  const failed=['failed','reversed','abandoned','blocked','rejected'].includes(d.status);
   return {verified:true,type:'payout',provider:'paystack',
    status:d.status==='success'?'paid':failed?'failed':'pending',
    reversed:d.status==='reversed',
@@ -48,7 +49,7 @@ export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://ap
    ...(failed?{failureReason:String(d.gateway_response||d.failures||'Provider reported transfer '+d.status).slice(0,300)}:{})};
  }
  return {
-  name:'paystack',methods,requiresVerifiedPhone:true,
+  name:'paystack',methods,processingFeeBps,requiresVerifiedPhone:true,
   /** Creates a mobile money recipient for a phone number ELESEND has already verified by SMS. */
   async createBeneficiary({phone,network,accountName}){
    const code=NETWORK_CODES[network];
@@ -80,7 +81,11 @@ export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://ap
   },
   verifyPayout({requestId}){
    check(/^[0-9a-f-]{36}$/.test(requestId),400,'Invalid payout request');
-   return verifyTransfer(PAYOUT_PREFIX+requestId);
+   // Paystack answers with an error when it has no transfer for the reference.
+   return verifyTransfer(PAYOUT_PREFIX+requestId).catch(e=>{
+    if([400,404].includes(e.providerStatus))return {verified:false,type:'payout',provider:'paystack',status:'not_found',requestId};
+    throw e;
+   });
   },allowedCheckoutHosts:['checkout.paystack.com'],payerFields:['email'],
   commissionIntentId(record){const ref=typeof record==='string'?record:record?.reference||'';const m=/^escomm_([0-9a-f]{32})$/.exec(ref);if(!m)return null;const h=m[1];return [h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');},
   async createCheckout({reference,amountMinor,currency,method,email}){

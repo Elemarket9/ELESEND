@@ -1,6 +1,7 @@
+import {recoverCompanyDebt} from './company-commission.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {check} from './security.mjs';
+import {check,passwordMatches} from './security.mjs';
 import {checkoutJournal} from './checkout-accounting.mjs';
 import {recoverDebtFromEarnings,debtState,lockRiderAccount} from './rider-wallet.mjs';
 const uuid=z.string().uuid();
@@ -42,7 +43,14 @@ function assertPayoutReceipt(p,record,providerName){
  if(p.provider_id&&record.providerId!=null)check(String(record.providerId)===String(p.provider_id),409,'Payout evidence mismatch: provider ID');
 }
 
-export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4,leaseSeconds=120}={}){
+const envInt=(value,fallback,min=1)=>{const n=Number(value);return value!==undefined&&value!==''&&Number.isSafeInteger(n)&&n>=min?n:fallback;};
+const WITHDRAWAL_SPEND_LOCK=839212,RESUBMIT_AFTER_SECONDS=300,GIVE_UP_AFTER_SECONDS=86400,MAX_DAILY_FAILURES=3;
+export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4,leaseSeconds=120,
+ withdrawalMinMinor=envInt(process.env.WITHDRAWAL_MIN_MINOR,10000),
+ withdrawalFeeMinor=envInt(process.env.WITHDRAWAL_FEE_MINOR,100,0),
+ platformDailyLimitMinor=envInt(process.env.WITHDRAWAL_PLATFORM_DAILY_LIMIT_MINOR,0,0),
+ earningsHoldHours=envInt(process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS,24,0),
+ securityHoldHours=envInt(process.env.WITHDRAWAL_SECURITY_HOLD_HOURS,24,0)}={}){
  async function permit(actor,permissions=['finance:configure']){
   check(actor?.kind==='admin',403,'Administrator required');
   check((await db.query('SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])',[actor.id,[permissions].flat()])).rowCount,403,'Finance permission required');
@@ -125,10 +133,146 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   const record=await withTimeout(provider.verifyRefund({requestId:r.id,providerId:r.provider_id,reference:r.reference,amountMinor:Number(r.amount_minor),currency:r.currency}),verifyTimeoutMs);
   return applyRefundRecord(r,record);
  }
+ async function loadWithdrawal(id){return (await db.query('SELECT * FROM payout_withdrawals WHERE id=$1',[id])).rows[0];}
+ async function lockIfRider(c,userId){if((await c.query('SELECT 1 FROM riders WHERE id=$1',[userId])).rowCount)await lockRiderAccount(c,userId);}
+ /** Returns every delivery in the withdrawal to the available balance. */
+ async function releaseWithdrawal(c,row,status,reason){
+  const text=String(reason||'Provider reported definitive failure').slice(0,500);
+  await c.query("UPDATE payout_operations SET status='failed',failed_at=now(),failure_reason=$2,updated_at=now() WHERE withdrawal_id=$1",[row.id,text]);
+  await c.query('UPDATE payout_withdrawals SET status=$2,failure_reason=$3,updated_at=now() WHERE id=$1',[row.id,status,text]);
+  await c.query('INSERT INTO audit_logs(action,entity_id) VALUES($1,$2)',['payout_withdrawal.'+status,row.id]);
+ }
+ /** One verified transfer settles every delivery in the withdrawal, or none of them. */
+ async function applyWithdrawalRecord(w,record){
+  if(!['paid','failed'].includes(record?.status))return {id:w.id,status:w.status==='needs_review'?'needs_review':'pending_verification'};
+  check(typeof record.eventId==='string'&&record.eventId.length>=4,409,'Withdrawal evidence requires a provider event');
+  assertPayoutReceipt(w,record,provider?.name);
+  return db.tx(async c=>{
+   await lockIfRider(c,w.beneficiary_id);
+   const row=(await c.query('SELECT * FROM payout_withdrawals WHERE id=$1 FOR UPDATE',[w.id])).rows[0];
+   const target=record.status==='paid'?'paid':record.reversed?'reversed':'failed';
+   if(row.status===target)return {id:row.id,status:row.status,duplicate:true};
+   const reversingPaid=row.status==='paid'&&target==='reversed';
+   check(LIVE_PAYOUT.includes(row.status)||reversingPaid,409,'Withdrawal not in flight');
+   check(!(await c.query('SELECT 1 FROM payment_operation_events WHERE provider=$1 AND event_id=$2',[row.provider,record.eventId])).rowCount,409,'Provider receipt already applied to another operation');
+   await recordEvent(c,row,target==='paid'?'payout':'payout_failed',record);
+   // Shipments before payouts, in a fixed order, matching dispute resolution.
+   await c.query('SELECT id FROM shipments WHERE id IN (SELECT shipment_id FROM payout_operations WHERE withdrawal_id=$1) ORDER BY id FOR UPDATE',[row.id]);
+   const items=(await c.query('SELECT * FROM payout_operations WHERE withdrawal_id=$1 FOR UPDATE',[row.id])).rows;
+   const payableAccount=item=>item.kind==='restaurant'?'restaurant_payable':'rider_payable';
+   if(target==='paid'){
+    check(items.reduce((sum,item)=>sum+Number(item.amount_minor),0)===Number(row.amount_minor)+Number(row.fee_minor),409,'Withdrawal does not match its deliveries');
+    for(const item of items){
+     await checkoutJournal(c,{shipmentId:item.shipment_id,eventKey:'payout:'+item.shipment_id+':'+item.kind+':'+row.id,kind:'payout_completed',entries:[[payableAccount(item),'debit',Number(item.amount_minor)],['provider_receivable','credit',Number(item.amount_minor)]]});
+     if(item.kind==='restaurant')await c.query("UPDATE restaurant_settlements SET status='settled',settled_at=now() WHERE order_id IN (SELECT id FROM food_orders WHERE shipment_id=$1)",[item.shipment_id]);
+    }
+    await c.query("UPDATE payout_operations SET status='paid',updated_at=now() WHERE withdrawal_id=$1",[row.id]);
+    await c.query("UPDATE payout_withdrawals SET status='paid',provider_id=coalesce(provider_id,$2),updated_at=now() WHERE id=$1",[row.id,record.providerId!=null?String(record.providerId):null]);
+    return {id:row.id,status:'paid',duplicate:false};
+   }
+   // Money the provider sent back after a success goes back on the ledger and becomes available again.
+   if(reversingPaid)for(const item of items){
+    await checkoutJournal(c,{shipmentId:item.shipment_id,eventKey:'payout-reversal:'+item.shipment_id+':'+item.kind+':'+row.id,kind:'payout_reversed',entries:[['provider_receivable','debit',Number(item.amount_minor)],[payableAccount(item),'credit',Number(item.amount_minor)]]});
+    if(item.kind==='restaurant')await c.query("UPDATE restaurant_settlements SET status='accrued',settled_at=NULL WHERE order_id IN (SELECT id FROM food_orders WHERE shipment_id=$1)",[item.shipment_id]);
+   }
+   await releaseWithdrawal(c,row,target,record.failureReason);
+   return {id:row.id,status:target,duplicate:false};
+  });
+ }
+ async function failLocally(w,reason){
+  return db.tx(async c=>{
+   await lockIfRider(c,w.beneficiary_id);
+   const row=(await c.query('SELECT * FROM payout_withdrawals WHERE id=$1 FOR UPDATE',[w.id])).rows[0];
+   if(!LIVE_PAYOUT.includes(row.status))return {id:row.id,status:row.status};
+   await releaseWithdrawal(c,row,'failed',reason);
+   return {id:row.id,status:'failed',amountMinor:Number(row.amount_minor)};
+  });
+ }
+ async function reconcileWithdrawal(w){
+  check(typeof provider?.verifyPayout==='function',503,'Active adapter does not support payout verification');
+  const record=await withTimeout(provider.verifyPayout({requestId:w.id,providerId:w.provider_id,recipientReference:w.recipient_reference,amountMinor:Number(w.amount_minor),currency:w.currency}),verifyTimeoutMs);
+  if(record?.status!=='not_found')return applyWithdrawalRecord(w,record);
+  // The provider has no such transfer. Resending the same reference cannot pay twice, so this needs no staff.
+  const age=(Date.now()-new Date(w.created_at).getTime())/1000,idle=(Date.now()-new Date(w.updated_at).getTime())/1000;
+  if(age>GIVE_UP_AFTER_SECONDS)return failLocally(w,'Provider never accepted the transfer');
+  if(idle<RESUBMIT_AFTER_SECONDS)return {id:w.id,status:w.status};
+  return submitWithdrawal(w);
+ }
+ async function submitWithdrawal(w){
+  const amountMinor=Number(w.amount_minor);
+  let receipt;
+  try{
+   // Re-check the destination at the last moment, so an altered record cannot redirect the money.
+   if(typeof provider.verifyBeneficiary==='function'){
+    const user=(await db.query('SELECT phone FROM users WHERE id=$1',[w.beneficiary_id])).rows[0];
+    const owned=await provider.verifyBeneficiary({beneficiaryId:w.beneficiary_id,recipientReference:w.recipient_reference,verifiedPhone:user?.phone});
+    if(owned?.verified!==true)return failLocally(w,'Payout destination no longer matches the verified phone number');
+   }
+   receipt=await provider.createPayout({requestId:w.id,idempotencyKey:w.id,recipientReference:w.recipient_reference,amountMinor,currency:w.currency});
+  }catch(e){
+   // The transfer may have gone through, so it stays locked until the provider says what happened.
+   await db.query("UPDATE payout_withdrawals SET status='needs_review',failure_reason=$2,updated_at=now() WHERE id=$1 AND status IN ('initiating','needs_review')",[w.id,'Submission outcome uncertain: '+reasonText(e)]);
+   return {id:w.id,status:'needs_review',amountMinor};
+  }
+  await db.query("UPDATE payout_withdrawals SET status=CASE WHEN status IN ('initiating','needs_review') THEN 'pending' ELSE status END,provider_id=coalesce(provider_id,$2),updated_at=now() WHERE id=$1",[w.id,receipt?.providerId!=null?String(receipt.providerId):null]);
+  const fresh=await loadWithdrawal(w.id);
+  try{return {...await reconcileWithdrawal(fresh),amountMinor};}catch{return {id:w.id,status:'pending_verification',amountMinor};}
+ }
+ async function availableEarnings(c,kind,scope,userId){
+  const account=kind==='restaurant'?'restaurant_payable':'rider_payable';
+  return (await c.query(`SELECT s.id AS shipment_id,s.company_id,$2::text AS kind,sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)::bigint AS amount
+    FROM shipments s JOIN checkout_accounting_journals j ON j.shipment_id=s.id JOIN checkout_accounting_lines l ON l.journal_id=j.id AND l.account=$3
+    WHERE ${scope} AND s.state IN ('COMPLETED','RETURNED') AND s.paid AND s.payment_method<>'CASH'
+      AND coalesce(s.completed_at,s.created_at)<=now()-make_interval(hours=>$4)
+      AND NOT EXISTS(SELECT 1 FROM payout_operations p WHERE p.shipment_id=s.id AND p.kind=$2 AND p.status NOT IN ('failed','superseded'))
+      ${kind==='restaurant'?"AND NOT EXISTS(SELECT 1 FROM food_orders f JOIN restaurant_settlements rs ON rs.order_id=f.id WHERE f.shipment_id=s.id AND rs.status<>'accrued')":''}
+    GROUP BY s.id HAVING sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)>0 ORDER BY min(coalesce(s.completed_at,s.created_at)) LIMIT 500`,[userId,kind,account,earningsHoldHours])).rows;
+ }
+ /** Every automatic safety check lives here. Anything that fails leaves the money in the balance. */
+ async function createWithdrawal(c,userId,{idempotencyKey,earnings}){
+  const prior=(await c.query('SELECT * FROM payout_withdrawals WHERE beneficiary_id=$1 AND idempotency_key=$2',[userId,idempotencyKey])).rows[0];
+  if(prior)return {existing:prior};
+  check(!(await c.query("SELECT 1 FROM payout_withdrawals WHERE beneficiary_id=$1 AND status IN ('initiating','pending','needs_review')",[userId])).rowCount,409,'You already have a withdrawal in progress');
+  check(!(await c.query("SELECT 1 FROM payout_withdrawals WHERE beneficiary_id=$1 AND status NOT IN ('failed','reversed') AND (created_at AT TIME ZONE 'UTC')::date=(now() AT TIME ZONE 'UTC')::date",[userId])).rowCount,429,'You can withdraw once a day. Please try again tomorrow');
+  const user=(await c.query('SELECT phone_verified_at,credentials_changed_at,deleted_at FROM users WHERE id=$1',[userId])).rows[0];
+  check(user?.phone_verified_at&&!user.deleted_at,403,'Verify your phone number before withdrawing');
+  const holdUntil=changed=>changed?new Date(changed).getTime()+securityHoldHours*3600000:0;
+  check(holdUntil(user.credentials_changed_at)<=Date.now(),423,`For your security, withdrawals resume ${securityHoldHours} hours after a password change`);
+  const beneficiary=(await c.query('SELECT * FROM payout_beneficiaries WHERE user_id=$1 AND provider=$2',[userId,provider.name])).rows[0];
+  check(beneficiary,409,'Add your payout details first');
+  check(holdUntil(beneficiary.destination_changed_at)<=Date.now(),423,`For your security, withdrawals resume ${securityHoldHours} hours after payout details change`);
+  const stats=(await c.query("SELECT count(*) FILTER(WHERE status IN ('failed','reversed'))::int AS failures FROM payout_withdrawals WHERE beneficiary_id=$1 AND created_at>now()-interval '24 hours'",[userId])).rows[0];
+  check(stats.failures<MAX_DAILY_FAILURES,429,'Several withdrawals failed today. Check your Mobile Money account and try again tomorrow');
+  const grossMinor=earnings.reduce((sum,e)=>sum+Number(e.amount),0);
+  check(grossMinor>=withdrawalMinMinor&&grossMinor>withdrawalFeeMinor,409,`You need at least GH₵${(withdrawalMinMinor/100).toFixed(2)} available to withdraw`);
+  // The person pays the transfer fee, so what leaves the provider balance equals what they earned.
+  const amountMinor=grossMinor-withdrawalFeeMinor;
+  // An optional platform-wide ceiling, off unless configured.
+  if(platformDailyLimitMinor>0){
+  await c.query('SELECT pg_advisory_xact_lock($1)',[WITHDRAWAL_SPEND_LOCK]);
+  const platform=Number((await c.query("SELECT coalesce(sum(amount_minor),0)::bigint AS total FROM payout_withdrawals WHERE status NOT IN ('failed','reversed') AND created_at>now()-interval '24 hours'")).rows[0].total);
+  if(platform+amountMinor>platformDailyLimitMinor){
+   process.stderr.write(JSON.stringify({level:'error',component:'withdrawals',code:'platform_daily_limit_reached'})+'\n');
+   check(false,503,'Withdrawals are paused for now. Your money is safe, please try again later');
+  }
+  }
+  const id=randomUUID();
+  const created=(await c.query("INSERT INTO payout_withdrawals(id,beneficiary_id,idempotency_key,provider,recipient_reference,amount_minor,fee_minor,submitted_at) VALUES($1,$2,$3,$4,$5,$6,$7,now()) RETURNING *",[id,userId,idempotencyKey,provider.name,beneficiary.recipient_reference,amountMinor,withdrawalFeeMinor])).rows[0];
+  for(const e of earnings)await c.query("INSERT INTO payout_operations(id,shipment_id,kind,beneficiary_id,company_id,provider,recipient_reference,amount_minor,proposed_by,status,submitted_at,withdrawal_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$4,'initiating',now(),$9)",[randomUUID(),e.shipment_id,e.kind,userId,e.company_id,provider.name,beneficiary.recipient_reference,Number(e.amount),id]);
+  await c.query("INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,'payout_withdrawal.created',$2)",[userId,id]);
+  return {created};
+ }
  async function confirmPayout(record){
   check(record?.status==='paid',409,'Payout is not independently confirmed');uuid.parse(record.requestId);
+  const withdrawal=await loadWithdrawal(record.requestId);
+  if(withdrawal)return applyWithdrawalRecord(withdrawal,record);
   check(typeof record.eventId==='string'&&record.eventId.length>=4,409,'Payout evidence mismatch: event');
   return db.tx(async c=>{
+   // Same lock order as approval and dispute resolution: rider account, shipment, then payout.
+   const pre=(await c.query('SELECT o.kind,o.shipment_id,s.rider_id,s.company_id FROM payout_operations o JOIN shipments s ON s.id=o.shipment_id WHERE o.id=$1',[record.requestId])).rows[0];
+   check(pre,409,'Payout evidence mismatch');
+   if(pre.kind==='rider'&&pre.rider_id&&!pre.company_id)await lockRiderAccount(c,pre.rider_id);
+   await c.query('SELECT id FROM shipments WHERE id=$1 FOR UPDATE',[pre.shipment_id]);
    const p=(await c.query('SELECT * FROM payout_operations WHERE id=$1 FOR UPDATE',[record.requestId])).rows[0];
    check(p,409,'Payout evidence mismatch');
    assertPayoutReceipt(p,record,provider?.name);
@@ -164,6 +308,7 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   return (await db.query(`UPDATE ${table} SET reconcile_lease_until=now()+make_interval(secs=>$3) WHERE id IN (
     SELECT id FROM ${table} WHERE provider=$1 AND status IN ('initiating','pending','needs_review')
     AND (reconcile_lease_until IS NULL OR reconcile_lease_until<now())
+    ${table==='payout_operations'?'AND withdrawal_id IS NULL':''}
     AND coalesce(last_reconciled_at,submitted_at,updated_at,created_at)<now()-make_interval(secs=>$4)
     ORDER BY coalesce(last_reconciled_at,submitted_at,updated_at,created_at) LIMIT $2 FOR UPDATE SKIP LOCKED) RETURNING *`,[provider.name,limit,leaseSeconds,olderThanSeconds])).rows;
  }
@@ -183,6 +328,8 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    }
    if(typeof provider.verifyPayout==='function'){
     const rows=await claim('payout_operations',limit,olderThanSeconds);
+    const withdrawals=await claim('payout_withdrawals',limit,olderThanSeconds);
+    results.push(...await pool(withdrawals,concurrency,async w=>{try{return await reconcileWithdrawal(w);}catch(e){return {id:w.id,status:'verification_unavailable',error:e.code??'error'};}finally{await release('payout_withdrawals',w.id);}}));
     results.push(...await pool(rows,concurrency,async p=>{try{return await verifyPayoutOp(p);}catch(e){return {id:p.id,status:'verification_unavailable',error:e.code??'error'};}finally{await release('payout_operations',p.id).catch(()=>{});}}));
    }
    return results;
@@ -252,8 +399,58 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    }
    const r=await provider.verifyBeneficiary({beneficiaryId:actor.id,recipientReference,...(verifiedPhone?{verifiedPhone}:{})});
    check(r.verified===true&&r.beneficiaryId===actor.id&&r.recipientReference===recipientReference,409,'Beneficiary ownership not verified');
-   await db.query(`INSERT INTO payout_beneficiaries(user_id,provider,recipient_reference) VALUES($1,$2,$3) ON CONFLICT(user_id,provider) DO UPDATE SET recipient_reference=excluded.recipient_reference,verified_at=now()`,[actor.id,provider.name,recipientReference]);
+   await db.query(`INSERT INTO payout_beneficiaries(user_id,provider,recipient_reference) VALUES($1,$2,$3) ON CONFLICT(user_id,provider) DO UPDATE SET destination_changed_at=CASE WHEN payout_beneficiaries.recipient_reference<>excluded.recipient_reference THEN now() ELSE payout_beneficiaries.destination_changed_at END,recipient_reference=excluded.recipient_reference,verified_at=now()`,[actor.id,provider.name,recipientReference]);
    return {verified:true};
+  },
+  /** Pays the rider's available balance as one transfer through the provider, with no staff step. */
+  async requestWithdrawal(actor,input){
+   check(actor?.kind==='rider',403,'Rider account required');
+   const v=z.object({idempotencyKey:z.string().regex(/^[a-zA-Z0-9_-]{8,128}$/),password:z.string().min(1).max(256)}).strict().parse(input);
+   check(typeof provider?.createPayout==='function'&&typeof provider?.verifyPayout==='function',503,'Withdrawals are not available yet');
+   // A stolen or unlocked phone is not enough to move money.
+   const stored=(await db.query('SELECT password_hash FROM users WHERE id=$1',[actor.id])).rows[0]?.password_hash;
+   check(stored&&await passwordMatches(v.password,stored),403,'Incorrect password');
+   const result=await db.tx(async c=>{
+    await lockRiderAccount(c,actor.id);
+    const rider=(await c.query('SELECT status FROM riders WHERE id=$1',[actor.id])).rows[0];
+    check(rider?.status==='approved',403,'Withdrawals are unavailable on this account');
+    await recoverDebtFromEarnings(c,actor.id,{trigger:'payout_precheck'});
+    check((await debtState(c,actor.id)).debtMinor===0,409,'Your earnings first repay your outstanding commission');
+    const earnings=await availableEarnings(c,'rider','s.rider_id=$1 AND s.company_id IS NULL',actor.id);
+    return createWithdrawal(c,actor.id,{idempotencyKey:v.idempotencyKey,earnings});
+   });
+   if(result.existing)return {id:result.existing.id,status:result.existing.status,amountMinor:Number(result.existing.amount_minor),feeMinor:Number(result.existing.fee_minor)};
+   return submitWithdrawal(result.created);
+  },
+  /** Pays restaurants and delivery companies automatically, once per day per owner. */
+  async settleBusinessesDue({limit=50}={}){
+   if(typeof provider?.createPayout!=='function'||typeof provider?.verifyPayout!=='function')return [];
+   const owners=(await db.query(`SELECT b.user_id FROM payout_beneficiaries b WHERE b.provider=$1 AND (
+     EXISTS(SELECT 1 FROM restaurants r WHERE r.owner_id=b.user_id) OR EXISTS(SELECT 1 FROM companies co WHERE co.owner_id=b.user_id AND co.status='approved'))
+     ORDER BY b.user_id LIMIT $2`,[provider.name,limit])).rows;
+   const idempotencyKey='auto-'+new Date().toISOString().slice(0,10);
+   const results=[];
+   for(const {user_id:userId} of owners){
+    try{
+     const result=await db.tx(c=>(async()=>{
+      for(const co of (await c.query("SELECT id FROM companies WHERE owner_id=$1 AND status='approved'",[userId])).rows)await recoverCompanyDebt(c,co.id);
+      const food=await availableEarnings(c,'restaurant','s.id IN (SELECT f.shipment_id FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id WHERE r.owner_id=$1)',userId);
+      const fleet=await availableEarnings(c,'rider',"s.company_id IN (SELECT id FROM companies WHERE owner_id=$1 AND status='approved')",userId);
+      const earnings=[...food,...fleet];
+      if(!earnings.length)return {};
+      return createWithdrawal(c,userId,{idempotencyKey,earnings});
+     })());
+     if(result.created)results.push(await submitWithdrawal(result.created));
+    }catch(e){results.push({userId,status:'skipped',reason:e.message});}
+   }
+   return results;
+  },
+  async withdrawals(actor){await permit(actor,READ);return (await db.query('SELECT id,beneficiary_id,amount_minor,fee_minor,currency,status,provider_id,failure_reason,created_at,updated_at FROM payout_withdrawals ORDER BY created_at DESC LIMIT 100')).rows;},
+  /** Handles a verified provider reversal. Returns null for payouts that are not withdrawals. */
+  async reverseWithdrawal(record){
+   uuid.parse(record.requestId);
+   const w=await loadWithdrawal(record.requestId);
+   return w?applyWithdrawalRecord(w,record):null;
   },
   async payouts(actor){await permit(actor,READ);return (await db.query('SELECT * FROM payout_operations ORDER BY created_at DESC LIMIT 100')).rows;},
   async proposePayout(actor,input){
@@ -435,171 +632,9 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
      await c.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[actor.id,'dispute.dismissed:'+v.reason,d.id]);
      return {disputeId:d.id,status:'dismissed',approvedRefundMinor:0,refundOperationId:null,duplicate:false};
     }
-    check(s&&s.paid&&s.payment_method!=='CASH',409,'Dispute refund requires a verified prepaid shipment');
-    check(s.state==='COMPLETED',409,'Item-level and partial dispute refunds require a completed delivery; use order cancellation/return for undelivered orders');
-    // Lock all payout operations for this shipment upfront before inspecting status or payable balances.
-    const lockedPayouts=(await c.query('SELECT * FROM payout_operations WHERE shipment_id=$1 ORDER BY id ASC FOR UPDATE',[s.id])).rows;
-    const intent=(await c.query("SELECT * FROM shipment_checkout_intents WHERE shipment_id=$1 AND status='confirmed' ORDER BY confirmed_at LIMIT 1 FOR UPDATE",[s.id])).rows[0];
-    check(intent,409,'Verified checkout payment intent required for dispute refund');
-    const priorCancelRefund=Number((await c.query('SELECT coalesce(sum(amount_minor),0)::bigint AS total FROM checkout_refund_requests WHERE shipment_id=$1',[s.id])).rows[0].total);
-    const priorDisputeRefund=Number((await c.query('SELECT coalesce(sum(amount_minor),0)::bigint AS total FROM dispute_refund_requests WHERE shipment_id=$1',[s.id])).rows[0].total);
-    const remainingOrderRefundable=Number(intent.amount_minor)-priorCancelRefund-priorDisputeRefund;
-    check(remainingOrderRefundable>0,409,'Order has already been refunded in full');
-    const fo=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[s.id])).rows[0];
-    const requestedItems=v.items?.length?v.items:(Array.isArray(d.items_json)&&d.items_json.length?d.items_json:[]);
-    const resolvedItems=[];
-    let foodRefundMinor=0;
-    let commRefundMinor=0;
-    let merchantDeductionMinor=0;
-    const deliveryRefundMinor=Number(v.deliveryFeeRefundMinor||0);
-    const entries=[];
-    if(fo){
-     const settlement=(await c.query('SELECT * FROM restaurant_settlements WHERE order_id=$1 FOR UPDATE',[fo.id])).rows[0];
-     check(!settlement||settlement.status!=='settled',409,'Restaurant settlement already paid out; manual adjustment required');
-     const inFlightRestPayout=lockedPayouts.some(p=>p.kind==='restaurant'&&['initiating','pending','needs_review','paid'].includes(p.status));
-     check(!inFlightRestPayout,409,'Restaurant payout already submitted or paid; cannot deduct from settled restaurant payable');
-     const orderItems=(await c.query('SELECT * FROM food_order_items WHERE order_id=$1 ORDER BY id ASC FOR UPDATE',[fo.id])).rows;
-     let itemsGrossMinor=0;
-     for(const reqItem of requestedItems){
-      const targetOrderItemId=reqItem.orderItemId||reqItem.foodOrderItemId;
-      const targetMenuItemId=reqItem.itemId||reqItem.menuItemId;
-      const oi=orderItems.find(x=>(targetOrderItemId&&x.id===targetOrderItemId)||(targetMenuItemId&&x.item_id===targetMenuItemId));
-      check(oi,400,'Disputed item does not belong to this food order');
-      const remainingQty=Number(oi.quantity)-Number(oi.refunded_quantity||0);
-      check(reqItem.quantity<=remainingQty,409,`Refund quantity for "${oi.name}" exceeds remaining unrefunded quantity (${remainingQty})`);
-      const lineMinor=Number(oi.unit_price_minor)*reqItem.quantity;
-      itemsGrossMinor+=lineMinor;
-      oi.refunded_quantity=Number(oi.refunded_quantity||0)+reqItem.quantity;
-      await c.query('UPDATE food_order_items SET refunded_quantity=refunded_quantity+$2 WHERE id=$1',[oi.id,reqItem.quantity]);
-      resolvedItems.push({
-       orderItemId:oi.id,
-       itemId:oi.item_id,
-       name:oi.name,
-       quantity:reqItem.quantity,
-       unitPriceMinor:Number(oi.unit_price_minor),
-       refundMinor:lineMinor
-      });
-     }
-     const restPayableAvail=await payableOrZero(c,s.id,'restaurant');
-     const foodCommAvail=Number((await c.query(`SELECT coalesce(sum(CASE WHEN side='credit' THEN amount_minor ELSE -amount_minor END),0)::bigint AS amount FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id WHERE j.shipment_id=$1 AND l.account='platform_food_commission_revenue'`,[s.id])).rows[0].amount);
-     const maxFoodRefundAvail=restPayableAvail+foodCommAvail;
-     if(v.refundAmountMinor!==undefined){
-      foodRefundMinor=v.refundAmountMinor-deliveryRefundMinor;
-     }else if(itemsGrossMinor>0){
-      const subtotal=Number(fo.subtotal_minor);
-      const netFoodCustomerPaid=Number(fo.customer_food_payable_minor??(subtotal-Number(fo.food_discount_minor||0)));
-      foodRefundMinor=subtotal>0?Math.min(maxFoodRefundAvail,Math.round((itemsGrossMinor*netFoodCustomerPaid)/subtotal)):itemsGrossMinor;
-     }else if(d.requested_refund_minor){
-      foodRefundMinor=Number(d.requested_refund_minor)-deliveryRefundMinor;
-     }
-     check(Number.isSafeInteger(foodRefundMinor)&&foodRefundMinor>=0,400,'Specify disputed items or a valid refundAmountMinor');
-     check(foodRefundMinor<=maxFoodRefundAvail,409,'Requested food refund exceeds remaining food settlement balance');
-     if(foodRefundMinor>0){
-      const bps=Number(fo.food_commission_bps||1000);
-      commRefundMinor=Math.min(foodCommAvail,Math.round((foodRefundMinor*bps)/10000));
-      merchantDeductionMinor=foodRefundMinor-commRefundMinor;
-      if(merchantDeductionMinor>restPayableAvail){
-       merchantDeductionMinor=restPayableAvail;
-       commRefundMinor=foodRefundMinor-merchantDeductionMinor;
-      }
-      check(merchantDeductionMinor<=restPayableAvail&&commRefundMinor<=foodCommAvail,409,'Insufficient food accounting balances for refund split');
-      if(merchantDeductionMinor>0)entries.push(['restaurant_payable','debit',merchantDeductionMinor]);
-      if(commRefundMinor>0)entries.push(['platform_food_commission_revenue','debit',commRefundMinor]);
-      if(settlement){
-       await c.query(`
-        UPDATE restaurant_settlements
-           SET refunded_gross_minor = refunded_gross_minor + $2,
-               commission_minor = commission_minor - $3,
-               net_payable_minor = net_payable_minor - $4
-         WHERE order_id = $1
-       `,[settlement.order_id,foodRefundMinor,commRefundMinor,merchantDeductionMinor]);
-      }
-      const proposedRestPayout=lockedPayouts.find(p=>p.kind==='restaurant'&&p.status==='proposed');
-      if(proposedRestPayout){
-       const nextRestPayable=restPayableAvail-merchantDeductionMinor;
-       if(nextRestPayable<=0){
-        await c.query("UPDATE payout_operations SET status='superseded',failure_reason='Superseded by full dispute refund of restaurant payable',updated_at=now() WHERE id=$1",[proposedRestPayout.id]);
-       }else{
-        await c.query('UPDATE payout_operations SET amount_minor=$2,updated_at=now() WHERE id=$1',[proposedRestPayout.id,nextRestPayable]);
-       }
-      }
-     }
-    }
-    const nonFoodRefundMinor=fo?deliveryRefundMinor:(v.refundAmountMinor??Number(d.requested_refund_minor||0));
-    if(nonFoodRefundMinor>0){
-     const inFlightRiderPayout=lockedPayouts.some(p=>p.kind==='rider'&&['initiating','pending','needs_review','paid'].includes(p.status));
-     check(!inFlightRiderPayout,409,'Rider payout already submitted or paid; cannot refund delivery fee from rider payable');
-     const riderPayableAvail=await payableOrZero(c,s.id,'rider');
-     const delivCommAvail=Number((await c.query(`SELECT coalesce(sum(CASE WHEN side='credit' THEN amount_minor ELSE -amount_minor END),0)::bigint AS amount FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id WHERE j.shipment_id=$1 AND l.account='platform_commission_revenue'`,[s.id])).rows[0].amount);
-     check(nonFoodRefundMinor<=riderPayableAvail+delivCommAvail,409,'Requested delivery refund exceeds remaining delivery settlement balance');
-     const delivCommDeduction=Math.min(delivCommAvail,nonFoodRefundMinor);
-     const riderDeduction=nonFoodRefundMinor-delivCommDeduction;
-     if(delivCommDeduction>0)entries.push(['platform_commission_revenue','debit',delivCommDeduction]);
-     if(riderDeduction>0){
-      entries.push(['rider_payable','debit',riderDeduction]);
-      const proposedRiderPayout=lockedPayouts.find(p=>p.kind==='rider'&&p.status==='proposed');
-      if(proposedRiderPayout){
-       const nextRiderPayable=riderPayableAvail-riderDeduction;
-       if(nextRiderPayable<=0){
-        await c.query("UPDATE payout_operations SET status='superseded',failure_reason='Superseded by dispute refund of rider payable',updated_at=now() WHERE id=$1",[proposedRiderPayout.id]);
-       }else{
-        await c.query('UPDATE payout_operations SET amount_minor=$2,updated_at=now() WHERE id=$1',[proposedRiderPayout.id,nextRiderPayable]);
-       }
-      }
-     }
-    }
-    const totalRefundMinor=foodRefundMinor+nonFoodRefundMinor;
-    check(Number.isSafeInteger(totalRefundMinor)&&totalRefundMinor>0,400,'Approved refund amount must be greater than zero');
-    check(totalRefundMinor<=remainingOrderRefundable,409,'Approved refund exceeds remaining refundable customer payment');
-    entries.push(['customer_refund_liability','credit',totalRefundMinor]);
-    await checkoutJournal(c,{
-     shipmentId:s.id,
-     eventKey:'dispute:'+d.id,
-     kind:'dispute_refund_requested',
-     entries
-    });
-    const reqRow=(await c.query(`
-     INSERT INTO dispute_refund_requests(
-      dispute_id,shipment_id,food_order_id,intent_id,amount_minor,
-      items_subtotal_refund_minor,commission_refund_minor,merchant_net_deduction_minor,
-      delivery_fee_refund_minor,items_json,reason,approved_by
-     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-     RETURNING *
-    `,[
-     d.id,s.id,fo?.id??null,intent.id,totalRefundMinor,
-     foodRefundMinor,commRefundMinor,merchantDeductionMinor,
-     nonFoodRefundMinor,JSON.stringify(resolvedItems),v.reason,actor.id
-    ])).rows[0];
-    const opRow=(await c.query(`
-     INSERT INTO refund_operations(id,source_key,shipment_id,provider,reference,amount_minor,currency)
-     VALUES($1,$2,$3,$4,$5,$6,$7)
-     ON CONFLICT(source_key) DO UPDATE SET amount_minor=EXCLUDED.amount_minor
-     RETURNING *
-    `,[randomUUID(),'dispute:'+d.id,s.id,intent.provider,intent.reference,totalRefundMinor,intent.currency])).rows[0];
-    await c.query(`
-     UPDATE disputes
-        SET status='resolved',
-            approved_refund_minor=$2,
-            items_json=CASE WHEN jsonb_array_length($3::jsonb)>0 THEN $3::jsonb ELSE items_json END,
-            resolution_notes=$4,
-            resolved_by=$5,
-            resolved_at=now()
-      WHERE id=$1
-    `,[d.id,totalRefundMinor,JSON.stringify(resolvedItems),v.reason,actor.id]);
-    await c.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[actor.id,`dispute.refund_approved:${totalRefundMinor}:${v.reason}`,d.id]);
-    return {
-     disputeId:d.id,
-     status:'resolved',
-     approvedRefundMinor:totalRefundMinor,
-     foodRefundMinor,
-     commissionRefundMinor:commRefundMinor,
-     merchantNetDeductionMinor:merchantDeductionMinor,
-     deliveryFeeRefundMinor:nonFoodRefundMinor,
-     items:resolvedItems,
-     disputeRefundRequestId:reqRow.id,
-     refundOperationId:opRow.id,
-     duplicate:false
-    };
+    // Delivery confirmed by SMS, and failed deliveries, are never refunded and commission is never given up.
+    const food=(await c.query('SELECT 1 FROM food_orders WHERE shipment_id=$1',[d.shipment_id])).rowCount;
+    check(false,409,food?'Delivered food orders are not refunded by ELESEND. The customer should chat with the restaurant':'Parcels confirmed by SMS and failed deliveries are not refunded');
    });
    return result;
   }

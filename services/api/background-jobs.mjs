@@ -1,3 +1,7 @@
+import {suspendExpiredDocuments} from './rider-documents.mjs';
+import {suspendExpiredLicences,syncOpenIdentityChecks,requireIdentityRefresh} from './rider-licence.mjs';
+import {enforceDrivingLimits,flagUnusualStops,settleRiderRewards} from './rider-tools.mjs';
+import {flagOverdueParcels} from './custody-incidents.mjs';
 /**
  * Shared background job scheduling for the API process and the dedicated worker.
  * Food deadlines never wait on payment-provider calls: expiry and financial
@@ -8,7 +12,7 @@ import {runScheduledRecovery} from './rider-wallet.mjs';
 import {runGeographicLearningCycle} from './infrastructure/maps/egia/background-learner.mjs';
 import {chatEngine} from './chat-engine.mjs';
 
-export const LOCKS={dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209,etaRefresh:839210};
+export const LOCKS={dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209,etaRefresh:839210,businessPayouts:839211,parcelCustody:839213,riderSafety:839214};
 
 const warn=(component,code,extra={})=>process.stderr.write(JSON.stringify({level:'warn',component,code,...extra})+'\n');
 
@@ -43,6 +47,9 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
    if(dispatch&&typeof dispatch.watchdog==='function')await dispatch.watchdog({onlyDueReviews:true});
   }),
   moneyRecon:guarded('money_reconciliation',LOCKS.moneyRecon,async()=>{if(!money)return;await money.syncRefunds();await money.reconcileDue();}),
+  businessPayouts:guarded('business_payouts',LOCKS.businessPayouts,async()=>{await money?.settleBusinessesDue?.();}),
+  riderSafety:guarded('rider_safety',LOCKS.riderSafety,async()=>{await enforceDrivingLimits(db);await flagUnusualStops(db);}),
+  parcelCustody:guarded('parcel_custody',LOCKS.parcelCustody,async()=>{await flagOverdueParcels(db);}),
   dispatch:guarded('dispatch',null,async()=>{if(!dispatch)return;const rows=await dispatch.tick();const errors=rows.filter(r=>r.status==='error');if(errors.length)warn('dispatch','tick_errors',{errors});}),
   paymentRecon:guarded('payment_reconciliation',LOCKS.paymentRecon,async()=>{
    if(!paymentProvider)return;
@@ -85,6 +92,11 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
    }
    // Financial checkout intents, transactions, journals, and audit logs are permanently retained under legal and financial audit requirements.
    await reconcileAndEnforceWeeklyRestrictions(db);
+   await suspendExpiredLicences(db);
+   await suspendExpiredDocuments(db);
+   await syncOpenIdentityChecks(db);
+   await requireIdentityRefresh(db);
+   await settleRiderRewards(db);
   })
  };
  const timers=[];
@@ -95,6 +107,9 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
   every(jobs.foodExpiry,15000,!!restOrders);
   every(jobs.deliveryWatchdog,15000,!!restOrders||!!dispatch);
   every(jobs.moneyRecon,30000,!!money&&!!paymentProvider);
+  every(jobs.businessPayouts,3600000,!!money&&!!paymentProvider);
+  every(jobs.parcelCustody,900000);
+  every(jobs.riderSafety,300000);
   every(jobs.dispatch,3000,!!dispatch);
   every(jobs.paymentRecon,30000,!!paymentProvider&&(!!checkout||!!finance));
   every(jobs.etaRefresh,60000,!!eta);
