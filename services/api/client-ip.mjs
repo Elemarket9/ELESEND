@@ -43,6 +43,15 @@ export function clientIp(req,trustedCidrs=process.env.TRUSTED_PROXY_CIDRS??''){
  return lastTrustedHop||peer;
 }
 
+/** Rate-limit identity for an address. One IPv6 customer controls a whole /64, so limits apply to the /64. */
+export function rateLimitKey(ip){
+ if(isIP(ip)!==6)return ip;
+ const [head,tail='']=ip.split('%')[0].split('::');
+ const left=head?head.split(':'):[],right=tail?tail.split(':'):[];
+ const full=ip.includes('::')?[...left,...Array(Math.max(0,8-left.length-right.length)).fill('0'),...right]:left;
+ return full.slice(0,4).map(h=>h.toLowerCase().replace(/^0+(?=.)/,'')).join(':')+'::/64';
+}
+
 export function resolveVerifiedHost(req, trustedCidrs = process.env.TRUSTED_PROXY_CIDRS ?? (process.env.NODE_ENV === 'production' ? '' : '127.0.0.1,::1')) {
  const peer = normalizedIp(req.socket?.remoteAddress);
  const entries = trustedCidrs.split(',').map(s => s.trim()).filter(Boolean);

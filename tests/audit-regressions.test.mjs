@@ -9,6 +9,8 @@ import {adminWalletReconciliation} from '../services/api/rider-wallet.mjs';
 import {promotionEngine} from '../services/api/promotion-engine.mjs';
 import {platform} from '../services/api/platform.mjs';
 import {mac} from '../services/api/security.mjs';
+import {rateLimitKey} from '../services/api/client-ip.mjs';
+import {ipLimits,memoryRateLimiter,parseIpLimitMultiplier} from '../services/api/rate-limits.mjs';
 
 const SESSION='a'.repeat(64);
 const permissive=(overrides=()=>null)=>{
@@ -181,4 +183,54 @@ test('a password reset leaves API keys working',async()=>{
  const result=await platform(db,{otpKey:OTP_KEY}).resetPassword({phone,challengeId,code:'123456',newPassword:'a-new-strong-password'});
  assert.equal(result.ok,true);
  assert.equal(db.calls.some(c=>c.sql.includes('api_clients')),false);
+});
+
+test('rate limit identity groups an IPv6 /64 and leaves IPv4 alone',()=>{
+ assert.equal(rateLimitKey('197.210.1.5'),'197.210.1.5');
+ const one=rateLimitKey('2001:db8:1:2:aaaa::1');
+ assert.equal(one,'2001:db8:1:2::/64');
+ assert.equal(rateLimitKey('2001:0DB8:1:2:bbbb:cccc:dddd:eeee'),one);
+ assert.notEqual(rateLimitKey('2001:db8:1:3::1'),one);
+ assert.equal(rateLimitKey('2001:db8::1'),'2001:db8:0:0::/64');
+});
+
+test('the flood guard limits per window and keeps memory bounded',()=>{
+ let at=0;
+ const guard=memoryRateLimiter({maxKeys:3,now:()=>at});
+ guard.hit('a',2,60);guard.hit('a',2,60);
+ assert.throws(()=>guard.hit('a',2,60),e=>e.status===429);
+ at=61000;
+ guard.hit('a',2,60);
+ for(const key of ['b','c','d','e','f'])guard.hit(key,2,60);
+ assert.ok(guard.size()<=3);
+});
+
+test('IP limit multiplier scales limits and rejects bad values',()=>{
+ assert.equal(ipLimits(2).loginFailuresPer15Min,ipLimits(1).loginFailuresPer15Min*2);
+ assert.equal(parseIpLimitMultiplier(undefined),1);
+ assert.equal(parseIpLimitMultiplier('2.5'),2.5);
+ for(const bad of ['0','1000','many'])assert.equal(parseIpLimitMultiplier(bad),null);
+});
+
+test('many users on one shared address can log in, but failures from it are capped',async()=>{
+ const counts=new Map();
+ const db=permissive((sql,params)=>{
+  if(sql.startsWith('SELECT count FROM rate_limits')){const count=counts.get(params[0]);return {rowCount:count?1:0,rows:count?[{count}]:[]};}
+  if(sql.includes('rate_limits')){const count=(counts.get(params[0])??0)+1;counts.set(params[0],count);return {rowCount:1,rows:[{count}]};}
+  return null;
+ });
+ const app={...fakeApp,login:async b=>{if(b.password!=='right')throw Object.assign(Error('Invalid credentials'),{status:401});return {token:'t'};}};
+ const server=httpServer(db,app,null,null,null,{restaurant:{},restaurantOrders:{}});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ const port=server.address().port;
+ const login=password=>fetch(`http://127.0.0.1:${port}/api/v1/auth/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password})}).then(r=>r.status);
+ try{
+  // More successes than the old limit of 40 allowed for a whole address.
+  for(let i=0;i<60;i++)assert.equal(await login('right'),200);
+  assert.equal(await login('wrong'),401);
+  const failures=ipLimits().loginFailuresPer15Min;
+  for(const key of counts.keys())if(key.startsWith('login-fail-ip:'))counts.set(key,failures);
+  assert.equal(await login('wrong'),429);
+  assert.equal(await login('right'),429);
+ }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });

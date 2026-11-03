@@ -1,3 +1,4 @@
+import {parseIpLimitMultiplier} from './rate-limits.mjs';
 /**
  * ELESEND Unified Environment & Runtime Configuration Module
  * 
@@ -103,6 +104,13 @@ export function validateConfig(env = process.env) {
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
+
+  if (parseIpLimitMultiplier(env.IP_LIMIT_MULTIPLIER) === null) {
+    errors.push('IP_LIMIT_MULTIPLIER must be a number from 0.1 to 100.');
+  }
+  if (isProduction && trustedProxyCidrs.length === 0) {
+    warnings.push('TRUSTED_PROXY_CIDRS is empty. Behind a reverse proxy, all users would share one rate limit; set it to the proxy address.');
+  }
 
   const readinessProbeToken = (env.READINESS_PROBE_TOKEN || '').trim() || null;
   if (isProduction && readinessProbeToken && readinessProbeToken.length < 32) {
