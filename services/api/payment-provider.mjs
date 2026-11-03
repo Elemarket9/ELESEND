@@ -29,7 +29,7 @@ export function paymentWebhook({db,provider,checkout,finance,money,moneyOperatio
   if(record.type==='refund'||record.kind==='refund')return record.status==='refunded'?moneySvc.confirmRefund(record):{status:'acknowledged'};
   if(record.type==='payout'||record.kind==='payout'){
    // Money returned after a payout looked complete needs finance review: ledgers are never rewritten automatically.
-   if(record.reversed){await db.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES(NULL,$1,$2)',['payment.payout_reversal_reported:'+record.eventId,record.requestId]);return {status:'acknowledged',requiresReview:true};}
+   if(record.reversed){const handled=await moneySvc.reverseWithdrawal?.(record);if(handled)return handled;await db.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES(NULL,$1,$2)',['payment.payout_reversal_reported:'+record.eventId,record.requestId]);return {status:'acknowledged',requiresReview:true};}
    return record.status==='paid'?moneySvc.confirmPayout(record):{status:'acknowledged'};
   }
   const reversal=record.status==='reversed';

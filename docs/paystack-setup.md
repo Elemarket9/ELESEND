@@ -4,8 +4,8 @@ The adapter has only been tested against simulated Paystack responses. Complete 
 
 ## Account
 1. Register a Paystack business. Transfers are only for registered businesses, not starter accounts.
-2. Ask Paystack support to switch your payouts to manual ("Settled to Balance"). Rider and restaurant payouts are paid from your Paystack balance, so without this it can be empty when a payout runs.
-3. In Preferences, turn off "Confirm transfers before sending". While it is on, each payout stops for a code and appears in the admin portal as needing review.
+2. Ask Paystack support to set settlement to "Settled to Balance", a one-time change that Paystack may call manual payouts. Nobody sends money by hand afterwards. It keeps customer payments in your Paystack balance, which the API pays riders and restaurants from. Without it, Paystack can move that money to your bank and leave withdrawals unfunded.
+3. In Preferences, turn off "Confirm transfers before sending". While it is on, each transfer waits for a code and expires unpaid after 30 minutes.
 4. Set the webhook URL to `https://<API host>/api/v1/payments/webhook`.
 
 ## Configuration
@@ -24,13 +24,29 @@ Production refuses test keys. Enable each method in the admin portal after this.
 
 ## Fees and withdrawals
 - **Customer fee:** digital payments add `PAYSTACK_CUSTOMER_FEE_BPS` (default 195, Paystack's listed 1.95%) on top of the order total. Set it to 0 if your agreed terms or legal advice rule it out. Cancelled orders refund the fee to the customer.
-- **Rider withdrawals:** a rider withdraws their whole available balance as one transfer, and pays no fee. ELESEND pays Paystack's transfer fee.
-- **Limits:** `WITHDRAWAL_MIN_MINOR` (default GH₵5) and `WITHDRAWAL_AUTO_LIMIT_MINOR` (default GH₵500 per rider per 24 hours). Above the limit, a finance administrator approves through `POST /api/v1/admin/payments/withdrawals/:id/decide`.
+- **Riders:** they press Withdraw and enter their password. The API sends the transfer with no staff step, and ELESEND pays Paystack's transfer fee.
+- **Restaurants and delivery companies:** their available balance is paid automatically once a day when a payout account is saved.
+- **Unclear results:** the system checks with Paystack and resends only with the same reference, which Paystack treats as the same transfer. If Paystack still has no transfer after 24 hours, or it fails or is reversed, the money returns to the available balance.
+
+## Automatic payout protection
+| Protection | Setting | Default |
+| --- | --- | --- |
+| Destination locked to the SMS-verified phone, and checked again before sending | | Always on |
+| Password required for each rider withdrawal, 5 attempts per hour | | Always on |
+| Hold on new earnings, and on any delivery with an open dispute | `WITHDRAWAL_EARNINGS_HOLD_HOURS` | 24 |
+| Hold after a password or payout details change | `WITHDRAWAL_SECURITY_HOLD_HOURS` | 24 |
+| Minimum withdrawal | `WITHDRAWAL_MIN_MINOR` | GH₵5 |
+| Limit per rider per 24 hours | `WITHDRAWAL_RIDER_DAILY_LIMIT_MINOR` | GH₵500 |
+| Limit per business per 24 hours | `WITHDRAWAL_BUSINESS_DAILY_LIMIT_MINOR` | GH₵5,000 |
+| Limit across the whole platform per 24 hours, which pauses withdrawals when reached | `WITHDRAWAL_PLATFORM_DAILY_LIMIT_MINOR` | GH₵50,000 |
+| Three failed withdrawals in 24 hours blocks more until the count clears | | Always on |
+
+Earnings above a limit stay in the balance for the next day. A single delivery larger than the rider or business limit is paid alone when nothing else has been paid that day. Raise the platform limit as volume grows.
+
 - **Ledger gap:** transfer fees, and processing fees Paystack keeps on refunded orders, are not recorded. Reconcile against your Paystack statements.
 
 ## What needs staff action
 - **A refund in `needs-attention`:** stays pending in ELESEND. Supply the customer's account details in the Paystack dashboard.
-- **A reversed transfer after payment:** written to the audit log as `payment.payout_reversal_reported`. Finance must review it, because ledgers are not rewritten automatically.
 - **Chargebacks and disputes:** not imported. Check the Paystack dashboard, and connect this before high volume.
 
 ## Live tests before launch
@@ -39,7 +55,9 @@ Use small real amounts, on each of MTN, Telecel and AT:
 - [ ] Full and partial refunds reach the customer.
 - [ ] A rider withdrawal reaches the wallet and clears the rider's available balance.
 - [ ] Paystack's fee on a real payment matches the customer fee, and whether it returns that fee on refunds is confirmed.
-- [ ] A failed payout, using an invalid number, shows as failed and can be retried safely.
+- [ ] A failed withdrawal, using an invalid number, returns the money to the balance and can be retried.
+- [ ] A restaurant is paid by the daily automatic run.
+- [ ] Withdrawing more than the Paystack balance recovers by itself once the balance is funded.
 - [ ] Commission repayment reduces the rider's debt.
 - [ ] Webhook retries and duplicates cause no double effects.
 - [ ] Confirm with Paystack that the `VOD` code is still right for Telecel, and whether account names can be checked for mobile money.

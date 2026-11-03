@@ -8,7 +8,7 @@ import {runScheduledRecovery} from './rider-wallet.mjs';
 import {runGeographicLearningCycle} from './infrastructure/maps/egia/background-learner.mjs';
 import {chatEngine} from './chat-engine.mjs';
 
-export const LOCKS={dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209,etaRefresh:839210};
+export const LOCKS={dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209,etaRefresh:839210,businessPayouts:839211};
 
 const warn=(component,code,extra={})=>process.stderr.write(JSON.stringify({level:'warn',component,code,...extra})+'\n');
 
@@ -43,6 +43,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
    if(dispatch&&typeof dispatch.watchdog==='function')await dispatch.watchdog({onlyDueReviews:true});
   }),
   moneyRecon:guarded('money_reconciliation',LOCKS.moneyRecon,async()=>{if(!money)return;await money.syncRefunds();await money.reconcileDue();}),
+  businessPayouts:guarded('business_payouts',LOCKS.businessPayouts,async()=>{await money?.settleBusinessesDue?.();}),
   dispatch:guarded('dispatch',null,async()=>{if(!dispatch)return;const rows=await dispatch.tick();const errors=rows.filter(r=>r.status==='error');if(errors.length)warn('dispatch','tick_errors',{errors});}),
   paymentRecon:guarded('payment_reconciliation',LOCKS.paymentRecon,async()=>{
    if(!paymentProvider)return;
@@ -95,6 +96,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
   every(jobs.foodExpiry,15000,!!restOrders);
   every(jobs.deliveryWatchdog,15000,!!restOrders||!!dispatch);
   every(jobs.moneyRecon,30000,!!money&&!!paymentProvider);
+  every(jobs.businessPayouts,3600000,!!money&&!!paymentProvider);
   every(jobs.dispatch,3000,!!dispatch);
   every(jobs.paymentRecon,30000,!!paymentProvider&&(!!checkout||!!finance));
   every(jobs.etaRefresh,60000,!!eta);

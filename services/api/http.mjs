@@ -167,7 +167,6 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/me/payout-beneficiary'){check(moneyOperations,503);result=await moneyOperations.verifyBeneficiary(actor,body);}
   else if(method==='POST'&&path==='/api/v1/rider/wallet/withdraw'){check(moneyOperations,503);await limit(db,'withdraw:'+actor.id,5,3600);result=await moneyOperations.requestWithdrawal(actor,body);}
   else if(method==='GET'&&path==='/api/v1/admin/payments/withdrawals'){check(moneyOperations,503);result=await moneyOperations.withdrawals(actor);}
-  else if(method==='POST'&&/^\/api\/v1\/admin\/payments\/withdrawals\/[0-9a-f-]+\/decide$/.test(path)){check(moneyOperations,503);result=await moneyOperations.decideWithdrawal(actor,path.split('/')[6],body);}
   else if(method==='GET'&&path==='/api/v1/admin/payments/payouts'){check(moneyOperations,503);result=await moneyOperations.payouts(actor);}
   else if(method==='POST'&&path==='/api/v1/admin/payments/payouts'){check(moneyOperations,503);result=await moneyOperations.proposePayout(actor,body);}
   else if(method==='POST'&&/^\/api\/v1\/admin\/payments\/payouts\/[0-9a-f-]+\/approve$/.test(path)){check(moneyOperations,503);result=await moneyOperations.approvePayout(actor,path.split('/')[6]);}

@@ -1,4 +1,4 @@
--- Customer-paid payment processing fees, and rider-requested withdrawals covering several deliveries.
+-- Customer-paid payment processing fees, and automatic withdrawals sent through the payment provider.
 ALTER TABLE shipment_checkout_intents
   ADD COLUMN IF NOT EXISTS processing_fee_minor bigint NOT NULL DEFAULT 0 CHECK (processing_fee_minor >= 0);
 
@@ -51,16 +51,32 @@ BEGIN
     replace(definition, '''provider_receivable''::text', '''provider_receivable''::text, ''customer_processing_fee_liability''::text');
 END $$;
 
-CREATE TABLE IF NOT EXISTS rider_withdrawals (
+-- Sign-in or destination changes start a security hold on withdrawals.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS credentials_changed_at timestamptz;
+CREATE OR REPLACE FUNCTION mark_credentials_changed() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.password_hash IS DISTINCT FROM OLD.password_hash OR NEW.phone IS DISTINCT FROM OLD.phone THEN
+    NEW.credentials_changed_at := now();
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER users_mark_credentials_changed BEFORE UPDATE OF password_hash, phone ON users
+  FOR EACH ROW EXECUTE FUNCTION mark_credentials_changed();
+ALTER TABLE payout_beneficiaries ADD COLUMN IF NOT EXISTS destination_changed_at timestamptz;
+
+ALTER TABLE checkout_accounting_journals DROP CONSTRAINT checkout_accounting_journals_kind_check;
+ALTER TABLE checkout_accounting_journals ADD CONSTRAINT checkout_accounting_journals_kind_check
+  CHECK (kind IN ('psp_verified','delivery_completed','verified_unapplied','refund_requested','refund_completed','payout_completed','rider_debt_recovered','payout_reversed'));
+
+CREATE TABLE IF NOT EXISTS payout_withdrawals (
   id uuid PRIMARY KEY,
-  rider_id uuid NOT NULL REFERENCES riders(id),
+  beneficiary_id uuid NOT NULL REFERENCES users(id),
   idempotency_key text NOT NULL CHECK (length(idempotency_key) BETWEEN 8 AND 128),
   provider text NOT NULL,
   recipient_reference text NOT NULL,
   amount_minor bigint NOT NULL CHECK (amount_minor > 0),
   currency text NOT NULL DEFAULT 'GHS',
-  status text NOT NULL DEFAULT 'initiating' CHECK (status IN ('awaiting_approval','initiating','pending','needs_review','paid','failed','rejected')),
-  approved_by uuid REFERENCES users(id),
+  status text NOT NULL DEFAULT 'initiating' CHECK (status IN ('initiating','pending','needs_review','paid','failed','reversed')),
   provider_id text,
   failure_reason text,
   submitted_at timestamptz,
@@ -68,13 +84,32 @@ CREATE TABLE IF NOT EXISTS rider_withdrawals (
   reconcile_lease_until timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (rider_id, idempotency_key)
+  UNIQUE (beneficiary_id, idempotency_key)
 );
-CREATE INDEX IF NOT EXISTS rider_withdrawals_open ON rider_withdrawals(status, updated_at);
--- A rider can only have one withdrawal moving at a time.
-CREATE UNIQUE INDEX IF NOT EXISTS rider_withdrawals_one_open ON rider_withdrawals(rider_id)
-  WHERE status IN ('awaiting_approval','initiating','pending','needs_review');
+CREATE INDEX IF NOT EXISTS payout_withdrawals_open ON payout_withdrawals(status, updated_at);
+CREATE INDEX IF NOT EXISTS payout_withdrawals_recent ON payout_withdrawals(created_at) WHERE status NOT IN ('failed','reversed');
+-- Only one withdrawal per person can be moving at a time.
+CREATE UNIQUE INDEX IF NOT EXISTS payout_withdrawals_one_open ON payout_withdrawals(beneficiary_id)
+  WHERE status IN ('initiating','pending','needs_review');
+
+-- Who is paid, and how much, can never change. Finished withdrawals cannot restart.
+CREATE OR REPLACE FUNCTION guard_payout_withdrawal() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'Withdrawal records are permanent'; END IF;
+  IF (NEW.id, NEW.beneficiary_id, NEW.provider, NEW.recipient_reference, NEW.amount_minor, NEW.currency)
+     IS DISTINCT FROM (OLD.id, OLD.beneficiary_id, OLD.provider, OLD.recipient_reference, OLD.amount_minor, OLD.currency) THEN
+    RAISE EXCEPTION 'Withdrawal terms immutable';
+  END IF;
+  IF NEW.status IS DISTINCT FROM OLD.status AND (
+       OLD.status IN ('failed','reversed') OR (OLD.status = 'paid' AND NEW.status <> 'reversed')
+     ) THEN
+    RAISE EXCEPTION 'Withdrawal already finished';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER payout_withdrawal_guard BEFORE UPDATE OR DELETE ON payout_withdrawals
+  FOR EACH ROW EXECUTE FUNCTION guard_payout_withdrawal();
 
 -- Each delivery keeps its own ledger row, linked to the single transfer that pays it.
-ALTER TABLE payout_operations ADD COLUMN IF NOT EXISTS withdrawal_id uuid REFERENCES rider_withdrawals(id);
+ALTER TABLE payout_operations ADD COLUMN IF NOT EXISTS withdrawal_id uuid REFERENCES payout_withdrawals(id);
 CREATE INDEX IF NOT EXISTS payout_operations_withdrawal ON payout_operations(withdrawal_id) WHERE withdrawal_id IS NOT NULL;

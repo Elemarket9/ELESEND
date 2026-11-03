@@ -83,6 +83,9 @@ export default function RiderApp() {
   const [momoPhone, setMomoPhone] = useState('');
   const [momoAmount, setMomoAmount] = useState('');
   const [withdrawModal, setWithdrawModal] = useState(false);
+  const [confirmWithdraw, setConfirmWithdraw] = useState(false);
+  const [withdrawPassword, setWithdrawPassword] = useState('');
+  const withdrawKey = useRef(null);
   const [payoutName, setPayoutName] = useState('');
 
   // Active Handover & OTP State
@@ -676,12 +679,17 @@ export default function RiderApp() {
   }
 
   async function requestWithdrawal() {
-    const res = await call('POST', '/api/v1/rider/wallet/withdraw', { idempotencyKey: Crypto.randomUUID() });
+    // The key survives a lost connection, so a repeat press cannot start a second withdrawal.
+    withdrawKey.current = withdrawKey.current || Crypto.randomUUID();
+    const res = await call('POST', '/api/v1/rider/wallet/withdraw', { idempotencyKey: withdrawKey.current, password: withdrawPassword });
+    withdrawKey.current = null;
+    setConfirmWithdraw(false);
+    setWithdrawPassword('');
     const amount = ghc(res?.amountMinor || 0);
     setError(res?.status === 'paid'
       ? `${amount} sent to your Mobile Money.`
-      : res?.status === 'awaiting_approval'
-        ? `Your withdrawal of ${amount} is waiting for approval.`
+      : res?.status === 'failed'
+        ? `Your withdrawal of ${amount} failed and the money is back in your balance.`
         : `Your withdrawal of ${amount} is processing.`);
     const fin = await call('GET', '/api/v1/rider/wallet/summary').catch(() => null);
     if (fin) setFinanceSnapshot(fin);
@@ -1550,11 +1558,14 @@ export default function RiderApp() {
                 <Text style={styles.primaryBtnText}>Payout Account</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                disabled={busy || !(financeSnapshot?.withdrawableMinor > 0)}
-                onPress={() => execute(requestWithdrawal)}
-                style={[styles.primaryBtn, { marginTop: 8, opacity: financeSnapshot?.withdrawableMinor > 0 ? 1 : 0.5 }]}>
-                <Text style={styles.primaryBtnText}>Withdraw {ghc(financeSnapshot?.withdrawableMinor || 0)}</Text>
+                disabled={busy || !(financeSnapshot?.availableNowMinor > 0)}
+                onPress={() => setConfirmWithdraw(true)}
+                style={[styles.primaryBtn, { marginTop: 8, opacity: financeSnapshot?.availableNowMinor > 0 ? 1 : 0.5 }]}>
+                <Text style={styles.primaryBtnText}>Withdraw {ghc(financeSnapshot?.availableNowMinor || 0)}</Text>
               </TouchableOpacity>
+              {financeSnapshot?.onHoldMinor > 0 && (
+                <Text style={[styles.momoSub, { marginTop: 6 }]}>{ghc(financeSnapshot.onHoldMinor)} on hold from recent deliveries.</Text>
+              )}
             </View>
 
             {/* Commission debt and assignment eligibility */}
@@ -1640,6 +1651,32 @@ export default function RiderApp() {
             </Modal>
 
             {/* Withdrawal Modal */}
+            <Modal visible={confirmWithdraw} animationType="fade" transparent>
+              <View style={styles.modalOverlay}>
+                <View style={styles.momoCard}>
+                  <Text style={styles.momoTitle}>Withdraw {ghc(financeSnapshot?.availableNowMinor || 0)}</Text>
+                  <Text style={styles.momoSub}>Enter your password to send this to your Mobile Money ({auth.phone}).</Text>
+                  <TextInput
+                    secureTextEntry
+                    autoCapitalize="none"
+                    placeholder="Password"
+                    placeholderTextColor={colors.textMuted}
+                    style={[styles.input, { marginTop: 12 }]}
+                    value={withdrawPassword}
+                    onChangeText={setWithdrawPassword}
+                  />
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
+                    <TouchableOpacity onPress={() => { setConfirmWithdraw(false); setWithdrawPassword(''); }} style={[styles.secondaryBtn, { flex: 1 }]}>
+                      <Text style={styles.secondaryBtnText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity disabled={busy || !withdrawPassword} onPress={() => execute(requestWithdrawal)} style={[styles.primaryBtn, { flex: 2 }]}>
+                      <Text style={styles.primaryBtnText}>Withdraw</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+
             <Modal visible={withdrawModal} animationType="fade" transparent>
               <View style={styles.modalOverlay}>
                 <View style={styles.momoCard}>
