@@ -549,7 +549,8 @@ export function upgradeToChatWebSocket(req, socket, head, { actor, sessionToken 
             await onClientMessage(parsed, conn);
           }
         } catch (err) {
-          conn.send('error', { message: err.message || 'Invalid WebSocket message' });
+          // Only deliberate application errors carry a status; never expose internal or SQL messages.
+          conn.send('error', { message: err?.status ? err.message : 'Invalid WebSocket message' });
         }
       }
     }

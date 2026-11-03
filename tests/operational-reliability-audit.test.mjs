@@ -2292,6 +2292,8 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
       const item2Id = randomUUID();
       const policyId = randomUUID();
 
+      // This test commits its rows, so it cannot inherit the MOMO setting from other tests' rolled-back fixtures.
+      await root.query("UPDATE checkout_method_policies SET enabled = true WHERE method = 'MOMO'");
       await root.query("UPDATE riders SET status = 'suspended', online = true, position_at = now()");
       for (const [uid, kind] of [
         [proposerId, 'admin'],
@@ -2908,7 +2910,7 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
       });
       assert.equal(adminResolvedStuck.state, 'CANCELLED');
       assert.equal(adminResolvedStuck.shipmentState, 'RETURNED');
-      assert.equal(adminResolvedStuck.refundReviewRequired, true);
+      assert.equal(adminResolvedStuck.refundReviewRequired, true);
     });
   } finally {
     await root.close();
