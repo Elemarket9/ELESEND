@@ -54,7 +54,9 @@ services:
       OTP_KEY: ${OTP_KEY:?Set 64 hex characters}
       TRACKING_TOKEN_SECRET: ${TRACKING_TOKEN_SECRET:-}
       ADMIN_MFA_ENCRYPTION_KEY: ${ADMIN_MFA_ENCRYPTION_KEY:?Set 64 hex characters}
-      RIDER_ID_ENCRYPTION_KEY: ${RIDER_ID_ENCRYPTION_KEY:?Set 64 hex characters}
+      RIDER_ID_ENCRYPTION_KEY: ${RIDER_ID_ENCRYPTION_KEY:-}
+      EMERGENCY_NUMBER: ${EMERGENCY_NUMBER:-112}
+      RIDER_REVERIFY_GRACE_DAYS: ${RIDER_REVERIFY_GRACE_DAYS:-7}
       SAFETY_ALERT_PHONE: ${SAFETY_ALERT_PHONE:-}
       RIDER_REVERIFY_DAYS: ${RIDER_REVERIFY_DAYS:-90}
       RIDER_MAX_ONLINE_HOURS: ${RIDER_MAX_ONLINE_HOURS:-12}
@@ -76,9 +78,10 @@ services:
       READINESS_PROBE_TOKEN: ${READINESS_PROBE_TOKEN:-}
       HOST: 0.0.0.0
       PORT: '3090'
-      API_PUBLIC_ORIGIN: ${API_PUBLIC_ORIGIN:?Set public API HTTPS origin}
-      WEB_PUBLIC_ORIGIN: ${WEB_PUBLIC_ORIGIN:?Set public web HTTPS origin}
-      ADMIN_HOST: ${ADMIN_HOST:?Set admin hostname}
+      API_PUBLIC_ORIGIN: ${API_PUBLIC_ORIGIN:-https://api.${ELESEND_DOMAIN:?Set your domain, for example example.com}}
+      MAPS_PUBLIC_ORIGIN: ${MAPS_PUBLIC_ORIGIN:-https://maps.${ELESEND_DOMAIN:?Set your domain, for example example.com}}
+      WEB_PUBLIC_ORIGIN: ${WEB_PUBLIC_ORIGIN:-https://app.${ELESEND_DOMAIN:?Set your domain, for example example.com}}
+      ADMIN_HOST: ${ADMIN_HOST:-admin.${ELESEND_DOMAIN:?Set your domain, for example example.com}}
       ENABLE_PREPAID_CREDITS: ${ENABLE_PREPAID_CREDITS:-false}
       ROUTING_OSRM_URL: ${ROUTING_OSRM_URL:-}
       ROUTING_OSRM_MOTORCYCLE_URL: ${ROUTING_OSRM_MOTORCYCLE_URL:-}

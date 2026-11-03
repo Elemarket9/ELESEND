@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {check} from './security.mjs';
+import {check} from '../../security.mjs';
 
 const weeklySettlementSettingsSchema = z.object({
   cutoffDayOfWeek: z.number().int().min(1).max(7).optional(),

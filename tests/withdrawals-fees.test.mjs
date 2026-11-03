@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID,randomInt} from 'node:crypto';
-import {processingFeeMinor} from '../services/api/checkout-policy.mjs';
-import {paystackCheckout} from '../services/api/paystack-checkout-adapter.mjs';
+import {processingFeeMinor} from '../services/api/modules/payments/checkout-policy.mjs';
+import {paystackCheckout} from '../services/api/modules/payments/paystack-checkout-adapter.mjs';
 import {validateConfig} from '../services/api/config.mjs';
 
 test('the customer fee leaves the full price after Paystack takes its percentage',()=>{
@@ -37,9 +37,9 @@ test('Paystack final statuses release money, and an unknown transfer is reported
 test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.TEST_DATABASE_URL},async()=>{
  const {database}=await import('../services/api/db.mjs');
  const {migrate}=await import('../scripts/migrate.mjs');
- const {moneyOperations}=await import('../services/api/money-operations.mjs');
- const {checkoutService}=await import('../services/api/checkout.mjs');
- const {checkoutJournal,digitalDeliveryCompleted,requestCheckoutRefund}=await import('../services/api/checkout-accounting.mjs');
+ const {moneyOperations}=await import('../services/api/modules/payments/money-operations.mjs');
+ const {checkoutService}=await import('../services/api/modules/payments/checkout.mjs');
+ const {checkoutJournal,digitalDeliveryCompleted,requestCheckoutRefund}=await import('../services/api/modules/payments/checkout-accounting.mjs');
  const configured=new URL(process.env.TEST_DATABASE_URL);
  assert.match(configured.pathname,/^\/elesend_test/);
  const db=database(configured.toString());
@@ -132,11 +132,25 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await db.query("UPDATE payout_withdrawals SET updated_at=now()-interval '10 minutes',last_reconciled_at=now()-interval '10 minutes' WHERE id=$1",[lost.id]);
   await money.reconcileDue({olderThanSeconds:0});
   assert.equal(submitted.length,2);assert.equal(submitted[0].requestId,submitted[1].requestId);
-  // After a day with no transfer at Paystack, the money comes back by itself.
-  await db.query("UPDATE payout_withdrawals SET created_at=now()-interval '30 days',last_reconciled_at=now()-interval '10 minutes' WHERE id=$1",[lost.id]);
+  // Not found never releases money by itself, however long it takes.
+  await db.query("UPDATE payout_withdrawals SET created_at=now()-interval '30 days',updated_at=now()-interval '10 minutes',last_reconciled_at=now()-interval '10 minutes' WHERE id=$1",[lost.id]);
   await money.reconcileDue({olderThanSeconds:0});
-  assert.equal((await db.query('SELECT status FROM payout_withdrawals WHERE id=$1',[lost.id])).rows[0].status,'failed');
+  const lostRow=(await db.query('SELECT * FROM payout_withdrawals WHERE id=$1',[lost.id])).rows[0];
+  assert.ok(['initiating','pending','needs_review'].includes(lostRow.status));assert.ok(lostRow.stuck_flagged_at);
+  await assert.rejects(withdraw(key()),/in progress/);
+  // Finance can release it only with the provider still reporting no transfer.
+  const releaser=await user('admin');await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'finance:approve')",[releaser]);
+  await assert.rejects(money.releaseUnsentWithdrawal({id:customer,kind:'customer'},lost.id,{reason:'Not allowed to do this'}));
+  outcome='pending';
+  await assert.rejects(money.releaseUnsentWithdrawal({id:releaser,kind:'admin'},lost.id,{reason:'Checked the Paystack dashboard'}),/record of this transfer/);
+  outcome='missing';
+  assert.equal((await money.releaseUnsentWithdrawal({id:releaser,kind:'admin'},lost.id,{reason:'Checked the Paystack dashboard'})).status,'failed');
   assert.equal(await payable(missing),700);
+  // If the provider pays it late anyway, the account goes on hold before the money can leave twice.
+  const late=await money.confirmPayout({verified:true,type:'payout',provider:'fixture',status:'paid',requestId:lost.id,providerId:'TRF_'+lost.id,recipientReference:lostRow.recipient_reference,amountMinor:Number(lostRow.amount_minor),currency:'GHS',eventId:'transfer:'+randomUUID()});
+  assert.equal(late.status,'paid_after_release');
+  await assert.rejects(withdraw(key()),/on hold/);
+  await db.query('DELETE FROM payout_holds WHERE user_id=$1',[rider]);
   outcome='success';
   await db.query("UPDATE payout_operations SET created_at=now() WHERE withdrawal_id=$1",[lost.id]);
 
@@ -158,12 +172,33 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const second_rider=await newRider(),other={id:second_rider,kind:'rider'};
   await db.query('INSERT INTO payout_beneficiaries(user_id,provider,recipient_reference) VALUES($1,$2,$3)',[second_rider,'fixture','RCP_second']);
   const a1=await completedEarning(second_rider,customer,300000),a2=await completedEarning(second_rider,customer,300000);
+  // The wallet's withdrawable figure and the actual withdrawal agree.
+  const {walletSummary}=await import('../services/api/modules/payments/rider-wallet.mjs');
+  process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS='0';
+  assert.equal((await walletSummary(db,other)).availableNowMinor,600000);
+  process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS='24';
+  const heldSummary=await walletSummary(db,other);
+  assert.equal(heldSummary.availableNowMinor,0);assert.equal(heldSummary.onHoldMinor,600000);
+  delete process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS;
   submitted.length=0;
   const charged=await withdraw(key(),other,moneyOperations(db,{...limits,withdrawalFeeMinor:100}));
   assert.equal(charged.status,'paid');assert.equal(charged.amountMinor,599900);
   assert.equal(submitted[0].amountMinor,599900);
   assert.equal((await payable(a1))+(await payable(a2)),0);
   await assert.rejects(withdraw(key(),other),/once a day/);
+  // The wallet shows the rider each withdrawal and a statement, and no one else's.
+  const {walletWithdrawals,walletStatement}=await import('../services/api/modules/payments/rider-wallet.mjs');
+  const walletView=await walletWithdrawals(db,other);
+  assert.equal(walletView.onHold,false);
+  assert.equal(walletView.withdrawals[0].earnedMinor,600000);assert.equal(walletView.withdrawals[0].feeMinor,100);assert.equal(walletView.withdrawals[0].sentMinor,599900);assert.equal(walletView.withdrawals[0].deliveries,2);
+  assert.match(walletView.withdrawals[0].transferCode,/^TRF_/);
+  const walletPaper=await walletStatement(db,other);
+  assert.equal(walletPaper.deliveries,2);assert.equal(walletPaper.withdrawals,1);
+  assert.match(walletPaper.csv,/^Type,Date,Reference/);assert.match(walletPaper.csv,/Withdrawal,.*TRF_.*,paid,Mobile Money,,1\.00,5999\.00/);
+  const afterPaid=await walletSummary(db,other);
+  assert.equal(afterPaid.availableNowMinor,0);assert.equal(afterPaid.inPayoutMinor,0);assert.equal(afterPaid.availableEarningsMinor,0);
+  await assert.rejects(walletStatement(db,other,{from:'2020-01-01',to:'2026-01-01'}),/up to 92 days/);
+  await assert.rejects(walletWithdrawals(db,{id:customer,kind:'customer'}),/Rider account/);
   await assert.rejects(db.query("INSERT INTO payout_withdrawals(id,beneficiary_id,idempotency_key,provider,recipient_reference,amount_minor) VALUES($1,$2,$3,'fixture','RCP_second',100)",[randomUUID(),second_rider,key()]),/payout_withdrawals_once_a_day/);
   await assert.rejects(db.query('UPDATE payout_withdrawals SET fee_minor=0 WHERE id=$1',[charged.id]),/immutable/);
 
@@ -198,9 +233,9 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const fleet=await completedEarning(fleetRider,customer,2500);
   await db.query('UPDATE shipments SET company_id=$2 WHERE id=$1',[fleet,companyId]);
   // Cash commission on a company job is the company's debt, never the rider's, and earnings repay it.
-  const {settleCompletedDelivery,debtState}=await import('../services/api/rider-wallet.mjs');
-  const {companyDebtMinor}=await import('../services/api/company-commission.mjs');
-  const {cashEligible}=await import('../services/api/finance.mjs');
+  const {settleCompletedDelivery,debtState}=await import('../services/api/modules/payments/rider-wallet.mjs');
+  const {companyDebtMinor}=await import('../services/api/modules/payments/company-commission.mjs');
+  const {cashEligible}=await import('../services/api/modules/payments/finance.mjs');
   await db.query('UPDATE riders SET company_id=$2 WHERE id=$1',[fleetRider,companyId]);
   const cashJob=await completedEarning(fleetRider,customer,1);
   await db.query('UPDATE shipments SET company_id=$2 WHERE id=$1',[cashJob,companyId]);
@@ -298,7 +333,9 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await assert.rejects(app.transition({id:investigator,kind:'admin'},stolen,{action:'fail',reason:'Admin should not change this'}),/Assigned rider/);
   assert.equal((await resolveCustodyIncident(db,{id:investigator,kind:'admin'},incident.id,{outcome:'police_reported',reason:'Rider unreachable for a day',policeReference:'ACC-123'})).police_reference,'ACC-123');
   // No rider is approved without a current licence, and one licence cannot back two accounts.
-  process.env.RIDER_ID_ENCRYPTION_KEY='c'.repeat(64);
+  // The rider data key works with nothing extra set, using the required admin key.
+  delete process.env.RIDER_ID_ENCRYPTION_KEY;
+  process.env.ADMIN_MFA_ENCRYPTION_KEY=process.env.ADMIN_MFA_ENCRYPTION_KEY||'b'.repeat(64);
   const {submitRiderLicence,riderLicenceStatus,rejectRiderLicence,suspendExpiredLicences,attachLicences}=await import('../services/api/rider-licence.mjs');
   const applicant=await newRider(),other_applicant=await newRider();
   await db.query("UPDATE riders SET status='pending' WHERE id=ANY($1::uuid[])",[[applicant,other_applicant]]);
@@ -323,6 +360,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const uploadAll=async rider=>{
    const token=(await createDocumentUploadLink(db,{id:rider,kind:'rider'})).path.split('#')[1];
    await uploadRiderDocument(db,{token,kind:'profile_photo',imageBase64:jpeg});
+   await uploadRiderDocument(db,{token,kind:'licence_photo',imageBase64:jpeg});
    await uploadRiderDocument(db,{token,kind:'insurance',imageBase64:jpeg,expiresOn:nextYear});
    await uploadRiderDocument(db,{token,kind:'roadworthiness',imageBase64:jpeg,expiresOn:nextYear});
    return token;
@@ -333,7 +371,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await assert.rejects(uploadRiderDocument(db,{token:uploadToken,kind:'profile_photo',imageBase64:Buffer.alloc(200,65).toString('base64')}),/upload a photo/);
   await assert.rejects(uploadRiderDocument(db,{token:uploadToken,kind:'insurance',imageBase64:jpeg,expiresOn:'2020-01-01'}),/expiry/);
   await uploadAll(applicant);
-  assert.equal((await riderDocumentStatus(db,applicantActor)).documents.length,3);
+  assert.equal((await riderDocumentStatus(db,applicantActor)).documents.length,4);
   assert.ok(!(await db.query("SELECT data_encrypted FROM rider_documents WHERE rider_id=$1 AND kind='insurance'",[applicant])).rows[0].data_encrypted.includes(jpeg.slice(0,40)));
   assert.equal((await viewRiderDocument(db,reviewer,applicant,'insurance')).imageBase64,jpeg);
   await assert.rejects(viewRiderDocument(db,{id:customer,kind:'customer'},applicant,'insurance'),/Permission/);
@@ -390,6 +428,9 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const texts=[];
   const smsFake={sendNotification:async x=>{texts.push(x);return {sent:true};}};
   await saveTrustedContact(db,safetyActor,{name:'Ama',phone:'0241112222'});
+  // With no SMS or duty phone the alert still saves for staff.
+  const quiet=await raiseEmergency(db,{id:await user('customer'),kind:'customer'},{},{sms:null,dutyPhone:''});
+  assert.equal(quiet.notified,0);assert.equal(quiet.emergencyNumber,'112');
   const alert=await raiseEmergency(db,safetyActor,{latitude:5.6,longitude:-0.2},{sms:smsFake,dutyPhone:'+233201234567'});
   assert.equal(alert.notified,2);assert.equal(texts.length,2);assert.match(texts[0].message,/maps\.google/);
   assert.equal((await raiseEmergency(db,safetyActor,{},{sms:smsFake,dutyPhone:'+233201234567'})).duplicate,true);assert.equal(texts.length,2);
@@ -451,7 +492,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   process.env.REFERRAL_TARGET_DELIVERIES='1';process.env.REFERRAL_REWARD_MINOR='900';
   await tools.settleRiderRewards(db);await tools.settleRiderRewards(db);
   delete process.env.REFERRAL_TARGET_DELIVERIES;delete process.env.REFERRAL_REWARD_MINOR;
-  const {balance}=await import('../services/api/finance.mjs');
+  const {balance}=await import('../services/api/modules/payments/finance.mjs');
   assert.equal((await balance(db,inviter)).creditMinor,900);
   assert.equal((await balance(db,invited)).creditMinor,700);
   assert.ok((await tools.riderCampaigns(db,{id:invited,kind:'rider'})).campaigns.some(k=>k.title==='Weekend push'&&k.completed>=1));

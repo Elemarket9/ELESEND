@@ -1,3 +1,5 @@
+import {settlementIntentForRider} from './modules/payments/index.mjs';
+import {publicMapConfig} from './map-config.mjs';
 import {saveTrustedContact,getTrustedContact,raiseEmergency,listSafetyAlerts,resolveSafetyAlert,createShareLink,rateDelivery,myRating,pendingRatings} from './safety.mjs';
 import {riderEarningsGoals,setEarningsGoals,demandAreas,referralSummary,applyReferralCode,riderCampaigns,createRewardCampaign} from './rider-tools.mjs';
 import {createDocumentUploadLink,uploadRiderDocument,riderDocumentStatus,rejectRiderDocument,viewRiderDocument,attachDocumentStatuses,renderDocumentUploadPage} from './rider-documents.mjs';
@@ -36,8 +38,8 @@ import {
   evaluateRiderWeeklyEligibility,
   getWeeklySettlementSettings,
   updateWeeklySettlementSettings
-} from './weekly-settlement.mjs';
-import {walletSummary,walletDebt,walletTransactions,adminWalletOverview,adminWalletReconciliation,walletPolicyView,updateWalletPolicy} from './rider-wallet.mjs';
+} from './modules/payments/index.mjs';
+import {walletWithdrawals,walletStatement,walletSummary,walletDebt,walletTransactions,adminWalletOverview,adminWalletReconciliation,walletPolicyView,updateWalletPolicy} from './modules/payments/index.mjs';
 import {getSystemHealthReport} from './infrastructure/monitoring/system-health.mjs';
 export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null,readinessToken=null,etaBaselineFactors={}}={}){
   const net=network(db),vehicles=vehicleService(db),markets=marketService(db);
@@ -129,6 +131,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   }
   if(method==='POST'&&['/api/v1/payments/webhook','/api/v1/payments/checkout-webhook','/api/v1/payments/commission-webhook'].includes(path)&&paymentsWebhook){send(200,await paymentsWebhook(rawBody,req.headers));return;}
   if(method==='POST'&&path==='/api/v1/rider-documents/upload'){await limit(db,'document-upload-ip:'+ipKey,30,3600);send(200,await uploadRiderDocument(db,body));return;}
+  // Public, because the map must load before sign-in.
+  if(method==='GET'&&path==='/api/v1/maps/config'){send(200,{renderer:'private',routing:'osrm',ghanaPostGpsLookup:Boolean(ghanaPostGps),...publicMapConfig()});return;}
   if(method==='POST'&&path==='/api/v1/identity/webhook'){send(200,await identityWebhook(db,rawBody,req.headers));return;}
   if(method==='POST'&&path==='/api/v1/payments/checkout-webhook'){
    check(checkout,503,'Checkout unavailable');send(200,await checkout.webhook(rawBody,req.headers));return;
@@ -175,6 +179,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&/^\/api\/v1\/admin\/payments\/refunds\/[0-9a-f-]+\/retry$/.test(path)){check(moneyOperations,503);result=await moneyOperations.retryRefund(actor,path.split('/')[6]);}
   else if(method==='POST'&&path==='/api/v1/me/payout-beneficiary'){check(moneyOperations,503);result=await moneyOperations.verifyBeneficiary(actor,body);}
   else if(method==='POST'&&path==='/api/v1/rider/wallet/withdraw'){check(moneyOperations,503);await limit(db,'withdraw:'+actor.id,5,3600);result=await moneyOperations.requestWithdrawal(actor,body);}
+  else if(method==='POST'&&/^\/api\/v1\/admin\/payments\/withdrawals\/[0-9a-f-]{36}\/release-unsent$/.test(path)){check(moneyOperations,503);result=await moneyOperations.releaseUnsentWithdrawal(actor,path.split('/')[6],body);}
   else if(method==='GET'&&path==='/api/v1/admin/payments/withdrawals'){check(moneyOperations,503);result=await moneyOperations.withdrawals(actor);}
   else if(method==='GET'&&path==='/api/v1/admin/payments/payouts'){check(moneyOperations,503);result=await moneyOperations.payouts(actor);}
   else if(method==='POST'&&path==='/api/v1/admin/payments/payouts'){check(moneyOperations,503);result=await moneyOperations.proposePayout(actor,body);}
@@ -185,7 +190,6 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&/^\/api\/v1\/shipments\/[0-9a-f-]+\/checkout$/.test(path)){check(checkout,503);result=await checkout.initiate(actor,path.split('/')[4],body);}
   else if(method==='GET'&&/^\/api\/v1\/shipments\/[0-9a-f-]+\/checkout$/.test(path)){check(checkout,503);result=await checkout.status(actor,path.split('/')[4]);}
   else if(method==='GET'&&path==='/api/v1/me'){const {sessionTokenHash:_omitted,...profile}=actor;result=profile;}
-  else if(method==='GET'&&path==='/api/v1/maps/config')result={renderer:'private',routing:'osrm',ghanaPostGpsLookup:Boolean(ghanaPostGps)};
   else if(method==='POST'&&path==='/api/v1/maps/ghana-address'){
    check(ghanaPostGps,503,'GhanaPostGPS address lookup is disabled');
    check(['customer','business'].includes(actor.kind)&&!actor.api_client_id,403,'Customer or business account required');
@@ -482,6 +486,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   // Rider wallet: available to debt-restricted/suspended riders (authentication only) so repayment is never blocked.
   else if(method==='GET'&&path==='/api/v1/rider/wallet/summary')result=await walletSummary(db,actor);
   else if(method==='GET'&&path==='/api/v1/rider/wallet/debt')result=await walletDebt(db,actor);
+  else if(method==='GET'&&path==='/api/v1/rider/wallet/withdrawals')result=await walletWithdrawals(db,actor);
+  else if(method==='GET'&&path==='/api/v1/rider/wallet/statement'){await limit(db,'wallet-statement:'+actor.id,20,3600);const q=new URL(req.url,'http://localhost').searchParams;result=await walletStatement(db,actor,{from:q.get('from')||undefined,to:q.get('to')||undefined});}
   else if(method==='GET'&&path==='/api/v1/rider/wallet/transactions')result=await walletTransactions(db,actor,{limit:new URL(req.url,'http://localhost').searchParams.get('limit')??100});
   else if(method==='POST'&&path==='/api/v1/rider/wallet/topups'){check(actor?.kind==='rider',403,'Rider required');check(finance,503);result=await finance.initiate(actor,{...body,kind:'commission_repayment'});}
   else if(method==='GET'&&/^\/api\/v1\/rider\/wallet\/topups\/[0-9a-f-]{36}$/.test(path)){check(actor?.kind==='rider',403,'Rider required');check(finance,503);result=await finance.paymentStatus(actor,path.split('/')[6]);}
@@ -501,7 +507,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    if(finance&&typeof finance.paymentStatus==='function'){
     result=await finance.paymentStatus(actor,intentId);
    }else{
-    const row=(await db.query('SELECT id, provider, provider_reference, amount_minor, status, receipt_number, momo_network, momo_phone, confirmed_at, created_at FROM settlement_intents WHERE id=$1 AND rider_id=$2',[intentId,actor.id])).rows[0];
+    const row=await settlementIntentForRider(db,intentId,actor.id);
     check(row,404,'Settlement intent not found');
     result={...row,intentId:row.id,reference:row.provider_reference,amountMinor:Number(row.amount_minor)};
    }

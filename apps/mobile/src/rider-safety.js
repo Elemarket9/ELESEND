@@ -12,6 +12,7 @@ const buttonText = { color: '#FFFFFF', fontWeight: '700' };
 
 export function EmergencyButton({ shipmentId }) {
   const [busy, setBusy] = useState(false);
+  const [emergencyNumber, setEmergencyNumber] = useState('112');
   async function raise() {
     setBusy(true);
     try {
@@ -20,12 +21,14 @@ export function EmergencyButton({ shipmentId }) {
         ...(shipmentId ? { shipmentId } : {}),
         ...(position ? { latitude: position.coords.latitude, longitude: position.coords.longitude } : {})
       });
+      const number = res?.emergencyNumber || emergencyNumber;
+      setEmergencyNumber(number);
       Alert.alert('Alert sent', res?.notified > 0
-        ? 'Your alert has been sent. If you are in danger, call 112 now.'
-        : 'We could not confirm the alert was delivered. Call 112 now if you are in danger.',
-      [{ text: 'Call 112', onPress: () => Linking.openURL('tel:112') }, { text: 'Close' }]);
+        ? `Your alert has been sent. If you are in danger, call ${number} now.`
+        : `We could not confirm the alert was delivered. Call ${number} now if you are in danger.`,
+      [{ text: `Call ${number}`, onPress: () => Linking.openURL(`tel:${number}`) }, { text: 'Close' }]);
     } catch (e) {
-      Alert.alert('Alert not sent', 'Call 112 now if you are in danger.', [{ text: 'Call 112', onPress: () => Linking.openURL('tel:112') }, { text: 'Close' }]);
+      Alert.alert('Alert not sent', `Call ${emergencyNumber} now if you are in danger.`, [{ text: `Call ${emergencyNumber}`, onPress: () => Linking.openURL(`tel:${emergencyNumber}`) }, { text: 'Close' }]);
     } finally { setBusy(false); }
   }
   return (

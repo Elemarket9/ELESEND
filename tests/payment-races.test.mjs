@@ -4,7 +4,7 @@ import {randomUUID,randomInt} from 'node:crypto';
 import {database} from '../services/api/db.mjs';
 import {migrate} from '../scripts/migrate.mjs';
 import {restaurantOrderService} from '../services/api/restaurant-orders.mjs';
-import {checkoutService} from '../services/api/checkout.mjs';
+import {checkoutService} from '../services/api/modules/payments/checkout.mjs';
 
 test('concurrent food booking, payment callbacks and cancellation',{skip:!process.env.TEST_DATABASE_URL},async()=>{
  const configured=new URL(process.env.TEST_DATABASE_URL);

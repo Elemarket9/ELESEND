@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID,createHmac} from 'node:crypto';
-import {paystackCheckout} from '../services/api/paystack-checkout-adapter.mjs';
+import {paystackCheckout} from '../services/api/modules/payments/paystack-checkout-adapter.mjs';
 import {assertPaymentOperations} from '../services/api/startup-guards.mjs';
-import {paymentWebhook} from '../services/api/payment-provider.mjs';
-import {moneyOperations} from '../services/api/money-operations.mjs';
+import {paymentWebhook} from '../services/api/modules/payments/payment-provider.mjs';
+import {moneyOperations} from '../services/api/modules/payments/money-operations.mjs';
 import {getPublicTracking,createPublicTrackingToken} from '../services/api/infrastructure/maps/web-tracker.mjs';
 
 const KEY='sk_test_example',PHONE='+233241234567',RCP='RCP_abc123';

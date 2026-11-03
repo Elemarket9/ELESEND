@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {check} from './security.mjs';
+import {check} from '../../security.mjs';
 /** Immutable double-entry for provider-verified customer delivery payment.
  * provider_receivable is NOT bank cash settlement evidence.
  */

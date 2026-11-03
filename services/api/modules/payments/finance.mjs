@@ -1,13 +1,13 @@
-import {MARKET_CURRENCY} from './market.mjs';
+import {MARKET_CURRENCY} from '../../market.mjs';
 import {validatePayer} from './payment-provider.mjs';
 import {validatedCheckoutUrl} from './checkout-policy.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {check} from './security.mjs';
-import {featureService} from './algorithms/features.mjs';
-import {detectFraudSignals} from './algorithms/fraud.mjs';
-import {decideCommissionExposure} from './algorithms/exposure.mjs';
-import {verifyBalancedJournal} from './algorithms/reconciliation.mjs';
+import {check} from '../../security.mjs';
+import {featureService} from '../../algorithms/features.mjs';
+import {detectFraudSignals} from '../../algorithms/fraud.mjs';
+import {decideCommissionExposure} from '../../algorithms/exposure.mjs';
+import {verifyBalancedJournal} from '../../algorithms/reconciliation.mjs';
 import {
  getGhanaWeekKey,
  evaluateRiderWeeklyEligibility,
@@ -812,4 +812,11 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
  FROM commission_accounts ca LEFT JOIN finance_journals j ON j.rider_id=ca.rider_id LEFT JOIN finance_lines l ON l.journal_id=j.id
  GROUP BY ca.rider_id ORDER BY outstanding_minor DESC LIMIT 100`)).rows;});}
  };
+}
+
+/** Rewards are commission credit, posted under the rider's account lock. */
+export async function awardPromotionCredit(c,riderId,eventKey,value){
+ await c.query('INSERT INTO commission_accounts(rider_id) VALUES($1) ON CONFLICT DO NOTHING',[riderId]);
+ await c.query('SELECT rider_id FROM commission_accounts WHERE rider_id=$1 FOR UPDATE',[riderId]);
+ return journal(c,{eventKey,riderId,kind:'promotion_credit',value});
 }

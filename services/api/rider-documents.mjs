@@ -5,17 +5,15 @@
 import {createCipheriv,createDecipheriv,createHash,randomBytes} from 'node:crypto';
 import {z} from 'zod';
 import {check} from './security.mjs';
+import {identityConfigured} from './identity-verification.mjs';
+import {riderDataKey} from './rider-licence.mjs';
 
-const KINDS=['profile_photo','insurance','roadworthiness'];
+const KINDS=['profile_photo','licence_photo','insurance','roadworthiness'];
 const EXPIRING=['insurance','roadworthiness'];
 const MAX_BYTES=2*1024*1024;
 const today=()=>new Date().toISOString().slice(0,10);
 const hashToken=token=>createHash('sha256').update(token).digest('hex');
-function key(){
- const value=process.env.RIDER_ID_ENCRYPTION_KEY||'';
- check(/^[a-fA-F0-9]{64}$/.test(value),503,'RIDER_ID_ENCRYPTION_KEY must be 64 hexadecimal characters');
- return Buffer.from(value,'hex');
-}
+const key=riderDataKey;
 function encryptImage(image,riderId,kind){
  const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key(),iv);
  cipher.setAAD(Buffer.from(`elesend:rider-document:v1:${riderId}:${kind}`));
@@ -32,7 +30,8 @@ function decryptImage(value,riderId,kind){
 async function requireVerifier(c,actor){
  check(actor?.kind==='admin'&&(await c.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission='verification:write'",[actor.id])).rowCount,403,'Permission required');
 }
-const requiredKinds=vehicle=>vehicle==='bicycle'?['profile_photo']:KINDS;
+// The identity provider photographs the licence when it is on. Otherwise staff review a photo here.
+const requiredKinds=vehicle=>KINDS.filter(kind=>(!EXPIRING.includes(kind)||vehicle!=='bicycle')&&(kind!=='licence_photo'||!identityConfigured()));
 
 export async function createDocumentUploadLink(db,actor){
  check(actor?.kind==='rider',403,'Rider account required');
@@ -116,13 +115,13 @@ export async function suspendExpiredDocuments(db){
  for(const {id,kind} of rows)await db.query('INSERT INTO audit_logs(action,entity_id) VALUES($1,$2)',['rider.document_expired_suspended:'+kind,id]);
  return rows.map(r=>r.id);
 }
-export function renderDocumentUploadPage(){
+export function renderDocumentUploadPage({includeLicencePhoto=!identityConfigured()}={}){
  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rider Documents</title>
 <style>body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#f8fafc;color:#0f172a}section{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:14px}h1{font-size:20px}h2{font-size:16px;margin:0 0 8px}label{display:block;font-size:14px;margin:10px 0 4px}input{font-size:16px;width:100%;box-sizing:border-box}button{margin-top:12px;width:100%;padding:12px;font-size:16px;font-weight:700;border:0;border-radius:8px;background:#0f172a;color:#fff}p.s{font-size:14px;margin:8px 0 0}</style></head><body>
 <h1>Rider documents</h1><p>Take clear photos where all the writing can be read.</p><div id="forms"></div>
 <script>
 var token=location.hash.slice(1);history.replaceState(null,'',location.pathname);
-var docs=[['profile_photo','Profile photo','user',false],['insurance','Insurance certificate','environment',true],['roadworthiness','Roadworthiness certificate','environment',true]];
+var docs=[['profile_photo','Profile photo','user',false],${includeLicencePhoto?"['licence_photo','Licence or Ghana Card photo','environment',false],":''}['insurance','Insurance certificate','environment',true],['roadworthiness','Roadworthiness certificate','environment',true]];
 function shrink(file){return new Promise(function(ok,no){var r=new FileReader();r.onerror=no;r.onload=function(){var i=new Image();i.onerror=no;i.onload=function(){var s=Math.min(1,1600/Math.max(i.width,i.height));var c=document.createElement('canvas');c.width=Math.round(i.width*s);c.height=Math.round(i.height*s);c.getContext('2d').drawImage(i,0,0,c.width,c.height);ok(c.toDataURL('image/jpeg',0.8).split(',')[1]);};i.src=r.result;};r.readAsDataURL(file);});}
 docs.forEach(function(d){var f=document.createElement('section');var h=document.createElement('h2');h.textContent=d[1];f.appendChild(h);
 var inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.setAttribute('capture',d[2]);f.appendChild(inp);var date;

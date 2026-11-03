@@ -7,8 +7,8 @@ import {flagOverdueParcels} from './custody-incidents.mjs';
  * Food deadlines never wait on payment-provider calls: expiry and financial
  * reconciliation run as independent jobs with independent locks.
  */
-import {reconcileAndEnforceWeeklyRestrictions} from './weekly-settlement.mjs';
-import {runScheduledRecovery} from './rider-wallet.mjs';
+import {reconcileAndEnforceWeeklyRestrictions} from './modules/payments/index.mjs';
+import {runScheduledRecovery} from './modules/payments/index.mjs';
 import {runGeographicLearningCycle} from './infrastructure/maps/egia/background-learner.mjs';
 import {chatEngine} from './chat-engine.mjs';
 

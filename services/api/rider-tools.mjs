@@ -3,7 +3,7 @@ import {randomBytes,randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from './security.mjs';
 import {haversine} from './dispatch-geometry.mjs';
-import {journal} from './finance.mjs';
+import {awardPromotionCredit} from './modules/payments/index.mjs';
 
 const requireRider=actor=>check(actor?.kind==='rider',403,'Rider account required');
 const envInt=(value,fallback)=>{const n=Number(value);return value&&Number.isSafeInteger(n)&&n>=0?n:fallback;};
@@ -57,11 +57,7 @@ export async function applyReferralCode(db,actor,input){
   return {status:'pending'};
  });
 }
-async function awardCredit(c,riderId,eventKey,value){
- await c.query('INSERT INTO commission_accounts(rider_id) VALUES($1) ON CONFLICT DO NOTHING',[riderId]);
- await c.query('SELECT rider_id FROM commission_accounts WHERE rider_id=$1 FOR UPDATE',[riderId]);
- return journal(c,{eventKey,riderId,kind:'promotion_credit',value});
-}
+const awardCredit=awardPromotionCredit;
 const completedSince=(c,riderId,from,to)=>c.query("SELECT count(*)::int AS n FROM shipments WHERE rider_id=$1 AND state='COMPLETED' AND completed_at>=$2 AND completed_at<=$3",[riderId,from,to]).then(r=>r.rows[0].n);
 /** Rewards are commission credit, used automatically against future cash commission. */
 export async function settleRiderRewards(db,{limit=100}={}){
@@ -103,6 +99,7 @@ export async function riderCampaigns(db,actor){
 /** Long online shifts force a rest. Short breaks do not reset the clock. */
 export async function enforceDrivingLimits(db){
  const hours=envInt(process.env.RIDER_MAX_ONLINE_HOURS,12)||12,rest=envInt(process.env.RIDER_REST_HOURS,6)||6;
+ await db.query('UPDATE riders SET shift_started_at=NULL WHERE NOT online AND shift_started_at IS NOT NULL AND last_offline_at<now()-make_interval(hours=>$1)',[rest]);
  const rows=(await db.query(`UPDATE riders SET online=false,rest_until=now()+make_interval(hours=>$2),shift_started_at=NULL
    WHERE online AND shift_started_at<now()-make_interval(hours=>$1) RETURNING id`,[hours,rest])).rows;
  for(const {id} of rows){

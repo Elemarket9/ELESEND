@@ -21,6 +21,7 @@ import {
   TouchableOpacity, Modal, Vibration
 } from 'react-native';
 import * as Location from 'expo-location';
+import { WithdrawalHistory } from '../rider-withdrawal-history';
 import { EmergencyButton, RatingPrompts, RiderTools, ShareLiveLocation, TrustedContactCard } from '../rider-safety';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline, openTurnByTurnNavigation } from '../maps/map-adapter';
@@ -707,7 +708,7 @@ export default function RiderApp() {
       ...(form.vehiclePlate.trim() ? { vehiclePlate: form.vehiclePlate.trim() } : {})
     });
     setLicence(await call('GET', '/api/v1/rider/licence'));
-    setError('Details saved. Now take your licence photo and selfie.');
+    setError('Details saved. Now add your photos.');
   }
 
   async function openDocumentUpload() {
@@ -1576,13 +1577,6 @@ export default function RiderApp() {
         {/* TAB 3: EARNINGS, CASH COMMISSION & SETTLEMENT */}
         {/* ================================================================= */}
         {tab === 'Earnings' && (
-          <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
-            <RatingPrompts />
-            <RiderTools />
-            <TrustedContactCard />
-          </View>
-        )}
-        {tab === 'Earnings' && (
           <View>
             {/* Wallet (server-derived from ELESEND ledgers) */}
             <View style={styles.walletCard}>
@@ -1596,7 +1590,7 @@ export default function RiderApp() {
               </View>
               <View style={styles.debtRow}>
                 <Text style={styles.debtRowLabel}>Withdrawable now:</Text>
-                <Text style={[styles.debtRowVal, { fontWeight: '800' }]}>{ghc(financeSnapshot?.withdrawableMinor || 0)}</Text>
+                <Text style={[styles.debtRowVal, { fontWeight: '800' }]}>{ghc(availableNow)}</Text>
               </View>
               {(financeSnapshot?.inPayoutMinor || 0) > 0 && (
                 <View style={styles.debtRow}>
@@ -1745,14 +1739,14 @@ export default function RiderApp() {
                   <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.expiresOn} onChangeText={value => setLicenceForm(f => ({ ...f, expiresOn: value }))} />
                   <Text style={[styles.inputLabel, { marginTop: 10 }]}>Vehicle Plate Number</Text>
                   <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.vehiclePlate} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, vehiclePlate: value }))} />
-                  {licence && licence.status !== 'missing' && (
+                  {licence && licence.status !== 'missing' && licence.identityAvailable && (
                     <Text style={[styles.momoSub, { marginTop: 10 }]}>
                       Photo check: {licence.identityStatus === 'approved' ? 'passed'
                         : licence.identityStatus === 'in_progress' ? 'in progress'
                           : licence.identityStatus === 'failed' ? `failed. ${licence.identityReason || ''}` : 'not started'}
                     </Text>
                   )}
-                  {licence && licence.status !== 'missing' && licence.identityStatus !== 'approved' && (
+                  {licence && licence.status !== 'missing' && licence.identityAvailable && licence.identityStatus !== 'approved' && (
                     <TouchableOpacity disabled={busy} onPress={() => execute(startIdentityPhotos)} style={[styles.primaryBtn, { marginTop: 10 }]}>
                       <Text style={styles.primaryBtnText}>Take Licence Photo and Selfie</Text>
                     </TouchableOpacity>
@@ -1848,6 +1842,14 @@ export default function RiderApp() {
             <TouchableOpacity onPress={() => setDeleteAccountOpen(true)} style={styles.switchAuthBtn} accessibilityRole="button">
               <Text style={[styles.switchAuthText, { color: '#B91C1C' }]}>Delete Account</Text>
             </TouchableOpacity>
+          </View>
+        )}
+        {tab === 'Earnings' && (
+          <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+            <WithdrawalHistory refreshKey={`${financeSnapshot?.inPayoutMinor}:${availableNow}`} />
+            <RatingPrompts />
+            <RiderTools />
+            <TrustedContactCard />
           </View>
         )}
       </ScrollView>

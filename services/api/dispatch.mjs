@@ -1,4 +1,5 @@
-import {foodDispatchAllowed} from './food-payment.mjs';
+import {cashAlreadyReported} from './modules/payments/index.mjs';
+import {foodDispatchAllowed} from './modules/payments/index.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from './security.mjs';
@@ -7,9 +8,9 @@ import {freshStops,bestInsertion,evaluateStops,activeStates,weightCapacityValid}
 import {roadMatrixBatched,memoRoadRouting} from './algorithms/roads.mjs';
 import {discoverByRadii} from './algorithms/discovery.mjs';
 import {eligibleAndRank} from './algorithms/ranking.mjs';
-import {cashEligible} from './finance.mjs';
-import {evaluateRiderWeeklyEligibility} from './weekly-settlement.mjs';
-import {requireDebtEligible} from './rider-wallet.mjs';
+import {cashEligible} from './modules/payments/index.mjs';
+import {evaluateRiderWeeklyEligibility} from './modules/payments/index.mjs';
+import {requireDebtEligible} from './modules/payments/index.mjs';
 import {buildRemainingRoadCorridor} from './algorithms/corridor.mjs';
 import {smoothGps} from './algorithms/gps.mjs';
 import {calibrateETA} from './algorithms/eta.mjs';
@@ -471,7 +472,7 @@ export function dispatchEngine(db,{routing}={}){
    const r=(await c.query('SELECT * FROM riders WHERE id=$1 FOR UPDATE',[actor.id])).rows[0];check(r,403,'Rider required');
    const s=(await c.query('SELECT * FROM shipments WHERE id=$1 FOR UPDATE',[sid])).rows[0];check(s,404,'Shipment unavailable');check(s.rider_id===actor.id,403,'Assigned rider required');check(['RIDER_ASSIGNED','FAILED'].includes(s.state),409,'Pickup custody started or assignment no longer releasable');
    check(!(await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[sid])).rowCount,409,'Parcel already collected');
-   check(!(await c.query('SELECT 1 FROM cash_collections WHERE shipment_id=$1',[sid])).rowCount,409,'Cash already reported: manual reassignment and reconciliation required');
+   check(!await cashAlreadyReported(c,sid),409,'Cash already reported: manual reassignment and reconciliation required');
    await c.query('UPDATE challenges SET expires_at=now() WHERE shipment_id=$1 AND consumed_at IS NULL',[sid]);
    await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE shipment_id=$1 AND status IN ('offered','accepted')",[sid]);
    await c.query("UPDATE shipments SET state='AWAITING_ASSIGNMENT',rider_id=NULL,company_id=NULL,next_dispatch_at=now(),dispatch_attempts=0 WHERE id=$1",[sid]);
@@ -583,7 +584,7 @@ export function dispatchEngine(db,{routing}={}){
      const accOffer=(await c.query("SELECT id,accepted_at,pickup_eta_seconds FROM dispatch_offers WHERE shipment_id=$1 AND rider_id=$2 AND status='accepted' ORDER BY accepted_at DESC LIMIT 1",[s.id,s.rider_id])).rows[0];
      const pickedUp=s.state!=='RIDER_ASSIGNED'||
       Boolean((await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount)||
-      Boolean((await c.query('SELECT 1 FROM cash_collections WHERE shipment_id=$1',[s.id])).rowCount)||
+      await cashAlreadyReported(c,s.id)||
       f?.state==='IN_TRANSIT';
      const nowMs=Date.now();
      const latestGpsMs=Math.max(

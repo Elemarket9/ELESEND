@@ -1,3 +1,4 @@
+import {ensureCommissionAccount,paymentMethodEnabled,findPaymentEvent,recordPaymentEvent,recordFinancialEntry,earningsEntriesFor,senderCashCollectedInFull,cashCollectionFor,accrueRestaurantSettlement} from './modules/payments/index.mjs';
 import {approveRiderDocuments} from './rider-documents.mjs';
 import {approveRiderLicence} from './rider-licence.mjs';
 import {randomUUID} from 'node:crypto';
@@ -7,9 +8,9 @@ import {z} from 'zod';
 import {check,phone,hash,passwordHash,passwordMatches,newToken,newCode,mac,equal,limit} from './security.mjs';
 import {carRegistration,registerVehicleInTx} from './vehicle.mjs';
 import {removeStop,removeShipment} from './multi-parcel.mjs';
-import {settleCompletedDelivery,debtState} from './rider-wallet.mjs';
-import {requestCheckoutRefund} from './checkout-accounting.mjs';
-import {requireFoodPayment} from './food-payment.mjs';
+import {settleCompletedDelivery,debtState} from './modules/payments/index.mjs';
+import {requestCheckoutRefund} from './modules/payments/index.mjs';
+import {requireFoodPayment} from './modules/payments/index.mjs';
 import {calculateQuote} from './pricing.mjs';
 import {getSurgeMultiplier,validateGhanaBoundary} from './pricing-surge.mjs';
 import {measuredSurge} from './pricing-surge.mjs';
@@ -39,9 +40,7 @@ async function limitAccountSms(db,phoneNumber){
 const audit=(c,actor,action,entity)=>c.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[actor,action,entity]);
 /** A returned parcel is paid for like a delivery: the sender pays, the rider earns and commission applies. */
 async function settleReturnedParcel(c,s){
- const entitlementMinor=Number(BigInt(s.amount_minor)-BigInt(s.commission_minor));
- const rider_id=s.rider_id;
- await c.query('INSERT INTO financial_entries(shipment_id,beneficiary_id,customer_charge_minor,commission_minor,entitlement_minor,payout_status) VALUES($1,$2,$3,$4,$5,$6)',[s.id,s.company_id??rider_id,s.amount_minor,s.commission_minor,entitlementMinor,s.payment_method==='CASH'?'cash_rider_reported':'held']);
+ await recordFinancialEntry(c,{shipment:s,beneficiaryId:s.company_id??s.rider_id});
  await settleCompletedDelivery(c,s);
 }
 export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env.ADMIN_MFA_ENCRYPTION_KEY}={}){
@@ -283,7 +282,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    if(v.kind==='rider'){
     const type=v.vehicle??'motorcycle';check(type!=='car'||v.car,400,'Car registration details required');
     await c.query('INSERT INTO riders(id,vehicle,max_weight_g) VALUES($1,$2,$3)',[uid,type,v.maxWeightG??20000]);
-    await c.query('INSERT INTO commission_accounts(rider_id) VALUES($1)',[uid]);
+    await ensureCommissionAccount(c,uid);
     if(type==='car')await registerVehicleInTx(c,uid,{vehicle:type,maxWeightG:v.maxWeightG??20000,car:v.car});
    }
    if(v.kind==='company'){check(v.name,400,'Company name required');await c.query('INSERT INTO companies(id,owner_id,name) VALUES($1,$2,$3)',[id(),uid,v.name]);}
@@ -463,7 +462,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   // Preserve prior API clients' implicit DIGITAL method in existing tests/migrations.
   // Native clients explicitly choose CASH/MOMO/CARD/QR. Legacy DIGITAL cannot
   // initiate public checkout or self-report payment success.
-  if(v.paymentMethod!=='DIGITAL'){const allowed=(await db.query('SELECT enabled FROM checkout_method_policies WHERE method=$1',[v.paymentMethod])).rows[0];check(allowed?.enabled,503,'Payment method is not active');}
+  if(v.paymentMethod!=='DIGITAL'){check(await paymentMethodEnabled(db,v.paymentMethod),503,'Payment method is not active');}
   if(v.vehicle){const capability=(await db.query('SELECT enabled FROM vehicle_capabilities WHERE vehicle=$1',[v.vehicle])).rows[0];check(capability?.enabled!==false,409,'This vehicle type is not available yet');}
   for(const location of [v.pickup,v.destination])validateGhanaBoundary(location.latitude,location.longitude);
   const p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NOT DISTINCT FROM $1',[v.vehicle??null])).rows[0];check(p,503,'Pricing not configured for selected vehicle');
@@ -496,10 +495,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   // Internal adapter entry only. Never mounted as an unsigned public route.
   check(typeof provider==='string'&&provider.length>0&&typeof eventId==='string'&&eventId.length>0,400);uuid.parse(shipmentId);check(Number.isSafeInteger(amountMinor)&&currency===MARKET_CURRENCY,400);
   return db.tx(async c=>{const s=await locked(c,shipmentId);check(s.amount_minor===amountMinor,409,'Payment amount mismatch');
-   const previous=(await c.query('SELECT * FROM payment_events WHERE provider=$1 AND event_id=$2',[provider,eventId])).rows[0];
+   const previous=await findPaymentEvent(c,provider,eventId);
    if(previous){check(previous.shipment_id===shipmentId&&previous.amount_minor===amountMinor,409,'Event conflict');return {duplicate:true};}
    check(s.payment_method==='DIGITAL'&&s.state==='AWAITING_PAYMENT'&&!s.paid,409,'Shipment cannot receive provider payment');
-   await c.query('INSERT INTO payment_events(provider,event_id,shipment_id,amount_minor,currency) VALUES($1,$2,$3,$4,$5)',[provider,eventId,shipmentId,amountMinor,currency]);
+   await recordPaymentEvent(c,{provider,eventId,shipmentId,amountMinor,currency});
    await c.query("UPDATE shipments SET paid=true,state='AWAITING_ASSIGNMENT' WHERE id=$1",[shipmentId]);await event(c,shipmentId,'payment_confirmed');return {ok:true};
   });
  },
@@ -587,7 +586,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     await c.query('UPDATE rider_dispatch_plans SET stops=$2,revision=revision+1,updated_at=now() WHERE rider_id=$1',[actor.id,JSON.stringify(updated)]);
    }
    if(ch.purpose==='pickup'){
-    if(s.payment_method==='CASH'&&s.cash_payer==='sender')check((await c.query("SELECT 1 FROM cash_collections WHERE shipment_id=$1 AND cash_payer='sender' AND reported_status='reported_full' AND reported_minor=$2",[sid,s.amount_minor])).rowCount,409,'Full sender cash collection required before normal pickup; report shortfall and use dispute/exception flow');
+    if(s.payment_method==='CASH'&&s.cash_payer==='sender')check(await senderCashCollectedInFull(c,sid,s.amount_minor),409,'Full sender cash collection required before normal pickup; report shortfall and use dispute/exception flow');
     await c.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[sid]);
     await c.query("UPDATE food_orders SET state='IN_TRANSIT', updated_at=now() WHERE shipment_id=$1 AND state IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')",[sid]);
     await c.query(
@@ -600,7 +599,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    }
    else {
     if(s.payment_method==='CASH'){
-     const collection=(await c.query('SELECT * FROM cash_collections WHERE shipment_id=$1 AND rider_id=$2',[sid,actor.id])).rows[0];
+     const collection=await cashCollectionFor(c,sid,actor.id);
      check(collection&&collection.reported_status==='reported_full'&&Number(collection.reported_minor)===Number(s.amount_minor),409,'Full cash collection report required for normal handover. Open a payment dispute or exception/return flow for unpaid or partial cash.');
     }else check(s.paid,409,'Digital payment must be verified');
     await c.query("UPDATE shipments SET state='COMPLETED',completed_at=now() WHERE id=$1",[sid]);
@@ -618,16 +617,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
      const netPayable=grossSales-restDiscount-commMinor;
      const commBasis=fo.commission_calculation_basis||'gross_subtotal';
      const commBase=Number(fo.commission_base_minor??grossSales);
-     await c.query(`INSERT INTO restaurant_settlements(
-       order_id,restaurant_id,gross_sales_minor,restaurant_discount_minor,elesend_subsidy_minor,
-       commission_bps,commission_minor,net_payable_minor,commission_basis,commission_base_minor,
-       commission_snapshot,promotion_snapshot,status
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'accrued') ON CONFLICT(order_id) DO NOTHING`,
-      [fo.id,fo.restaurant_id,grossSales,restDiscount,elesendSubsidy,commBps,commMinor,netPayable,commBasis,commBase,JSON.stringify(fo.commission_snapshot||{}),JSON.stringify(fo.promotion_snapshot||{})]);
+     await accrueRestaurantSettlement(c,{orderId:fo.id,restaurantId:fo.restaurant_id,grossSales,restDiscount,elesendSubsidy,commBps,commMinor,netPayable,commBasis,commBase,commissionSnapshot:fo.commission_snapshot,promotionSnapshot:fo.promotion_snapshot});
      await promotionEngine(db).finalizeOrderPromotions(c,fo.id);
     }
-    const entitlementMinor = Number(BigInt(s.amount_minor) - BigInt(s.commission_minor));
-    await c.query('INSERT INTO financial_entries(shipment_id,beneficiary_id,customer_charge_minor,commission_minor,entitlement_minor,payout_status) VALUES($1,$2,$3,$4,$5,$6)',[sid,s.company_id??actor.id,s.amount_minor,s.commission_minor,entitlementMinor,s.payment_method==='CASH'?'cash_rider_reported':'held']);
+    await recordFinancialEntry(c,{shipment:{...s,id:sid},beneficiaryId:s.company_id??actor.id});
     // One settlement path: exactly-once commission/earnings posting plus automatic debt recovery,
     // inside this same OTP-verified completion transaction.
     await settleCompletedDelivery(c,s);
@@ -750,7 +743,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    return {id:did};
   });
  },
- async earnings(actor){return (await db.query('SELECT f.* FROM financial_entries f WHERE f.beneficiary_id=$1 OR f.beneficiary_id IN (SELECT id FROM companies WHERE owner_id=$1) ORDER BY f.created_at DESC LIMIT 100',[actor.id])).rows;},
+ async earnings(actor){return earningsEntriesFor(db,actor.id);},
  async reviewQueue(actor){await permission(db,actor,'verification:write');return {riders:(await db.query('SELECT r.id,u.phone,r.company_id,r.status,r.vehicle,r.max_weight_g FROM riders r LEFT JOIN users u ON u.id=r.id ORDER BY r.id LIMIT 100')).rows,companies:(await db.query('SELECT id,name,status FROM companies ORDER BY name LIMIT 100')).rows,vehicles:(await db.query('SELECT * FROM rider_vehicle_registrations ORDER BY submitted_at DESC LIMIT 100')).rows};}
  ,
   routing,

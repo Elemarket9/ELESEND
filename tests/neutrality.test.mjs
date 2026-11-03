@@ -28,6 +28,6 @@ test('address lookup needs an explicitly chosen service',()=>{
 });
 
 test('currency and time zone come from one place outside payment adapters',()=>{
- for(const file of ['checkout','finance','platform','rider-wallet'])assert.equal(/'GHS'/.test(read('services/api/'+file+'.mjs')),false,file);
+ for(const file of ['modules/payments/checkout','modules/payments/finance','platform','modules/payments/rider-wallet'])assert.equal(/'GHS'/.test(read('services/api/'+file+'.mjs')),false,file);
  for(const file of ['platform.mjs','eta/stage-eta.mjs'])assert.equal(read('services/api/'+file).includes("'Africa/Accra'"),false,file);
 });

@@ -21,7 +21,7 @@ services:
     security_opt: [no-new-privileges:true]
     volumes:
       - type: bind
-        source: ${GHANA_MAP_DATA:?Set GHANA_MAP_DATA to the prepared Ghana data directory}
+        source: ${GHANA_MAP_DATA:-./map-data}
         target: /data
         read_only: true
     networks: [private]
@@ -34,7 +34,7 @@ services:
     security_opt: [no-new-privileges:true]
     volumes:
       - type: bind
-        source: ${GHANA_MAP_DATA:?Set GHANA_MAP_DATA to the prepared Ghana data directory}
+        source: ${GHANA_MAP_DATA:-./map-data}
         target: /data
         read_only: true
     networks: [private]
@@ -48,7 +48,7 @@ services:
     security_opt: [no-new-privileges:true]
     volumes:
       - type: bind
-        source: ${GHANA_MAP_DATA:?Set GHANA_MAP_DATA to the prepared Ghana data directory}
+        source: ${GHANA_MAP_DATA:-./map-data}
         target: /data
         read_only: true
     ports: ['127.0.0.1:3145:3145']

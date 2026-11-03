@@ -125,3 +125,17 @@ Before opening public access:
 - [ ] Privacy policy and data retention rules have been reviewed for Ghana's Data Protection Act.
 - [ ] Alerts are set up for API restarts, `fatal` logs, failed jobs and full disks.
 - [ ] Mobile app bundle is exported with matching `EXPO_PUBLIC_ELESEND_API_BASE_URL` pointing to your validated HTTPS API origin.
+
+## One domain, one server, separate later
+Set `ELESEND_DOMAIN` and point these DNS records at the server: `api`, `app`, `admin` and `maps`.
+
+Each part has its own address, so it can move without code changes:
+- **Map tiles:** host them elsewhere, point the `maps` record there, or set `MAPS_PUBLIC_ORIGIN`.
+- **Road routing:** set `ROUTING_OSRM_CAR_URL` and `ROUTING_OSRM_MOTORCYCLE_URL`.
+- **Database and Redis:** set `DOCKER_DATABASE_URL` and the Redis URL.
+- **Admin and web:** set `ADMIN_HOST`, `WEB_HOST` and `WEB_PUBLIC_ORIGIN`.
+
+When building the apps, set `EXPO_PUBLIC_ELESEND_API_BASE_URL` to your API address in your build environment. It is not stored in this repository. The apps ask the API for the map address when they open.
+
+## Module boundaries
+`config/modules.json` lists each module's files and tables. `tests/module-boundaries.test.mjs` fails on any new import or SQL that crosses a module, and `config/module-boundary-baseline.json` lists the existing crossings still to remove. After removing one, run `node scripts/module-boundaries.mjs --write`. Payments lives in `services/api/modules/payments`, and other code may import only its `index.mjs`.
