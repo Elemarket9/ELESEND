@@ -8,7 +8,7 @@ import {listCustodyIncidents,resolveCustodyIncident} from './custody-incidents.m
 import {createServer} from 'node:http';
 import {randomUUID} from 'node:crypto';
 import {ZodError} from 'zod';
-import {check,limit,equal,recordAttempt,assertUnderLimit} from './security.mjs';
+import {securityEvent,check,limit,equal,recordAttempt,assertUnderLimit} from './security.mjs';
 import {ipLimits,memoryRateLimiter} from './rate-limits.mjs';
 import {haversine} from './dispatch-geometry.mjs';
 import {network} from './network.mjs';
@@ -24,7 +24,7 @@ import {createMapLifecycleService} from './infrastructure/maps/egia/map-lifecycl
 import {getPublicTracking,renderTrackingHtml} from './infrastructure/maps/web-tracker.mjs';
 import {renderAdminPortalHtml} from './admin-web/admin-portal.mjs';
 import {renderRestaurantPortalHtml,renderRestaurantManifestJson} from './restaurant-web/restaurant-portal.mjs';
-import {renderCompanyPortalHtml} from './company-web/company-portal.mjs';
+import {companyPortalCsp,renderCompanyPortalHtml} from './company-web/company-portal.mjs';
 import {assertCompanyDelivery,companyService} from './company.mjs';
 import {webhookService} from './api-webhooks.mjs';
 import {restaurantService} from './restaurant.mjs';
@@ -57,7 +57,9 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const server=createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192,keepAliveTimeout:65000},async(req,res)=>{
  const requestId=randomUUID();res.setHeader('X-Request-Id',requestId);
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
- res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+ res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+ res.setHeader('X-Frame-Options','DENY');res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=(), payment=(), usb=()');res.setHeader('Cross-Origin-Opener-Policy','same-origin');res.setHeader('Cross-Origin-Resource-Policy','same-site');res.setHeader('X-Permitted-Cross-Domain-Policies','none');
+ if(process.env.NODE_ENV==='production')res.setHeader('Strict-Transport-Security','max-age=31536000; includeSubDomains');
  // Serialize before writing headers: a failure must stay recoverable by the catch block below.
  const send=(code,body)=>{const payload=JSON.stringify(body);res.writeHead(code,{'Content-Type':'application/json'});res.end(payload);};
  try{
@@ -122,6 +124,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   }
   if(method==='GET'&&(path==='/company'||path==='/company/')){
    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});
+   res.setHeader('Content-Security-Policy',companyPortalCsp());
    res.end(renderCompanyPortalHtml());
    return;
   }
@@ -164,6 +167,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   if(method==='POST'&&path==='/api/v1/auth/password-reset'){await limit(db,'pw-reset-ip:'+ipKey,ipLimit.resetPer15Min,900);send(200,await app.resetPassword(body));return;}
   const token=req.headers.authorization?.replace(/^Bearer /,'');const actor=token?.startsWith('es_live_')?await net.authenticateKey(token):await app.authenticate(token);
   net.authorizeKey(actor,method,path);
+  if(actor.api_client_id)await limit(db,'api-key:'+actor.api_client_id,300,60);
   await limit(db,'user:'+actor.id,150,60);
   if(path.startsWith('/api/v1/admin/'))check(actor?.kind==='admin',403,'Administrator required');
   let result;
@@ -727,6 +731,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   // Once a response has started the status cannot change; end it rather than crash the process.
   if(res.headersSent){if(!res.writableEnded)res.end();}else send(status,{error:clientError});
   // IDs are removed from the path and query strings left out, because they can hold personal data or tokens.
+  if([401,403,423,429].includes(status))securityEvent('request_refused',{requestId,status,method:req.method,route:String(req.url).split('?')[0].replace(/[0-9a-f-]{36}/gi,':id').slice(0,200)});
   if(status===500)process.stderr.write(JSON.stringify({level:'error',requestId,method:req.method,route:String(req.url).split('?')[0].replace(/[0-9a-f-]{36}/gi,':id').slice(0,200),code:e.code??'internal',message:String(e.message??'').slice(0,300),time:new Date().toISOString()})+'\n');
  }
 });

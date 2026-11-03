@@ -14,4 +14,25 @@ export async function migrate(db){await db.tx(async c=>{
   await c.query(sql);await c.query('INSERT INTO schema_migrations(name,sha256) VALUES($1,$2)',[name,sha]);
  }
 });}
-if(process.argv[1]===import.meta.filename){const db=database();try{await migrate(db);console.log('Migrations applied');}finally{await db.close();}}
+/** Optional second database login for the API. It can use data but cannot change tables or switch off the audit triggers. */
+export async function applyAppRole(db,env=process.env){
+ if(!env.ELESEND_APP_DB_PASSWORD)return false;
+ const role=env.ELESEND_APP_DB_ROLE||'elesend_app';
+ if(!/^[a-z_][a-z0-9_]{0,62}$/.test(role))throw Error('ELESEND_APP_DB_ROLE is not a valid role name');
+ await db.tx(async c=>{
+  if(!(await c.query('SELECT 1 FROM pg_roles WHERE rolname=$1',[role])).rowCount)await c.query(`CREATE ROLE ${role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT`);
+  const password=(await c.query('SELECT format($1::text,$2::text) AS sql',[`ALTER ROLE ${role} PASSWORD %L`,env.ELESEND_APP_DB_PASSWORD])).rows[0].sql;
+  await c.query(password);
+  const database=(await c.query('SELECT current_database() AS name')).rows[0].name.replace(/"/g,'""');
+  for(const sql of [
+   `GRANT CONNECT ON DATABASE "${database}" TO ${role}`,
+   'REVOKE CREATE ON SCHEMA public FROM PUBLIC',
+   `GRANT USAGE ON SCHEMA public TO ${role}`,
+   `GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
+   `REVOKE INSERT,UPDATE,DELETE ON schema_migrations FROM ${role}`,
+   `GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO ${role}`
+  ])await c.query(sql);
+ });
+ return true;
+}
+if(process.argv[1]===import.meta.filename){const db=database();try{await migrate(db);await applyAppRole(db);console.log('Migrations applied');}finally{await db.close();}}

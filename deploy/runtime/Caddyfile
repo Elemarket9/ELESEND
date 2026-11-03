@@ -1,6 +1,6 @@
 {$ELESEND_API_HOST} {
   encode gzip
-  @blocked path /api/v1/debug* /admin* /.env*
+  @blocked path /api/v1/debug* /api/v1/admin* /admin* /.env*
   respond @blocked 404
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -19,7 +19,7 @@
 # Web return pages and the restaurant portal.
 {$WEB_HOST} {
   encode gzip
-  @blocked path /api/v1/debug* /admin* /.env*
+  @blocked path /api/v1/debug* /api/v1/admin* /admin* /.env*
   respond @blocked 404
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -31,6 +31,9 @@
 
 {$ADMIN_HOST} {
   encode gzip
+  # Set ADMIN_ALLOWED_IPS to your office or VPN addresses to close the admin portal to everyone else.
+  @outside not remote_ip {$ADMIN_ALLOWED_IPS}
+  respond @outside 404
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains"
     X-Content-Type-Options nosniff

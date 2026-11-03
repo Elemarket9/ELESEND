@@ -1,5 +1,7 @@
 name: ELESEND checks
 on: [push, pull_request]
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -26,14 +28,16 @@ jobs:
       PGPASSWORD: test-only-password
       PGDATABASE: elesend_test_ci
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24.22.1'
           cache: npm
       - run: npm ci --ignore-scripts
       - name: Check production dependencies for known vulnerabilities
         run: npm audit --omit=dev --audit-level=high
+      - name: Check for committed secrets
+        run: node scripts/secret-scan.mjs
       - name: Run database migrations
         run: npm run migrate
       - name: Run backend, geospatial, security, and mobile logic tests

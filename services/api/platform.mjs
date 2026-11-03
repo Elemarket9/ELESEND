@@ -8,7 +8,7 @@ import {randomUUID} from 'node:crypto';
 import {MARKET_CURRENCY,MARKET_TIME_ZONE} from './market.mjs';
 import {decryptAdminSecret,verifyAdminTotp} from './admin-mfa.mjs';
 import {z} from 'zod';
-import {check,phone,hash,passwordHash,passwordMatches,newToken,newCode,mac,equal,limit} from './security.mjs';
+import {assertAcceptablePassword,passwordNeedsUpgrade,UNKNOWN_ACCOUNT_HASH,check,phone,hash,passwordHash,passwordMatches,newToken,newCode,mac,equal,limit} from './security.mjs';
 import {carRegistration,registerVehicleInTx} from './vehicle.mjs';
 import {removeStop,removeShipment} from './multi-parcel.mjs';
 import {settleCompletedDelivery,debtState} from './modules/payments/index.mjs';
@@ -156,6 +156,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const v=z.object({phone:z.string().max(30),challengeId:uuid,code:z.string().regex(/^\d{6}$/),newPassword:z.string().min(12).max(128)}).strict().parse(input);
   const p=phone(v.phone);
   await limit(db,'pw-reset:'+hash(p),10,900);
+  assertAcceptablePassword(v.newPassword,{phone:v.phone});
   const pw=await passwordHash(v.newPassword);
   const result=await db.tx(async c=>{
    const u=(await c.query('SELECT id,phone,kind FROM users WHERE phone=$1 FOR UPDATE',[p])).rows[0];
@@ -270,7 +271,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    [actor.id]
   )).rows;
  },
- async register(input){const v=registration.parse(input);const uid=id(),p=phone(v.phone),pw=await passwordHash(v.password);
+ async register(input){const v=registration.parse(input);const uid=id(),p=phone(v.phone);assertAcceptablePassword(v.password,{phone:p});const pw=await passwordHash(v.password);
   await db.tx(async c=>{await c.query('INSERT INTO users(id,phone,password_hash,kind) VALUES($1,$2,$3,$4)',[uid,p,pw,v.kind]);
    if(v.kind==='rider'){
     const type=v.vehicle??'motorcycle';check(type!=='car'||v.car,400,'Car registration details required');
@@ -288,12 +289,13 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   await limit(db,'login-source:'+hash(p+'|'+clientIp),10,900);await limit(db,'login:'+hash(p),100,900);
   const u=(await db.query('SELECT * FROM users WHERE phone=$1',[p])).rows[0];
   // Spend equivalent password derivation work for unknown identities.
-  const ok=await passwordMatches(v.password,u?.password_hash??('0'.repeat(32)+':'+ '0'.repeat(128)));check(u&&ok,401,'Invalid credentials');
+  const ok=await passwordMatches(v.password,u?.password_hash??UNKNOWN_ACCOUNT_HASH);check(u&&ok,401,'Invalid credentials');
   const token=newToken();
   return db.tx(async c=>{
    const current=(await c.query('SELECT * FROM users WHERE phone=$1 FOR UPDATE',[p])).rows[0];
    const stillValid=Boolean(current&&current.id===u.id&&current.password_hash===u.password_hash&&(await passwordMatches(v.password,current.password_hash)));
    check(stillValid,401,'Invalid credentials');
+   if(passwordNeedsUpgrade(current.password_hash))await c.query('UPDATE users SET password_hash=$2 WHERE id=$1',[current.id,await passwordHash(v.password)]);
    if(current.kind==='admin'){
     check(v.totpCode,401,'Administrator authenticator code required');
     // FOR UPDATE serializes counter consumption across concurrent mobile logins.
@@ -311,7 +313,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    return {token,user:{id:current.id,kind:current.kind}};
   });
  },
- async authenticate(token){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const tokenHash=hash(token);const u=(await db.query("SELECT u.id,u.kind,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR s.admin_mfa_verified=true)",[tokenHash])).rows[0];check(u,401,'Session expired or administrator MFA required');if(u.kind==='rider'){const r=(await db.query("SELECT r.status, c.status AS company_status, r.company_id FROM riders r LEFT JOIN companies c ON c.id=r.company_id WHERE r.id=$1",[u.id])).rows[0];check(r&&r.status==='approved'&&(!r.company_id||r.company_status==='approved'),403,'Rider account suspended or not approved');}if(u.kind==='company'){const c=(await db.query("SELECT status FROM companies WHERE owner_id=$1",[u.id])).rows[0];check(c&&c.status==='approved',403,'Company suspended or not approved');}return {...u,sessionTokenHash:tokenHash};},
+ async authenticate(token){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const tokenHash=hash(token);const u=(await db.query("SELECT u.id,u.kind,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR (s.admin_mfa_verified=true AND s.last_seen_at>now()-interval '30 minutes'))",[tokenHash])).rows[0];check(u,401,'Session expired or administrator MFA required');if(u.kind==='admin')await db.query("UPDATE sessions SET last_seen_at=now() WHERE token_hash=$1 AND last_seen_at<now()-interval '1 minute'",[tokenHash]);if(u.kind==='rider'){const r=(await db.query("SELECT r.status, c.status AS company_status, r.company_id FROM riders r LEFT JOIN companies c ON c.id=r.company_id WHERE r.id=$1",[u.id])).rows[0];check(r&&r.status==='approved'&&(!r.company_id||r.company_status==='approved'),403,'Rider account suspended or not approved');}if(u.kind==='company'){const c=(await db.query("SELECT status FROM companies WHERE owner_id=$1",[u.id])).rows[0];check(c&&c.status==='approved',403,'Company suspended or not approved');}return {...u,sessionTokenHash:tokenHash};},
  async logout(token,input={},actor=null){
   const tokenHash=typeof token==='string'&&token.length>0?hash(token):(actor?.sessionTokenHash??null);
   const deviceId=typeof input?.deviceId==='string'&&input.deviceId.trim().length>0

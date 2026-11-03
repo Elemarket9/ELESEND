@@ -4,6 +4,7 @@ services:
   db:
     image: postgis/postgis:18-3.6
     restart: unless-stopped
+    security_opt: ['no-new-privileges:true']
     command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-elesend}
@@ -50,6 +51,8 @@ services:
     command: [node, scripts/migrate.mjs]
     environment:
       DATABASE_URL: ${DOCKER_DATABASE_URL:?Required}
+      ELESEND_APP_DB_ROLE: ${ELESEND_APP_DB_ROLE:-}
+      ELESEND_APP_DB_PASSWORD: ${ELESEND_APP_DB_PASSWORD:-}
       DATABASE_SSL: ${DATABASE_SSL:-auto}
       DATABASE_SSL_CA: ${DATABASE_SSL_CA:-}
       DATABASE_SSL_REJECT_UNAUTHORIZED: ${DATABASE_SSL_REJECT_UNAUTHORIZED:-true}
@@ -64,7 +67,7 @@ services:
     cap_drop: [ALL]
     security_opt: ['no-new-privileges:true']
     environment:
-      DATABASE_URL: ${DOCKER_DATABASE_URL:?Set database URL}
+      DATABASE_URL: ${DOCKER_APP_DATABASE_URL:-${DOCKER_DATABASE_URL:?Set database URL}}
       DATABASE_SSL: ${DATABASE_SSL:-auto}
       DATABASE_SSL_CA: ${DATABASE_SSL_CA:-}
       DATABASE_SSL_REJECT_UNAUTHORIZED: ${DATABASE_SSL_REJECT_UNAUTHORIZED:-true}
@@ -175,7 +178,11 @@ services:
   caddy:
     image: caddy:2
     restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ['no-new-privileges:true']
     environment:
+      ADMIN_ALLOWED_IPS: ${ADMIN_ALLOWED_IPS:-0.0.0.0/0 ::/0}
       ELESEND_API_HOST: ${ELESEND_API_HOST:-api.${ELESEND_DOMAIN:?Set your domain, for example example.com}}
       WEB_HOST: ${WEB_HOST:-app.${ELESEND_DOMAIN:?Set your domain, for example example.com}}
       ADMIN_HOST: ${ADMIN_HOST:-admin.${ELESEND_DOMAIN:?Set your domain, for example example.com}}
