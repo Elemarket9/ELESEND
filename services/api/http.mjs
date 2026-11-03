@@ -1,4 +1,5 @@
 import {createServer} from 'node:http';
+import {randomUUID} from 'node:crypto';
 import {ZodError} from 'zod';
 import {check,limit,equal,recordAttempt,assertUnderLimit} from './security.mjs';
 import {ipLimits,memoryRateLimiter} from './rate-limits.mjs';
@@ -43,7 +44,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const mapLifecycle=createMapLifecycleService(db);
   const eta=etaService(db,{routing:app?.routing,baselineFactors:etaBaselineFactors});
   const ipLimit=ipLimits(),floodGuard=memoryRateLimiter();
-  const server=createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192},async(req,res)=>{
+  const server=createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192,keepAliveTimeout:65000},async(req,res)=>{
+ const requestId=randomUUID();res.setHeader('X-Request-Id',requestId);
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
  res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
  // Serialize before writing headers: a failure must stay recoverable by the catch block below.
@@ -145,6 +147,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   if(path.startsWith('/api/v1/admin/'))check(actor?.kind==='admin',403,'Administrator required');
   let result;
   if(method==='POST'&&path==='/api/v1/auth/logout'){result=await app.logout(token,body,actor);disconnectRealtimeSession(token,'logged_out');}
+  else if(method==='POST'&&path==='/api/v1/me/delete-account'){await limit(db,'delete-account:'+actor.id,5,900);check(!actor.api_client_id,403,'Sign in to delete your account');result=await app.deleteAccount(actor,body);disconnectRealtimeSession(token,'account_deleted');}
   else if(method==='GET'&&path==='/api/v1/me/phone')result=await app.phoneStatus(actor);
   else if(method==='POST'&&path==='/api/v1/me/phone-challenge'){await limit(db,'account-sms-ip:'+ipKey,ipLimit.accountSmsPer15Min,900);result=await app.phoneChallenge(actor);}
   else if(method==='POST'&&path==='/api/v1/me/phone-verify')result=await app.verifyPhone(actor,body);
@@ -561,7 +564,9 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
        close(){if(!res.writableEnded)res.end();}
      };
      const unregister=registerRealtimeConnection(actor.id,conn,{expiresAt,deduplicate:true});
-     req.on('close',unregister);
+     // Comment lines keep idle streams open through proxies and reveal dead connections.
+     const heartbeat=setInterval(()=>{if(!res.writableEnded)res.write(': ping\n\n');},25000);heartbeat.unref();
+     req.on('close',()=>{clearInterval(heartbeat);unregister();});
      conn.send('connected',{userId:actor.id,role:actor.kind,conversationId:convId||null});
      return;
    }
@@ -654,7 +659,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const clientError=status===500?'Internal server error':e.code==='23505'?'Unique resource already exists':e instanceof ZodError?'Invalid input':e.message;
   // Once a response has started the status cannot change; end it rather than crash the process.
   if(res.headersSent){if(!res.writableEnded)res.end();}else send(status,{error:clientError});
-  if(status===500)process.stderr.write(JSON.stringify({level:'error',code:e.code??'internal',time:new Date().toISOString()})+'\n');
+  // IDs are removed from the path and query strings left out, because they can hold personal data or tokens.
+  if(status===500)process.stderr.write(JSON.stringify({level:'error',requestId,method:req.method,route:String(req.url).split('?')[0].replace(/[0-9a-f-]{36}/gi,':id').slice(0,200),code:e.code??'internal',message:String(e.message??'').slice(0,300),time:new Date().toISOString()})+'\n');
  }
 });
   server.on('upgrade',async(req,socket,head)=>{

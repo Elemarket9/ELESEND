@@ -395,6 +395,9 @@ export function disconnectRealtimeUser(userId, reason = 'account_suspended') {
   return closed;
 }
 
+const MAX_REALTIME_CONNECTIONS_PER_USER = 5;
+const MAX_WS_MESSAGES_PER_MINUTE = 120;
+
 export function registerRealtimeConnection(userId, conn, options = {}) {
   const uid = String(userId);
   if (options?.expiresAt && !conn.expiresAt) {
@@ -404,7 +407,14 @@ export function registerRealtimeConnection(userId, conn, options = {}) {
     conn._deduplicator = createRealtimeEventDeduplicator();
   }
   if (!realtimeClients.has(uid)) realtimeClients.set(uid, new Set());
-  realtimeClients.get(uid).add(conn);
+  const connections = realtimeClients.get(uid);
+  // One account cannot hold unlimited sockets open: the oldest connection makes way for the newest.
+  if (connections.size >= MAX_REALTIME_CONNECTIONS_PER_USER) {
+    const oldest = connections.values().next().value;
+    connections.delete(oldest);
+    try { oldest.close?.(); } catch {}
+  }
+  connections.add(conn);
   for (const db of realtimeBus.dbs) {
     const bridge = realtimeBus.bridges.get(db);
     if (bridge) bridge.stopped = false;
@@ -493,6 +503,8 @@ export function upgradeToChatWebSocket(req, socket, head, { actor, sessionToken 
   const unregister = registerRealtimeConnection(actor.id, conn, { expiresAt: calculatedExpiresAt, deduplicate: true });
 
   let buffer = head && head.length ? Buffer.from(head) : Buffer.alloc(0);
+  let messageWindow = 0, messageCount = 0;
+  socket.setKeepAlive?.(true, 30000);
 
   socket.on('data', async chunk => {
     buffer = Buffer.concat([buffer, chunk]);
@@ -501,6 +513,11 @@ export function upgradeToChatWebSocket(req, socket, head, { actor, sessionToken 
       const secondByte = buffer[1];
       const opcode = firstByte & 0x0f;
       const isMasked = (secondByte & 0x80) !== 0;
+      // The WebSocket standard requires every client frame to be masked.
+      if (!isMasked) {
+        conn.close();
+        return;
+      }
       let payloadLen = secondByte & 0x7f;
       let offset = 2;
 
@@ -538,6 +555,12 @@ export function upgradeToChatWebSocket(req, socket, head, { actor, sessionToken 
         continue;
       }
       if (opcode === 0x01) {
+        const minute = Math.floor(Date.now() / 60000);
+        if (minute !== messageWindow) { messageWindow = minute; messageCount = 0; }
+        if (++messageCount > MAX_WS_MESSAGES_PER_MINUTE) {
+          conn.close();
+          return;
+        }
         if (isMasked && mask) {
           for (let i = 0; i < dataBuf.length; i++) {
             dataBuf[i] ^= mask[i & 3];

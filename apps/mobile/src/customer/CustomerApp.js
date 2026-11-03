@@ -23,6 +23,7 @@ import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline } from '../maps/map-adapter';
 import { call, loadToken, saveToken, clearToken, ghc, BASE } from '../api';
+import DeleteAccountModal from '../delete-account';
 import { detectCustomerLocation, buildConfirmedLocation } from '../customer-location';
 import {
   ENDPOINTS,
@@ -115,6 +116,7 @@ export default function CustomerApp() {
   const [myShipments, setMyShipments] = useState([]);
   const [trackingShipment, setTrackingShipment] = useState(null);
   const [liveCourier, setLiveCourier] = useState(null);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [vehicleTariffs, setVehicleTariffs] = useState([]);
   // Starting prices come from the live tariff, and are hidden until it loads.
   const vehicleFromPrice = vehicle => {
@@ -2113,6 +2115,12 @@ export default function CustomerApp() {
 
             {/* Card Group 3: Information & Logout */}
             <View style={styles.profileGroupCard}>
+              <TouchableOpacity style={styles.profileMenuItem} accessibilityRole="button" onPress={() => setDeleteAccountOpen(true)}>
+                <Text style={styles.menuItemIcon}>🗑️</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.menuItemTitle, { color: '#B91C1C' }]}>Delete Account</Text>
+                </View>
+              </TouchableOpacity>
               <TouchableOpacity style={styles.profileMenuItem} onPress={() => Alert.alert('About ELESEND', 'ELESEND delivery platform for Ghana.')}>
                 <Text style={styles.menuItemIcon}>ℹ️</Text>
                 <View style={{ flex: 1 }}>
@@ -2664,6 +2672,16 @@ export default function CustomerApp() {
           </View>
         </View>
       </Modal>
+
+      <DeleteAccountModal
+        visible={deleteAccountOpen}
+        onClose={() => setDeleteAccountOpen(false)}
+        onDeleted={async () => {
+          await clearToken();
+          setDeleteAccountOpen(false);
+          setAuth(null);
+        }}
+      />
 
       {/* =====================================================================
           MODAL: DISH CUSTOMIZER (Required modifier checks & Radio vs Checkbox)

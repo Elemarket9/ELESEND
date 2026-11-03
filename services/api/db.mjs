@@ -79,7 +79,8 @@ export function database(url = process.env.DATABASE_URL, options = {}) {
     activeClients.add(client);
     client.once('end', () => activeClients.delete(client));
   });
-  pool.on('error', () => {});
+  // An idle connection failing must not crash the API, but operators need to see it.
+  pool.on('error', error => process.stderr.write(JSON.stringify({level:'error',component:'database_pool',code:error?.code??'connection_error',time:new Date().toISOString()})+'\n'));
   return {
     query: (...args) => pool.query(...args),
     close: async () => {
@@ -90,16 +91,18 @@ export function database(url = process.env.DATABASE_URL, options = {}) {
     pool,
     async tx(fn) {
       const c = await pool.connect();
+      let broken;
       try {
         await c.query('BEGIN');
         const result = await fn(c);
         await c.query('COMMIT');
         return result;
       } catch (e) {
-        await c.query('ROLLBACK');
+        // A failed rollback must not hide the original error, and that connection cannot be reused.
+        await c.query('ROLLBACK').catch(rollbackError => { broken = rollbackError; });
         throw e;
       } finally {
-        c.release();
+        c.release(broken);
       }
     }
   };

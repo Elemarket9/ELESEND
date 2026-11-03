@@ -5,7 +5,7 @@ import {z} from 'zod';
 import {check,phone,hash,passwordHash,passwordMatches,newToken,newCode,mac,equal,limit} from './security.mjs';
 import {carRegistration,registerVehicleInTx} from './vehicle.mjs';
 import {removeStop,removeShipment} from './multi-parcel.mjs';
-import {settleCompletedDelivery} from './rider-wallet.mjs';
+import {settleCompletedDelivery,debtState} from './rider-wallet.mjs';
 import {requestCheckoutRefund} from './checkout-accounting.mjs';
 import {requireFoodPayment} from './food-payment.mjs';
 import {calculateQuote} from './pricing.mjs';
@@ -339,6 +339,34 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
         )`,
     [tokenHash,uid,deviceId,pushToken]
    );
+   return {ok:true};
+  });
+ },
+ /** Removes login and contact details. Financial, audit and custody records stay, unlinked from any phone number. */
+ async deleteAccount(actor,input){
+  const v=z.object({password:z.string().min(1).max(128)}).strict().parse(input);
+  check(actor?.id&&actor.kind!=='admin',403,'Administrator accounts are removed by another administrator');
+  return db.tx(async c=>{
+   const user=(await c.query('SELECT id,kind,password_hash FROM users WHERE id=$1 FOR UPDATE',[actor.id])).rows[0];
+   check(user&&await passwordMatches(v.password,user.password_hash),401,'Incorrect password');
+   check(!(await c.query("SELECT 1 FROM shipments WHERE (customer_id=$1 OR rider_id=$1) AND state NOT IN ('COMPLETED','CANCELLED','RETURNED') LIMIT 1",[actor.id])).rowCount,409,'Finish or cancel your active deliveries first');
+   check(!(await c.query("SELECT 1 FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id WHERE r.owner_id=$1 AND f.state NOT IN ('DELIVERED','CANCELLED','REJECTED') LIMIT 1",[actor.id])).rowCount,409,'Finish your open restaurant orders first');
+   if(user.kind==='rider'){
+    const debt=await debtState(c,actor.id);
+    check(debt.debtMinor===0,409,'Settle your outstanding commission first');
+    await c.query("UPDATE riders SET online=false,status='suspended',current_position=NULL,position_at=NULL WHERE id=$1",[actor.id]);
+    await c.query('DELETE FROM rider_location_samples WHERE rider_id=$1',[actor.id]);
+    await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[actor.id]);
+   }
+   await c.query("UPDATE restaurants SET status='suspended' WHERE owner_id=$1",[actor.id]);
+   await c.query('UPDATE api_clients SET revoked_at=now() WHERE owner_id=$1 AND revoked_at IS NULL',[actor.id]);
+   await c.query('DELETE FROM sessions WHERE user_id=$1',[actor.id]);
+   await c.query('DELETE FROM user_push_tokens WHERE user_id=$1',[actor.id]);
+   await c.query('DELETE FROM account_phone_challenges WHERE user_id=$1',[actor.id]);
+   await c.query('DELETE FROM account_recovery_challenges WHERE user_id=$1',[actor.id]);
+   await c.query("UPDATE users SET deleted_at=now(),phone='deleted:'||id::text,password_hash='deleted',phone_verified_at=NULL WHERE id=$1",[actor.id]);
+   await audit(c,actor.id,'auth.account_deleted',actor.id);
+   disconnectRealtimeUser(actor.id,'account_deleted');
    return {ok:true};
   });
  },
