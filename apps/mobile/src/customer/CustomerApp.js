@@ -1569,16 +1569,6 @@ export default function CustomerApp() {
                   <Text style={styles.vehicleOptionPrice}>from GH₵ 15</Text>
                 </TouchableOpacity>
 
-                {/* Express Cargo Van */}
-                <TouchableOpacity
-                  style={[styles.vehicleOptionCard, booking.vehicle === 'van' && styles.vehicleOptionCardActive]}
-                  onPress={() => updateBooking('vehicle', 'van')}>
-                  <Text style={{ fontSize: 26, marginBottom: 4 }}>🚐</Text>
-                  <Text style={styles.vehicleEtaBadge}>6 min</Text>
-                  <Text style={styles.vehicleOptionName}>Express Cargo</Text>
-                  <Text style={styles.vehicleOptionPrice}>from GH₵ 64</Text>
-                </TouchableOpacity>
-
                 {/* Car Delivery */}
                 <TouchableOpacity
                   style={[styles.vehicleOptionCard, booking.vehicle === 'car' && styles.vehicleOptionCardActive]}
@@ -1783,13 +1773,10 @@ export default function CustomerApp() {
               </View>
 
               <TouchableOpacity
-                style={styles.cargoOrderButton}
-                onPress={() => {
-                  setBooking(b => ({ ...b, vehicle: 'van' }));
-                  setTab('Send');
-                }}>
-                <Text style={styles.cargoOrderButtonText}>Order</Text>
-                <Text style={styles.cargoOrderButtonSub}>Complete all of the order fields</Text>
+                style={[styles.cargoOrderButton, { opacity: 0.5 }]}
+                disabled>
+                <Text style={styles.cargoOrderButtonText}>Coming soon</Text>
+                <Text style={styles.cargoOrderButtonSub}>Van delivery is not available yet</Text>
               </TouchableOpacity>
             </View>
           </ScrollView>

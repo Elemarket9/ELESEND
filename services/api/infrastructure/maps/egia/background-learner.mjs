@@ -1,10 +1,11 @@
-import { sanitizeTrajectory, extractCandidateRoadCorridor } from './gps-quality-filter.mjs';
+import { sanitizeTrajectory, extractCandidateRoadCorridor, offRoadSegments } from './gps-quality-filter.mjs';
 import { validatePublicLandmarkCandidate, deduplicateLandmark } from './deduplicator.mjs';
 import { calculateBearing, angleDifference } from './unmapped-navigation.mjs';
 import { randomUUID } from 'node:crypto';
 import { ghanaReverseGeocode } from '../ghana-geocoder.mjs';
 
 // Learning may advance a road under review, but never reverses an administrator's decision.
+const MAX_SAMPLES_PER_RIDER = 60;
 const LOCKED_ROAD_STATUSES = new Set(['VERIFIED', 'PUBLISHED', 'REJECTED', 'RETIRED']);
 
 /**
@@ -13,7 +14,7 @@ const LOCKED_ROAD_STATUSES = new Set(['VERIFIED', 'PUBLISHED', 'REJECTED', 'RETI
  * Connects rider GPS trajectories, multi-factor corroboration (provenance, temporal spread,
  * bidirectional flow, mean accuracy), and evidence-based candidate road/landmark promotion.
  */
-export async function runGeographicLearningCycle(db) {
+export async function runGeographicLearningCycle(db, { routing = null } = {}) {
   const result = {
     roadsDiscovered: 0,
     roadsCorroborated: 0,
@@ -97,6 +98,9 @@ export async function runGeographicLearningCycle(db) {
     result.reportsProcessed++;
   }
 
+  // Without road data every trip would look like a new road, so discovery waits for routing.
+  if (typeof routing?.nearestRoadMeters !== 'function') return result;
+
   // 2. Discover and corroborate candidate roads from off-road rider trajectories (Priority 3 Hardened)
   const riderSamples = await db.query(`
     SELECT rider_id, array_agg(jsonb_build_object(
@@ -114,7 +118,16 @@ export async function runGeographicLearningCycle(db) {
   `);
 
   for (const row of riderSamples.rows) {
-    const clean = sanitizeTrajectory(row.samples);
+    const recent = sanitizeTrajectory(row.samples).slice(-MAX_SAMPLES_PER_RIDER);
+    let roadDistances;
+    try {
+      roadDistances = [];
+      for (const sample of recent) roadDistances.push(await routing.nearestRoadMeters(sample));
+    } catch {
+      continue; // Road data unavailable: learn nothing from this rider in this cycle.
+    }
+
+    for (const clean of offRoadSegments(recent, roadDistances)) {
     const corridor = extractCandidateRoadCorridor(clean);
 
     if (corridor) {
@@ -139,7 +152,8 @@ export async function runGeographicLearningCycle(db) {
                mean_accuracy_m, is_private_access, contributor_rider_ids,
                ST_AsGeoJSON(corridor::geometry) AS existing_geojson
         FROM candidate_roads
-        WHERE ST_DWithin(corridor, ST_SetSRID(ST_GeomFromGeoJSON($1), 4326)::geography, 35)
+        WHERE ST_DWithin(corridor, ST_SetSRID(ST_StartPoint(ST_GeomFromGeoJSON($1)), 4326)::geography, 35)
+          AND ST_DWithin(corridor, ST_SetSRID(ST_EndPoint(ST_GeomFromGeoJSON($1)), 4326)::geography, 35)
         ORDER BY ST_Distance(corridor, ST_SetSRID(ST_GeomFromGeoJSON($1), 4326)::geography) ASC
         LIMIT 1;
       `, [lineGeoJson]);
@@ -219,6 +233,7 @@ export async function runGeographicLearningCycle(db) {
 
         result.roadsDiscovered++;
       }
+    }
     }
   }
 

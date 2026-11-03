@@ -77,6 +77,35 @@ export function sanitizeTrajectory(rawSamples) {
   return valid;
 }
 
+const OFF_ROAD_METERS = 30;
+const MAX_SEGMENT_GAP_SECONDS = 120;
+const PRIVACY_TRIM_METERS = 100;
+
+/**
+ * Splits a clean trajectory into continuous stretches away from mapped roads.
+ * Only these can reveal a missing road. Each stretch loses its first and last 100 m,
+ * because that is where a rider's home or a customer's gate is most likely to be.
+ */
+export function offRoadSegments(cleanSamples, roadDistances) {
+  const segments = [];
+  let current = [];
+  const flush = () => {
+    if (current.length) {
+      const first = current[0], last = current[current.length - 1];
+      segments.push(current.filter(s => haversine(s, first) >= PRIVACY_TRIM_METERS && haversine(s, last) >= PRIVACY_TRIM_METERS));
+    }
+    current = [];
+  };
+  cleanSamples.forEach((sample, i) => {
+    if (roadDistances[i] <= OFF_ROAD_METERS) return flush();
+    const previous = current[current.length - 1];
+    if (previous && (new Date(sample.observedAt) - new Date(previous.observedAt)) / 1000 > MAX_SEGMENT_GAP_SECONDS) flush();
+    current.push(sample);
+  });
+  flush();
+  return segments;
+}
+
 /**
  * Analyzes clean off-road trajectories and detects potential missing road corridors.
  * If multiple sequential points deviate from known roads with consistent trajectory,

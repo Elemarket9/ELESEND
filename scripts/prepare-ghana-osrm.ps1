@@ -35,7 +35,8 @@ if($Vehicle -eq 'all' -or $Vehicle -eq 'car'){
   Build-Graph '/opt/car.lua' 'ghana-latest'
 }
 if($Vehicle -eq 'all' -or $Vehicle -eq 'motorcycle'){
-  # Use dedicated bicycle/motorcycle lua profile for two-wheelers in Ghana
-  Build-Graph '/opt/bicycle.lua' 'ghana-motorcycle'
+  # Uses road rules from the car profile: the bicycle profile allows footpaths and uses cycling speeds.
+  # The API applies ROUTING_MOTORCYCLE_DURATION_FACTOR to make motorcycle ETAs faster.
+  Build-Graph '/opt/car.lua' 'ghana-motorcycle'
 }
 Write-Output 'Private Ghana OSRM routing graphs (car + motorcycle) prepared.'

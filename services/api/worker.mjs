@@ -55,7 +55,8 @@ export async function startWorker(options = {}) {
     ? osrmRouting({
         endpoint: config.routing.osrmUrl,
         profiles: config.routing.profiles,
-        vehicleRoutes: config.routing.vehicleRoutes
+        vehicleRoutes: config.routing.vehicleRoutes,
+        durationFactors: config.routing.durationFactors
       })
     : null);
 
@@ -105,7 +106,8 @@ export async function startWorker(options = {}) {
     money,
     checkout,
     finance,
-    paymentProvider
+    paymentProvider,
+    routing
   }).start({ unref: false });
 
   function stop() {

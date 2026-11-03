@@ -2,7 +2,7 @@ import {check} from './security.mjs';
 import {haversine} from './dispatch-geometry.mjs';
 
 /** Distances and durations are ONLY from a configured road-network routing service. */
-export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,maxSnapMeters=2500,maxInFlight=48,fetchImpl=fetch}){
+export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,maxSnapMeters=2500,maxInFlight=48,durationFactors={},fetchImpl=fetch}){
  function base(value){const u=new URL(value);check(['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash,500,'Routing base URL must not contain secrets/query');return u;}
  check(endpoint||vehicleRoutes,500,'OSRM graph configuration required');
  const origin=endpoint?base(endpoint):null;
@@ -38,7 +38,7 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,m
    }
   }
  }
- function normalize(distance,duration){check(Number.isFinite(distance)&&distance>=0&&distance<=10000000&&Number.isFinite(duration)&&duration>=0&&duration<=604800,503,'Invalid road estimate');return {distanceMeters:Math.ceil(distance),durationSeconds:Math.ceil(duration),source:'routing-provider',trafficAware:false};}
+ function normalize(distance,rawDuration,vehicle){const duration=rawDuration*(durationFactors[vehicle]??1);check(Number.isFinite(distance)&&distance>=0&&distance<=10000000&&Number.isFinite(duration)&&duration>=0&&duration<=604800,503,'Invalid road estimate');return {distanceMeters:Math.ceil(distance),durationSeconds:Math.ceil(duration),source:'routing-provider',trafficAware:false};}
  return {
   async route(from,to,{vehicle='car'}={}){
    const p=profile(vehicle),body=await request(`/route/v1/${p}/${coords(from)};${coords(to)}?overview=full&geometries=geojson&steps=false`,vehicle);
@@ -48,7 +48,7 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,m
    if(straightLine>250){
     check(Number(body.routes[0].distance)>=straightLine*0.25,422,'No connected road path');
    }
-   return {...normalize(body.routes[0].distance,body.routes[0].duration),geometry:body.routes[0].geometry};
+   return {...normalize(body.routes[0].distance,body.routes[0].duration,vehicle),geometry:body.routes[0].geometry};
   },
   async matrix(sources,destination,{vehicle='car'}={}){
    check(Array.isArray(sources)&&sources.length>0&&sources.length<=30,400,'Invalid matrix');const p=profile(vehicle);
@@ -62,8 +62,15 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,m
     if(d===null||m===null||!Number.isFinite(d)||!Number.isFinite(m))return null;
     const straightLine=haversine(src,destination);
     if(straightLine>250&&m<straightLine*0.25)return null;
-    return normalize(m,d);
+    return normalize(m,d,vehicle);
    });
+  },
+  /** Metres from a point to the nearest road on the vehicle's graph. */
+  async nearestRoadMeters(point,{vehicle='car'}={}){
+   const body=await request(`/nearest/v1/${profile(vehicle)}/${coords(point)}?number=1`,vehicle);
+   const meters=body.waypoints?.[0]?.distance;
+   check(Number.isFinite(meters),503,'Invalid nearest road response');
+   return meters;
   },
   capabilities:Object.freeze({roadNetwork:true,traffic:false,mapMatching:false,multiVehicleProfileMustBeConfigured:true})
  };

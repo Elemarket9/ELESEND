@@ -296,7 +296,15 @@ export function validateConfig(env = process.env) {
     }
   }
 
+  const motorcycleDurationFactor = env.ROUTING_MOTORCYCLE_DURATION_FACTOR === undefined || String(env.ROUTING_MOTORCYCLE_DURATION_FACTOR).trim() === ''
+    ? 0.75
+    : Number(env.ROUTING_MOTORCYCLE_DURATION_FACTOR);
+  if (!Number.isFinite(motorcycleDurationFactor) || motorcycleDurationFactor < 0.3 || motorcycleDurationFactor > 1) {
+    errors.push('ROUTING_MOTORCYCLE_DURATION_FACTOR must be a number from 0.3 to 1.');
+  }
+
   const routingConfig = {
+    durationFactors: {motorcycle: motorcycleDurationFactor},
     osrmUrl,
     vehicleRoutes: assembledVehicleRoutes,
     profiles,

@@ -25,7 +25,7 @@ export async function withAdvisoryLock(db,lockId,task){
  finally{client?.release();}
 }
 
-export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=null,money=null,checkout=null,finance=null,paymentProvider=null,chat=null}){
+export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=null,money=null,checkout=null,finance=null,paymentProvider=null,chat=null,routing=null}){
  const chatSvc=chat||(db&&typeof db.query==='function'?chatEngine(db):null);
  const busy=new Set();
  const guarded=(name,lockId,fn)=>async()=>{
@@ -66,7 +66,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
    if(recovered.length)process.stdout.write(JSON.stringify({level:'info',component:'wallet_reconciliation',msg:'catch_up_recovery',riders:recovered.length})+'\n');
   }),
   pruning:guarded('location_retention',LOCKS.dispatchPruning,async()=>{await dispatch?.pruneSamples();}),
-   geoLearning:guarded('geo_learning',LOCKS.geoLearning,async()=>{await runGeographicLearningCycle(db);}),
+   geoLearning:guarded('geo_learning',LOCKS.geoLearning,async()=>{await runGeographicLearningCycle(db,{routing});}),
   corridors:guarded('corridor_refresh',LOCKS.corridors,async()=>{await dispatch?.refreshCorridors();}),
   maintenance:guarded('maintenance',LOCKS.maintenance,async()=>{
    await db.query("DELETE FROM rate_limits WHERE expires_at<now()-interval '1 hour'");

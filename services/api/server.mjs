@@ -33,7 +33,8 @@ const routing = (config.routing.vehicleRoutes || config.routing.osrmUrl)
   ? osrmRouting({
       endpoint: config.routing.osrmUrl,
       profiles: config.routing.profiles,
-      vehicleRoutes: config.routing.vehicleRoutes
+      vehicleRoutes: config.routing.vehicleRoutes,
+      durationFactors: config.routing.durationFactors
     })
   : null;
 
@@ -63,7 +64,7 @@ const money=moneyOperations(db,{provider:paymentProvider});
 const restOrders = restaurantOrderService(db, {platform: app, dispatcher: dispatch, routing, sms, ...config.food});
 
 const scheduler = config.server.backgroundJobsEnabled
-  ? backgroundJobs({db,dispatch,notifications,restOrders,money,checkout,finance,paymentProvider}).start({unref:true})
+  ? backgroundJobs({db,dispatch,notifications,restOrders,money,checkout,finance,paymentProvider,routing}).start({unref:true})
   : null;
 
 const server = httpServer(db, app, dispatch, finance, checkout, {
