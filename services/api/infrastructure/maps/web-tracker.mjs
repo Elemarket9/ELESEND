@@ -69,13 +69,6 @@ export function verifyPublicTrackingToken(token,{secret=null}={}){
  return {valid:false,shipmentId:null,signed:false};
 }
 
-function sanitizePublicAddress(addr,fallbackLabel){
- if(!addr||typeof addr!=='string')return fallbackLabel;
- // Redact bracketed private delivery instructions (e.g. "[Instructions: Blue gate code 1234]") from unauthenticated public views
- const stripped=addr.replace(/\s*\[Instructions:[^\]]*\]/gi,'').trim();
- return stripped||fallbackLabel;
-}
-
 export async function getPublicTracking(db, token, {actor=null, secret=null, eta=null}={}){
  const parsed=verifyPublicTrackingToken(token,{secret});
  if(!parsed.valid||!parsed.shipmentId)return null;
@@ -117,7 +110,8 @@ export async function getPublicTracking(db, token, {actor=null, secret=null, eta
    (row.rider_id && actor.id === row.rider_id)
   )
  );
- const isPrivilegedView = isAuthorizedActor || parsed.signed;
+ // A raw shipment ID is not a credential: anyone else needs a signed, expiring link.
+ if(!isAuthorizedActor&&!parsed.signed)return null;
 
  const req=row.request||{};
 
@@ -135,12 +129,8 @@ export async function getPublicTracking(db, token, {actor=null, secret=null, eta
  }:null;
 
  // Straight-line estimates are no longer shown: customer ETAs come from road routes via the ETA service.
- const pickupAddr = isPrivilegedView
-  ? (req.pickup?.address || 'Pickup Location')
-  : sanitizePublicAddress(req.pickup?.address, 'Pickup Location');
- const destAddr = isPrivilegedView
-  ? (req.destination?.address || 'Delivery Destination')
-  : sanitizePublicAddress(req.destination?.address, 'Delivery Destination');
+ const pickupAddr = req.pickup?.address || 'Pickup Location';
+ const destAddr = req.destination?.address || 'Delivery Destination';
 
  return {
   shipmentId:row.id,
@@ -150,18 +140,18 @@ export async function getPublicTracking(db, token, {actor=null, secret=null, eta
   vehicle:courier?.vehicle||req.vehicle||'motorcycle',
   pickup: req.pickup ? {
    address: pickupAddr,
-   latitude: isPrivilegedView ? (req.pickup.latitude ?? null) : null,
-   longitude: isPrivilegedView ? (req.pickup.longitude ?? null) : null
+   latitude: req.pickup.latitude ?? null,
+   longitude: req.pickup.longitude ?? null
   } : null,
   destination: req.destination ? {
    address: destAddr,
-   latitude: isPrivilegedView ? (req.destination.latitude ?? null) : null,
-   longitude: isPrivilegedView ? (req.destination.longitude ?? null) : null
+   latitude: req.destination.latitude ?? null,
+   longitude: req.destination.longitude ?? null
   } : null,
-  courier: isPrivilegedView ? courier : null,
-  courierStale: isPrivilegedView ? Boolean(isCourierActive && (!row.courier_time || !isCourierFresh)) : undefined,
+  courier,
+  courierStale: Boolean(isCourierActive && (!row.courier_time || !isCourierFresh)),
   // Raw riderPhone PII is only exposed to authenticated shipment participants or verified signed tracking tokens
-  riderPhone: (isCourierActive && isPrivilegedView) ? (row.rider_phone || null) : null,
+  riderPhone: isCourierActive ? (row.rider_phone || null) : null,
   eta:null,
   deliveryEta:eta?await eta.customerEta(row.id):null,
   createdAt:row.created_at,
