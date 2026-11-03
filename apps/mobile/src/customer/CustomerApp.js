@@ -17,7 +17,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, TextInput, Pressable, ScrollView, StyleSheet,
   Alert, ActivityIndicator, AppState, Linking, StatusBar,
-  TouchableOpacity, Modal, Dimensions, Platform
+  TouchableOpacity, Modal, Dimensions, Platform, Share
 } from 'react-native';
 import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
@@ -124,6 +124,7 @@ export default function CustomerApp() {
     return tariff ? `from ${ghc(Math.max(Number(tariff.minimum_minor) || 0, Number(tariff.base_minor) || 0))}` : null;
   };
   const [deliveryEta, setDeliveryEta] = useState(null);
+  const [shareToken, setShareToken] = useState(null);
   const [placeQuery, setPlaceQuery] = useState('');
   const [placesList, setPlacesList] = useState([]);
   const [detectedLocation, setDetectedLocation] = useState(null);
@@ -298,6 +299,7 @@ export default function CustomerApp() {
     if (!trackingShipment?.id) {
       setLiveCourier(null);
       setDeliveryEta(null);
+      setShareToken(null);
       return;
     }
     let cancelled = false;
@@ -307,6 +309,7 @@ export default function CustomerApp() {
         if (!cancelled) {
           setLiveCourier(trk?.courier || null);
           setDeliveryEta(trk?.deliveryEta || null);
+          setShareToken(trk?.trackingToken || null);
           if (trk?.riderPhone && !trackingShipment.rider_phone) {
             setTrackingShipment(ts => ts ? { ...ts, rider_phone: trk.riderPhone } : null);
           }
@@ -2624,6 +2627,15 @@ export default function CustomerApp() {
               </TouchableOpacity>
             </View>
           )}
+
+          {shareToken ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              style={{ paddingHorizontal: 16, paddingVertical: 10 }}
+              onPress={() => Share.share({ message: `Track this ELESEND delivery: ${BASE}/track/${shareToken}` }).catch(() => null)}>
+              <Text style={{ fontSize: 14, fontWeight: '700', color: colors.primary }}>Share tracking link</Text>
+            </TouchableOpacity>
+          ) : null}
 
           {deliveryEta?.message ? (
             <Text accessibilityLiveRegion="polite" style={{ paddingHorizontal: 16, paddingVertical: 10, fontSize: 14, fontWeight: '700', color: '#0F172A', backgroundColor: '#F1F5F9' }}>

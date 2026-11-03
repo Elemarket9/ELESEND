@@ -69,6 +69,7 @@ services:
       DATABASE_SSL_CA: ${DATABASE_SSL_CA:-}
       DATABASE_SSL_REJECT_UNAUTHORIZED: ${DATABASE_SSL_REJECT_UNAUTHORIZED:-true}
       OTP_KEY: ${OTP_KEY:?Set 64 hex characters}
+      TRACKING_TOKEN_SECRET: ${TRACKING_TOKEN_SECRET:-}
       ADMIN_MFA_ENCRYPTION_KEY: ${ADMIN_MFA_ENCRYPTION_KEY:?Set 64 hex characters}
       JWT_SECRET: ${JWT_SECRET:?Set 32+ character JWT secret}
       ADMIN_MASTER_KEY: ${ADMIN_MASTER_KEY:?Set 32+ character admin master key}

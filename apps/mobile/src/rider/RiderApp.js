@@ -83,7 +83,7 @@ export default function RiderApp() {
   const [momoPhone, setMomoPhone] = useState('');
   const [momoAmount, setMomoAmount] = useState('');
   const [withdrawModal, setWithdrawModal] = useState(false);
-  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [payoutName, setPayoutName] = useState('');
 
   // Active Handover & OTP State
   const [activeParcel, setActiveParcel] = useState(null);
@@ -676,17 +676,16 @@ export default function RiderApp() {
   }
 
   async function submitWithdrawalRequest() {
-    const destination = (withdrawAmount || auth.phone || '').trim();
-    if (!destination) throw Error('Enter your verified payout recipient reference or Mobile Money phone');
+    const accountName = payoutName.trim();
+    if (accountName.length < 2) throw Error('Enter the name on your Mobile Money account');
 
     await call('POST', '/api/v1/me/payout-beneficiary', {
-      recipientReference: destination,
-      accountNumber: normalizeGhanaPhone(auth.phone),
-      accountName: `Rider ${auth.phone}`
+      momoNetwork: momoNetwork === 'Telecel' ? 'TELECEL' : momoNetwork,
+      accountName
     });
 
     setWithdrawModal(false);
-    setWithdrawAmount('');
+    setPayoutName('');
     setError('Verified payout beneficiary saved for digital order settlements.');
     const fin = await call('GET', '/api/v1/rider/wallet/summary').catch(() => null);
     if (fin) setFinanceSnapshot(fin);
@@ -1626,17 +1625,28 @@ export default function RiderApp() {
             <Modal visible={withdrawModal} animationType="fade" transparent>
               <View style={styles.modalOverlay}>
                 <View style={styles.momoCard}>
-                  <Text style={styles.momoTitle}>Withdraw Earnings</Text>
-                  <Text style={styles.momoSub}>Funds will be transferred to your registered phone ({auth.phone}).</Text>
+                  <Text style={styles.momoTitle}>Payout Details</Text>
+                  <Text style={styles.momoSub}>Payouts go to Mobile Money on your verified phone ({auth.phone}).</Text>
 
-                  <Text style={[styles.inputLabel, { marginTop: 12 }]}>Amount to Withdraw in GH₵</Text>
+                  <Text style={[styles.inputLabel, { marginTop: 12 }]}>Select Network</Text>
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
+                    {['MTN', 'Telecel', 'AT'].map(net => (
+                      <TouchableOpacity
+                        key={net}
+                        onPress={() => setMomoNetwork(net)}
+                        style={[styles.networkPill, momoNetwork === net && styles.networkPillActive]}>
+                        <Text style={styles.networkPillText}>{net}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <Text style={[styles.inputLabel, { marginTop: 12 }]}>Name on Mobile Money Account</Text>
                   <TextInput
-                    placeholder="e.g. 50.00"
                     placeholderTextColor={colors.textMuted}
-                    keyboardType="decimal-pad"
+                    autoCapitalize="words"
                     style={styles.input}
-                    value={withdrawAmount}
-                    onChangeText={setWithdrawAmount}
+                    value={payoutName}
+                    onChangeText={setPayoutName}
                   />
 
                   <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
@@ -1644,7 +1654,7 @@ export default function RiderApp() {
                       <Text style={styles.secondaryBtnText}>Cancel</Text>
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => execute(submitWithdrawalRequest)} style={[styles.primaryBtn, { flex: 2 }]}>
-                      <Text style={styles.primaryBtnText}>Confirm Withdrawal</Text>
+                      <Text style={styles.primaryBtnText}>Save Payout Details</Text>
                     </TouchableOpacity>
                   </View>
                 </View>

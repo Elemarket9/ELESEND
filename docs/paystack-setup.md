@@ -1,0 +1,38 @@
+# Paystack setup for ELESEND (Ghana)
+
+The adapter has only been tested against simulated Paystack responses. Complete every step below, including the live tests, before opening payments to the public.
+
+## Account
+1. Register a Paystack business. Transfers are only for registered businesses, not starter accounts.
+2. Ask Paystack support to switch your payouts to manual ("Settled to Balance"). Rider and restaurant payouts are paid from your Paystack balance, so without this it can be empty when a payout runs.
+3. In Preferences, turn off "Confirm transfers before sending". While it is on, each payout stops for a code and appears in the admin portal as needing review.
+4. Set the webhook URL to `https://<API host>/api/v1/payments/webhook`.
+
+## Configuration
+```
+PAYMENT_PROVIDER=paystack
+PAYSTACK_SECRET_KEY=sk_live_...
+PAYSTACK_ENABLED_METHODS=MOMO,CARD
+```
+Production refuses test keys. Enable each method in the admin portal after this.
+
+## How it works
+- **Webhooks:** verified with the signature header, and every result is confirmed by asking Paystack directly.
+- **Payouts:** each payout uses a stable reference, so an unclear result is checked rather than sent again.
+- **Payout recipients:** created only for the user's SMS-verified phone. Paystack returns no account name for mobile money, so the name on the wallet is not checked.
+- **Refunds:** checked by the reconciliation job about every 30 seconds.
+
+## What needs staff action
+- **A refund in `needs-attention`:** stays pending in ELESEND. Supply the customer's account details in the Paystack dashboard.
+- **A reversed transfer after payment:** written to the audit log as `payment.payout_reversal_reported`. Finance must review it, because ledgers are not rewritten automatically.
+- **Chargebacks and disputes:** not imported. Check the Paystack dashboard, and connect this before high volume.
+
+## Live tests before launch
+Use small real amounts, on each of MTN, Telecel and AT:
+- [ ] Customer pays by mobile money and by card, and the order is confirmed.
+- [ ] Full and partial refunds reach the customer.
+- [ ] A rider payout reaches the wallet, and the admin portal shows it as paid.
+- [ ] A failed payout, using an invalid number, shows as failed and can be retried safely.
+- [ ] Commission repayment reduces the rider's debt.
+- [ ] Webhook retries and duplicates cause no double effects.
+- [ ] Confirm with Paystack that the `VOD` code is still right for Telecel, and whether account names can be checked for mobile money.
