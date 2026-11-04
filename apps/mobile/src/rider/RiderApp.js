@@ -211,6 +211,7 @@ export default function RiderApp() {
       }
     });
 
+    let pollCount = 0;
     const poll = async ({ allowBackground = false } = {}) => {
       if (cancelled) return;
       if (!allowBackground && AppState.currentState && AppState.currentState !== 'active') {
@@ -221,16 +222,21 @@ export default function RiderApp() {
         return;
       }
       try {
+        // Offers are checked every time. The rest changes rarely, which saves the rider's data and the request limit.
+        pollCount += 1;
+        const refreshJobs = pollCount % 2 === 1;
+        const refreshAccount = pollCount % 6 === 1;
         const [m, o, v, cs, fin] = await Promise.all([
-          call('GET', '/api/v1/rider/manifest').catch(() => null),
-          online ? call('GET', '/api/v1/rider/offers').catch(() => []) : Promise.resolve([]),
-          call('GET', '/api/v1/rider/vehicle').catch(() => null),
-          call('GET', '/api/v1/rider/commissions/summary').catch(() => null),
-          call('GET', '/api/v1/rider/wallet/summary').catch(() => null)
+          refreshJobs ? call('GET', '/api/v1/rider/manifest').catch(() => null) : Promise.resolve(undefined),
+          online ? call('GET', '/api/v1/rider/offers').catch(() => null) : Promise.resolve([]),
+          refreshAccount ? call('GET', '/api/v1/rider/vehicle').catch(() => null) : Promise.resolve(null),
+          refreshAccount ? call('GET', '/api/v1/rider/commissions/summary').catch(() => null) : Promise.resolve(null),
+          refreshAccount ? call('GET', '/api/v1/rider/wallet/summary').catch(() => null) : Promise.resolve(null)
         ]);
         if (!cancelled) {
-          await applyManifest(m);
-          applyOfferList(o || []);
+          if (m !== undefined) await applyManifest(m);
+          // A failed check says nothing about offers, so the one on screen stays.
+          if (o) applyOfferList(o);
           if (v) {
             setVehicle(v);
             setOnline(v.online);

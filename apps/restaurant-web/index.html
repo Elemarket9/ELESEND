@@ -301,6 +301,7 @@
     </div>
 
     <div id="mainView" style="display: none;">
+      <div id="approvalNotice" role="status" style="display: none; background: #FEF3C7; color: #92400E; padding: 12px 16px; font-size: 14px;"></div>
       <div class="incoming-alert-banner" id="incomingAlertBanner">
         <span>NEW INCOMING ORDER RECEIVED! Immediate kitchen action required.</span>
         <button class="btn" style="width: auto; padding: 8px 16px;" onclick="switchTab('orders')">View Orders</button>
@@ -975,6 +976,11 @@
         }
         currentRestaurant = list[0];
         document.getElementById('restaurantHeaderName').textContent = currentRestaurant.name;
+        const approvalNotice = document.getElementById('approvalNotice');
+        approvalNotice.style.display = currentRestaurant.status === 'approved' ? 'none' : 'block';
+        approvalNotice.textContent = currentRestaurant.status === 'pending'
+          ? 'ELESEND is reviewing your restaurant. You can set up your menu now. Customers can order once you are approved.'
+          : 'Your restaurant is not active. Please contact ELESEND support.';
         updateStoreStatusUI();
         return true;
       } catch (err) {

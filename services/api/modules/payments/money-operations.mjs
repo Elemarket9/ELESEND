@@ -119,6 +119,26 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    await db.query('UPDATE refund_operations SET provider_id=$2 WHERE id=$1 AND provider_id IS NULL',[r.id,String(record.providerId)]);
   return {id:r.id,status:r.status==='needs_review'?'needs_review':'pending_verification'};
  }
+ async function submitRefundOperation(id,submittedBy){
+   check(typeof provider?.createRefund==='function'&&typeof provider?.verifyRefund==='function',503,'Configure an adapter with verified refund support');
+   const r=await db.tx(async c=>{
+    const row=(await c.query('SELECT * FROM refund_operations WHERE id=$1 FOR UPDATE',[id])).rows[0];
+    check(row&&row.provider===provider.name,404,'Refund unavailable for active adapter');
+    if(row.status!=='queued')return {...row,existing:true};
+    await c.query("UPDATE refund_operations SET status='initiating',submitted_by=$2,submitted_at=coalesce(submitted_at,now()),updated_at=now() WHERE id=$1",[id,submittedBy]);return row;
+   });
+   if(r.existing)return {id:r.id,status:r.status};
+   let receipt;
+   try{receipt=await provider.createRefund({requestId:r.id,idempotencyKey:r.id,reference:r.reference,amountMinor:Number(r.amount_minor),currency:r.currency});}
+   catch(e){
+    // Outcome unknown: never resubmit automatically; verification only.
+    await db.query("UPDATE refund_operations SET status='needs_review',failure_reason=$2,updated_at=now() WHERE id=$1 AND status='initiating'",[id,'Submission outcome uncertain: '+reasonText(e)]);
+    return {id,status:'needs_review'};
+   }
+   const pid=receipt?.providerId!=null?String(receipt.providerId):null;
+   await db.query("UPDATE refund_operations SET provider_id=coalesce(provider_id,$2),status=CASE WHEN status='initiating' THEN 'pending' ELSE status END,updated_at=now() WHERE id=$1",[id,pid]);
+   try{return await reconcileRefund(id);}catch{return {id,status:'pending_verification'};}
+  }
  async function reconcileRefund(id){
   const r=(await db.query('SELECT * FROM refund_operations WHERE id=$1',[id])).rows[0];
   check(r&&r.provider===provider?.name,404,'Refund unavailable for active adapter');
@@ -233,7 +253,7 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   const account=kind==='restaurant'?'restaurant_payable':'rider_payable';
   return (await c.query(`SELECT s.id AS shipment_id,s.company_id,$2::text AS kind,sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)::bigint AS amount
     FROM shipments s JOIN checkout_accounting_journals j ON j.shipment_id=s.id JOIN checkout_accounting_lines l ON l.journal_id=j.id AND l.account=$3
-    WHERE ${scope} AND s.state IN ('COMPLETED','RETURNED') AND s.paid AND s.payment_method<>'CASH'
+    WHERE ${scope} AND s.state IN ('COMPLETED','RETURNED','CANCELLED') AND s.paid AND s.payment_method<>'CASH'
       AND coalesce(s.completed_at,s.created_at)<=now()-make_interval(hours=>$4)
       AND NOT EXISTS(SELECT 1 FROM payout_operations p WHERE p.shipment_id=s.id AND p.kind=$2 AND p.status NOT IN ('failed','superseded'))
       ${kind==='restaurant'?"AND NOT EXISTS(SELECT 1 FROM food_orders f JOIN restaurant_settlements rs ON rs.order_id=f.id WHERE f.shipment_id=s.id AND rs.status<>'accrued')":''}
@@ -358,24 +378,17 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   },
   async submitRefund(actor,id){
    await permit(actor);uuid.parse(id);
-   check(typeof provider?.createRefund==='function'&&typeof provider?.verifyRefund==='function',503,'Configure an adapter with verified refund support');
-   const r=await db.tx(async c=>{
-    const row=(await c.query('SELECT * FROM refund_operations WHERE id=$1 FOR UPDATE',[id])).rows[0];
-    check(row&&row.provider===provider.name,404,'Refund unavailable for active adapter');
-    if(row.status!=='queued')return {...row,existing:true};
-    await c.query("UPDATE refund_operations SET status='initiating',submitted_by=$2,submitted_at=coalesce(submitted_at,now()),updated_at=now() WHERE id=$1",[id,actor.id]);return row;
-   });
-   if(r.existing)return {id:r.id,status:r.status};
-   let receipt;
-   try{receipt=await provider.createRefund({requestId:r.id,idempotencyKey:r.id,reference:r.reference,amountMinor:Number(r.amount_minor),currency:r.currency});}
-   catch(e){
-    // Outcome unknown: never resubmit automatically; verification only.
-    await db.query("UPDATE refund_operations SET status='needs_review',failure_reason=$2,updated_at=now() WHERE id=$1 AND status='initiating'",[id,'Submission outcome uncertain: '+reasonText(e)]);
-    return {id,status:'needs_review'};
-   }
-   const pid=receipt?.providerId!=null?String(receipt.providerId):null;
-   await db.query("UPDATE refund_operations SET provider_id=coalesce(provider_id,$2),status=CASE WHEN status='initiating' THEN 'pending' ELSE status END,updated_at=now() WHERE id=$1",[id,pid]);
-   try{return await reconcileRefund(id);}catch{return {id,status:'pending_verification'};}
+   return submitRefundOperation(id,actor.id);
+  },
+  /** A cancelled order was never collected, as the database enforces, so the money can go back without waiting for staff. */
+  async refundUncollectedOrders({limit=20}={}){
+   if(process.env.AUTOMATIC_REFUNDS==='false'||typeof provider?.createRefund!=='function'||typeof provider?.verifyRefund!=='function')return [];
+   const due=(await db.query(`SELECT o.id FROM refund_operations o JOIN shipments s ON s.id=o.shipment_id WHERE o.status='queued' AND o.retry_of IS NULL AND o.provider=$1 AND o.source_key LIKE 'cancellation:%'
+     AND s.state='CANCELLED'
+     ORDER BY o.created_at LIMIT $2`,[provider.name,limit])).rows;
+   const results=[];
+   for(const {id} of due)results.push(await submitRefundOperation(id,null).catch(e=>({id,status:'error',reason:reasonText(e)})));
+   return results;
   },
   async reconcileRefund(actor,id){await permit(actor);uuid.parse(id);return reconcileRefund(id);},
   /** New operation only after a verified definitive failure; one live attempt per refund. */

@@ -319,6 +319,16 @@ export function renderAdminPortalHtml() {
       <!-- PANEL 3: Fleet & Onboarding -->
       <div id="fleetTab" class="panel">
         <div class="card">
+          <div class="card-title"><span>Restaurants Waiting For Approval</span></div>
+          <div class="card-subtitle">Customers can order from a restaurant once it is approved.</div>
+          <div class="table-container">
+            <table>
+              <thead><tr><th>Restaurant</th><th>Phone</th><th>Address</th><th>Action</th></tr></thead>
+              <tbody id="restaurantApprovalTable"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
           <div class="card-title"><span>Orders Needing Attention</span></div>
           <div class="card-subtitle">Orders with no rider, handover codes that could not be sent, and riders who became unresponsive.</div>
           <div class="table-container">
@@ -1070,8 +1080,34 @@ export function renderAdminPortalHtml() {
         </tr>\`).join('') : '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Nothing needs attention.</td></tr>';
     }
 
+    async function loadRestaurantApprovals() {
+      const rows = await api('/api/v1/admin/restaurants').catch(() => null);
+      const tb = document.getElementById('restaurantApprovalTable');
+      const waiting = (rows || []).filter(r => r.status === 'pending');
+      tb.innerHTML = waiting.length ? waiting.map(r => \`
+        <tr>
+          <td>\${escapeHtml(r.name)}</td>
+          <td>\${escapeHtml(r.phone)}</td>
+          <td>\${escapeHtml(r.address)}</td>
+          <td>
+            <button class="action-btn" onclick="reviewRestaurant('\${escapeHtml(r.id)}', 'approved')">Approve</button>
+            <button class="action-btn btn-danger" onclick="reviewRestaurant('\${escapeHtml(r.id)}', 'rejected')">Reject</button>
+          </td>
+        </tr>\`).join('') : '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No restaurants waiting.</td></tr>';
+    }
+
+    async function reviewRestaurant(id, status) {
+      try {
+        await api(\`/api/v1/restaurants/\${id}\`, { method: 'POST', body: JSON.stringify({ status }) });
+        loadRestaurantApprovals();
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
     async function loadFleet() {
       loadAttention();
+      loadRestaurantApprovals();
       try {
         const queue = await api('/api/v1/admin/review');
         const tb = document.getElementById('fleetTable');

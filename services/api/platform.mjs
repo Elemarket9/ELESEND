@@ -1,4 +1,6 @@
-import {ACTIVE_PUSH_TOKEN_FILTER} from './notifications.mjs';
+import {ACTIVE_PUSH_TOKEN_FILTER,queueNotification} from './notifications.mjs';
+import {envInt} from './env-values.mjs';
+import {cashAlreadyReported,confirmedPaymentMinor} from './modules/payments/index.mjs';
 import {approveVehicleRecord} from './vehicle.mjs';
 import {ACCEPTED_SERVICES,assertCompanyDelivery} from './company.mjs';
 import {ensureCommissionAccount,paymentMethodEnabled,findPaymentEvent,recordPaymentEvent,recordFinancialEntry,earningsEntriesFor,senderCashCollectedInFull,cashCollectionFor,accrueRestaurantSettlement} from './modules/payments/index.mjs';
@@ -50,6 +52,17 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  check(/^[a-f0-9]{64}$/i.test(otpKey??''),500,'OTP_KEY must be 32 random bytes encoded as hex');
  async function event(c,s,kind){await c.query('INSERT INTO outbox(shipment_id,kind,payload) VALUES($1,$2,$3)',[s,kind,JSON.stringify({shipmentId:s,kind})]);}
  async function permission(c,actor,p){check((await c.query('SELECT 1 FROM permissions WHERE user_id=$1 AND permission=$2',[actor.id,p])).rowCount,403,'Permission required');}
+ /** Free until a set time after a rider accepts. After that a set fee goes to that rider, taken from the refund. */
+ async function cancellationTerms(c,s){
+  const paidMinor=s.paid?await confirmedPaymentMinor(c,s.id):0;
+  let feeMinor=0,freeSecondsLeft=null;
+  if(s.state==='RIDER_ASSIGNED'&&s.paid){
+   const accepted=(await c.query("SELECT extract(epoch FROM now()-accepted_at)::int AS seconds FROM dispatch_offers WHERE shipment_id=$1 AND rider_id=$2 AND status='accepted' ORDER BY accepted_at DESC LIMIT 1",[s.id,s.rider_id])).rows[0];
+   freeSecondsLeft=Math.max(0,envInt(process.env.CANCEL_FREE_SECONDS,300,0)-Number(accepted?.seconds??0));
+   if(freeSecondsLeft===0)feeMinor=Math.min(envInt(process.env.CANCEL_FEE_MINOR,500,0),Number(s.amount_minor)-Number(s.commission_minor));
+  }
+  return {canCancel:['AWAITING_PAYMENT','AWAITING_ASSIGNMENT','RIDER_ASSIGNED'].includes(s.state),feeMinor,refundMinor:Math.max(0,paidMinor-feeMinor),freeSecondsLeft};
+ }
  /** A provider that answers without accepting the message counts as a failure. */
  async function sendSms(message){const result=await sms.send(message);if(result?.accepted===false)throw Error('SMS not accepted');return result;}
  async function rider(c,actor){
@@ -637,15 +650,29 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await audit(c,actor.id,ch.purpose+'.verified',sid);await event(c,sid,ch.purpose==='delivery'?'completed':'pickup_verified');return {ok:true};
   });check(!result.invalid,400,'Incorrect code');return result;
  },
+ /** What cancelling costs right now, so the customer sees it before deciding. */
+ async cancelTerms(actor,sid){uuid.parse(sid);const s=(await db.query('SELECT * FROM shipments WHERE id=$1',[sid])).rows[0];check(s&&s.customer_id===actor.id,404,'Shipment not found');return cancellationTerms(db,s);},
  async transition(actor,sid,input){const v=z.object({action:z.enum(['start','fail','return','returned','cancel']),reason:z.string().min(3).max(1000).optional()}).strict().parse(input);
   return db.tx(async c=>{if(actor.kind==='rider')await rider(c,actor);const s=await locked(c,sid);
-   const transitions={start:['PICKUP_VERIFIED','IN_TRANSIT'],fail:[['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'],'FAILED'],return:['FAILED','RETURN_REQUESTED'],returned:['RETURN_REQUESTED','RETURNED'],cancel:[['AWAITING_PAYMENT','AWAITING_ASSIGNMENT'],'CANCELLED']};
+   const transitions={start:['PICKUP_VERIFIED','IN_TRANSIT'],fail:[['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'],'FAILED'],return:['FAILED','RETURN_REQUESTED'],returned:['RETURN_REQUESTED','RETURNED'],cancel:[['AWAITING_PAYMENT','AWAITING_ASSIGNMENT','RIDER_ASSIGNED'],'CANCELLED']};
    const [from,to]=transitions[v.action];check([from].flat().includes(s.state),409,'Invalid transition');
-   let foOwnerReturned=false;
+   let foOwnerReturned=false,cancelledRider=null,cancellationFeeMinor=0;
    if(v.action==='cancel'){
     check(s.customer_id===actor.id,403);
     check(!(await c.query('SELECT 1 FROM food_orders WHERE shipment_id=$1',[sid])).rowCount,409,'Cancel food orders through the food order cancellation endpoint');
-    await requestCheckoutRefund(c,s,v.reason||'Customer cancelled');
+    if(s.state==='RIDER_ASSIGNED'){
+     check(!(await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[sid])).rowCount,409,'The rider has already collected this parcel');
+     check(!await cashAlreadyReported(c,sid),409,'Cash has already been collected for this order. Please contact support');
+     cancellationFeeMinor=(await cancellationTerms(c,s)).feeMinor;
+     cancelledRider=s.rider_id;
+     await c.query('UPDATE challenges SET expires_at=now() WHERE shipment_id=$1 AND consumed_at IS NULL',[sid]);
+     await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE shipment_id=$1 AND status IN ('offered','accepted')",[sid]);
+     const plan=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[s.rider_id])).rows[0];
+     if(plan)await c.query('UPDATE rider_dispatch_plans SET stops=$2,revision=revision+1,updated_at=now() WHERE rider_id=$1',[s.rider_id,JSON.stringify(removeShipment(plan.stops,sid))]);
+     await c.query('DELETE FROM dispatch_commitments WHERE shipment_id=$1',[sid]);
+     await queueNotification(c,{id:`cancelled:${sid}`,recipientId:s.rider_id,kind:'delivery_watchdog_alert',payload:{shipmentId:sid,action:'customer_cancelled',message:cancellationFeeMinor>0?`The customer cancelled this delivery. You receive GH₵${(cancellationFeeMinor/100).toFixed(2)} for your trip.`:'The customer cancelled this delivery. You can take other jobs.'}});
+    }
+    await requestCheckoutRefund(c,s,v.reason||'Customer cancelled',{riderFeeMinor:cancellationFeeMinor});
    }else if(v.action==='returned'){
     const foOwner=(await c.query('SELECT r.owner_id FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id WHERE f.shipment_id=$1',[sid])).rows[0];
     foOwnerReturned=Boolean(foOwner);
@@ -661,7 +688,9 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     if(v.action==='return'&&!(await c.query('SELECT 1 FROM food_orders WHERE shipment_id=$1',[sid])).rowCount)check((await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[sid])).rowCount,409,'This parcel was never picked up. Release the job instead');
    }
    if(v.action!=='start')check(v.reason,400,'Reason required');
-   await c.query('UPDATE shipments SET state=$2 WHERE id=$1',[sid,to]);
+   // Without a fee the rider is released from the order. With one, they stay on it so the fee reaches them.
+   const dropRider=Boolean(cancelledRider)&&cancellationFeeMinor===0;
+   await c.query('UPDATE shipments SET state=$2,rider_id=CASE WHEN $3::boolean THEN NULL ELSE rider_id END,company_id=CASE WHEN $3::boolean THEN NULL ELSE company_id END,cancellation_fee_minor=$4 WHERE id=$1',[sid,to,dropRider,cancellationFeeMinor]);
    if(['cancel','returned','fail'].includes(v.action)){
     await c.query('DELETE FROM locations WHERE shipment_id=$1',[sid]);
    }
@@ -679,7 +708,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     }
     if(!fo)await settleReturnedParcel(c,s);
    }
-   await audit(c,actor.id,'shipment.'+v.action,sid);await event(c,sid,to);return {state:to,refundReviewRequired:(v.action==='cancel'||(v.action==='returned'&&Boolean(foOwnerReturned)))&&s.paid};
+   await audit(c,actor.id,'shipment.'+v.action,sid);await event(c,sid,to);return {state:to,refundReviewRequired:(v.action==='cancel'||(v.action==='returned'&&Boolean(foOwnerReturned)))&&s.paid,...(cancelledRider?{releasedRiderId:cancelledRider,cancellationFeeMinor}:{})};
   });
  },
  async location(actor,sid,input){

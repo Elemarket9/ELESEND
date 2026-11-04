@@ -17,7 +17,11 @@ export async function checkoutJournal(c,{shipmentId,eventKey,kind,entries}){
 }
 export const customerMoneyReceived=(c,{shipmentId,eventKey,amountMinor,processingFeeMinor=0})=>checkoutJournal(c,{shipmentId,eventKey,kind:'psp_verified',entries:[['provider_receivable','debit',amountMinor],['customer_delivery_liability','credit',amountMinor-processingFeeMinor],...(processingFeeMinor>0?[['customer_processing_fee_liability','credit',processingFeeMinor]]:[])]});
 export const customerMoneyUnapplied=(c,{shipmentId,eventKey,amountMinor})=>checkoutJournal(c,{shipmentId,eventKey,kind:'verified_unapplied',entries:[['provider_receivable','debit',amountMinor],['customer_refund_liability','credit',amountMinor]]});
-export async function requestCheckoutRefund(c,shipment,reason){
+export async function confirmedPaymentMinor(c,shipmentId){
+ const intent=(await c.query("SELECT amount_minor FROM shipment_checkout_intents WHERE shipment_id=$1 AND status='confirmed' ORDER BY confirmed_at LIMIT 1",[shipmentId])).rows[0];
+ return Number(intent?.amount_minor??0);
+}
+export async function requestCheckoutRefund(c,shipment,reason,{riderFeeMinor=0}={}){
  await c.query(
   `UPDATE shipment_checkout_intents
       SET status='expired',
@@ -34,9 +38,9 @@ export async function requestCheckoutRefund(c,shipment,reason){
  check(intent,409,'Verified payment evidence required for refund review');
  const amountMinor=Number(intent.amount_minor),feeMinor=Number(intent.processing_fee_minor||0);
  // A cancelled order refunds everything the customer paid, including the processing fee.
- await checkoutJournal(c,{shipmentId:shipment.id,eventKey:'cancellation:'+shipment.id,kind:'refund_requested',entries:[['customer_delivery_liability','debit',amountMinor-feeMinor],...(feeMinor>0?[['customer_processing_fee_liability','debit',feeMinor]]:[]),['customer_refund_liability','credit',amountMinor]]});
- await c.query(`INSERT INTO checkout_refund_requests(shipment_id,intent_id,amount_minor,reason) VALUES($1,$2,$3,$4) ON CONFLICT(shipment_id) DO NOTHING`,[shipment.id,intent.id,amountMinor,reason]);
- return {required:true,amountMinor};
+ await checkoutJournal(c,{shipmentId:shipment.id,eventKey:'cancellation:'+shipment.id,kind:'refund_requested',entries:[['customer_delivery_liability','debit',amountMinor-feeMinor],...(feeMinor>0?[['customer_processing_fee_liability','debit',feeMinor]]:[]),['customer_refund_liability','credit',amountMinor-riderFeeMinor],...(riderFeeMinor>0?[['rider_payable','credit',riderFeeMinor]]:[])]});
+ await c.query(`INSERT INTO checkout_refund_requests(shipment_id,intent_id,amount_minor,reason) VALUES($1,$2,$3,$4) ON CONFLICT(shipment_id) DO NOTHING`,[shipment.id,intent.id,amountMinor-riderFeeMinor,reason]);
+ return {required:true,amountMinor:amountMinor-riderFeeMinor};
 }
 export async function digitalDeliveryCompleted(c,shipment){
  if(shipment.payment_method==='CASH')return {skipped:'cash'};
