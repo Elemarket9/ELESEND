@@ -15,7 +15,7 @@ const hash=crypto.createHash("sha256").update(fs.readFileSync(path.join(director
 if(hash!==metadata.sha256)throw Error("Ghana source checksum mismatch");
 ' "$task_data"
 
-task_image=ghcr.io/project-osrm/osrm-backend:v26.10.0
+task_image=ghcr.io/project-osrm/osrm-backend:v26.4.0
 
 # 1. Car Graph
 if [ ! -e "$task_data/ghana-latest.osrm" ]; then
@@ -27,11 +27,11 @@ fi
 
 # 2. Motorcycle Graph
 if [ ! -e "$task_data/ghana-motorcycle.osrm" ]; then
-  # Uses road rules from the car profile: the bicycle profile allows footpaths and uses cycling speeds.
-  # Not verified against Ghanaian motorbike access. Changing the profile requires rebuilding this graph.
+  # deploy/maps/motorcycle.lua. Changing the profile requires removing ghana-motorcycle.osrm* and rebuilding.
+  cp "$(cd "$(dirname "$0")/.." && pwd -P)/deploy/maps/motorcycle.lua" "$task_data/motorcycle.lua"
   # OSRM names its output after the input, so extract from a copy to keep the car graph intact.
   cp "$task_data/ghana-latest.osm.pbf" "$task_data/ghana-motorcycle.osm.pbf"
-  docker run --rm --network none --mount "type=bind,source=$task_data,target=/data" "$task_image" osrm-extract -p /opt/car.lua /data/ghana-motorcycle.osm.pbf
+  docker run --rm --network none --mount "type=bind,source=$task_data,target=/data" "$task_image" osrm-extract -p /data/motorcycle.lua /data/ghana-motorcycle.osm.pbf
   rm -f "$task_data/ghana-motorcycle.osm.pbf"
   docker run --rm --network none --mount "type=bind,source=$task_data,target=/data" "$task_image" osrm-partition /data/ghana-motorcycle.osrm
   docker run --rm --network none --mount "type=bind,source=$task_data,target=/data" "$task_image" osrm-customize /data/ghana-motorcycle.osrm

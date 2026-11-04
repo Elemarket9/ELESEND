@@ -7,7 +7,7 @@ if(!(Test-Path -LiteralPath $pbf) -or !(Test-Path -LiteralPath $metadataPath)){t
 $metadata=Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
 if((Get-FileHash -LiteralPath $pbf -Algorithm SHA256).Hash.ToLowerInvariant() -ne $metadata.sha256){throw 'Ghana PBF checksum does not match its provenance record'}
 
-$image='ghcr.io/project-osrm/osrm-backend:v26.10.0'
+$image='ghcr.io/project-osrm/osrm-backend:v26.4.0'
 $mount="type=bind,source=$data,target=/data"
 & docker.exe image inspect $image *> $null
 if($LASTEXITCODE -ne 0){throw "Docker image $image is not available; pull it first"}
@@ -37,6 +37,7 @@ if($Vehicle -eq 'all' -or $Vehicle -eq 'car'){
 if($Vehicle -eq 'all' -or $Vehicle -eq 'motorcycle'){
   # Uses road rules from the car profile: the bicycle profile allows footpaths and uses cycling speeds.
   # Not verified against Ghanaian motorbike access. Changing the profile requires rebuilding this graph.
-  Build-Graph '/opt/car.lua' 'ghana-motorcycle'
+  Copy-Item -Path (Join-Path $PSScriptRoot '..\deploy\maps\motorcycle.lua') -Destination (Join-Path $data 'motorcycle.lua') -Force
+  Build-Graph '/data/motorcycle.lua' 'ghana-motorcycle'
 }
 Write-Output 'Private Ghana OSRM routing graphs (car + motorcycle) prepared.'
