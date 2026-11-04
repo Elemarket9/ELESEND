@@ -29,6 +29,7 @@ import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline, openTurnByTurnNavigation } from '../maps/map-adapter';
 import { call, loadToken, saveToken, clearToken, ghc, parseGhs, BASE } from '../api';
 import DeleteAccountModal from '../delete-account';
+import CompanyHome from '../company/CompanyHome';
 import { sample, startShiftTracking, stopShiftTracking, subscribeBackgroundOfferAlerts, acquireDevicePushToken, registerDevicePushChannel } from '../tracking';
 import { cacheJobs, readCachedJobs, readLastCachedJobs, clearCachedJobs } from '../offline';
 import { normalizeGhanaPhone, isValidGhanaPhone } from '../phone';
@@ -38,6 +39,9 @@ const initialCreds = {
   phone: '',
   password: '',
   name: '',
+  accountType: 'rider',
+  sendDeliveries: true,
+  provideRiders: true,
   vehicle: 'motorcycle',
   maxWeightG: '20000',
   plateNumber: '',
@@ -144,7 +148,7 @@ export default function RiderApp() {
         const token = await loadToken();
         if (token) {
           const user = await call('GET', '/api/v1/me');
-          if (user.kind === 'rider') {
+          if (user.kind === 'rider' || user.kind === 'company') {
             const pStatus = await call('GET', '/api/v1/me/phone').catch(() => ({ phone: user.phone || '', verified: false }));
             setPhoneState(pStatus);
             setAuth({ ...user, phone: pStatus.phone || user.phone || '' });
@@ -152,7 +156,7 @@ export default function RiderApp() {
             await clearToken();
             setAuth(null);
             setPhoneState(null);
-            setError('Please sign in with a Courier Rider account on this application.');
+            setError('Please sign in with a rider or company account on this application.');
           }
         }
       } catch (e) {
@@ -291,7 +295,7 @@ export default function RiderApp() {
   // --- Auth & Onboarding Actions ---
   async function signIn() {
     const { data, normPhone, pStatus } = await signInWithPassword(credentials, user => {
-      if (user.kind !== 'rider') throw Error('This account is registered as a customer. Please use the standard ELESEND app.');
+      if (user.kind !== 'rider' && user.kind !== 'company') throw Error('This account is registered as a customer. Please use the standard ELESEND app.');
     });
     setPhoneState(pStatus);
     setAuth({ ...data.user, phone: pStatus.phone || normPhone });
@@ -312,6 +316,16 @@ export default function RiderApp() {
     if (!isValidGhanaPhone(normPhone)) throw Error('Enter a valid Ghana phone (e.g. 024 123 4567)');
     if (credentials.password.length < 12 || credentials.password.length > 128) {
       throw Error('Password must be between 12 and 128 characters');
+    }
+
+    if (credentials.accountType === 'company') {
+      const services = [credentials.sendDeliveries && 'delivery', credentials.provideRiders && 'riders'].filter(Boolean);
+      if (credentials.name.trim().length < 2) throw Error('Enter your company name');
+      if (!services.length) throw Error('Choose at least one service');
+      await call('POST', '/api/v1/auth/register', { phone: normPhone, password: credentials.password, kind: 'company', name: credentials.name.trim(), services });
+      setIsSignup(false);
+      await signIn();
+      return;
     }
 
     const body = {
@@ -762,8 +776,52 @@ export default function RiderApp() {
           )}
 
           <View style={styles.authCard}>
-            <Text style={styles.authCardTitle}>{isSignup ? 'Courier Driver Registration' : 'Courier Sign In'}</Text>
-            <Text style={styles.authCardSubtitle}>{isSignup ? 'Register your vehicle to start accepting delivery offers' : 'Sign in to go online and earn'}</Text>
+            <Text style={styles.authCardTitle}>{isSignup ? (credentials.accountType === 'company' ? 'Company Registration' : 'Courier Driver Registration') : 'Rider & Company Sign In'}</Text>
+            <Text style={styles.authCardSubtitle}>{isSignup ? (credentials.accountType === 'company' ? 'Register to send deliveries, provide riders, or both' : 'Register your vehicle to start accepting delivery offers') : 'Sign in to go online and earn'}</Text>
+
+            {isSignup && (
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>I am registering as</Text>
+                <View style={styles.vehicleRow}>
+                  {[{ id: 'rider', label: 'A rider' }, { id: 'company', label: 'A company' }].map(option => (
+                    <TouchableOpacity
+                      key={option.id}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected: credentials.accountType === option.id }}
+                      style={[styles.vehicleChoice, credentials.accountType === option.id && styles.vehicleChoiceActive]}
+                      onPress={() => edit('accountType', option.id)}>
+                      <Text style={styles.vehicleChoiceTitle}>{option.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            )}
+
+            {isSignup && credentials.accountType === 'company' && (
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Company Name</Text>
+                <TextInput
+                  placeholder="Registered company name"
+                  placeholderTextColor={colors.textMuted}
+                  maxLength={160}
+                  style={styles.input}
+                  value={credentials.name}
+                  onChangeText={v => edit('name', v)}
+                />
+                <Text style={[styles.inputLabel, { marginTop: 12 }]}>What will you use ELESEND for?</Text>
+                {[{ key: 'sendDeliveries', label: 'Send our deliveries' }, { key: 'provideRiders', label: 'Provide riders' }].map(option => (
+                  <TouchableOpacity
+                    key={option.key}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: credentials[option.key] }}
+                    style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 10 }}
+                    onPress={() => edit(option.key, !credentials[option.key])}>
+                    <Text style={styles.inputLabel}>{option.label}</Text>
+                    <Text style={styles.inputLabel}>{credentials[option.key] ? '☑' : '☐'}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
 
             <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>Mobile Phone</Text>
@@ -796,7 +854,7 @@ export default function RiderApp() {
               />
             </View>
 
-            {isSignup && (
+            {isSignup && credentials.accountType === 'rider' && (
               <View style={{ marginTop: 6 }}>
                 <Text style={styles.inputLabel}>Vehicle Class</Text>
                 <View style={styles.vehicleRow}>
@@ -920,7 +978,7 @@ export default function RiderApp() {
               onPress={() => { setIsSignup(!isSignup); setForgotModal(false); setError(''); }}
               style={styles.switchAuthBtn}>
               <Text style={styles.switchAuthText}>
-                {isSignup ? 'Already registered? Sign In' : 'New courier? Register here'}
+                {isSignup ? 'Already registered? Sign In' : 'New rider or company? Register here'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -938,7 +996,7 @@ export default function RiderApp() {
         <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
         <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled">
           <View style={styles.authHeader}>
-            <BrandRow tagline="VERIFY COURIER PHONE" />
+            <BrandRow tagline={auth?.kind === 'company' ? 'VERIFY COMPANY PHONE' : 'VERIFY COURIER PHONE'} />
             <Text style={styles.authSubtitle}>
               Verify your registered Ghana mobile number ({phoneState.phone || auth.phone}) before going online for dispatch.
             </Text>
@@ -1001,6 +1059,16 @@ export default function RiderApp() {
         onClose={() => setDeleteAccountOpen(false)}
         onDeleted={finishAccountDeletion}
       />
+      </View>
+    );
+  }
+
+  if (auth?.kind === 'company') {
+    return (
+      <View style={styles.screen}>
+        <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" />
+        <CompanyHome onSignOut={() => execute(logout)} onDeleteAccount={() => setDeleteAccountOpen(true)} />
+        <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleted={finishAccountDeletion} />
       </View>
     );
   }
