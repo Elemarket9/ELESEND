@@ -801,9 +801,12 @@ export default function CustomerApp() {
   }
 
   async function cancelOrder(id, isFood = false, shipmentState = null, foodState = null) {
+    const terms = isFood ? null : await call('GET', `/api/v1/shipments/${id}/cancel-terms`).catch(() => null);
     Alert.alert(
       'Cancel Delivery',
-      'Are you sure you want to cancel this delivery?',
+      terms?.feeMinor > 0
+        ? `A rider is already on the way, so ${ghc(terms.feeMinor)} goes to them and ${ghc(terms.refundMinor)} is refunded. Cancel this delivery?`
+        : 'Are you sure you want to cancel this delivery?',
       [
         { text: 'No', style: 'cancel' },
         {

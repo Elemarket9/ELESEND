@@ -44,6 +44,13 @@ import {
 } from './modules/payments/index.mjs';
 import {walletWithdrawals,walletStatement,walletSummary,walletDebt,walletTransactions,adminWalletOverview,adminWalletReconciliation,walletPolicyView,updateWalletPolicy} from './modules/payments/index.mjs';
 import {getSystemHealthReport} from './infrastructure/monitoring/system-health.mjs';
+const INTERNAL_FIGURES=/commission|riderEarnings|driverEarning/i;
+/** A customer sees what they pay, not what ELESEND and the rider each keep. */
+function forCustomer(actor,value){
+ if(Array.isArray(value))return value.map(row=>forCustomer(actor,row));
+ if(!value||typeof value!=='object'||value.customer_id!==actor.id)return value;
+ return Object.fromEntries(Object.entries(value).filter(([key])=>!INTERNAL_FIGURES.test(key)));
+}
 const AWAITING_APPROVAL_ROUTES=new Set(['GET /api/v1/me','GET /api/v1/me/phone','POST /api/v1/me/phone-challenge','POST /api/v1/me/phone-verify','POST /api/v1/auth/logout','POST /api/v1/me/delete-account',
  'GET /api/v1/rider/licence','POST /api/v1/rider/licence','POST /api/v1/rider/licence/identity-check','GET /api/v1/rider/documents','POST /api/v1/rider/documents/upload-link',
  'GET /api/v1/company/profile','PUT /api/v1/company/services']);
@@ -427,13 +434,13 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    else if(method==='POST'&&path==='/api/v1/admin/geo-intelligence/reject'){
     result=await mapLifecycle.rejectCandidate(actor,body);
    }
-   else if(method==='POST'&&path==='/api/v1/quotes'){await limit(db,'quote:'+actor.id,30,60);result=await app.quote(actor,body);}
-  else if(method==='POST'&&path==='/api/v1/calculate-fare'){await limit(db,'quote:'+actor.id,30,60);result=await app.quote(actor,body);}
+   else if(method==='POST'&&path==='/api/v1/quotes'){await limit(db,'quote:'+actor.id,30,60);result=forCustomer(actor,{...await app.quote(actor,body),customer_id:actor.id});}
+  else if(method==='POST'&&path==='/api/v1/calculate-fare'){await limit(db,'quote:'+actor.id,30,60);result=forCustomer(actor,{...await app.quote(actor,body),customer_id:actor.id});}
   else if(method==='GET'&&path==='/api/v1/pricing/vehicles')result=await app.vehicleTariffs(actor);
   else if(method==='POST'&&path==='/api/v1/admin/pricing/vehicles')result=await app.configureVehicleTariff(actor,body);
   else if(method==='POST'&&path==='/api/v1/admin/pricing/surge-zones')result=await app.configureSurgeZone(actor,body);
-  else if(method==='POST'&&path==='/api/v1/shipments')result=await app.book(actor,body,req.headers['idempotency-key']);
-  else if(method==='GET'&&path==='/api/v1/shipments')result=await app.list(actor);
+  else if(method==='POST'&&path==='/api/v1/shipments')result=forCustomer(actor,await app.book(actor,body,req.headers['idempotency-key']));
+  else if(method==='GET'&&path==='/api/v1/shipments')result=forCustomer(actor,await app.list(actor));
   else if(method==='GET'&&path==='/api/v1/rider/offers')result=await app.offers(actor);
   else if(method==='GET'&&path==='/api/v1/rider/dispatch-settings'){check(dispatcher,503);result=await dispatcher.trackingSettings(actor);}
   else if(method==='POST'&&path==='/api/v1/rider/licence/identity-check'){await limit(db,'identity-check:'+actor.id,5,3600);result=await startIdentityCheck(db,actor);}
@@ -573,7 +580,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&/^\/api\/v1\/company\/invitations\/[^/]+\/revoke$/.test(path))result=await companies.revokeInvitation(actor,path.split('/')[5]);
   else if(method==='GET'&&path==='/api/v1/company/profile')result=await companies.profile(actor);
   else if(method==='PUT'&&path==='/api/v1/company/services')result=await companies.setServices(actor,body);
-  else if(method==='GET'&&path==='/api/v1/company/deliveries'){check(actor.kind==='company',403);result=await app.list(actor,{asClient:true});}
+  else if(method==='GET'&&path==='/api/v1/company/deliveries'){check(actor.kind==='company',403);result=forCustomer(actor,await app.list(actor,{asClient:true}));}
   else if(method==='GET'&&path==='/api/v1/rider/invitations')result=await companies.riderInvitations(actor);
   else if(method==='POST'&&/^\/api\/v1\/rider\/invitations\/[^/]+\/decline$/.test(path))result=await companies.declineInvitation(actor,path.split('/')[5]);
   else if(method==='POST'&&path==='/api/v1/rider/company/leave')result=await net.leaveCompany(actor);
@@ -698,7 +705,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/batch-dispatch$/.test(path))result=await restOrders.evaluateBatchDispatch(actor,path.split('/')[4],body);
   // Food Ordering Endpoints
   else if(method==='POST'&&path==='/api/v1/food-orders/quote'){await limit(db,'quote:'+actor.id,30,60);result=await restOrders.quoteFoodOrder(actor,body);}
-  else if(method==='POST'&&path==='/api/v1/food-orders')result=await restOrders.createFoodOrder(actor,body,{paymentMethod:body.paymentMethod,specialInstructions:body.specialInstructions,promoCode:body.promoCode,promoCodes:body.promoCodes,campaignIds:body.campaignIds,idempotencyKey:req.headers['idempotency-key']});
+  else if(method==='POST'&&path==='/api/v1/food-orders')result=forCustomer(actor,await restOrders.createFoodOrder(actor,body,{paymentMethod:body.paymentMethod,specialInstructions:body.specialInstructions,promoCode:body.promoCode,promoCodes:body.promoCodes,campaignIds:body.campaignIds,idempotencyKey:req.headers['idempotency-key']}));
   else if(method==='GET'&&path==='/api/v1/food-orders'){
     const u=new URL(req.url,'http://localhost').searchParams;
     result=await restOrders.listFoodOrders(actor,{restaurantId:u.get('restaurantId'),state:u.get('state'),limit:u.get('limit')});
@@ -718,8 +725,9 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    }
   }
   else {
-   const m=path.match(/^\/api\/v1\/shipments\/([^/]+)(?:\/(accept|pickup-challenge|delivery-challenge|return-challenge|verify|transition|location|tracking|dispatch|disputes))?$/);check(m,404,'Endpoint not found');const [,sid,action]=m;
-   if(method==='GET'&&!action)result=await app.get(actor,sid);
+   const m=path.match(/^\/api\/v1\/shipments\/([^/]+)(?:\/(accept|pickup-challenge|delivery-challenge|return-challenge|verify|transition|location|tracking|dispatch|disputes|cancel-terms))?$/);check(m,404,'Endpoint not found');const [,sid,action]=m;
+   if(method==='GET'&&!action)result=forCustomer(actor,await app.get(actor,sid));
+   else if(method==='GET'&&action==='cancel-terms')result=await app.cancelTerms(actor,sid);
    else if(method==='GET'&&action==='tracking')result=await app.tracking(actor,sid);
    else if(method==='GET'&&action==='dispatch'){const shipment=await app.get(actor,sid);result={shipmentId:sid,state:shipment.state,confirmedRider:!!shipment.rider_id,guaranteed:!!shipment.rider_id,attempts:shipment.dispatch_attempts,dispatchStatus:shipment.state==='AWAITING_ASSIGNMENT'?(shipment.no_rider_since?'no_rider_yet':'searching_or_awaiting_offer'):shipment.state};}
    else if(method==='POST'&&action==='accept')result=await app.accept(actor,sid,body.offerId);
@@ -727,7 +735,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    else if(method==='POST'&&action==='delivery-challenge')result=await app.challenge(actor,sid,'delivery');
    else if(method==='POST'&&action==='return-challenge')result=await app.challenge(actor,sid,'return');
    else if(method==='POST'&&action==='verify')result=await app.verify(actor,sid,body);
-   else if(method==='POST'&&action==='transition')result=await app.transition(actor,sid,body);
+   else if(method==='POST'&&action==='transition'){result=await app.transition(actor,sid,body);if(result?.releasedRiderId)await chat.revokeRiderConversations(db,{shipmentId:sid,oldRiderUserId:result.releasedRiderId,reason:'customer_cancelled'}).catch(()=>{});}
    else if(method==='POST'&&action==='location')result=await app.location(actor,sid,body);
    else if(method==='POST'&&action==='disputes')result=await app.dispute(actor,sid,body);
    else check(false,404,'Endpoint not found');

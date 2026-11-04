@@ -48,7 +48,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
    if(restOrders&&typeof restOrders.monitorAssignedDeliveries==='function')await restOrders.monitorAssignedDeliveries({onlyDueReviews:true});
    if(dispatch&&typeof dispatch.watchdog==='function')await dispatch.watchdog({onlyDueReviews:true});
   }),
-  moneyRecon:guarded('money_reconciliation',LOCKS.moneyRecon,async()=>{if(!money)return;await money.syncRefunds();await money.reconcileDue();}),
+  moneyRecon:guarded('money_reconciliation',LOCKS.moneyRecon,async()=>{if(!money)return;await money.syncRefunds();await money.refundUncollectedOrders();await money.reconcileDue();}),
   businessPayouts:guarded('business_payouts',LOCKS.businessPayouts,async()=>{await money?.settleBusinessesDue?.();}),
   riderSafety:guarded('rider_safety',LOCKS.riderSafety,async()=>{await enforceDrivingLimits(db);await flagUnusualStops(db);await offlineSignedOutRiders(db);}),
   parcelCustody:guarded('parcel_custody',LOCKS.parcelCustody,async()=>{await flagOverdueParcels(db);}),
