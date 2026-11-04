@@ -34,6 +34,7 @@ import { sample, startShiftTracking, stopShiftTracking, subscribeBackgroundOffer
 import { cacheJobs, readCachedJobs, readLastCachedJobs, clearCachedJobs } from '../offline';
 import { normalizeGhanaPhone, isValidGhanaPhone } from '../phone';
 import { colors, typography, spacing, radii } from '../theme';
+import { riderStatus } from '../status-labels';
 
 const initialCreds = {
   phone: '',
@@ -555,7 +556,7 @@ export default function RiderApp() {
 
   async function submitOtpVerification() {
     if (!activeParcel || !challenge) return;
-    if (otp.trim().length !== 6) throw Error('Enter the exact 6-digit handover OTP');
+    if (otp.trim().length !== 6) throw Error('Enter the 6-digit code');
     const verifiedKind = activeParcel.kind;
 
     await call('POST', `/api/v1/shipments/${activeParcel.id}/verify`, {
@@ -788,8 +789,8 @@ export default function RiderApp() {
     return <ScrollView contentContainerStyle={{padding:24}}>
       <Text>Saved deliveries — view only</Text>
       <Text>Last saved: {offlineCopy.cachedAt}. Connect to refresh before taking any action.</Text>
-      {offlineCopy.shipments.map(job=><Text key={job.id}>{job.details?.pickup} → {job.details?.destination}</Text>)}
-      {offlineCopy.stops.map((stop,index)=><Text key={index}>{stop.kind}: {stop.shipmentId}</Text>)}
+      {offlineCopy.shipments.map(job=><Text key={job.id} style={styles.offlineText}>{job.details?.pickup} → {job.details?.destination}</Text>)}
+      {offlineCopy.stops.map((stop,index)=><Text key={index} style={styles.offlineText}>{stop.kind}: {stop.shipmentId}</Text>)}
       <Pressable onPress={async()=>{await clearToken();await clearCachedJobs();setOfflineCopy(null);}}><Text>Sign out and clear saved jobs</Text></Pressable>
     </ScrollView>;
   }
@@ -799,8 +800,8 @@ export default function RiderApp() {
         <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
         <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled">
           <View style={styles.authHeader}>
-            <BrandRow tagline="RIDER COURIER APP" />
-            <Text style={styles.authSubtitle}>Drive and earn on your schedule with transparent, administrator-published commission and clear weekly settlements.</Text>
+            <BrandRow tagline="Rider and company app" />
+            <Text style={styles.authSubtitle}>Deliver on your schedule and see the commission on every job before you accept it.</Text>
           </View>
 
           {!!error && (
@@ -942,9 +943,9 @@ export default function RiderApp() {
             <TouchableOpacity
               activeOpacity={0.85}
               onPress={() => execute(isSignup ? signUp : signIn)}
-              style={styles.primaryBtn}
+              style={[styles.primaryBtn, { marginTop: 16 }]}
               disabled={busy}>
-              {busy ? <ActivityIndicator color={colors.bg} /> : <Text style={styles.primaryBtnText}>{isSignup ? 'Complete Registration' : 'Sign In as Driver'}</Text>}
+              {busy ? <ActivityIndicator color={colors.bg} /> : <Text style={styles.primaryBtnText}>{isSignup ? 'Create account' : 'Sign in'}</Text>}
             </TouchableOpacity>
 
             {!isSignup && (
@@ -1083,8 +1084,8 @@ export default function RiderApp() {
               style={styles.switchAuthBtn}>
               <Text style={styles.switchAuthText}>Sign Out / Use Another Account</Text>
             </TouchableOpacity>
-            <TouchableOpacity accessibilityRole="button" onPress={() => setDeleteAccountOpen(true)}>
-              <Text style={[styles.switchAuthText, { color: '#B91C1C' }]}>Delete Account</Text>
+            <TouchableOpacity accessibilityRole="button" style={styles.switchAuthBtn} onPress={() => setDeleteAccountOpen(true)}>
+              <Text style={[styles.switchAuthText, { color: '#FCA5A5' }]}>Delete Account</Text>
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -1099,7 +1100,7 @@ export default function RiderApp() {
 
   const licenceDocumentsModal = (
             <Modal visible={licenceModal} animationType="fade" transparent>
-              <View style={styles.modalOverlay}>
+              <ScrollView style={{ flex: 1, backgroundColor: '#000000AA' }} contentContainerStyle={styles.modalScrollBody} keyboardShouldPersistTaps="handled">
                 <View style={styles.momoCard}>
                   <Text style={styles.momoTitle}>Driver's Licence</Text>
                   <Text style={styles.momoSub}>
@@ -1114,7 +1115,7 @@ export default function RiderApp() {
                   <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceNumber} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceNumber: value }))} />
                   <Text style={[styles.inputLabel, { marginTop: 10 }]}>Licence Class</Text>
                   <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceClass} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceClass: value }))} />
-                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Expiry Date (YYYY-MM-DD)</Text>
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Expiry date (year-month-day, like 2028-06-30)</Text>
                   <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.expiresOn} onChangeText={value => setLicenceForm(f => ({ ...f, expiresOn: value }))} />
                   <Text style={[styles.inputLabel, { marginTop: 10 }]}>Vehicle Plate Number</Text>
                   <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.vehiclePlate} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, vehiclePlate: value }))} />
@@ -1147,7 +1148,7 @@ export default function RiderApp() {
                     </TouchableOpacity>
                   </View>
                 </View>
-              </View>
+              </ScrollView>
             </Modal>
   );
 
@@ -1168,8 +1169,8 @@ export default function RiderApp() {
             <TouchableOpacity accessibilityRole="button" onPress={() => execute(logout)} style={styles.switchAuthBtn}>
               <Text style={styles.switchAuthText}>Sign Out</Text>
             </TouchableOpacity>
-            <TouchableOpacity accessibilityRole="button" onPress={() => setDeleteAccountOpen(true)}>
-              <Text style={[styles.switchAuthText, { color: '#B91C1C' }]}>Delete Account</Text>
+            <TouchableOpacity accessibilityRole="button" style={styles.switchAuthBtn} onPress={() => setDeleteAccountOpen(true)}>
+              <Text style={[styles.switchAuthText, { color: '#FCA5A5' }]}>Delete Account</Text>
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -1201,15 +1202,15 @@ export default function RiderApp() {
         <View style={styles.headerLeft}>
           <View style={styles.headerBadge}><Text style={styles.headerBadgeText}>🛵</Text></View>
           <View>
-            <Text style={styles.headerTitle}>COURIER RIDER</Text>
-            <Text style={styles.headerSubtitle}>{auth.phone} • {vehicle?.vehicle?.toUpperCase() || 'MOTORCYCLE'}</Text>
+            <Text style={styles.headerTitle}>Rider</Text>
+            <Text style={styles.headerSubtitle}>{auth.phone} • {vehicle?.vehicle || 'motorcycLE'}</Text>
           </View>
         </View>
 
         {offlineCopy && <View style={{padding:16}}>
-          <Text>Saved jobs (view only) — {offlineCopy.cachedAt}</Text>
-          {offlineCopy.stops.map((stop,index)=><Text key={index}>{stop.kind}: {stop.shipmentId}</Text>)}
-          {offlineCopy.shipments.map(job=><Text key={job.id}>{job.details?.pickup} → {job.details?.destination}</Text>)}
+          <Text style={styles.offlineText}>Saved jobs (view only), {offlineCopy.cachedAt}</Text>
+          {offlineCopy.stops.map((stop,index)=><Text key={index} style={styles.offlineText}>{stop.kind}: {stop.shipmentId}</Text>)}
+          {offlineCopy.shipments.map(job=><Text key={job.id} style={styles.offlineText}>{job.details?.pickup} → {job.details?.destination}</Text>)}
         </View>}
         {/* Online / Offline Switch */}
         <TouchableOpacity
@@ -1250,14 +1251,14 @@ export default function RiderApp() {
           onPress={() => setTab('Manifest')}
           style={[styles.tabItem, tab === 'Manifest' && styles.tabItemActive]}>
           <Text style={[styles.tabText, tab === 'Manifest' && styles.tabTextActive]}>
-            🗺️ Active Route
+            🗺️ Route
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
           onPress={() => setTab('Earnings')}
           style={[styles.tabItem, tab === 'Earnings' && styles.tabItemActive]}>
           <Text style={[styles.tabText, tab === 'Earnings' && styles.tabTextActive]}>
-            💰 Wallet & Debt
+            💰 Wallet
           </Text>
         </TouchableOpacity>
       </View>
@@ -1279,12 +1280,20 @@ export default function RiderApp() {
                 await call('POST', '/api/v1/rider/multi-stop', { enabled: !manifest?.optedIn });
                 setManifest(await call('GET', '/api/v1/rider/manifest'));
               })}
-              style={[styles.secondaryBtn, { marginHorizontal: 16, marginTop: 12 }]}>
-              <Text style={styles.secondaryBtnText}>Carry parcels going my way: {manifest?.optedIn ? 'On' : 'Off'}</Text>
+              accessibilityRole="switch"
+              accessibilityState={{ checked: Boolean(manifest?.optedIn) }}
+              style={styles.carryToggle}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.carryToggleTitle}>Carry parcels going my way</Text>
+                <Text style={styles.carryToggleSub}>Extra parcels only on your route. Each one earns its own pay.</Text>
+              </View>
+              <View style={[styles.carryTogglePill, manifest?.optedIn && styles.carryTogglePillOn]}>
+                <Text style={[styles.carryToggleState, manifest?.optedIn && styles.carryToggleStateOn]}>{manifest?.optedIn ? 'On' : 'Off'}</Text>
+              </View>
             </TouchableOpacity>
             {online && shifts && shifts.background === false && (
               <View style={styles.motionWarningBanner}>
-                <Text style={styles.motionWarningTitle}>⚠️ BACKGROUND LOCATION / BATTERY SAVER ACTIVE</Text>
+                <Text style={styles.motionWarningTitle}>⚠️ Battery saver may stop your offers</Text>
                 <Text style={styles.motionWarningSub}>
                   Allow "All the time" location and disable Battery Saver for ELESEND Rider so offers and GPS alerts continue when your screen is off ({shifts.reason || 'background permission required'}).
                 </Text>
@@ -1293,7 +1302,7 @@ export default function RiderApp() {
 
             {!isStationary(speed) && (
               <View style={styles.motionWarningBanner}>
-                <Text style={styles.motionWarningTitle}>⚠️ MOTORCYCLE IN MOTION</Text>
+                <Text style={styles.motionWarningTitle}>⚠️ You are moving</Text>
                 <Text style={styles.motionWarningSub}>
                   Speed exceeds 9 km/h. For your safety, stop safely roadside before accepting delivery jobs.
                 </Text>
@@ -1383,7 +1392,7 @@ export default function RiderApp() {
                     <View style={styles.manifestCardHeader}>
                       <Text style={styles.manifestShipmentId}>Order #{s.id.slice(0, 8)}</Text>
                       <View style={styles.stageBadge}>
-                        <Text style={styles.stageBadgeText}>{s.state}</Text>
+                        <Text style={styles.stageBadgeText}>{riderStatus(s.state)}</Text>
                       </View>
                     </View>
 
@@ -1441,10 +1450,10 @@ export default function RiderApp() {
                       <View>
                         <TouchableOpacity
                           accessibilityRole="button"
-                          accessibilityLabel="Confirm Package Pickup"
+                          accessibilityLabel="Confirm pickup"
                           onPress={() => execute(() => initiatePickupVerification(s))}
                           style={[styles.primaryBtn, { marginTop: 10, minHeight: 56 }]}>
-                          <Text style={styles.primaryBtnText}>Confirm Package Pickup</Text>
+                          <Text style={styles.primaryBtnText}>Confirm pickup</Text>
                         </TouchableOpacity>
                         <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
                           <TouchableOpacity
@@ -1505,13 +1514,13 @@ export default function RiderApp() {
                         )}
                         <TouchableOpacity
                           accessibilityRole="button"
-                          accessibilityLabel="Verify Handover OTP and Collect Payment"
+                          accessibilityLabel="Enter the recipient's code"
                           onPress={() => execute(() => initiateDeliveryVerification(s))}
                           style={[styles.primaryBtn, { marginTop: 10, minHeight: 56 }]}>
                           <Text style={styles.primaryBtnText}>
                             {s.payment_method === 'CASH' && !reportedCash[s.id]
-                              ? `Collect Cash (${ghc(s.amount_minor)}) & Verify OTP`
-                              : 'Verify Recipient Handover OTP'}
+                              ? `Collect ${ghc(s.amount_minor)} cash, then enter code`
+                              : "Enter recipient's code"}
                           </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
@@ -1577,16 +1586,16 @@ export default function RiderApp() {
             <Modal visible={Boolean(activeParcel && challenge)} animationType="fade" transparent>
               <View style={styles.modalOverlay}>
                 <View style={styles.otpCard}>
-                  <Text style={styles.otpCardTitle}>🔑 Verify Delivery Handover</Text>
+                  <Text style={styles.otpCardTitle}>🔑 Enter the code</Text>
                   <Text style={styles.otpCardSub}>
                     {activeParcel?.kind === 'pickup'
-                      ? 'Ask the sender or restaurant merchant for their 6-digit pickup handover OTP.'
+                      ? 'Ask the sender or restaurant merchant for their 6-digit pickup code.'
                       : 'Ask the recipient for their 6-digit delivery confirmation code.'}
                   </Text>
 
                   {activeParcel?.payment_method === 'CASH' && activeParcel?.kind !== 'pickup' && (
                     <View style={styles.modalCodAlert}>
-                      <Text style={styles.modalCodAlertTitle}>💵 CASH PAYMENT CONFIRMATION</Text>
+                      <Text style={styles.modalCodAlertTitle}>💵 Collect the cash first</Text>
                       <Text style={styles.modalCodAlertText}>
                         Ensure you have received the full amount of {ghc(activeParcel.amount_minor)} in cash before finalizing this verification.
                       </Text>
@@ -1967,10 +1976,10 @@ const styles = StyleSheet.create({
   inputLabel: { fontSize: 13, fontWeight: '600', color: colors.textMuted, marginBottom: 6 },
   input: { backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1, borderColor: colors.cardBorder, padding: 12, color: colors.text, fontSize: 14 },
   phoneInputRow: { flexDirection: 'row', gap: 8 },
-  countryBadge: { backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1, borderColor: colors.cardBorder, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  countryBadge: { flexShrink: 0, backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1, borderColor: colors.cardBorder, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 6 },
   flag: { fontSize: 16 },
   countryCode: { color: colors.text, fontWeight: '600', fontSize: 14 },
-  phoneInput: { flex: 1, backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1, borderColor: colors.cardBorder, padding: 12, color: colors.text, fontSize: 14 },
+  phoneInput: { flex: 1, minWidth: 0, backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1, borderColor: colors.cardBorder, padding: 12, color: colors.text, fontSize: 14 },
   vehicleRow: { flexDirection: 'row', gap: 8, marginTop: 6 },
   vehicleChoice: { flex: 1, backgroundColor: colors.card, borderRadius: radii.md, padding: 10, alignItems: 'center', borderWidth: 1, borderColor: colors.cardBorder },
   vehicleChoiceActive: { borderColor: colors.primary, backgroundColor: colors.cardBorder },
@@ -1978,6 +1987,14 @@ const styles = StyleSheet.create({
   vehicleChoiceSub: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
   primaryBtn: { backgroundColor: colors.primary, borderRadius: radii.md, minHeight: 56, paddingVertical: 14, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
   primaryBtnText: { color: colors.bg, fontSize: 15, fontWeight: '700' },
+  carryToggle: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 16, marginTop: 12, marginBottom: 12, padding: 14, backgroundColor: colors.card, borderRadius: radii.md, borderWidth: 1, borderColor: colors.cardBorder },
+  carryToggleTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
+  carryToggleSub: { fontSize: 12, color: colors.textMuted, marginTop: 2 },
+  carryTogglePill: { minWidth: 48, alignItems: 'center', paddingVertical: 6, paddingHorizontal: 10, borderRadius: radii.full, borderWidth: 1, borderColor: colors.cardBorder },
+  carryTogglePillOn: { backgroundColor: colors.primary, borderColor: colors.primary },
+  carryToggleState: { fontSize: 12, fontWeight: '700', color: colors.textMuted },
+  carryToggleStateOn: { color: colors.bg },
+  offlineText: { color: colors.text, fontSize: 13, marginTop: 6 },
   secondaryBtn: { backgroundColor: colors.card, borderRadius: radii.md, minHeight: 56, paddingVertical: 14, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.cardBorder },
   secondaryBtnText: { color: colors.text, fontSize: 14, fontWeight: '600' },
   codWarningBanner: { backgroundColor: '#78350F', borderRadius: radii.md, padding: 12, marginTop: 10, borderWidth: 1, borderColor: '#F59E0B' },
@@ -1986,6 +2003,7 @@ const styles = StyleSheet.create({
   motionWarningBanner: { backgroundColor: '#451A03', borderRadius: radii.md, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: '#D97706' },
   motionWarningTitle: { color: '#FCD34D', fontSize: 12, fontWeight: '800', letterSpacing: 0.5 },
   motionWarningSub: { color: '#FEF3C7', fontSize: 12, marginTop: 2, lineHeight: 16 },
+  manifestRoutePoint: { fontSize: 13, color: colors.text, marginTop: 6, lineHeight: 18 },
   manifestPackageInfo: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
   modalCodAlert: { backgroundColor: '#451A03', borderRadius: radii.md, padding: 12, marginBottom: 14, borderWidth: 1, borderColor: '#D97706' },
   modalCodAlertTitle: { color: '#FCD34D', fontSize: 12, fontWeight: '800' },
@@ -2054,6 +2072,7 @@ const styles = StyleSheet.create({
   debtRowVal: { fontSize: 13, color: colors.text, fontWeight: '600' },
   settleBtn: { backgroundColor: '#B45309', padding: 12, borderRadius: radii.md, alignItems: 'center' },
   settleBtnText: { color: '#FEF3C7', fontSize: 14, fontWeight: '700' },
+  modalScrollBody: { flexGrow: 1, justifyContent: 'center', padding: 20 },
   modalOverlay: { flex: 1, backgroundColor: '#000000AA', justifyContent: 'center', padding: 20 },
   otpCard: { backgroundColor: colors.surface, borderRadius: radii.lg, padding: 24, borderWidth: 1, borderColor: colors.cardBorder },
   otpCardTitle: { fontSize: 18, fontWeight: '700', color: colors.text, textAlign: 'center' },
