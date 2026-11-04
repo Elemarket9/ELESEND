@@ -107,13 +107,31 @@ export function formatAccuracyLabel(accuracyMeters, isLastKnown = false) {
 }
 
 /**
+ * Asks for foreground location when an app opens and wakes the device's GPS so the first
+ * real fix comes sooner. Declining is allowed: this never throws and never shows a message.
+ * Background location is never requested here.
+ */
+export async function prepareDeviceLocation(locationApi) {
+  try {
+    const { status } = await locationApi.requestForegroundPermissionsAsync();
+    if (status !== 'granted') return 'denied';
+    Promise.resolve(locationApi.getCurrentPositionAsync({ accuracy: locationApi.Accuracy?.Balanced ?? 3 })).catch(() => {});
+    return 'granted';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+/**
  * Orchestrates customer location detection with device permission, timeout, and reverse geocoding.
  * Includes graceful fallback to getLastKnownPositionAsync for indoor or cold GPS locks.
  */
 export async function detectCustomerLocation({
   locationApi,
   reverseGeocodeApi,
-  timeoutMs = 10000
+  timeoutMs = 10000,
+  // Use a recent fix the device already holds, instead of waiting for a new one.
+  quickFirst = false
 } = {}) {
   if (!locationApi) {
     throw new Error('Location API provider required');
@@ -159,7 +177,19 @@ export async function detectCustomerLocation({
   let position = null;
   let isLastKnown = false;
   let timeoutHandle = null;
-  try {
+  if (quickFirst && typeof locationApi.getLastKnownPositionAsync === 'function') {
+    try {
+      const held = await locationApi.getLastKnownPositionAsync({ maxAge: LAST_KNOWN_MAX_AGE_MS });
+      const heldAgeMs = Date.now() - Number(held?.timestamp);
+      if (held?.coords && Number.isFinite(heldAgeMs) && heldAgeMs >= -60000 && heldAgeMs <= LAST_KNOWN_MAX_AGE_MS) {
+        position = held;
+        isLastKnown = true;
+      }
+    } catch {
+      // No held fix: measure a new one below.
+    }
+  }
+  if (!position) try {
     const positionPromise = locationApi.getCurrentPositionAsync({
       accuracy: locationApi.Accuracy?.High ?? 4
     });
