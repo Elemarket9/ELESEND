@@ -37,6 +37,7 @@ if($Vehicle -eq 'all' -or $Vehicle -eq 'car'){
 if($Vehicle -eq 'all' -or $Vehicle -eq 'motorcycle'){
   # Uses road rules from the car profile: the bicycle profile allows footpaths and uses cycling speeds.
   # Not verified against Ghanaian motorbike access. Changing the profile requires rebuilding this graph.
-  Build-Graph '/opt/car.lua' 'ghana-motorcycle'
+  Copy-Item -Path (Join-Path $PSScriptRoot '..\deploy\maps\motorcycle.lua') -Destination (Join-Path $data 'motorcycle.lua') -Force
+  Build-Graph '/data/motorcycle.lua' 'ghana-motorcycle'
 }
 Write-Output 'Private Ghana OSRM routing graphs (car + motorcycle) prepared.'
