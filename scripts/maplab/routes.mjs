@@ -1,0 +1,6 @@
+const P={accraMall:[-0.1735,5.6221],osu:[-0.1825,5.5560],madina:[-0.1650,5.6760],kaneshie:[-0.2370,5.5650],legon:[-0.1870,5.6500],tema:[0.0060,5.6700],adabraka:[-0.2120,5.5620],kejetia:[-1.6240,6.6960],knust:[-1.5730,6.6730],takoradi:[-1.7550,4.8970],tamale:[-0.8393,9.4008]};
+const pairs=[['osu','accraMall'],['madina','kaneshie'],['legon','adabraka'],['tema','osu'],['kejetia','knust'],['accraMall','kejetia'],['takoradi','osu'],['tamale','kejetia']];
+const get=async(port,a,b,q='overview=false')=>{const t=Date.now();const r=await(await fetch(`http://127.0.0.1:${port}/route/v1/driving/${a};${b}?${q}`)).json();return{...r,ms:Date.now()-t};};
+for(const [x,y] of pairs){const a=P[x].join(','),b=P[y].join(',');const c=await get(5000,a,b),m=await get(5001,a,b);const f=r=>r.routes?`${(r.routes[0].distance/1000).toFixed(1)}km ${Math.round(r.routes[0].duration/60)}min ${r.ms}ms`:r.code;console.log(x,'->',y,'| car',f(c),'| moto',f(m));}
+const s=await get(5001,P.osu.join(','),P.accraMall.join(','),'overview=false&steps=true');
+for(const st of s.routes[0].legs[0].steps.slice(0,12))console.log(JSON.stringify({m:st.maneuver.type,mod:st.maneuver.modifier,exit:st.maneuver.exit,name:st.name,ref:st.ref,d:Math.round(st.distance)}));
