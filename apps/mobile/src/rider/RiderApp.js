@@ -98,6 +98,7 @@ export default function RiderApp() {
   const [momoAmount, setMomoAmount] = useState('');
   const [withdrawModal, setWithdrawModal] = useState(false);
   const [confirmWithdraw, setConfirmWithdraw] = useState(false);
+  const [finalPayout, setFinalPayout] = useState(false);
   const availableNow = financeSnapshot?.availableNowMinor || 0;
   const withdrawalMin = financeSnapshot?.withdrawalMinMinor || 0;
   const withdrawalFee = financeSnapshot?.withdrawalFeeMinor || 0;
@@ -734,8 +735,9 @@ export default function RiderApp() {
   async function requestWithdrawal() {
     // The key survives a lost connection, so a repeat press cannot start a second withdrawal.
     withdrawKey.current = withdrawKey.current || Crypto.randomUUID();
-    const res = await call('POST', '/api/v1/rider/wallet/withdraw', { idempotencyKey: withdrawKey.current, password: withdrawPassword });
+    const res = await call('POST', '/api/v1/rider/wallet/withdraw', { idempotencyKey: withdrawKey.current, ...(finalPayout ? { finalPayout: true } : {}), password: withdrawPassword });
     withdrawKey.current = null;
+    setFinalPayout(false);
     setConfirmWithdraw(false);
     setWithdrawPassword('');
     const amount = ghc(res?.amountMinor || 0);
@@ -1758,6 +1760,15 @@ export default function RiderApp() {
                       : 'Nothing to withdraw yet'}
                 </Text>
               </TouchableOpacity>
+              {availableNow > withdrawalFee && availableNow < withdrawalMin && (
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  disabled={busy}
+                  onPress={() => { setFinalPayout(true); setConfirmWithdraw(true); }}
+                  style={[styles.secondaryBtn, { marginTop: 8 }]}>
+                  <Text style={styles.secondaryBtnText}>Closing your account? Withdraw {ghc(availableNow)}</Text>
+                </TouchableOpacity>
+              )}
               {canWithdraw && (
                 <Text style={[styles.momoSub, { marginTop: 6 }]}>You receive {ghc(availableNow - withdrawalFee)} after the {ghc(withdrawalFee)} transfer fee.</Text>
               )}

@@ -216,6 +216,68 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    for(const body of [q.data,(await api(c.token,'GET','/api/v1/shipments/'+id)).data,(await api(c.token,'GET','/api/v1/shipments')).data[0]])assert.deepEqual(Object.keys(body).filter(k=>/commission|riderEarnings|driverEarning/i.test(k)),[]);
    await db.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[id]);
   });
+  await t.test('a rush of orders spreads across free riders',async()=>{
+   await db.query("UPDATE shipments SET state='CANCELLED' WHERE state='AWAITING_ASSIGNMENT'");await db.query("UPDATE dispatch_offers SET status='expired' WHERE status='offered'");
+   await offline();
+   const c=await customer();const riders=[];
+   for(let i=0;i<4;i++){const r=await signUp('rider',{vehicle:'motorcycle',maxWeightG:20000});await verifyPhone(r);await approve(r.id);await api(r.token,'POST','/api/v1/rider/availability',{online:true});await gps(r);riders.push(r);}
+   const ids=[];for(let i=0;i<5;i++)ids.push(await paidOrder(c));
+   await Promise.all([dispatch.tick(20),dispatch.tick(20)]);
+   const seen=await Promise.all(riders.map(r=>api(r.token,'GET','/api/v1/rider/offers').then(x=>x.data)));
+   assert.deepEqual(seen.map(o=>o.length),[1,1,1,1],'each free rider gets one offer');
+   const accepted=await Promise.all(riders.map((r,i)=>api(r.token,'POST','/api/v1/shipments/'+seen[i][0].id+'/accept',{offerId:seen[i][0].offerId}).then(x=>x.status)));
+   assert.deepEqual(accepted,[200,200,200,200]);
+   const waiting=(await db.query("SELECT id,dispatch_attempts FROM shipments WHERE id=ANY($1) AND state='AWAITING_ASSIGNMENT'",[ids])).rows;
+   assert.equal(waiting.length,1);
+   await db.query('UPDATE dispatch_offers SET status=$2 WHERE shipment_id=ANY($1) AND status=$3',[ids,'expired','offered']);
+   await db.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[waiting[0].id]);
+   await offline();
+  });
+  await t.test('money owed blocks account deletion until it is paid',async()=>{
+   await offline();
+   const c=await customer();const r=await readyRider();const id=await paidOrder(c);await dispatch.tick();
+   const offer=await offerFor(r,id);await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:offer.offerId});
+   const pc=await api(r.token,'POST','/api/v1/shipments/'+id+'/pickup-challenge',{});await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:pc.data.challengeId,code:code()});
+   await api(r.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'start'});await gps(r,D);
+   const dc=await api(r.token,'POST','/api/v1/shipments/'+id+'/delivery-challenge',{});assert.equal((await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:dc.data.challengeId,code:code()})).status,200);
+   const del=await api(r.token,'POST','/api/v1/me/delete-account',{password:'mango river lantern'});
+   assert.equal(del.status,409);assert.match(del.data.error,/unpaid earnings/);
+   assert.equal((await api(r.token,'GET','/api/v1/me')).status,200,'the account is still there');
+   assert.equal((await api((await customer()).token,'POST','/api/v1/me/delete-account',{password:'mango river lantern'})).status,200,'others can still delete');
+   const money=moneyOperations(db,{provider:{...provider,async verifyBeneficiary({beneficiaryId,recipientReference}){return {verified:true,beneficiaryId,recipientReference};},async createBeneficiary(){return {recipientReference:'RCP_'+randomInt(1e9)};}}});
+   await money.verifyBeneficiary({id:r.id,kind:'rider'},{momoNetwork:'MTN',accountName:'Kofi'});
+   await db.query('UPDATE payout_beneficiaries SET destination_changed_at=NULL WHERE user_id=$1',[r.id]);
+   await db.query("UPDATE shipments SET completed_at=now()-interval '2 days' WHERE id=$1",[id]);
+   const withdraw=extra=>money.requestWithdrawal({id:r.id,kind:'rider'},{idempotencyKey:'final-'+randomInt(1e9),password:'mango river lantern',...extra});
+   await assert.rejects(withdraw({}),/at least/,'the normal minimum still applies');
+   await withdraw({finalPayout:true});
+   assert.equal((await api(r.token,'POST','/api/v1/me/delete-account',{password:'mango river lantern'})).status,200,'paid out, so it can close');
+   await offline();
+  });
+  await t.test('a rider stopped while carrying a parcel can only finish that delivery',async()=>{
+   await offline();
+   const c=await customer();const r=await readyRider();const id=await paidOrder(c);await dispatch.tick();
+   const offer=await offerFor(r,id);await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:offer.offerId});
+   const pc=await api(r.token,'POST','/api/v1/shipments/'+id+'/pickup-challenge',{});await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:pc.data.challengeId,code:code()});
+   await db.query("UPDATE riders SET status='suspended',online=false WHERE id=$1",[r.id]);
+   assert.equal((await api(r.token,'GET','/api/v1/me')).data.custodyOnly,true);
+   for(const [m,p,b] of [['GET','/api/v1/rider/offers'],['POST','/api/v1/rider/availability',{online:true}],['GET','/api/v1/rider/finance'],['POST','/api/v1/rider/wallet/withdraw',{}]])assert.equal((await api(r.token,m,p,b)).status,403,p);
+   assert.equal((await api(r.token,'GET','/api/v1/rider/manifest')).status,200);
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'start'})).status,200);
+   const dc=await api(r.token,'POST','/api/v1/shipments/'+id+'/delivery-challenge',{});assert.equal(dc.status,200,JSON.stringify(dc.data));
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:dc.data.challengeId,code:code()})).status,200);
+   assert.equal((await db.query('SELECT state FROM shipments WHERE id=$1',[id])).rows[0].state,'COMPLETED');
+   assert.equal((await api(r.token,'GET','/api/v1/me')).status,403,'locked out once the parcel is delivered');
+  });
+  await t.test('customers do not see funding or commission on a food quote',async()=>{
+   const owner=await signUp('business');await verifyPhone(owner);const c=await customer();
+   const made=await api(owner.token,'POST','/api/v1/restaurants',{name:'Quiet Kitchen '+randomInt(1e6),phone:'0241234567',address:'Oxford Street, Osu',latitude:P.latitude,longitude:P.longitude});
+   await db.query("UPDATE restaurants SET status='approved' WHERE id=$1",[made.data.id]);
+   const item=await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id+'/items',{name:'Jollof',priceMinor:4000});
+   const q=await api(c.token,'POST','/api/v1/food-orders/quote',{restaurantId:made.data.id,items:[{itemId:item.data.id,quantity:1}],deliveryAddress:D.address,deliveryLatitude:D.latitude,deliveryLongitude:D.longitude,customerPhone:'0241234567'});
+   assert.equal(q.status,200);assert.ok(q.data.totalMinor>0);
+   assert.equal(/commission|elesend|funded|riderEarnings/i.test(JSON.stringify(q.data)),false);
+  });
   await t.test('people in use stay signed in, and riders with ended sessions go offline',async()=>{
    const r=await readyRider();
    const lifetime=(await db.query("SELECT expires_at>now()+interval '29 days' AS long FROM sessions WHERE user_id=$1",[r.id])).rows[0];
