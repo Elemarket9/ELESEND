@@ -8,7 +8,8 @@ mkdir -p "$data/tools"
 [ -e "$data/tools/planetiler.jar" ] || curl --fail --location --retry 2 --max-time 900 --output "$data/tools/planetiler.jar" "$base"
 [ -e "$data/tools/planetiler.jar.sha256" ] || curl --fail --location --retry 2 --max-time 90 --output "$data/tools/planetiler.jar.sha256" "$base.sha256"
 [ "$(sha256sum "$data/tools/planetiler.jar" | cut -d' ' -f1)" = "$(cut -d' ' -f1 "$data/tools/planetiler.jar.sha256")" ] || { echo 'Planetiler checksum mismatch' >&2; exit 1; }
+[ -e "$data/water-polygons-split-3857.zip" ] || curl --fail --location --retry 5 --retry-delay 20 --connect-timeout 60 --max-time 1800 --output "$data/water-polygons-split-3857.zip" https://osmdata.openstreetmap.de/download/water-polygons-split-3857.zip
 [ -f "$data/ghana-latest.osm.pbf" ] || { echo 'Run scripts/download-ghana.sh first' >&2; exit 1; }
 [ ! -e "$data/ghana.mbtiles" ] || { echo 'Move the existing tiles aside before rebuilding' >&2; exit 1; }
-java -Xmx3g -jar "$data/tools/planetiler.jar" generate-custom --download "--schema=$root/deploy/maps/ghana-schema.yml" "--osm-local-path=$data/ghana-latest.osm.pbf" "--output=$data/ghana.mbtiles" "--tmpdir=$data/tile-temp" --threads=2 --nodemap-storage=ram --bounds=-3.4,4.5,1.4,11.4
+java -Xmx3g -jar "$data/tools/planetiler.jar" generate-custom "--ocean-local-path=$data/water-polygons-split-3857.zip" "--schema=$root/deploy/maps/ghana-schema.yml" "--osm-local-path=$data/ghana-latest.osm.pbf" "--output=$data/ghana.mbtiles" "--tmpdir=$data/tile-temp" --threads=2 --nodemap-storage=ram --bounds=-3.4,4.5,1.4,11.4
 sha256sum "$data/ghana.mbtiles"

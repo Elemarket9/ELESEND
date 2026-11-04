@@ -7,7 +7,7 @@ if(!(Test-Path -LiteralPath $pbf) -or !(Test-Path -LiteralPath $metadataPath)){t
 $metadata=Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
 if((Get-FileHash -LiteralPath $pbf -Algorithm SHA256).Hash.ToLowerInvariant() -ne $metadata.sha256){throw 'Ghana PBF checksum does not match its provenance record'}
 
-$image='ghcr.io/project-osrm/osrm-backend:v26.10.0'
+$image='ghcr.io/project-osrm/osrm-backend:v26.4.0'
 $mount="type=bind,source=$data,target=/data"
 & docker.exe image inspect $image *> $null
 if($LASTEXITCODE -ne 0){throw "Docker image $image is not available; pull it first"}

@@ -4,6 +4,7 @@ attribution: © OpenStreetMap contributors
 version: 2
 args:
   osm_local_path: ghana-latest.osm.pbf
+  ocean_local_path: water-polygons-split-3857.zip
   minzoom: 0
   maxzoom: 14
 definitions:
@@ -20,7 +21,7 @@ sources:
     local_path: '${ args.osm_local_path }'
   ocean:
     type: shapefile
-    url: https://osmdata.openstreetmap.de/download/water-polygons-split-3857.zip
+    local_path: '${ args.ocean_local_path }'
 layers:
   - id: roads
     features:

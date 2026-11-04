@@ -15,7 +15,7 @@ const hash=crypto.createHash("sha256").update(fs.readFileSync(path.join(director
 if(hash!==metadata.sha256)throw Error("Ghana source checksum mismatch");
 ' "$task_data"
 
-task_image=ghcr.io/project-osrm/osrm-backend:v26.10.0
+task_image=ghcr.io/project-osrm/osrm-backend:v26.4.0
 
 # 1. Car Graph
 if [ ! -e "$task_data/ghana-latest.osrm" ]; then
