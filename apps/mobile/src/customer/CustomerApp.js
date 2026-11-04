@@ -264,8 +264,9 @@ export default function CustomerApp() {
             setError('Please sign in with a Customer account on this application.');
           }
         }
-      } catch {
-        await clearToken();
+      } catch (e) {
+        // Only a rejected session signs the customer out, never a weak network.
+        if (e.status === 401 || e.status === 403) await clearToken();
       } finally {
         setLoading(false);
       }

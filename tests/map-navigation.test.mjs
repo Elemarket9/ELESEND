@@ -68,7 +68,27 @@ test('the style has day and night looks, and the night one stays on our tiles', 
 
 test('the motorcycle graph has its own rules and keeps one-way streets', () => {
   const lua = readFileSync(new URL('../deploy/maps/motorcycle.lua', import.meta.url), 'utf8');
-  assert.match(lua, /'motorcycle', 'motor_vehicle'/);
+  assert.match(lua, /access_tags_hierarchy = Sequence { 'motorcycle', 'motor_vehicle'/);
   assert.doesNotMatch(lua, /oneway\s*=\s*false/);
   for (const file of ['prepare-ghana-osrm.sh', 'prepare-ghana-osrm.ps1']) assert.match(readFileSync(new URL('../scripts/' + file, import.meta.url), 'utf8'), /\/data\/motorcycle\.lua/);
+});
+
+test('a suspended rider finishing a parcel can still get directions', () => {
+  assert.match(readFileSync(new URL('../services/api/http.mjs', import.meta.url), 'utf8'), /CUSTODY_ROUTES=new Set\([^)]*POST \/api\/v1\/rider\/navigation/);
+});
+
+test('voice says each turn once from afar and once when close', async () => {
+  const { voicePrompt } = await import('../apps/mobile/src/rider/navigation-logic.mjs');
+  const step = { instruction: 'Turn left onto Oxford Street' };
+  let v = voicePrompt({}, { index: 0, metersToStep: 900, step });
+  assert.equal(v.say, null);
+  v = voicePrompt(v.state, { index: 0, metersToStep: 280, step });
+  assert.equal(v.say, 'In 280 m, turn left onto Oxford Street');
+  v = voicePrompt(v.state, { index: 0, metersToStep: 250, step });
+  assert.equal(v.say, null);
+  v = voicePrompt(v.state, { index: 0, metersToStep: 50, step });
+  assert.equal(v.say, 'Turn left onto Oxford Street');
+  v = voicePrompt(v.state, { index: 0, metersToStep: 20, step });
+  assert.equal(v.say, null);
+  assert.equal(voicePrompt(v.state, { index: 1, metersToStep: 50, step }).say, 'Turn left onto Oxford Street');
 });

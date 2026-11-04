@@ -74,3 +74,14 @@ export function stepArrow(step) {
   if (step?.type === 'roundabout' || step?.type === 'rotary') return '⟳';
   return ARROWS[step?.modifier] || '↑';
 }
+
+const VOICE_FAR_METERS = 300, VOICE_NEAR_METERS = 60;
+/** What to say now, if anything. Each turn is announced once from afar and once when close. */
+export function voicePrompt(state, { index, metersToStep, step }) {
+  if (!step) return { state, say: null };
+  const said = state?.index === index ? state.said : 0;
+  const words = String(step.instruction || '');
+  if (metersToStep <= VOICE_NEAR_METERS && said < 2) return { state: { index, said: 2 }, say: words };
+  if (metersToStep <= VOICE_FAR_METERS && said < 1) return { state: { index, said: 1 }, say: `In ${formatDistance(metersToStep)}, ${words[0].toLowerCase()}${words.slice(1)}` };
+  return { state: { index, said }, say: null };
+}

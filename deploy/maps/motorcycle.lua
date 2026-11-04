@@ -14,7 +14,7 @@ local function setup()
   profile.vehicle_width = 1.0
   profile.vehicle_length = 2.2
   profile.vehicle_weight = 400
-  profile.access_tag_hierarchy = Sequence { 'motorcycle', 'motor_vehicle', 'vehicle', 'access' }
+  profile.access_tags_hierarchy = Sequence { 'motorcycle', 'motor_vehicle', 'vehicle', 'access' }
   profile.restrictions = Sequence { 'motorcycle', 'motor_vehicle', 'vehicle' }
   profile.barrier_whitelist['bollard'] = true
   profile.barrier_whitelist['cycle_barrier'] = true
