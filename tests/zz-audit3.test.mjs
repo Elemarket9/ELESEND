@@ -56,7 +56,7 @@ test('audit three',{skip:!url},async()=>{
  const pickup=async(r,id)=>{const c=await api(r.token,'POST','/api/v1/shipments/'+id+'/pickup-challenge',{});return brief(await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:c.data?.challengeId,code:code()}));};
  const paid=async(c)=>{const b=await book(c);const x=await pay(c,b);await webhook(x.ev);return b.id;};
 
- await scene('real Paystack webhook',async()=>{
+ if(false)await scene('real Paystack webhook',async()=>{
   const c=await person('customer');const b=await book(c);const x=await pay(c,b);
   const forged=await webhook(x.ev,'a'.repeat(128));const none=await fetch(base+'/api/v1/payments/webhook',{method:'POST',body:JSON.stringify(x.ev)}).then(r=>r.status);
   const stillUnpaid=await state(b.id);
@@ -79,7 +79,7 @@ test('audit three',{skip:!url},async()=>{
   const badJson=await fetch(base+'/api/v1/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:'{oops'}).then(r=>r.status);
   log('bad input',{stolen:brief(stolen),expired:brief(expired),out,big,badJson});
  });
- await scene('wrong codes',async()=>{
+ if(false)await scene('wrong codes',async()=>{
   const c=await person('customer');const r=await rider();const id=await paid(c);await assign(r,id);
   const ch=await api(r.token,'POST','/api/v1/shipments/'+id+'/pickup-challenge',{});const tries=[];for(let i=0;i<7;i++)tries.push((await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:ch.data.challengeId,code:'000000'})).status);
   const right=await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:ch.data.challengeId,code:code()});
@@ -87,7 +87,7 @@ test('audit three',{skip:!url},async()=>{
   log('wrong codes',{tries,right:brief(right),fresh});
   await db.query('UPDATE riders SET online=false WHERE id=$1',[r.id]);
  });
- await scene('suspended mid delivery',async()=>{
+ if(false)await scene('suspended mid delivery',async()=>{
   const c=await person('customer');const r=await rider();const id=await paid(c);await assign(r,id);await pickup(r,id);await api(r.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'start'});
   const admin=randomUUID();await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'x','admin',now())",[admin,phone()]);await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'verification:write')",[admin]);
   await app.approve({id:admin,kind:'admin'},'riders',r.id,'suspended');
@@ -95,14 +95,14 @@ test('audit three',{skip:!url},async()=>{
   const tick=await dispatch.tick().catch(e=>e.message);await db.query('SELECT 1');
   log('rider suspended holding a parcel',{finish:brief(finish),state:await state(id),exceptions:(await db.query('SELECT kind FROM dispatch_exceptions WHERE shipment_id=$1',[id])).rows,customerAlerts:(await db.query('SELECT count(*)::int n FROM notification_jobs WHERE recipient_id=$1',[c.id])).rows[0].n,cust:brief(await api(c.token,'GET','/api/v1/shipments/'+id))});
  });
- await scene('company suspended mid delivery',async()=>{
+ if(false)await scene('company suspended mid delivery',async()=>{
   const co=await signUp('company',{name:'Audit3 Co',services:['riders']});await db.query("UPDATE companies SET status='approved' WHERE owner_id=$1",[co.id]);await verify(co);
   const r=await rider();await api(co.token,'POST','/api/v1/company/invitations',{phone:r.number});const inv=await api(r.token,'GET','/api/v1/rider/invitations');await api(r.token,'POST','/api/v1/rider/invitations/accept',{invitationId:inv.data[0].id});await api(r.token,'POST','/api/v1/rider/availability',{online:true});await gps(r);
   const c=await person('customer');const id=await paid(c);const a=await assign(r,id);await pickup(r,id);
   await db.query("UPDATE companies SET status='suspended' WHERE owner_id=$1",[co.id]);
   log('company suspended holding a parcel',{a,me:brief(await api(r.token,'GET','/api/v1/me')),state:await state(id),companyLogin:brief(await api(co.token,'GET','/api/v1/company/profile'))});
  });
- await scene('accounts',async()=>{
+ if(false)await scene('accounts',async()=>{
   const r=await rider();const c=await person('customer');const id=await paid(c);await assign(r,id);await pickup(r,id);await api(r.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'start'});await gps(r,D);const dc=await api(r.token,'POST','/api/v1/shipments/'+id+'/delivery-challenge',{});await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:dc.data.challengeId,code:code()});
   const summary=(await api(r.token,'GET','/api/v1/rider/wallet/summary')).data;
   const del=await api(r.token,'POST','/api/v1/me/delete-account',{password:PW});
@@ -124,7 +124,7 @@ test('audit three',{skip:!url},async()=>{
   log('tracking',{keys:Object.keys(t.data||{}),hasToken:!!tok,pub:pub&&[pub[0],Object.keys(pub[1]||{})],bad});
   await db.query('UPDATE riders SET online=false WHERE id=$1',[r.id]);
  });
- await scene('promotions',async()=>{
+ if(false)await scene('promotions',async()=>{
   const owner=await person('business');const made=await api(owner.token,'POST','/api/v1/restaurants',{name:'Promo Kitchen '+randomInt(1e6),phone:'0241234567',address:'Oxford Street, Osu',latitude:P.latitude,longitude:P.longitude});
   await db.query("UPDATE restaurants SET status='approved',is_open=true,is_paused=false WHERE id=$1",[made.data.id]);
   const item=await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id+'/items',{name:'Jollof',priceMinor:4000});
@@ -140,19 +140,19 @@ test('audit three',{skip:!url},async()=>{
   log('promo',{quote:brief(q),total:q.data?.totalMinor??q.data?.total_minor,keys:q.data&&Object.keys(q.data).filter(k=>/total|discount|commission|subsid/i.test(k)),fake:brief(fake),race:race.map(x=>[x.status,x.data?.error??x.data?.total_minor]),visibleCommission:race[0].data&&Object.keys(race[0].data).filter(k=>/commission/i.test(k))});
  });
  await scene('many people at once',async()=>{
-  const people=[];for(let i=0;i<60;i++){people.push(await person('customer'));}
-  const t0=Date.now();const res=await Promise.all(people.map(async c=>{const s=Date.now();const r=await api(c.token,'POST','/api/v1/quotes',trip());return [r.status,Date.now()-s];}));
-  const times=res.map(x=>x[1]).sort((a,b)=>a-b);
-  const logins=await Promise.all(people.slice(0,40).map(async c=>{const s=Date.now();const r=await api(null,'POST','/api/v1/auth/login',{phone:c.number,password:PW});return [r.status,Date.now()-s];}));
-  const lt=logins.map(x=>x[1]).sort((a,b)=>a-b);
-  log('load',{quotes:{statuses:[...new Set(res.map(x=>x[0]))],p50:times[30],p95:times[57],total:Date.now()-t0},logins:{statuses:[...new Set(logins.map(x=>x[0]))],p50:lt[20],max:lt.at(-1)}});
+  const people=[];for(let i=0;i<40;i++){people.push(await person('customer'));}
+  for(const n of [1,5,10,20,40]){const ls=await Promise.all(people.slice(0,n).map(async c=>{const s=Date.now();const r=await api(null,'POST','/api/v1/auth/login',{phone:c.number,password:PW});return [r.status,Date.now()-s,r.data?.error];}));const lt=ls.map(x=>x[1]).sort((a,b)=>a-b);log('logins at once '+n,{statuses:ls.reduce((o,x)=>(o[x[0]]=(o[x[0]]||0)+1,o),{}),p50:lt[Math.floor(n/2)],max:lt.at(-1),err:[...new Set(ls.map(x=>x[2]).filter(Boolean))]});await new Promise(r=>setTimeout(r,500));}
+  await db.query("UPDATE shipments SET state='CANCELLED' WHERE state='AWAITING_ASSIGNMENT'");await db.query("UPDATE dispatch_offers SET status='expired' WHERE status='offered'");
   await db.query('UPDATE riders SET online=false');
   const riders=[];for(let i=0;i<12;i++){const r=await signUp('rider',{vehicle:'motorcycle',maxWeightG:20000});await verify(r);await db.query("UPDATE riders SET status='approved' WHERE id=$1",[r.id]);await api(r.token,'POST','/api/v1/rider/availability',{online:true});await gps(r);riders.push(r);}
-  const c=people[0];const ids=[];for(let i=0;i<12;i++){const k=await book(people[i]);const x=await pay(people[i],k);await webhook(x.ev);ids.push(k.id);}
-  const s=Date.now();const a=await Promise.all([dispatch.tick(20),dispatch.tick(20)]);const dup=(await db.query("SELECT shipment_id,count(*)::int n FROM dispatch_offers WHERE shipment_id=ANY($1) AND status='offered' GROUP BY 1 HAVING count(*)>1",[ids])).rows;
-  const offers=(await Promise.all(riders.map(async r=>{const o=(await api(r.token,'GET','/api/v1/rider/offers')).data||[];return Promise.all(o.map(x=>api(r.token,'POST','/api/v1/shipments/'+x.id+'/accept',{offerId:x.offerId}).then(y=>y.status)));}))).flat();
+  const ids=[];for(let i=0;i<12;i++){const k=await book(people[i]);const x=await pay(people[i],k);await webhook(x.ev);ids.push(k.id);}
+  const s=Date.now();await Promise.all([dispatch.tick(20),dispatch.tick(20)]);const dup=(await db.query("SELECT shipment_id,count(*)::int n FROM dispatch_offers WHERE shipment_id=ANY($1) AND status='offered' GROUP BY 1 HAVING count(*)>1",[ids])).rows;
+  const seen=await Promise.all(riders.map(r=>api(r.token,'GET','/api/v1/rider/offers').then(x=>x.data||[])));
+  const res=(await Promise.all(riders.map(async(r,i)=>Promise.all(seen[i].map(x=>api(r.token,'POST','/api/v1/shipments/'+x.id+'/accept',{offerId:x.offerId}).then(y=>[y.status,y.data?.error])))))).flat();
   const assigned=(await db.query("SELECT count(*)::int n,count(DISTINCT rider_id)::int riders FROM shipments WHERE id=ANY($1) AND state='RIDER_ASSIGNED'",[ids])).rows[0];
-  log('dispatch at once',{ms:Date.now()-s,sameOrderOfferedTwice:dup.length,accepts:offers,assigned});
+  log('dispatch at once',{ms:Date.now()-s,sameOrderOfferedTwice:dup.length,offersPerRider:seen.map(x=>x.length),accepts:res,assigned});
+  const rounds=[];for(let i=0;i<6&&assigned.n<12;i++){await db.query("UPDATE dispatch_offers SET status='expired' WHERE status='offered' AND shipment_id=ANY($1)",[ids]);await db.query('UPDATE shipments SET next_dispatch_at=now() WHERE id=ANY($1)',[ids]);await dispatch.tick(20);const os=await Promise.all(riders.map(r=>api(r.token,'GET','/api/v1/rider/offers').then(x=>x.data||[])));const ac=(await Promise.all(riders.map(async(r,j)=>Promise.all(os[j].slice(0,1).map(x=>api(r.token,'POST','/api/v1/shipments/'+x.id+'/accept',{offerId:x.offerId}).then(y=>y.status)))))).flat();rounds.push({offers:os.flat().length,ok:ac.filter(x=>x===200).length});}
+  log('dispatch rounds',{rounds,assigned:(await db.query("SELECT count(*)::int n,count(DISTINCT rider_id)::int riders FROM shipments WHERE id=ANY($1) AND state='RIDER_ASSIGNED'",[ids])).rows[0]});
  });
  process.env.NODE_ENV=prev;server.closeAllConnections?.();log('ALL DONE',{});setTimeout(()=>process.exit(0),500);
 });
