@@ -342,6 +342,26 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    const told=(await db.query("SELECT payload FROM notification_jobs WHERE recipient_id=$1 AND kind='refund_completed'",[c.id])).rows;
    assert.equal(told.length,1);assert.match(told[0].payload.message,/refund/i);
   });
+  await t.test('a failed parcel does not hold up another customer\'s parcel',async()=>{
+   await db.query("UPDATE shipments SET state='CANCELLED' WHERE state='AWAITING_ASSIGNMENT'");await db.query("UPDATE dispatch_offers SET status='expired' WHERE status='offered'");await offline();
+   const a=await customer(),b=await customer(),r=await readyRider();
+   await api(r.token,'POST','/api/v1/rider/multi-stop',{enabled:true});
+   const take=async(c,o)=>{const id=await paidOrder(c,o);await dispatch.tick();const offer=await offerFor(r,id);assert.ok(offer);assert.equal((await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:offer.offerId})).status,200);return id;};
+   await take(a);await take(b,{pickup:{address:'Tetteh Quarshie Interchange, Accra',latitude:5.6200,longitude:-0.1740},destination:{address:'Airport Residential, Accra',latitude:5.6050,longitude:-0.1780}});
+   const step=async(id,kind)=>{const ch=await api(r.token,'POST','/api/v1/shipments/'+id+'/'+kind+'-challenge',{});assert.equal(ch.status,200,JSON.stringify(ch.data));assert.equal((await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:ch.data.challengeId,code:code()})).status,200);};
+   const stops=()=>api(r.token,'GET','/api/v1/rider/manifest').then(x=>x.data.stops);
+   for(const s of (await stops()).filter(x=>x.kind==='pickup')){await step(s.shipmentId,'pickup');await api(r.token,'POST','/api/v1/shipments/'+s.shipmentId+'/transition',{action:'start'});}
+   const [first,second]=(await stops()).map(s=>s.shipmentId);
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+second+'/delivery-challenge',{})).status,409,'stop order still applies');
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+first+'/transition',{action:'fail',reason:'Recipient unreachable'})).status,200);
+   await step(second,'delivery');
+   assert.equal((await db.query('SELECT state FROM shipments WHERE id=$1',[second])).rows[0].state,'COMPLETED');
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+first+'/transition',{action:'return',reason:'Taking it back'})).status,200);
+   await step(first,'return');
+   assert.equal((await db.query('SELECT state FROM shipments WHERE id=$1',[first])).rows[0].state,'RETURNED');
+   assert.equal((await stops()).length,0,'nothing left on the route');
+   await offline();
+  });
   await t.test('people in use stay signed in, and riders with ended sessions go offline',async()=>{
    const r=await readyRider();
    const lifetime=(await db.query("SELECT expires_at>now()+interval '29 days' AS long FROM sessions WHERE user_id=$1",[r.id])).rows[0];

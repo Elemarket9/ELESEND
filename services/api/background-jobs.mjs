@@ -43,7 +43,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
   notifications:guarded('notifications',null,async()=>{await notifications?.tick();}),
   chatOutbox:guarded('chat_outbox',null,async()=>{await chatSvc?.flushRealtimeOutbox();}),
   apiWebhooks:guarded('api_webhooks',null,async()=>{await webhookService(db).tick();}),
-  foodExpiry:guarded('food_expiry',LOCKS.foodExpiry,async()=>{await restOrders?.expireUnfulfilledOrders();}),
+  foodExpiry:guarded('food_expiry',LOCKS.foodExpiry,async()=>{await restOrders?.expireUnfulfilledOrders();await restOrders?.alertUnconfirmedReturns?.();}),
   deliveryWatchdog:guarded('delivery_watchdog',LOCKS.deliveryWatchdog,async()=>{
    if(restOrders&&typeof restOrders.monitorAssignedDeliveries==='function')await restOrders.monitorAssignedDeliveries({onlyDueReviews:true});
    if(dispatch&&typeof dispatch.watchdog==='function')await dispatch.watchdog({onlyDueReviews:true});

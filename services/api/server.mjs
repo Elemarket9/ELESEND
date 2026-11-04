@@ -18,6 +18,7 @@ import {reconcileAndEnforceWeeklyRestrictions} from './modules/payments/index.mj
 import {loadConfig} from './config.mjs';
 import {notificationGateway,notificationWorker,queueNotification} from './notifications.mjs';
 import {backgroundJobs} from './background-jobs.mjs';
+import {firebasePush} from './providers/firebase-push.mjs';
 import {etaService} from './eta/eta-service.mjs';
 import {installProcessGuards} from './process-guards.mjs';
 
@@ -49,7 +50,7 @@ const sms = config.sms.provider === 'hubtel' && config.sms.hubtel
   ? httpsSmsGateway(config.sms.httpsGateway)
   : null;
 
-const notifications=notificationWorker(db,{transport:config.notifications.endpoint?notificationGateway(config.notifications):null,sms});
+const notifications=notificationWorker(db,{transport:config.notifications.firebaseAccount?firebasePush(config.notifications.firebaseAccount):config.notifications.endpoint?notificationGateway(config.notifications):null,sms});
 
 const app = platform(db, {
   otpKey: config.security.otpKey,

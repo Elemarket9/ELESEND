@@ -15,3 +15,4 @@ data/osm/
 data/overture/
 audit-reports/
 tests/screenshots/
+apps/mobile/android/app/google-services.json

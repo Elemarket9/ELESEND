@@ -1,3 +1,4 @@
+import {parseFirebaseAccount} from './firebase-account.mjs';
 import {parseIpLimitMultiplier} from './rate-limits.mjs';
 /**
  * ELESEND Unified Environment & Runtime Configuration Module
@@ -494,7 +495,8 @@ export function validateConfig(env = process.env) {
     notifications: {
       endpoint: (env.NOTIFICATION_GATEWAY_ENDPOINT || '').trim(),
       allowedHost: (env.NOTIFICATION_GATEWAY_ALLOWED_HOST || '').trim(),
-      token: env.NOTIFICATION_GATEWAY_TOKEN || ''
+      token: env.NOTIFICATION_GATEWAY_TOKEN || '',
+      firebaseAccount: (()=>{try{return parseFirebaseAccount(env.FIREBASE_SERVICE_ACCOUNT_JSON);}catch(e){errors.push(e instanceof SyntaxError?'FIREBASE_SERVICE_ACCOUNT_JSON must be valid JSON.':e.message);return null;}})()
     },
     food: {
       acceptanceTimeoutSeconds:parseInteger(env.FOOD_ACCEPTANCE_TIMEOUT_SECONDS,300),
