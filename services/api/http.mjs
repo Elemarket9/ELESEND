@@ -139,8 +139,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    return;
   }
   if(method==='GET'&&(path==='/company'||path==='/company/')){
-   res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});
-   res.setHeader('Content-Security-Policy',companyPortalCsp());
+   res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Content-Security-Policy':companyPortalCsp()});
    res.end(renderCompanyPortalHtml());
    return;
   }

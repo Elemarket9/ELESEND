@@ -1271,6 +1271,17 @@ export default function RiderApp() {
         {tab === 'Jobs' && (
           <View>
             <CompanyInvitations />
+            <TouchableOpacity
+              accessibilityRole="switch"
+              accessibilityState={{ checked: Boolean(manifest?.optedIn) }}
+              disabled={busy}
+              onPress={() => execute(async () => {
+                await call('POST', '/api/v1/rider/multi-stop', { enabled: !manifest?.optedIn });
+                setManifest(await call('GET', '/api/v1/rider/manifest'));
+              })}
+              style={[styles.secondaryBtn, { marginHorizontal: 16, marginTop: 12 }]}>
+              <Text style={styles.secondaryBtnText}>Carry parcels going my way: {manifest?.optedIn ? 'On' : 'Off'}</Text>
+            </TouchableOpacity>
             {online && shifts && shifts.background === false && (
               <View style={styles.motionWarningBanner}>
                 <Text style={styles.motionWarningTitle}>⚠️ BACKGROUND LOCATION / BATTERY SAVER ACTIVE</Text>

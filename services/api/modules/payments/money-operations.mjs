@@ -5,6 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check,passwordMatches} from '../../security.mjs';
 import {checkoutJournal} from './checkout-accounting.mjs';
+import {queueNotification} from '../../notifications.mjs';
 import {recoverDebtFromEarnings,debtState,lockRiderAccount} from './rider-wallet.mjs';
 const uuid=z.string().uuid();
 
@@ -88,6 +89,8 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    check(!used,409,'Provider receipt already applied to another operation');
    await recordEvent(c,r,'refund',record);
    await checkoutJournal(c,{shipmentId:r.shipment_id,eventKey:'refund:'+r.source_key.split(':retry:')[0],kind:'refund_completed',entries:[['customer_refund_liability','debit',record.amountMinor],['provider_receivable','credit',record.amountMinor]]});
+   const owner=(await c.query('SELECT customer_id FROM shipments WHERE id=$1',[r.shipment_id])).rows[0];
+   if(owner)await queueNotification(c,{id:'refund-done:'+r.id,recipientId:owner.customer_id,kind:'refund_completed',payload:{shipmentId:r.shipment_id,amountMinor:Number(r.amount_minor),message:`Your refund of GH₵${(Number(r.amount_minor)/100).toFixed(2)} has been sent. It can take a little time to reach your account.`}});
    await c.query("UPDATE refund_operations SET status='refunded',provider_id=coalesce(provider_id,$2),updated_at=now() WHERE id=$1",[r.id,record.providerId!=null?String(record.providerId):null]);
    if(r.source_key.startsWith('cancellation:')){
     await c.query("UPDATE checkout_refund_requests SET status='refunded' WHERE shipment_id=$1",[r.shipment_id]);

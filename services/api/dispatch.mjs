@@ -6,7 +6,8 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from './security.mjs';
 import {haversine,classifyMovement} from './dispatch-geometry.mjs';
-import {freshStops,bestInsertion,evaluateStops,activeStates,weightCapacityValid} from './multi-parcel.mjs';
+import {freshStops,bestInsertion,evaluateStops,activeStates,weightCapacityValid,sameDirection} from './multi-parcel.mjs';
+import {envInt} from './env-values.mjs';
 import {roadMatrixBatched,memoRoadRouting} from './algorithms/roads.mjs';
 import {discoverByRadii} from './algorithms/discovery.mjs';
 import {eligibleAndRank} from './algorithms/ranking.mjs';
@@ -210,6 +211,8 @@ export function dispatchEngine(db,{routing}={}){
   if(active.length>=p.max_active_parcels||active.some(s=>['FAILED','RETURN_REQUESTED'].includes(s.state)))return null;
   const multiEnabled=p.multi_stop_enabled&&await features.enabled('multi_parcel_vrp')&&await features.enabled('dynamic_pickup_insertion');
   if(active.length&&(!multiEnabled||!r.multi_stop_opt_in||active.some(s=>!s.promised_delivery_before)))return null;
+  // A second parcel is only offered when it travels the same way as what the rider already carries.
+  if(active.some(s=>!sameDirection(s.request,request,envInt(process.env.SAME_ROUTE_MAX_ANGLE_DEGREES,45,1))))return null;
   const plan=(await db.query('SELECT stops,revision FROM rider_dispatch_plans WHERE rider_id=$1',[r.id])).rows[0];
   if(active.length&&!plan)return null;
   const existing=plan?.stops??[];
