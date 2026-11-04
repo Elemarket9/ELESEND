@@ -100,3 +100,42 @@ test('a batch cut short carries on from its last row, and old failures stop bloc
   await trafficService(stale, { routing: { matchTrace: async () => { throw Error('no match'); } }, now: () => NOW }).ingest(async (_s, until) => ({ traces: [trip], until }));
   assert.ok(stale.state.cursor.getTime() > NOW - 3600000);
 });
+
+const url = process.env.TEST_DATABASE_URL;
+test('trips become road speeds and change the chosen route, on a real database', { skip: !url }, async () => {
+  assert.match(new URL(url).pathname, /^\/elesend_test/);
+  const { randomUUID, randomInt } = await import('node:crypto');
+  const { database } = await import('../services/api/db.mjs');
+  const { migrate } = await import('../scripts/migrate.mjs');
+  const { dispatchEngine } = await import('../services/api/dispatch.mjs');
+  const db = database(url);
+  try {
+    await migrate(db);
+    await db.query('DELETE FROM traffic_cursor');
+    await db.query('DELETE FROM traffic_observations');
+    const rider = randomUUID();
+    await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'test-only','rider',now())", [rider, `+23324${randomInt(1000000, 9999999)}`]);
+    await db.query("INSERT INTO riders(id,status,vehicle,max_weight_g) VALUES($1,'approved','motorcycle',20000)", [rider]);
+    const base = Date.now() - 200000;
+    for (const s of [0, 30, 60]) await db.query('INSERT INTO rider_location_samples(rider_id,position,observed_at,accuracy_m) VALUES($1,ST_SetSRID(ST_MakePoint(-0.2,5.6),4326)::geography,$2,10)', [rider, new Date(base + s * 1000)]);
+    await db.query('INSERT INTO traffic_cursor(id,processed_until) VALUES(1,$1)', [new Date(base - 1000)]);
+    const n = randomInt(1000000, 9000000);
+    const matchTrace = async () => ({ tracepoints, matchings: [{ confidence: 0.9, legs: [{ distance: 90, annotation: { nodes: [n, n + 1] } }, { distance: 90, annotation: { nodes: [n + 1, n + 2] } }] }] });
+    const service = trafficService(db, { routing: { matchTrace } });
+    const engine = dispatchEngine(db, { routing: { matchTrace } });
+    const first = await service.ingest(engine.recentRiderTraces);
+    assert.ok(first.segments >= 2);
+    assert.equal((await service.ingest(engine.recentRiderTraces)).segments, 0, 'each trip is read once');
+    const columns = (await db.query("SELECT column_name FROM information_schema.columns WHERE table_name IN ('traffic_observations','traffic_typical_speeds')")).rows.map(r => r.column_name);
+    assert.equal(columns.some(c => c.includes('rider')), false, 'no rider stored');
+    // Three sightings make a live speed; fewer do not.
+    assert.equal((await service.speedsFor('motorcycle', [n, n + 1])).size, 0);
+    for (let i = 0; i < 2; i += 1) await db.query('INSERT INTO traffic_observations(vehicle,from_node,to_node,speed_kmh,observed_at) VALUES($1,$2,$3,$4,now())', ['motorcycle', n, n + 1, 11]);
+    const live = await service.speedsFor('motorcycle', [n, n + 1]);
+    assert.ok(Math.abs(live.get(`${n}:${n + 1}`) - 11) < 0.5);
+    assert.equal((await service.speedsFor('car', [n, n + 1])).size, 0, 'other vehicles are unaffected');
+  } finally {
+    await db.query('DELETE FROM traffic_cursor').catch(() => {});
+    await db.end?.();
+  }
+});
