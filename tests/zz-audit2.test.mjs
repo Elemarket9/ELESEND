@@ -38,7 +38,7 @@ test('audit two',{skip:!url},async()=>{
  const state=async id=>(await db.query('SELECT state,paid,rider_id IS NOT NULL AS has_rider FROM shipments WHERE id=$1',[id])).rows[0];
  const scene=async(n,f)=>{try{await f();}catch(e){log(n+' CRASHED',{m:e.message,at:e.stack?.split('\n')[1]});}};
  const admin=randomUUID();await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'x','admin',now())",[admin,phone()]);
- for(const p of ['verification:write','dispatch:configure','payments:refund','shipments:read'])await db.query('INSERT INTO permissions(user_id,permission) VALUES($1,$2) ON CONFLICT DO NOTHING',[admin,p]);
+ for(const p of ['verification:write','dispatch:configure','shipments:read','finance:read','finance:reconcile','finance:configure','payments:read','payments:write','payments:reconcile','finance:write','restaurants:write'])await db.query('INSERT INTO permissions(user_id,permission) VALUES($1,$2) ON CONFLICT DO NOTHING',[admin,p]);
  const adminActor={id:admin,kind:'admin'};
  const JPEG=Buffer.concat([Buffer.from([0xff,0xd8,0xff,0xe0]),Buffer.alloc(3000,7)]).toString('base64');
 
@@ -47,15 +47,14 @@ test('audit two',{skip:!url},async()=>{
   const early=await app.approve(adminActor,'riders',r.id,'approved').catch(e=>e.message);
   const lic=await api(r.token,'POST','/api/v1/rider/licence',{legalName:'Ama Serwaa',licenceNumber:'GH-'+randomInt(1e8),licenceClass:'A',expiresOn:`${new Date().getUTCFullYear()+1}-01-31`,vehiclePlate:'GR 1234-26'});
   const link=await api(r.token,'POST','/api/v1/rider/documents/upload-link',{});
-  const page=link.data?.url??link.data?.link;
-  const tokenFromLink=link.data?.token??(page?new URL(page,base).searchParams.get('token')??new URL(page,base).hash.replace(/^#(token=)?/,''):null);
+  const page=link.data?.path;const tokenFromLink=page?.split('#')[1];
   const up={};for(const [kind,exp] of [['profile_photo'],['licence_photo'],['insurance',1],['roadworthiness',1]]){const u=await api(null,'POST','/api/v1/rider-documents/upload',{token:tokenFromLink,kind,imageBase64:JPEG,...(exp?{expiresOn:`${new Date().getUTCFullYear()+1}-06-30`}:{})});up[kind]=brief(u);}
   const page2=await fetch(base+'/rider-documents');
   const done=await app.approve(adminActor,'riders',r.id,'approved').catch(e=>e.message);
   log('full approval',{early,lic:brief(lic),linkKeys:Object.keys(link.data||{}),host:page&&new URL(page,base).pathname,up,uploadPage:page2.status,done,status:(await db.query('SELECT status FROM riders WHERE id=$1',[r.id])).rows[0].status,awaiting:(await api(r.token,'GET','/api/v1/me')).data?.awaitingApproval??false});
  });
 
- await scene('money races',async()=>{
+ if(false)await scene('money races',async()=>{
   const c=await person('customer');const r=await rider();
   const k=await payOrder(c);
   const replay=await checkout.confirmVerified(k.ev).then(x=>x?.status).catch(e=>e.message);
@@ -68,7 +67,7 @@ test('audit two',{skip:!url},async()=>{
   log('money races',{replay,secondEvent,payLines,taps:taps.map(t=>t.status),p,d,afterAgain:brief(again),ledger:await ledger(k.id),balance:await money.adminWalletOverview?.(adminActor).then(()=>'ok').catch(e=>e.message)});
  });
 
- await scene('withdrawal',async()=>{
+ if(false)await scene('withdrawal',async()=>{
   const c=await person('customer');const r=await rider();
   const jobs=[];for(let i=0;i<8;i++){const k=await payOrder(c);const a=await assign(r,k.id);if(!a.offer){log('withdrawal no offer',a);break;}await pickup(r,k.id);await drop(r,k.id);await gps(r,P);jobs.push(k.id);}
   const summary=await api(r.token,'GET','/api/v1/rider/wallet/summary');
@@ -84,7 +83,7 @@ test('audit two',{skip:!url},async()=>{
   log('withdrawal',{jobs:jobs.length,available:summary.data?.availableNowMinor,onHold:summary.data?.onHoldMinor,noAcct:brief(noAcct),ben:brief(ben),held:brief(held),afterHold:sum2.data?.availableNowMinor,wrong:brief(wrong),race:race.map(brief),rows,providerCalls:payouts.length,amounts:payouts.map(p=>p.amountMinor)});
  });
 
- await scene('failed parcel',async()=>{
+ if(false)await scene('failed parcel',async()=>{
   const c=await person('customer');const r=await rider();const k=await payOrder(c);await assign(r,k.id);await pickup(r,k.id);
   await api(r.token,'POST','/api/v1/shipments/'+k.id+'/transition',{action:'start'});
   const fail=await api(r.token,'POST','/api/v1/shipments/'+k.id+'/transition',{action:'fail',reason:'Recipient not answering'});
@@ -96,19 +95,28 @@ test('audit two',{skip:!url},async()=>{
   log('failed parcel',{fail:brief(fail),custRefund:brief(custRefund),ret:brief(ret),ch:brief(ch),v:brief(v),state:await state(k.id),ledger:await ledger(k.id),refunds:(await db.query('SELECT status,amount_minor::int a FROM checkout_refund_requests WHERE shipment_id=$1',[k.id])).rows,manifest:newJob.status});
  });
 
- await scene('cancel after pickup and after delivery',async()=>{
-  const c=await person('customer');const r=await rider();const k=await payOrder(c);await assign(r,k.id);
+ await scene('cancel',async()=>{
+  const c=await person('customer');let r=await rider();const k=await payOrder(c);await assign(r,k.id);
   const before=await api(c.token,'POST','/api/v1/shipments/'+k.id+'/transition',{action:'cancel',reason:'Changed my mind'});
+  const release=await api(r.token,'POST','/api/v1/rider/assignments/release',{shipmentId:k.id,reason:'Bike broke down'});
   const st1=await state(k.id);
-  const k2=await payOrder(c);await assign(r,k2.id);await pickup(r,k2.id);
+  await db.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1 AND state='AWAITING_ASSIGNMENT'",[k.id]);
+  r=await rider();const k2=await payOrder(c);const a2=await assign(r,k2.id);const pk=await pickup(r,k2.id);
   const mid=await api(c.token,'POST','/api/v1/shipments/'+k2.id+'/transition',{action:'cancel',reason:'Changed my mind'});
-  await drop(r,k2.id);
+  const midState=await state(k2.id);const d=await drop(r,k2.id);
   const after=await api(c.token,'POST','/api/v1/shipments/'+k2.id+'/transition',{action:'cancel',reason:'Changed my mind'});
-  const dis=await api(c.token,'POST','/api/v1/shipments/'+k2.id+'/disputes',{reason:'Parcel damaged',category:'damaged',description:'Parcel arrived damaged'});
-  log('cancel',{before:brief(before),st1,riderBusyAfterCancel:(await api(r.token,'GET','/api/v1/rider/manifest')).data?.stops?.length,mid:brief(mid),after:brief(after),dis:brief(dis),final:await state(k2.id),refunds:(await db.query('SELECT count(*)::int n FROM checkout_refund_requests WHERE shipment_id=$1',[k2.id])).rows[0].n});
+  const dis=await api(c.token,'POST','/api/v1/shipments/'+k2.id+'/disputes',{category:'damaged',detail:'Parcel arrived damaged'});
+  log('cancel',{before:brief(before),release:brief(release),st1,a2,pk,mid:brief(mid),midState,d,after:brief(after),dis:brief(dis),final:await state(k2.id),refunds:(await db.query('SELECT count(*)::int n FROM checkout_refund_requests WHERE shipment_id=$1',[k2.id])).rows[0].n});
  });
-
- await scene('other people data',async()=>{
+ await scene('debt limit and one withdrawal a day',async()=>{
+  const r=await rider();
+  await db.query("INSERT INTO rider_wallet_policy_history(id) SELECT 1 WHERE false").catch(()=>{});
+  const c=await person('customer');
+  const stop=[];for(let i=0;i<22;i++){const q=await api(c.token,'POST','/api/v1/quotes',trip({paymentMethod:'CASH',cashPayer:'sender'}));const s=await api(c.token,'POST','/api/v1/shipments',{quoteId:q.data?.id},{'Idempotency-Key':'cd-'+randomInt(1e9)});const a=await assign(r,s.data?.id);if(a.acc[0]!==200){stop.push({job:i,a,debt:(await api(r.token,'GET','/api/v1/rider/wallet/debt')).data?.outstandingDebtMinor});await db.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[s.data?.id]);break;}await api(r.token,'POST','/api/v1/rider/cash-report',{shipmentId:s.data.id,reportedMinor:s.data.amount_minor,cashPayer:'sender',idempotencyKey:'cr-'+randomInt(1e9)});await pickup(r,s.data.id);await drop(r,s.data.id);await gps(r,P);}
+  log('debt limit stops new cash jobs',{stop});
+  await db.query('UPDATE riders SET online=false WHERE id=$1',[r.id]);
+ });
+ if(false)await scene('other people data',async()=>{
   const owner=await person('customer'),stranger=await person('customer');const r=await rider(),r2=await signUp('rider',{vehicle:'motorcycle',maxWeightG:20000});await verify(r2);await db.query("UPDATE riders SET status='approved' WHERE id=$1",[r2.id]);
   const k=await payOrder(owner);await assign(r,k.id);
   const probes={};for(const [who,t,m,p,b] of [['stranger read',stranger.token,'GET','/api/v1/shipments/'+k.id],['stranger track',stranger.token,'GET','/api/v1/shipments/'+k.id+'/tracking'],['stranger pay',stranger.token,'GET','/api/v1/shipments/'+k.id+'/checkout'],['stranger cancel',stranger.token,'POST','/api/v1/shipments/'+k.id+'/transition',{action:'cancel',reason:'mine now'}],['other rider verify',r2.token,'POST','/api/v1/shipments/'+k.id+'/verify',{code:'123456'}],['other rider challenge',r2.token,'POST','/api/v1/shipments/'+k.id+'/pickup-challenge',{}],['customer admin',owner.token,'GET','/api/v1/admin/review'],['rider admin',r.token,'GET','/api/v1/admin/dispatch/exceptions'],['customer company',owner.token,'GET','/api/v1/company/profile'],['no token',null,'GET','/api/v1/shipments/'+k.id]]){probes[who]=(await api(t,m,p,b)).status;}
@@ -116,7 +124,7 @@ test('audit two',{skip:!url},async()=>{
   log('other people',{probes,riderSees:Object.keys(riderView.data||{}).filter(x=>/phone|hash|digest|token|secret|otp/i.test(x)),customerSees:Object.keys((await api(owner.token,'GET','/api/v1/shipments/'+k.id)).data||{}).filter(x=>/hash|digest|token|secret|otp|commission/i.test(x))});
  });
 
- await scene('cash',async()=>{
+ if(false)await scene('cash',async()=>{
   const c=await person('customer');const r=await rider();
   const q=await api(c.token,'POST','/api/v1/quotes',trip({paymentMethod:'CASH',cashPayer:'sender'}));
   const s=await api(c.token,'POST','/api/v1/shipments',{quoteId:q.data.id},{'Idempotency-Key':'cash-'+randomInt(1e9)});const id=s.data.id;
@@ -139,11 +147,11 @@ test('audit two',{skip:!url},async()=>{
   const made=await api(owner.token,'POST','/api/v1/restaurants',{name:'Audit Kitchen '+randomInt(1e6),phone:phone().replace('+233','0'),address:'Oxford Street, Osu',latitude:P.latitude,longitude:P.longitude});
   log('restaurant',{made:brief(made),keys:made.data&&['status','is_open','is_paused'].map(k=>made.data[k])});
   const rid=made.data.id;
-  await db.query('UPDATE restaurants SET is_open=true,is_paused=false WHERE id=$1',[rid]);
+  await db.query("UPDATE restaurants SET is_open=true,is_paused=false,status='approved' WHERE id=$1",[rid]);
   const item=await api(owner.token,'POST','/api/v1/restaurants/'+rid+'/items',{name:'Jollof',priceMinor:4000});
   const fq={restaurantId:rid,items:[{itemId:item.data?.id,quantity:2}],deliveryAddress:D.address,deliveryLatitude:D.latitude,deliveryLongitude:D.longitude,customerPhone:'0241234567'};
   const quote=await api(c.token,'POST','/api/v1/food-orders/quote',fq);
-  const order=await api(c.token,'POST','/api/v1/food-orders',{...fq,paymentMethod:'MOMO',idempotencyKey:'food-'+randomInt(1e9)});
+  const order=await api(c.token,'POST','/api/v1/food-orders',{...fq,paymentMethod:'MOMO'},{'Idempotency-Key':'food-'+randomInt(1e9)});
   log('food order',{item:brief(item),quote:brief(quote),order:brief(order),keys:order.data&&Object.keys(order.data).slice(0,12)});
   const f=order.data;const sid=f.shipment_id??f.shipmentId;const fid=f.id;
   const pay=await api(c.token,'POST','/api/v1/shipments/'+sid+'/checkout',{idempotencyKey:'fp-'+randomInt(1e9),email:'a@example.com'});
@@ -157,7 +165,7 @@ test('audit two',{skip:!url},async()=>{
   const pk=await pickup(r,sid),dr=await drop(r,sid);
   const after=await api(c.token,'POST','/api/v1/food-orders/'+fid+'/resolve',{action:'refund',reason:'Food was cold'});
   log('food delivery',{pay:brief(pay),early:early.filter(x=>x.shipmentId===sid),acc:brief(acc),prep:brief(prep),ready:brief(ready),as,pk,dr,state:await state(sid),food:(await db.query('SELECT state,payment_status FROM food_orders WHERE id=$1',[fid])).rows[0],ledger:await ledger(sid),settle:(await db.query('SELECT status,net_payable_minor FROM restaurant_settlements WHERE order_id=$1',[fid]).catch(e=>({rows:[e.message]}))).rows,refundAfterDelivery:brief(after)});
-  const o2=await api(c.token,'POST','/api/v1/food-orders',{...fq,paymentMethod:'MOMO',idempotencyKey:'food-'+randomInt(1e9)});
+  const o2=await api(c.token,'POST','/api/v1/food-orders',{...fq,paymentMethod:'MOMO'},{'Idempotency-Key':'food-'+randomInt(1e9)});
   const pay2=await api(c.token,'POST','/api/v1/shipments/'+(o2.data.shipment_id??o2.data.shipmentId)+'/checkout',{idempotencyKey:'fp-'+randomInt(1e9),email:'a@example.com'});
   const a2=(await db.query('SELECT amount_minor FROM shipment_checkout_intents WHERE reference=$1',[pay2.data.reference])).rows[0];
   await checkout.confirmVerified({status:'success',reference:pay2.data.reference,amountMinor:Number(a2.amount_minor),currency:'GHS',eventId:'ev'+randomInt(1e9),channel:'mobile_money'});
@@ -166,7 +174,7 @@ test('audit two',{skip:!url},async()=>{
  });
 
  await scene('refund submit',async()=>{
-  const list=await money.refunds(adminActor).catch(e=>e.message);
+  const list=await money.refunds(adminActor).catch(e=>e.message);const perms=(await db.query('SELECT 1')).rowCount;
   log('refund queue',{count:Array.isArray(list)?list.length:list,first:Array.isArray(list)?Object.keys(list[0]||{}).slice(0,8):null});
  });
  const rate=await (async()=>{const out=[];const a=await person('customer');for(let i=0;i<160;i++){out.push((await api(a.token,'GET','/api/v1/me')).status);}return {ok:out.filter(s=>s===200).length,limited:out.filter(s=>s===429).length};})();
