@@ -15,10 +15,10 @@ test('real world walk-through',{skip:!url},async()=>{
  const db=database(url);await migrate(db);
  const texts=[];let smsWorks=true;
  const sms={async send(m){if(!smsWorks)return {accepted:false};texts.push(m);return {accepted:true,providerId:'x'};},async sendNotification(m){texts.push(m);return {accepted:true};}};
- const routing={async route(a,b){const m=Math.round(Math.hypot((a.latitude-b.latitude)*111000,(a.longitude-b.longitude)*111000));return {source:'routing-provider',distanceMeters:m,durationSeconds:Math.round(m/8),distance:m,duration:m/8,geometry:{type:'LineString',coordinates:[[a.longitude,a.latitude],[b.longitude,b.latitude]]}};},async matrix(o,d){return o.map(x=>d.map(y=>{const m=Math.round(Math.hypot((x.latitude-y.latitude)*111000,(x.longitude-y.longitude)*111000));return {source:'routing-provider',distanceMeters:m,durationSeconds:Math.round(m/8),distance:m,duration:m/8};}));}};
+ const routing={async route(a,b){const m=Math.round(Math.hypot((a.latitude-b.latitude)*111000,(a.longitude-b.longitude)*111000));return {source:'routing-provider',distanceMeters:m,durationSeconds:Math.round(m/8),distance:m,duration:m/8,geometry:{type:'LineString',coordinates:[[a.longitude,a.latitude],[b.longitude,b.latitude]]}};},async matrix(o,d){return o.map(x=>{const m=Math.max(1,Math.round(Math.hypot((x.latitude-d.latitude)*111000,(x.longitude-d.longitude)*111000)));return {source:'routing-provider',distanceMeters:m,durationSeconds:Math.round(m/8)};});}};
  const dispatch=dispatchEngine(db,{routing});
  const payments=[];
- const provider={name:'audit_fx',methods:['MOMO','CARD','DIGITAL'],allowedCheckoutHosts:['checkout.test'],async createPayment(x){payments.push(x);return {reference:x.reference,checkoutUrl:'https://checkout.test/'+x.reference};},async verifyPayment(ref){return {verified:true,status:'pending',reference:ref};},commissionIntentId:()=>null,async parseVerifiedWebhook(){return null;},async createPayout(x){return {providerId:'po_'+x.requestId};},async verifyPayout(){return {verified:true,status:'pending'};},async verifyBeneficiary({beneficiaryId,recipientReference}){return {verified:true,beneficiaryId,recipientReference};},async createBeneficiary(){return {recipientReference:'RCP_x'};}};
+ const provider={name:'audit_fx',methods:['MOMO','CARD','DIGITAL'],allowedCheckoutHosts:['checkout.test'],async createCheckout(x){payments.push(x);return {reference:x.reference,checkoutUrl:'https://checkout.test/'+x.reference,providerReference:x.reference};},async createPayment(x){payments.push(x);return {reference:x.reference,checkoutUrl:'https://checkout.test/'+x.reference};},async verifyPayment(ref){return {verified:true,status:'pending',reference:ref};},commissionIntentId:()=>null,async parseVerifiedWebhook(){return null;},async createPayout(x){return {providerId:'po_'+x.requestId};},async verifyPayout(){return {verified:true,status:'pending'};},async verifyBeneficiary({beneficiaryId,recipientReference}){return {verified:true,beneficiaryId,recipientReference};},async createBeneficiary(){return {recipientReference:'RCP_x'};}};
  const app=platform(db,{otpKey:process.env.OTP_KEY,routing,dispatch,sms});
  const checkout=checkoutService(db,{provider,sms,dispatch,routing});
  const finance=financeService(db,{provider});
@@ -60,12 +60,12 @@ test('real world walk-through',{skip:!url},async()=>{
   const again=await api(c.token,'POST','/api/v1/shipments',{quoteId:q.data.id},{'Idempotency-Key':key});
   const pay=await api(c.token,'POST','/api/v1/shipments/'+s.data?.id+'/checkout',{idempotencyKey:key});
   let confirm=null;
-  if(pay.data?.reference){try{const row=(await db.query('SELECT amount_minor,processing_fee_minor FROM shipment_checkout_intents WHERE reference=$1',[pay.data.reference])).rows[0];confirm=await checkout.confirmVerified({verified:true,status:'success',reference:pay.data.reference,amountMinor:Number(pay.data.amountMinor)+Number(pay.data.processingFeeMinor||0),currency:'GHS',eventId:'ev'+randomInt(1e9),method:'MOMO',row});}catch(e){confirm={error:e.message};}}
+  if(pay.data?.reference){try{const row=(await db.query('SELECT amount_minor,processing_fee_minor FROM shipment_checkout_intents WHERE reference=$1',[pay.data.reference])).rows[0];confirm=await checkout.confirmVerified({verified:true,status:'success',reference:pay.data.reference,amountMinor:Number(row.amount_minor),currency:'GHS',eventId:'ev'+randomInt(1e9),channel:'mobile_money'});confirm={ok:true,state:confirm?.status};}catch(e){confirm={error:e.message};}}
   return {q,s,sameBooking:again.data?.id===s.data?.id,pay,confirm,id:s.data?.id};
  }
  async function deliver(r,id){
   const offers=await api(r.token,'GET','/api/v1/rider/offers');
-  const offer=(offers.data||[]).find?.(o=>o.shipment_id===id||o.shipmentId===id||o.id===id);
+  const offer=(offers.data||[]).find?.(o=>o.shipment_id===id||o.shipmentId===id);
   log('offer seen by rider',{count:offers.data?.length,keys:offer?Object.keys(offer):offers.data});
   const acc=await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:offer?.offer_id??offer?.offerId??offer?.id});
   log('accept',{status:acc.status,err:acc.data?.error});
@@ -151,6 +151,8 @@ test('real world walk-through',{skip:!url},async()=>{
   const seen=await api(r.token,'GET','/api/v1/rider/invitations');
   const acc=await api(r.token,'POST','/api/v1/rider/invitations/accept',{invitationId:seen.data?.[0]?.id});log('rider joins',{seen:seen.data?.length,accept:acc.status,err:acc.data?.error,notifiedRider:(await db.query('SELECT count(*)::int n FROM notification_jobs WHERE recipient_id=$1',[r.id])).rows[0].n});
   log('company rider online',await goOnline(r));
+  const portal=await bookAndPay(co,{paymentMethod:'DIGITAL'});log('company portal booking as the portal sends it',{quote:portal.q.status,pay:portal.pay?.status,payErr:portal.pay?.data?.error});
+  await db.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[portal.id]);
   const b=await bookAndPay(co);log('company booking',{quote:b.q.status,quoteErr:b.q.data?.error,book:b.s?.status,bookErr:b.s?.data?.error,pay:b.pay?.status,payErr:b.pay?.data?.error,confirm:b.confirm});
   if(!b.id)return;
   await dispatch.tick();
@@ -173,6 +175,29 @@ test('real world walk-through',{skip:!url},async()=>{
   log('rider removed',{status:removed.status,err:removed.data?.error,rider:(await db.query('SELECT status,company_id,online FROM riders WHERE id=$1',[r.id])).rows[0]});
  });
 
+await scene('rider phone dies mid delivery',async()=>{
+  const c=await account('customer');const r=await account('rider',{vehicle:'motorcycle',maxWeightG:20000});await goOnline(r);
+  const k=await bookAndPay(c);await dispatch.tick();
+  const o=(await api(r.token,'GET','/api/v1/rider/offers')).data?.[0];
+  const acc=await api(r.token,'POST','/api/v1/shipments/'+k.id+'/accept',{offerId:o?.offer_id??o?.id});
+  await db.query("UPDATE riders SET position_at=now()-interval '2 hours' WHERE id=$1",[r.id]);await db.query("UPDATE locations SET updated_at=now()-interval '2 hours' WHERE rider_id=$1",[r.id]);
+  await db.query("UPDATE dispatch_offers SET accepted_at=now()-interval '2 hours' WHERE shipment_id=$1",[k.id]);
+  const out=await dispatch.tick().catch(e=>({error:e.message}));
+  const row=(await db.query('SELECT state,rider_id=$2 AS same_rider FROM shipments WHERE id=$1',[k.id,r.id])).rows[0];
+  log('rider vanishes before pickup',{accept:acc.status,row,custAlerts:(await db.query('SELECT count(*)::int n FROM notification_jobs WHERE recipient_id=$1',[c.id])).rows[0].n,signals:(await db.query('SELECT signal_code FROM operational_risk_signals WHERE shipment_id=$1',[k.id])).rows.map(x=>x.signal_code)});
+  await db.query("UPDATE riders SET online=false WHERE id=$1",[r.id]);
+ });
+ await scene('cash',async()=>{
+  const c=await account('customer');const r=await account('rider',{vehicle:'motorcycle',maxWeightG:20000});await goOnline(r);
+  const q=await api(c.token,'POST','/api/v1/quotes',booking({paymentMethod:'CASH',cashPayer:'sender'}));
+  const s=await api(c.token,'POST','/api/v1/shipments',{quoteId:q.data?.id},{'Idempotency-Key':'audit-cash-'+randomInt(1e9)});
+  await dispatch.tick();const o=(await api(r.token,'GET','/api/v1/rider/offers')).data?.[0];
+  log('cash offer',{quote:[q.status,q.data?.error],book:[s.status,s.data?.error],offer:!!o});
+  if(!o)return;
+  await deliver(r,s.data.id);
+  log('cash after',{finance:(await api(r.token,'GET','/api/v1/rider/finance')).data?.dueMinor,wallet:(await db.query('SELECT * FROM commission_accounts WHERE rider_id=$1',[r.id])).rows[0]?.debt_minor});
+  await db.query("UPDATE riders SET online=false WHERE id=$1",[r.id]);
+ });
  await scene('rider sees earnings it cannot withdraw',async()=>{
   const row=(await db.query("SELECT count(*)::int n FROM riders WHERE company_id IS NOT NULL")).rows[0];log('company riders left',row);
  });
