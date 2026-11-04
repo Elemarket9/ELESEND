@@ -36,8 +36,8 @@ async function run(app,name,me,api,steps,vp={width:360,height:740}){
  await run('rider','r-signin',null,riderBase,[['company','Register here']],{width:360,height:1000});
  await run('rider','r-pending',{...ru,awaitingApproval:true},riderBase,[['docs','Licence & Documents']]);
  await run('rider','r-offer',ru,{...riderBase,'/api/v1/rider/offers':[offer],'/api/v1/rider/invitations':[],'/api/v1/rider/manifest':{optedIn:false,shipments:[],stops:[]}},[['wallet','Wallet']],{width:360,height:1500});
- await run('rider','r-job',ru,{...riderBase,'/api/v1/rider/invitations':[],'/api/v1/rider/manifest':manifestOf('RIDER_ASSIGNED')},[['route','Active Route']],{width:360,height:1100});
- await run('rider','r-drop',ru,{...riderBase,'/api/v1/rider/invitations':[],'/api/v1/rider/manifest':manifestOf('IN_TRANSIT')},[['route','Active Route']],{width:360,height:1100});
+ await run('rider','r-job',ru,{...riderBase,'/api/v1/rider/invitations':[],'/api/v1/rider/manifest':manifestOf('RIDER_ASSIGNED')},[['route','🗺️ Route']],{width:360,height:1100});
+ await run('rider','r-drop',ru,{...riderBase,'/api/v1/rider/invitations':[],'/api/v1/rider/manifest':manifestOf('IN_TRANSIT')},[['route','🗺️ Route']],{width:360,height:1100});
  await run('rider','co-home',{id:'o',kind:'company',phone:'+233241234567'},{...riderBase,'/api/v1/company/profile':{id:'c1',name:'Volta Logistics',status:'approved',services:['riders','delivery'],riders:{total:3,online:2},balance:{debtMinor:1200,debtLimitMinor:50000,unpaidEarningsMinor:45000,nextPayoutMinor:43800}},'/api/v1/company/riders':[{id:'r1',phone:'+233241234567',vehicle:'motorcycle',online:true,completed_jobs:12}]},[],{width:360,height:1100});
  await run.browser.close();
 })();
