@@ -12,6 +12,7 @@ try {
 }
 const glyphsUrl = GLYPHS_URL || (tileUrl ? tileUrl.replace(/\/tiles\/.+$/, '/fonts/{fontstack}/{range}.pbf') : null);
 const mapStyle = privateMapStyle(tileUrl, { glyphsUrl });
+const nightMapStyle = privateMapStyle(tileUrl, { glyphsUrl, night: true });
 
 // The API says where the map lives, so moving it needs no app release. A build-time address still wins.
 let remoteSource = null;
@@ -24,7 +25,7 @@ function loadRemoteMapSource() {
       .then(config => {
         if (!config?.tileUrl) return null;
         const url = privateTileUrl(config.tileUrl, { development: isDevelopmentEnvironment() });
-        remoteSource = { tileUrl: url, style: privateMapStyle(url, { glyphsUrl: config.glyphsUrl }) };
+        remoteSource = { tileUrl: url, style: privateMapStyle(url, { glyphsUrl: config.glyphsUrl }), nightStyle: privateMapStyle(url, { glyphsUrl: config.glyphsUrl, night: true }) };
         return remoteSource;
       })
       .catch(() => null)
@@ -72,7 +73,7 @@ export const MARKER_PRIORITY = Object.freeze({
   BACKGROUND_POI: 3    // Background merchants or non-essential landmarks
 });
 
-export default forwardRef(function MapView({ initialRegion, children, onPress, onMapReady, onPanDrag, style, accessibilityLabel }, ref) {
+export default forwardRef(function MapView({ night = false, initialRegion, children, onPress, onMapReady, onPanDrag, style, accessibilityLabel }, ref) {
   const camera = useRef(null);
   const [styleError, setStyleError] = React.useState(false);
   const [mapSource, setMapSource] = React.useState(remoteSource);
@@ -98,12 +99,14 @@ export default forwardRef(function MapView({ initialRegion, children, onPress, o
   }, [initialRegion?.latitude, initialRegion?.longitude, initialRegion?.longitudeDelta]);
 
   useImperativeHandle(ref, () => ({
-    animateCamera({ center, zoom }, { duration = 600 } = {}) {
+    animateCamera({ center, zoom, heading, pitch }, { duration = 600 } = {}) {
       if (!center || !camera.current) return;
       try {
         camera.current.setCamera({
           centerCoordinate: coordinate(center),
           zoomLevel: Number.isFinite(zoom) ? zoom : 15,
+          ...(Number.isFinite(heading) && heading >= 0 ? { heading } : {}),
+          ...(Number.isFinite(pitch) ? { pitch } : {}),
           animationDuration: duration,
           animationMode: 'easeTo'
         });
@@ -144,7 +147,7 @@ export default forwardRef(function MapView({ initialRegion, children, onPress, o
     }
   }), []);
 
-  const activeMapStyle = styleError ? OFFLINE_MAP_STYLE : (mapSource?.style || mapStyle);
+  const activeMapStyle = styleError ? OFFLINE_MAP_STYLE : (night ? (mapSource?.nightStyle || nightMapStyle) : (mapSource?.style || mapStyle));
 
   // Bounded, user-initiated retry of the private style (no automatic retry loop).
   const retryPrivateStyle = () => {

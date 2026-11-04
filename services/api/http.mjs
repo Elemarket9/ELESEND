@@ -472,6 +472,22 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/rider/licence'){await limit(db,'licence:'+actor.id,10,3600);result=await submitRiderLicence(db,actor,body);}
   else if(method==='GET'&&path==='/api/v1/rider/vehicle')result=await vehicles.profile(actor);
   else if(method==='POST'&&path==='/api/v1/rider/vehicle')result=await vehicles.submit(actor,body);
+  else if(method==='POST'&&path==='/api/v1/rider/navigation'){
+   check(actor?.kind==='rider',403,'Rider required');
+   await limit(db,'rider-navigation:'+actor.id,30,60);
+   check(/^[0-9a-f-]{36}$/.test(String(body.shipmentId??'')),400,'Valid shipment required');
+   const from={latitude:Number(body.latitude),longitude:Number(body.longitude)};
+   check(Number.isFinite(from.latitude)&&Math.abs(from.latitude)<=90&&Number.isFinite(from.longitude)&&Math.abs(from.longitude)<=180,400,'Valid position required');
+   const job=(await db.query('SELECT s.state,s.rider_id,q.request FROM shipments s JOIN quotes q ON q.id=s.quote_id WHERE s.id=$1',[body.shipmentId])).rows[0];
+   check(job,404,'Shipment not found');
+   check(job.rider_id===actor.id,403,'Assigned rider required');
+   check(['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP','RETURN_REQUESTED'].includes(job.state),409,'This job has no route to follow');
+   const stop=job.state==='RIDER_ASSIGNED'||job.state==='RETURN_REQUESTED'?job.request?.pickup:job.request?.destination;
+   const to={latitude:Number(stop?.latitude),longitude:Number(stop?.longitude)};
+   check(Number.isFinite(to.latitude)&&Number.isFinite(to.longitude),422,'This stop has no confirmed location');
+   check(typeof app?.routing?.route==='function',503,'Directions are not available right now');
+   result=await app.routing.route(from,to,{vehicle:job.request?.vehicle||'motorcycle',steps:true});
+  }
   else if(method==='GET'&&path==='/api/v1/rider/manifest'){check(dispatcher,503);result=await dispatcher.manifest(actor);}
   else if(method==='POST'&&path==='/api/v1/rider/multi-stop'){check(dispatcher,503);result=await dispatcher.optIn(actor,body);}
   else if(method==='POST'&&path==='/api/v1/rider/location'){check(dispatcher,503,'Dispatch unavailable');result=await dispatcher.riderPosition(actor,body);}

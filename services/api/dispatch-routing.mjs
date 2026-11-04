@@ -1,6 +1,24 @@
 import {check} from './security.mjs';
 import {haversine} from './dispatch-geometry.mjs';
 
+const ROAD_TURNS={uturn:'Make a U-turn','sharp right':'Turn sharp right',right:'Turn right','slight right':'Keep right',straight:'Continue','slight left':'Keep left',left:'Turn left','sharp left':'Turn sharp left'};
+/** Words a rider can follow, from one OSRM route step. */
+export function stepInstruction({maneuver:m={},name,ref}={},last=false){
+ const road=name||ref||'',onto=road?` onto ${road}`:'';
+ if(m.type==='arrive'||last)return 'You have arrived';
+ if(m.type==='depart')return road?`Head out on ${road}`:'Head out';
+ if(m.type==='roundabout'||m.type==='rotary')return `At the roundabout, take exit ${m.exit||1}${onto}`;
+ if(m.type==='exit roundabout'||m.type==='exit rotary')return `Leave the roundabout${onto}`;
+ if(m.type==='merge')return `Merge${onto}`;
+ const turn=ROAD_TURNS[m.modifier]||'Continue';
+ if(m.type==='continue'&&m.modifier==='straight')return road?`Continue on ${road}`:'Continue straight';
+ return `${turn}${onto}`;
+}
+export function navigationSteps(route){
+ const raw=(route?.legs||[]).flatMap(leg=>leg.steps||[]);
+ return raw.map((step,i)=>({type:step.maneuver?.type,modifier:step.maneuver?.modifier??null,name:step.name||step.ref||null,instruction:stepInstruction(step,i===raw.length-1),distanceMeters:Math.ceil(step.distance||0),durationSeconds:Math.ceil(step.duration||0),location:{latitude:step.maneuver?.location?.[1],longitude:step.maneuver?.location?.[0]}}));
+}
+
 /** Distances and durations are ONLY from a configured road-network routing service. */
 export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,maxSnapMeters=2500,maxInFlight=48,fetchImpl=fetch}){
  function base(value){const u=new URL(value);check(['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash,500,'Routing base URL must not contain secrets/query');return u;}
@@ -40,15 +58,15 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,m
  }
  function normalize(distance,duration){check(Number.isFinite(distance)&&distance>=0&&distance<=10000000&&Number.isFinite(duration)&&duration>=0&&duration<=604800,503,'Invalid road estimate');return {distanceMeters:Math.ceil(distance),durationSeconds:Math.ceil(duration),source:'routing-provider',trafficAware:false};}
  return {
-  async route(from,to,{vehicle='car'}={}){
-   const p=profile(vehicle),body=await request(`/route/v1/${p}/${coords(from)};${coords(to)}?overview=full&geometries=geojson&steps=false`,vehicle);
+  async route(from,to,{vehicle='car',steps=false}={}){
+   const p=profile(vehicle),body=await request(`/route/v1/${p}/${coords(from)};${coords(to)}?overview=full&geometries=geojson&steps=${steps?'true':'false'}`,vehicle);
    check(body.routes?.length&&body.routes[0].geometry,503,'No connected road route');
    validateWaypoints(body.waypoints);
    const straightLine=haversine(from,to);
    if(straightLine>250){
     check(Number(body.routes[0].distance)>=straightLine*0.25,422,'No connected road path');
    }
-   return {...normalize(body.routes[0].distance,body.routes[0].duration),geometry:body.routes[0].geometry};
+   return {...normalize(body.routes[0].distance,body.routes[0].duration),geometry:body.routes[0].geometry,...(steps?{steps:navigationSteps(body.routes[0])}:{})};
   },
   async matrix(sources,destination,{vehicle='car'}={}){
    check(Array.isArray(sources)&&sources.length>0&&sources.length<=30,400,'Invalid matrix');const p=profile(vehicle);
