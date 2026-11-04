@@ -380,11 +380,11 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    await permit(actor);uuid.parse(id);
    return submitRefundOperation(id,actor.id);
   },
-  /** Nothing was collected on these orders, so the money can go back without waiting for staff. */
+  /** A cancelled order was never collected, as the database enforces, so the money can go back without waiting for staff. */
   async refundUncollectedOrders({limit=20}={}){
    if(process.env.AUTOMATIC_REFUNDS==='false'||typeof provider?.createRefund!=='function'||typeof provider?.verifyRefund!=='function')return [];
-   const due=(await db.query(`SELECT o.id FROM refund_operations o WHERE o.status='queued' AND o.retry_of IS NULL AND o.provider=$1 AND o.source_key LIKE 'cancellation:%'
-     AND NOT EXISTS(SELECT 1 FROM challenges ch WHERE ch.shipment_id=o.shipment_id AND ch.purpose='pickup' AND ch.consumed_at IS NOT NULL)
+   const due=(await db.query(`SELECT o.id FROM refund_operations o JOIN shipments s ON s.id=o.shipment_id WHERE o.status='queued' AND o.retry_of IS NULL AND o.provider=$1 AND o.source_key LIKE 'cancellation:%'
+     AND s.state='CANCELLED'
      ORDER BY o.created_at LIMIT $2`,[provider.name,limit])).rows;
    const results=[];
    for(const {id} of due)results.push(await submitRefundOperation(id,null).catch(e=>({id,status:'error',reason:reasonText(e)})));

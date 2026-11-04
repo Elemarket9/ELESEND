@@ -155,6 +155,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    assert.equal((await api(c.token,'POST','/api/v1/food-orders/quote',order)).status,400);
    assert.equal((await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id,{status:'approved'})).status,403,'an owner cannot approve themselves');
    const admin=randomUUID();await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'test-only','admin',now())",[admin,phone()]);
+   await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'verification:write')",[admin]);
    await restaurantService(db).updateRestaurant({id:admin,kind:'admin'},made.data.id,{status:'approved'});
    assert.equal((await api(c.token,'POST','/api/v1/food-orders/quote',order)).status,200);
   });

@@ -708,9 +708,9 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/food-orders')result=forCustomer(actor,await restOrders.createFoodOrder(actor,body,{paymentMethod:body.paymentMethod,specialInstructions:body.specialInstructions,promoCode:body.promoCode,promoCodes:body.promoCodes,campaignIds:body.campaignIds,idempotencyKey:req.headers['idempotency-key']}));
   else if(method==='GET'&&path==='/api/v1/food-orders'){
     const u=new URL(req.url,'http://localhost').searchParams;
-    result=await restOrders.listFoodOrders(actor,{restaurantId:u.get('restaurantId'),state:u.get('state'),limit:u.get('limit')});
+    result=forCustomer(actor,await restOrders.listFoodOrders(actor,{restaurantId:u.get('restaurantId'),state:u.get('state'),limit:u.get('limit')}));
   }
-  else if(method==='GET'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+$/.test(path))result=await restOrders.getFoodOrder(actor,path.split('/')[4]);
+  else if(method==='GET'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+$/.test(path))result=forCustomer(actor,await restOrders.getFoodOrder(actor,path.split('/')[4]));
   else if(method==='POST'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+\/accept$/.test(path))result=await restOrders.acceptOrder(actor,path.split('/')[4],body);
   else if(method==='POST'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+\/prepare$/.test(path))result=await restOrders.startPreparing(actor,path.split('/')[4]);
   else if(method==='POST'&&/^\/api\/v1\/food-orders\/[0-9a-f-]+\/ready$/.test(path))result=await restOrders.markReadyForPickup(actor,path.split('/')[4]);

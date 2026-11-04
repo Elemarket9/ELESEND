@@ -1,6 +1,6 @@
 import {ACTIVE_PUSH_TOKEN_FILTER,queueNotification} from './notifications.mjs';
 import {envInt} from './env-values.mjs';
-import {cashAlreadyReported} from './modules/payments/index.mjs';
+import {cashAlreadyReported,confirmedPaymentMinor} from './modules/payments/index.mjs';
 import {approveVehicleRecord} from './vehicle.mjs';
 import {ACCEPTED_SERVICES,assertCompanyDelivery} from './company.mjs';
 import {ensureCommissionAccount,paymentMethodEnabled,findPaymentEvent,recordPaymentEvent,recordFinancialEntry,earningsEntriesFor,senderCashCollectedInFull,cashCollectionFor,accrueRestaurantSettlement} from './modules/payments/index.mjs';
@@ -54,8 +54,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async function permission(c,actor,p){check((await c.query('SELECT 1 FROM permissions WHERE user_id=$1 AND permission=$2',[actor.id,p])).rowCount,403,'Permission required');}
  /** Free until a set time after a rider accepts. After that a set fee goes to that rider, taken from the refund. */
  async function cancellationTerms(c,s){
-  const intent=s.paid?(await c.query("SELECT amount_minor FROM shipment_checkout_intents WHERE shipment_id=$1 AND status='confirmed' ORDER BY confirmed_at LIMIT 1",[s.id])).rows[0]:null;
-  const paidMinor=Number(intent?.amount_minor??0);
+  const paidMinor=s.paid?await confirmedPaymentMinor(c,s.id):0;
   let feeMinor=0,freeSecondsLeft=null;
   if(s.state==='RIDER_ASSIGNED'&&s.paid){
    const accepted=(await c.query("SELECT extract(epoch FROM now()-accepted_at)::int AS seconds FROM dispatch_offers WHERE shipment_id=$1 AND rider_id=$2 AND status='accepted' ORDER BY accepted_at DESC LIMIT 1",[s.id,s.rider_id])).rows[0];

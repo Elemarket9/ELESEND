@@ -17,6 +17,10 @@ export async function checkoutJournal(c,{shipmentId,eventKey,kind,entries}){
 }
 export const customerMoneyReceived=(c,{shipmentId,eventKey,amountMinor,processingFeeMinor=0})=>checkoutJournal(c,{shipmentId,eventKey,kind:'psp_verified',entries:[['provider_receivable','debit',amountMinor],['customer_delivery_liability','credit',amountMinor-processingFeeMinor],...(processingFeeMinor>0?[['customer_processing_fee_liability','credit',processingFeeMinor]]:[])]});
 export const customerMoneyUnapplied=(c,{shipmentId,eventKey,amountMinor})=>checkoutJournal(c,{shipmentId,eventKey,kind:'verified_unapplied',entries:[['provider_receivable','debit',amountMinor],['customer_refund_liability','credit',amountMinor]]});
+export async function confirmedPaymentMinor(c,shipmentId){
+ const intent=(await c.query("SELECT amount_minor FROM shipment_checkout_intents WHERE shipment_id=$1 AND status='confirmed' ORDER BY confirmed_at LIMIT 1",[shipmentId])).rows[0];
+ return Number(intent?.amount_minor??0);
+}
 export async function requestCheckoutRefund(c,shipment,reason,{riderFeeMinor=0}={}){
  await c.query(
   `UPDATE shipment_checkout_intents
