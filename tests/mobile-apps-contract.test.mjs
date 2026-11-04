@@ -189,10 +189,10 @@ test('Frontend UI/UX refinements, ergonomics, live countdown timers, and financi
   assert.ok(riderAppSrc.includes('Vibration.vibrate([0, 400, 200, 400])'), 'RiderApp triggers haptic vibration on new incoming job offers');
   assert.ok(riderAppSrc.includes('Vibration.cancel()'), 'RiderApp cancels vibration when offer is accepted, declined, or cleared');
   assert.ok(riderAppSrc.includes('vibrationEnabled'), 'RiderApp supports configurable vibration settings');
-  assert.ok(riderAppSrc.includes('MOTORCYCLE IN MOTION'), 'RiderApp displays safety warning when speed exceeds stationary threshold');
+  assert.ok(riderAppSrc.includes('You are moving'), 'RiderApp displays safety warning when speed exceeds stationary threshold');
   assert.ok(riderAppSrc.includes('disabled={!isStationary(speed)}'), 'RiderApp disables job acceptance while in motion on motorcycle');
   assert.ok(riderAppSrc.includes('CASH ON DELIVERY REQUIRED'), 'RiderApp highlights prominent cash on delivery warning banner in route manifest');
-  assert.ok(riderAppSrc.includes('CASH PAYMENT CONFIRMATION'), 'RiderApp displays cash collection reminder in OTP verification modal');
+  assert.ok(riderAppSrc.includes('Collect the cash first'), 'RiderApp displays cash collection reminder in OTP verification modal');
   assert.ok(riderAppSrc.includes('s.description'), 'RiderApp displays delivery instructions/notes in manifest');
 
   // 3. Restaurant Kitchen Portal: Live visual countdown progress bar, server timestamp synchronization, fullscreen kiosk mode, and non-negotiable 10% commission rate

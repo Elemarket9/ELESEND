@@ -45,6 +45,7 @@ import {
 } from '../booking-contract';
 import { normalizeGhanaPhone, isValidGhanaPhone, formatGhanaDisplayPhone } from '../phone';
 import { colors, typography, spacing, radii, shadows } from '../theme';
+import { customerStatus, paymentLabel } from '../status-labels';
 import {
   GHANA_REGIONS,
   GHANA_REGIONAL_TOWNS,
@@ -165,6 +166,7 @@ export default function CustomerApp() {
 
   // Food Marketplace State
   const [foodRestaurants, setFoodRestaurants] = useState([]);
+  const [foodNotice, setFoodNotice] = useState('');
   const [selectedRest, setSelectedRest] = useState(null);
   const [restMenu, setRestMenu] = useState(null);
   const [selectedDish, setSelectedDish] = useState(null);
@@ -847,12 +849,15 @@ export default function CustomerApp() {
           : null);
       if (!targetCoords) {
         setFoodRestaurants([]);
+        setFoodNotice('location');
         return;
       }
       const data = await call('GET', `/api/v1/restaurants?lat=${targetCoords.latitude}&lon=${targetCoords.longitude}`);
       setFoodRestaurants(data?.restaurants || []);
+      setFoodNotice('');
     } catch {
       setFoodRestaurants([]);
+      setFoodNotice('failed');
     }
   }
 
@@ -1376,7 +1381,7 @@ export default function CustomerApp() {
             </TouchableOpacity>
 
             {/* Recent & Saved Landmark Shortcuts */}
-            <View style={styles.recentDestinationsGroup}>
+            {recentPlaces.length > 0 && <View style={styles.recentDestinationsGroup}>
               {recentPlaces.slice(0, 3).map((item, idx) => (
                 <TouchableOpacity
                   key={idx}
@@ -1392,7 +1397,7 @@ export default function CustomerApp() {
                   <Text style={styles.landmarkDistanceBadge}>Recent</Text>
                 </TouchableOpacity>
               ))}
-            </View>
+            </View>}
 
             {/* Ghanaian Contextual Promo Cards */}
             <View style={styles.promoCardsSection}>
@@ -1610,7 +1615,7 @@ export default function CustomerApp() {
                   style={styles.orderFormCtaButton}
                   onPress={() => execute(step === 0 ? getParcelQuote : bookParcel)}>
                   <Text style={styles.orderFormCtaText}>
-                    {step === 0 ? 'Go to order form' : `Book Courier • ${quoted ? ghc(quoted.amount_minor) : ''}`}
+                    {step === 0 ? 'Continue' : `Book Courier • ${quoted ? ghc(quoted.amount_minor) : ''}`}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -1773,6 +1778,17 @@ export default function CustomerApp() {
               <Text style={styles.foodMarketSubtitle}>Fresh local Ghanaian meals delivered upfront</Text>
             </View>
 
+            {foodRestaurants.length === 0 && (
+              <View style={styles.emptyStateBox}>
+                <Text style={styles.emptyStateTitle}>
+                  {foodNotice === 'location' ? 'Set your location to see restaurants' : foodNotice === 'failed' ? 'Restaurants could not be loaded' : 'No restaurants near you yet'}
+                </Text>
+                <Text style={styles.emptyStateSub}>
+                  {foodNotice === 'location' ? 'Restaurants are listed by how close they are to you.' : foodNotice === 'failed' ? 'Check your connection, then open this tab again.' : 'Try again later or send a parcel from the Home tab.'}
+                </Text>
+              </View>
+            )}
+
             {/* Restaurant Cards */}
             {foodRestaurants.map(rest => (
               <TouchableOpacity
@@ -1854,10 +1870,11 @@ export default function CustomerApp() {
                 <View style={styles.orderCardHeader}>
                   <Text style={styles.orderIdText}>Parcel #{s.id.slice(0, 8)}</Text>
                   <View style={styles.statusPillBadge}>
-                    <Text style={styles.statusPillText}>{s.state}</Text>
+                    <Text style={styles.statusPillText}>{customerStatus(s.state)}</Text>
                   </View>
                 </View>
-                <Text style={styles.orderFareText}>{ghc(s.amount_minor)} • {s.payment_method}</Text>
+                <Text style={styles.orderFareText}>{ghc(s.amount_minor)}, {paymentLabel(s.payment_method)}</Text>
+                {Boolean(s.destination?.address) && <Text style={styles.orderFareText} numberOfLines={1}>To {s.destination.address}</Text>}
 
                 {/* Handover OTP Display Banner */}
                 {s.state === 'AWAITING_DELIVERY_OTP' && (
@@ -1887,13 +1904,13 @@ export default function CustomerApp() {
                   </TouchableOpacity>
                   {['RIDER_ASSIGNED', 'PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(s.state) && (
                     <TouchableOpacity
-                      style={[styles.liveTrackButton, { backgroundColor: '#0F172A', marginLeft: 6 }]}
+                      style={[styles.liveTrackButton, { backgroundColor: '#0F172A' }]}
                       onPress={() => openOrderChat({ conversationType: 'CUSTOMER_RIDER', shipmentId: s.id })}>
                       <Text style={styles.liveTrackText}>💬 Chat Courier</Text>
                     </TouchableOpacity>
                   )}
                   <TouchableOpacity
-                    style={[styles.liveTrackButton, { backgroundColor: '#475569', marginLeft: 6 }]}
+                    style={[styles.liveTrackButton, { backgroundColor: '#475569' }]}
                     onPress={() => openOrderChat({ conversationType: 'CUSTOMER_SUPPORT', shipmentId: s.id })}>
                     <Text style={styles.liveTrackText}>🎧 Support</Text>
                   </TouchableOpacity>
@@ -1914,7 +1931,7 @@ export default function CustomerApp() {
                 <View style={styles.orderCardHeader}>
                   <Text style={styles.orderIdText}>🍲 Food #{o.id.slice(0, 8)}</Text>
                   <View style={styles.statusPillBadge}>
-                    <Text style={styles.statusPillText}>{o.state}</Text>
+                    <Text style={styles.statusPillText}>{customerStatus(o.state)}</Text>
                   </View>
                 </View>
                 <Text style={styles.orderFareText}>{ghc(o.total_minor ?? o.total_customer_charge_minor)}</Text>
@@ -1933,7 +1950,7 @@ export default function CustomerApp() {
                 <View style={styles.activeOrderActionsRow}>
                   {o.payment_status !== 'PAID' && Boolean(o.shipment_id) && (
                     <TouchableOpacity
-                      style={[styles.liveTrackButton, { backgroundColor: colors.brandCoral, marginRight: 6 }]}
+                      style={[styles.liveTrackButton, { backgroundColor: colors.brandCoral }]}
                       onPress={() => execute(() => startOrResumeCheckout(o.shipment_id, o.payment_method || 'MOMO'))}>
                       <Text style={styles.liveTrackText}>💳 Pay Now</Text>
                     </TouchableOpacity>
@@ -1945,13 +1962,13 @@ export default function CustomerApp() {
                   </TouchableOpacity>
                   {Boolean(o.shipment_id) && ['RIDER_ASSIGNED', 'PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(o.shipment_state) && (
                     <TouchableOpacity
-                      style={[styles.liveTrackButton, { backgroundColor: '#1E293B', marginLeft: 6 }]}
+                      style={[styles.liveTrackButton, { backgroundColor: '#1E293B' }]}
                       onPress={() => openOrderChat({ conversationType: 'CUSTOMER_RIDER', foodOrderId: o.id, shipmentId: o.shipment_id })}>
                       <Text style={styles.liveTrackText}>🛵 Chat Courier</Text>
                     </TouchableOpacity>
                   )}
                   <TouchableOpacity
-                    style={[styles.liveTrackButton, { backgroundColor: '#475569', marginLeft: 6 }]}
+                    style={[styles.liveTrackButton, { backgroundColor: '#475569' }]}
                     onPress={() => openOrderChat({ conversationType: 'CUSTOMER_SUPPORT', foodOrderId: o.id, shipmentId: o.shipment_id })}>
                     <Text style={styles.liveTrackText}>🎧 Support</Text>
                   </TouchableOpacity>
@@ -1964,13 +1981,33 @@ export default function CustomerApp() {
               </View>
             ))}
 
-            {myShipments.length === 0 && myFoodOrders.length === 0 && (
+            {myShipments.every(s => ['COMPLETED', 'CANCELLED'].includes(s.state)) && myFoodOrders.every(o => ['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.state)) && (
               <View style={styles.emptyStateBox}>
                 <Text style={{ fontSize: 40, marginBottom: 12 }}>📦</Text>
-                <Text style={styles.emptyStateTitle}>No Active Deliveries</Text>
+                <Text style={styles.emptyStateTitle}>No deliveries in progress</Text>
                 <Text style={styles.emptyStateSub}>Book a parcel or cargo delivery to start tracking in real time.</Text>
               </View>
             )}
+
+            {[...myShipments.filter(s => ['COMPLETED', 'CANCELLED'].includes(s.state)), ...myFoodOrders.filter(o => ['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.state))].length > 0 && (
+              <Text style={styles.activitySectionTitle}>Past orders</Text>
+            )}
+            {myShipments.filter(s => ['COMPLETED', 'CANCELLED'].includes(s.state)).slice(0, 20).map(s => (
+              <View key={s.id} style={styles.pastOrderRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.orderIdText} numberOfLines={1}>{s.destination?.address ? `To ${s.destination.address}` : `Parcel #${s.id.slice(0, 8)}`}</Text>
+                  <Text style={styles.orderFareText}>{customerStatus(s.state)}, {ghc(s.amount_minor)}</Text>
+                </View>
+              </View>
+            ))}
+            {myFoodOrders.filter(o => ['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.state)).slice(0, 20).map(o => (
+              <View key={o.id} style={styles.pastOrderRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.orderIdText} numberOfLines={1}>{`Food #${o.id.slice(0, 8)}`}</Text>
+                  <Text style={styles.orderFareText}>{customerStatus(o.state)}, {ghc(o.total_minor ?? o.total_customer_charge_minor)}</Text>
+                </View>
+              </View>
+            ))}
           </ScrollView>
         )}
 
@@ -1987,7 +2024,7 @@ export default function CustomerApp() {
             {/* Profile Avatar & Name Header */}
             <View style={styles.profileHeaderBox}>
               <View style={styles.profileAvatarLarge}>
-                <Text style={{ fontSize: 48 }}>🐳</Text>
+                <Text style={{ fontSize: 48 }}>👤</Text>
               </View>
               <Text style={styles.profileNameBold}>
                 {(auth.name || 'CUSTOMER').toUpperCase()} ›
@@ -2070,17 +2107,6 @@ export default function CustomerApp() {
                 </View>
                 <Text style={styles.menuItemChevron}>›</Text>
               </TouchableOpacity>
-
-              <View style={styles.profileItemDivider} />
-
-              <View style={styles.profileMenuItem}>
-                <Text style={styles.menuItemIcon}>🟢</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.menuItemTitle}>Great! Few canceled rides</Text>
-                  <Text style={styles.menuItemSub}>This ensures high-priority courier matching</Text>
-                </View>
-                <Text style={styles.menuItemChevron}>›</Text>
-              </View>
             </View>
 
             {/* Card Group 3: Information & Logout */}
@@ -2123,12 +2149,12 @@ export default function CustomerApp() {
 
             {/* Modal Header */}
             <View style={styles.addressModalHeaderRow}>
-              <View>
+              <View style={{ flex: 1, minWidth: 0, paddingRight: 10 }}>
                 <Text style={styles.addressModalHeaderTitle}>
                   Select {locationTarget === 'pickup' ? 'Pickup' : 'Delivery'} Location
                 </Text>
                 <Text style={styles.addressModalHeaderSub}>
-                  Choose via search, GPS, or enter informal Ghanaian landmarks
+                  Search, use GPS, or describe a nearby landmark
                 </Text>
               </View>
               <TouchableOpacity
@@ -2162,21 +2188,21 @@ export default function CustomerApp() {
                 style={[styles.modeTabBtn, addressMode === 'search' && styles.modeTabBtnActive]}
                 onPress={() => setAddressMode('search')}>
                 <Text style={[styles.modeTabBtnText, addressMode === 'search' && styles.modeTabBtnTextActive]}>
-                  🔍 Search Places
+                  Search
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.modeTabBtn, addressMode === 'gps' && styles.modeTabBtnActive]}
                 onPress={() => { setAddressMode('gps'); if (!detectedLocation) requestLocation(); }}>
                 <Text style={[styles.modeTabBtnText, addressMode === 'gps' && styles.modeTabBtnTextActive]}>
-                  📍 GPS Location
+                  GPS
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.modeTabBtn, addressMode === 'manual' && styles.modeTabBtnActive]}
                 onPress={() => setAddressMode('manual')}>
                 <Text style={[styles.modeTabBtnText, addressMode === 'manual' && styles.modeTabBtnTextActive]}>
-                  ✍️ Enter Manually
+                  Manual
                 </Text>
               </TouchableOpacity>
             </View>
@@ -3027,9 +3053,9 @@ const styles = StyleSheet.create({
   formLabel: { fontSize: 12, fontWeight: '700', color: '#334155', marginBottom: 6, textTransform: 'uppercase' },
   formInput: { backgroundColor: '#F8FAFC', borderRadius: 12, borderWidth: 1, borderColor: '#CBD5E1', padding: 12, fontSize: 14, color: '#0F172A' },
   phoneInputRow: { flexDirection: 'row', gap: 8 },
-  ghanaBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#F1F5F9', borderRadius: 12, borderWidth: 1, borderColor: '#CBD5E1', paddingHorizontal: 12 },
+  ghanaBadge: { flexShrink: 0, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#F1F5F9', borderRadius: 12, borderWidth: 1, borderColor: '#CBD5E1', paddingHorizontal: 12 },
   ghanaCode: { fontSize: 14, fontWeight: '700', color: '#0F172A' },
-  phoneInput: { flex: 1, backgroundColor: '#F8FAFC', borderRadius: 12, borderWidth: 1, borderColor: '#CBD5E1', padding: 12, fontSize: 14, color: '#0F172A' },
+  phoneInput: { flex: 1, minWidth: 0, backgroundColor: '#F8FAFC', borderRadius: 12, borderWidth: 1, borderColor: '#CBD5E1', padding: 12, fontSize: 14, color: '#0F172A' },
   primaryActionButton: { backgroundColor: colors.brandCoral, borderRadius: 14, padding: 15, alignItems: 'center', justifyContent: 'center', marginTop: 10 },
   primaryActionText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
   switchAuthTouch: { marginTop: 16, alignItems: 'center', padding: 6 },
@@ -3182,8 +3208,8 @@ const styles = StyleSheet.create({
   modernActiveOrderCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 12, ...shadows.card },
   orderCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   orderIdText: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
-  statusPillBadge: { backgroundColor: '#F1F5F9', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
-  statusPillText: { fontSize: 11, fontWeight: '800', color: colors.primary },
+  statusPillBadge: { flexShrink: 1, marginLeft: 8, backgroundColor: '#F1F5F9', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  statusPillText: { fontSize: 11, fontWeight: '800', color: '#0F766E' },
   orderFareText: { fontSize: 13, color: '#64748B', marginTop: 4 },
   otpSecurityBanner: { backgroundColor: '#FEF3C7', borderRadius: 12, padding: 12, marginTop: 12, alignItems: 'center', borderWidth: 1, borderColor: '#FDE68A' },
   otpSecurityHeader: { fontSize: 11, fontWeight: '800', color: '#92400E', textTransform: 'uppercase' },
@@ -3191,13 +3217,14 @@ const styles = StyleSheet.create({
   otpSecurityCaption: { fontSize: 11, color: '#B45309', textAlign: 'center' },
   callCourierButton: { marginTop: 10, backgroundColor: '#F1F5F9', borderRadius: 12, padding: 10, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
   callCourierText: { fontSize: 13, fontWeight: '700', color: '#0F172A' },
-  activeOrderActionsRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
-  liveTrackButton: { flex: 2, backgroundColor: colors.brandCoral, borderRadius: 12, padding: 12, alignItems: 'center' },
-  liveTrackText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
-  cancelSmallButton: { flex: 1, backgroundColor: '#FEE2E2', borderRadius: 12, padding: 12, alignItems: 'center' },
-  cancelSmallText: { color: '#B91C1C', fontSize: 13, fontWeight: '800' },
+  activeOrderActionsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
+  pastOrderRow: { flexDirection: 'row', backgroundColor: '#FFFFFF', borderRadius: 14, padding: 14, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 8 },
+  liveTrackButton: { flexGrow: 1, flexBasis: '45%', minHeight: 46, backgroundColor: colors.brandCoral, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' },
+  liveTrackText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800', textAlign: 'center' },
+  cancelSmallButton: { flexGrow: 1, flexBasis: '45%', minHeight: 46, backgroundColor: '#FEE2E2', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' },
+  cancelSmallText: { color: '#B91C1C', fontSize: 13, fontWeight: '800', textAlign: 'center' },
   emptyStateBox: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 32, alignItems: 'center', marginTop: 24, borderWidth: 1, borderColor: '#E2E8F0' },
-  emptyStateTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A' },
+  emptyStateTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A', textAlign: 'center' },
   emptyStateSub: { fontSize: 13, color: '#64748B', textAlign: 'center', marginTop: 4 },
 
   // Profile Screen Styles (Reference 3)

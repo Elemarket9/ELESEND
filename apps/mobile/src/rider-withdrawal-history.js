@@ -55,8 +55,8 @@ export function WithdrawalHistory({ refreshKey }) {
         {loading && !history && <ActivityIndicator />}
         {!loading && !history && <Text style={body}>Your withdrawals could not be loaded. Tap Refresh to try again.</Text>}
         {history?.onHold && <Text style={[body, { color: '#B91C1C' }]}>Withdrawals are on hold on this account. Please contact support.</Text>}
-        {history && !history.withdrawals.length && <Text style={body}>No withdrawals yet.</Text>}
-        {history?.withdrawals.map(w => (
+        {history && !history.withdrawals?.length && <Text style={body}>No withdrawals yet.</Text>}
+        {history?.withdrawals?.map(w => (
           <View key={w.id} style={{ marginTop: 10 }}>
             <View style={row}><Text style={strong}>{ghc(w.sentMinor)} sent</Text><Text style={body}>{STATUS[w.status] || w.status}</Text></View>
             <Text style={body}>{when(w.requestedAt)}, {w.deliveries} deliveries, {ghc(w.earnedMinor)} earned, {ghc(w.feeMinor)} fee</Text>
