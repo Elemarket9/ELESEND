@@ -16,7 +16,7 @@ import {restaurantOrderService} from './restaurant-orders.mjs';
 import {enforcePatchedNodeRuntime} from './runtime-enforce.mjs';
 import {reconcileAndEnforceWeeklyRestrictions} from './modules/payments/index.mjs';
 import {loadConfig} from './config.mjs';
-import {notificationGateway,notificationWorker} from './notifications.mjs';
+import {notificationGateway,notificationWorker,queueNotification} from './notifications.mjs';
 import {backgroundJobs} from './background-jobs.mjs';
 import {etaService} from './eta/eta-service.mjs';
 import {installProcessGuards} from './process-guards.mjs';
@@ -62,7 +62,7 @@ const paymentProvider=createPaymentProvider(config.payment);
 assertPaymentOperations(paymentProvider,{production:config.isProduction});
 const finance=financeService(db,{provider:paymentProvider});
 const checkout=checkoutService(db,{provider:paymentProvider,sms,dispatch,routing});
-const money=moneyOperations(db,{provider:paymentProvider});
+const money=moneyOperations(db,{provider:paymentProvider,notify:queueNotification});
 const restOrders = restaurantOrderService(db, {platform: app, dispatcher: dispatch, routing, sms, ...config.food});
 
 const scheduler = config.server.backgroundJobsEnabled

@@ -334,8 +334,13 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    const page=await fetch(base+'/company');const html=await page.text();
    assert.equal(page.status,200);assert.match(html,/ELESEND for Companies/);
    assert.equal((page.headers.get('content-security-policy')||'').includes('unsafe'),false);
-   const moneySrc=await import('node:fs').then(fs=>fs.readFileSync(new URL('../services/api/modules/payments/money-operations.mjs',import.meta.url),'utf8'));
-   assert.match(moneySrc,/kind:'refund_completed'/);
+   const {queueNotification}=await import('../services/api/notifications.mjs');
+   const refunding=moneyOperations(db,{notify:queueNotification,provider:{...provider,async createRefund(x){return {providerId:'77'};},async verifyRefund(x){return {verified:true,type:'refund',provider:provider.name,status:'refunded',requestId:x.requestId,providerId:'77',eventId:'refund-ev-'+x.requestId,amountMinor:x.amountMinor,currency:x.currency,reference:x.reference};}}});
+   const c=await customer();const id=await paidOrder(c);
+   await api(c.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'cancel',reason:'Changed my mind'});
+   await refunding.syncRefunds();await refunding.refundUncollectedOrders({limit:100});
+   const told=(await db.query("SELECT payload FROM notification_jobs WHERE recipient_id=$1 AND kind='refund_completed'",[c.id])).rows;
+   assert.equal(told.length,1);assert.match(told[0].payload.message,/refund/i);
   });
   await t.test('people in use stay signed in, and riders with ended sessions go offline',async()=>{
    const r=await readyRider();

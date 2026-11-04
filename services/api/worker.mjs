@@ -25,7 +25,7 @@ import { reconcileAndEnforceWeeklyRestrictions } from './modules/payments/index.
 import { createPaymentProvider } from './modules/payments/index.mjs';
 import { hubtelSmsGateway } from './providers/hubtel-sms.mjs';
 import { httpsSmsGateway } from './sms-gateway.mjs';
-import { notificationGateway, notificationWorker } from './notifications.mjs';
+import { notificationGateway, notificationWorker, queueNotification } from './notifications.mjs';
 import { enforcePatchedNodeRuntime } from './runtime-enforce.mjs';
 import { backgroundJobs, LOCKS, withAdvisoryLock as sharedAdvisoryLock } from './background-jobs.mjs';
 import { resolve } from 'node:path';
@@ -85,7 +85,7 @@ export async function startWorker(options = {}) {
   assertPaymentOperations(paymentProvider,{production:config.isProduction});
   const finance = options.finance || financeService(db, { provider: paymentProvider });
   const checkout = options.checkout || checkoutService(db, { provider: paymentProvider });
-  const money = options.money || moneyOperations(db, { provider: paymentProvider });
+  const money = options.money || moneyOperations(db, { provider: paymentProvider, notify: queueNotification });
   const restOrders = options.restOrders || restaurantOrderService(db, { platform: app, dispatcher: dispatch, routing, ...config.food });
 
   console.log(JSON.stringify({
