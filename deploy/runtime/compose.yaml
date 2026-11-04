@@ -215,7 +215,7 @@ services:
           memory: 64M
   # Map services start by default and read prepared data from GHANA_MAP_DATA (see scripts/).
   osrm:
-    image: ghcr.io/project-osrm/osrm-backend:v26.10.0
+    image: ghcr.io/project-osrm/osrm-backend:v26.4.0
     command: [osrm-routed, --algorithm, mld, --max-table-size, '100', /data/ghana-latest.osrm]
     restart: unless-stopped
     read_only: true
@@ -226,7 +226,7 @@ services:
     networks: [private]
     logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
   osrm-motorcycle:
-    image: ghcr.io/project-osrm/osrm-backend:v26.10.0
+    image: ghcr.io/project-osrm/osrm-backend:v26.4.0
     command: [osrm-routed, --algorithm, mld, --max-table-size, '100', /data/ghana-motorcycle.osrm]
     restart: unless-stopped
     read_only: true
