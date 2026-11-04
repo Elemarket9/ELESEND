@@ -72,3 +72,7 @@ test('the motorcycle graph has its own rules and keeps one-way streets', () => {
   assert.doesNotMatch(lua, /oneway\s*=\s*false/);
   for (const file of ['prepare-ghana-osrm.sh', 'prepare-ghana-osrm.ps1']) assert.match(readFileSync(new URL('../scripts/' + file, import.meta.url), 'utf8'), /\/data\/motorcycle\.lua/);
 });
+
+test('a suspended rider finishing a parcel can still get directions', () => {
+  assert.match(readFileSync(new URL('../services/api/http.mjs', import.meta.url), 'utf8'), /CUSTODY_ROUTES=new Set\([^)]*POST \/api\/v1\/rider\/navigation/);
+});
