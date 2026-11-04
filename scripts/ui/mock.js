@@ -5,3 +5,6 @@ export const getItemAsync=async k=>localStorage.getItem(k),setItemAsync=async(k,
 export const randomUUID=()=>crypto.randomUUID();
 export const getPermissionsAsync=async()=>({status:'denied'}),requestPermissionsAsync=async()=>({status:'denied'}),setNotificationHandler=()=>{},addNotificationReceivedListener=()=>({remove(){}}),addNotificationResponseReceivedListener=()=>({remove(){}});
 export const registerRootComponent=()=>{};
+export const OfflineManager={getPack:async()=>null,deletePack:async()=>{},createPack:async()=>{}};
+export const speak=()=>{},stop=()=>{};
+export const useKeepAwake=()=>{};
