@@ -72,6 +72,8 @@ test('a day',{skip:!url},async()=>{
   if(s.state==='FAILED'&&!o.food){seen('return',await api(r.token,'POST','/api/v1/shipments/'+o.id+'/transition',{action:'return',reason:'Taking it back'}));return;}
   if(s.state==='RETURN_REQUESTED'&&!o.food){const ch=seen('return challenge',await api(r.token,'POST','/api/v1/shipments/'+o.id+'/return-challenge',{}));if(ch.status!==200)return;const code=[...texts].reverse().find(m=>m.challengeId===ch.data.challengeId)?.code;seen('return verify',await api(r.token,'POST','/api/v1/shipments/'+o.id+'/verify',{challengeId:ch.data.challengeId,code}));}
  };
+ setTimeout(()=>{log('TIMED OUT',{});process.exit(0);},120000).unref();process.on('unhandledRejection',e=>{log('CRASH',{m:e.message,at:e.stack});process.exit(0);});
+ try{
  const c1=customers[0],c2=customers[1];const r=riders[1];
  await db.query('UPDATE riders SET online=false WHERE id<>$1',[r.id]);
  const P=PLACES[0];await gps(r,P);
@@ -89,5 +91,6 @@ test('a day',{skip:!url},async()=>{
  const ret=await api(r.token,'POST','/api/v1/shipments/'+firstDrop+'/transition',{action:'return',reason:'Taking it back'});
  const other2=await step(secondDrop,'delivery');
  log('first parcel fails while second is on board',{pa,pb,fail:fail.status,afterFail,otherDelivery:other,ret:[ret.status,ret.data?.error],otherAfterReturnRequest:other2,afterStops:(await api(r.token,'GET','/api/v1/rider/manifest')).data.stops.map(s=>[s.shipmentId===firstDrop?'failed':'other',s.kind])});
+ }catch(e){log('CRASH',{m:e.message,at:e.stack?.split('\n').slice(0,3)});}
  log('ALL DONE',{});setTimeout(()=>process.exit(0),300);await new Promise(()=>{});
 });
