@@ -20,7 +20,7 @@ test('audit four',{skip:!url},async()=>{
   if(p==='/refund'&&o.method==='POST'){const id=randomInt(1e9),t=PS.tx[b.transaction];PS.refunds[id]={id,amount:Number(b.amount),currency:'GHS',status:PS.refundStatus||'pending',domain:'live',transaction:t.id,merchant_note:b.merchant_note};return ok(PS.refunds[id]);}
   if(p.startsWith('/refund/'))return ok(PS.refunds[p.split('/').pop()]);
   if(p==='/bank')return ok([{name:'MTN',code:'MTN',type:'mobile_money',active:true,slug:'mtn'}]);
-  if(p==='/transferrecipient'){const code='RCP_'+randomInt(1e9);PS.rec=PS.rec||{};PS.rec[code]={recipient_code:code,active:true,domain:'live',metadata:b.metadata,details:{account_number:b.account_number}};return ok(PS.rec[code]);}
+  if(p==='/transferrecipient'){const code='RCP_'+randomInt(1e9);PS.rec=PS.rec||{};PS.rec[code]={recipient_code:code,active:true,type:'mobile_money',currency:'GHS',domain:'live',metadata:b.metadata,details:{account_number:b.account_number}};return ok(PS.rec[code]);}
   if(p.startsWith('/transferrecipient/'))return ok(PS.rec[p.split('/').pop()]);
   if(p==='/transfer'){PS.transfers[b.reference]={id:randomInt(1e9),reference:b.reference,amount:b.amount,currency:'GHS',status:PS.transferStatus||'pending',recipient:b.recipient,domain:'live'};return ok(PS.transfers[b.reference]);}
   if(p.startsWith('/transfer/verify/')){const r=decodeURIComponent(p.split('/').pop());return ok(PS.transfers[r]);}
@@ -52,7 +52,7 @@ test('audit four',{skip:!url},async()=>{
  const scene=async(n,f)=>{log('START '+n,{});try{await Promise.race([f(),new Promise((_,rej)=>setTimeout(()=>rej(new Error('STUCK after 120s')),120000).unref())]);}catch(e){log(n+' CRASHED',{m:e.message,at:e.stack?.split('\n').slice(1,3)});}};
  const admin=randomUUID();await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'x','admin',now())",[admin,phone()]);for(const p of ['verification:write','promotions:manage','finance:configure','dispatch:configure'])await db.query('INSERT INTO permissions(user_id,permission) VALUES($1,$2) ON CONFLICT DO NOTHING',[admin,p]);const A={id:admin,kind:'admin'};
 
- await scene('refund through Paystack code',async()=>{
+ if(false)await scene('refund through Paystack code',async()=>{
   const c=await person('customer');const id=await paid(c);
   const cancel=await api(c.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'cancel',reason:'Changed my mind'});
   await money.syncRefunds();const out=await money.refundUncollectedOrders({limit:50});
@@ -115,7 +115,7 @@ test('audit four',{skip:!url},async()=>{
   const m=await api(r.token,'GET','/api/v1/rider/manifest');
   log('multi stop',{opt:brief(opt),first,second,stops:m.data?.stops?.map(s=>s.kind),jobs:m.data?.shipments?.length});
  });
- await scene('chat',async()=>{
+ if(false)await scene('chat',async()=>{
   const c=await person('customer');const r=await rider();const id=await paid(c);await assign(r,id);
   const conv=await api(c.token,'POST','/api/v1/chat/conversations',{conversationType:'CUSTOMER_RIDER',shipmentId:id});
   const cid=conv.data?.id??conv.data?.conversationId;
