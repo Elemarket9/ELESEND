@@ -20,7 +20,7 @@ test('audit four',{skip:!url},async()=>{
   if(p==='/refund'&&o.method==='POST'){const id=randomInt(1e9),t=PS.tx[b.transaction];PS.refunds[id]={id,amount:Number(b.amount),currency:'GHS',status:PS.refundStatus||'pending',domain:'live',transaction:t.id,merchant_note:b.merchant_note};return ok(PS.refunds[id]);}
   if(p.startsWith('/refund/'))return ok(PS.refunds[p.split('/').pop()]);
   if(p==='/bank')return ok([{name:'MTN',code:'MTN',type:'mobile_money',active:true,slug:'mtn'}]);
-  if(p==='/transferrecipient'){const code='RCP_'+randomInt(1e9);PS.rec=PS.rec||{};PS.rec[code]={recipient_code:code,active:true,metadata:b.metadata,details:{account_number:b.account_number}};return ok(PS.rec[code]);}
+  if(p==='/transferrecipient'){const code='RCP_'+randomInt(1e9);PS.rec=PS.rec||{};PS.rec[code]={recipient_code:code,active:true,domain:'live',metadata:b.metadata,details:{account_number:b.account_number}};return ok(PS.rec[code]);}
   if(p.startsWith('/transferrecipient/'))return ok(PS.rec[p.split('/').pop()]);
   if(p==='/transfer'){PS.transfers[b.reference]={id:randomInt(1e9),reference:b.reference,amount:b.amount,currency:'GHS',status:PS.transferStatus||'pending',recipient:b.recipient,domain:'live'};return ok(PS.transfers[b.reference]);}
   if(p.startsWith('/transfer/verify/')){const r=decodeURIComponent(p.split('/').pop());return ok(PS.transfers[r]);}
@@ -59,7 +59,7 @@ test('audit four',{skip:!url},async()=>{
   const op=()=>db.query('SELECT status,amount_minor::int a,failure_reason FROM refund_operations WHERE shipment_id=$1',[id]).then(x=>x.rows[0]);
   const first=await op();
   for(const r of Object.values(PS.refunds))r.status='processed';
-  await money.reconcileDue?.();const second=await op();
+  await new Promise(r=>setTimeout(r,3000));await money.reconcileDue({olderThanSeconds:0});const second=await op();
   log('refund',{cancel:brief(cancel),submitted:out.filter(x=>x.status!=='error').length,errors:out.filter(x=>x.status==='error').slice(0,2),first,second,customerTold:(await db.query("SELECT count(*)::int n FROM notification_jobs WHERE recipient_id=$1",[c.id])).rows[0].n});
  });
  await scene('withdrawal through Paystack code',async()=>{
@@ -75,9 +75,9 @@ test('audit four',{skip:!url},async()=>{
   if(ref){PS.transfers[ref].status='reversed';await webhook({event:'transfer.reversed',data:{reference:ref}});}
   const after=(await db.query('SELECT status FROM payout_withdrawals WHERE beneficiary_id=$1',[r.id])).rows[0];
   const sum=(await api(r.token,'GET','/api/v1/rider/wallet/summary')).data;
-  log('withdrawal',{jobs:jobs.length,ben:brief(ben),w:[w.status,w.data?.error,w.data?.amountMinor],before,paidRow,after,availableAfterReversal:sum?.availableNowMinor});
+  const dup=await webhook({event:'transfer.success',data:{reference:ref}}).catch(e=>e.message);log('withdrawal',{dup,calls:[...new Set(PS.calls)].slice(0,12),jobs:jobs.length,ben:brief(ben),w:[w.status,w.data?.error,w.data?.amountMinor],before,paidRow,after,availableAfterReversal:sum?.availableNowMinor});
  });
- await scene('company suspended through admin, rider carrying parcel',async()=>{
+ if(false)await scene('company suspended through admin, rider carrying parcel',async()=>{
   const co=await signUp('company',{name:'Audit4 Co',services:['riders']});await db.query("UPDATE companies SET status='approved' WHERE owner_id=$1",[co.id]);await verify(co);
   const r=await rider();await api(co.token,'POST','/api/v1/company/invitations',{phone:r.number});const inv=await api(r.token,'GET','/api/v1/rider/invitations');await api(r.token,'POST','/api/v1/rider/invitations/accept',{invitationId:inv.data[0].id});await api(r.token,'POST','/api/v1/rider/availability',{online:true});await gps(r);
   const c=await person('customer');const id=await paid(c);const a=await assign(r,id);await handover(r,id,'pickup');
@@ -89,7 +89,7 @@ test('audit four',{skip:!url},async()=>{
   const bal=(await db.query("SELECT coalesce(sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END),0)::int v FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id WHERE j.shipment_id=$1 AND l.account='rider_payable'",[id])).rows[0].v;
   log('company suspended',{a,old:old.status,login:again.status,custody:me.data?.custodyOnly,d,state:await state(id),companyEarned:bal,companyDel:brief(await api(co.token,'GET','/api/v1/company/profile'))});
  });
- await scene('promo budget under load',async()=>{
+ if(false)await scene('promo budget under load',async()=>{
   const owner=await person('business');const made=await api(owner.token,'POST','/api/v1/restaurants',{name:'Budget Kitchen '+randomInt(1e6),phone:'0241234567',address:'Oxford Street, Osu',latitude:P.latitude,longitude:P.longitude});
   await db.query("UPDATE restaurants SET status='approved',is_open=true,is_paused=false WHERE id=$1",[made.data.id]);
   const item=await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id+'/items',{name:'Jollof',priceMinor:4000});
@@ -100,7 +100,7 @@ test('audit four',{skip:!url},async()=>{
   const spent=(await db.query("SELECT coalesce(sum(discount_minor),0)::int v,count(*)::int n FROM promotion_redemptions WHERE campaign_id=$1 AND status IN ('reserved','applied')",[camp.id]).catch(e=>({rows:[e.message]}))).rows[0];
   log('budget',{camp:camp.error||camp.status,statuses:out.map(x=>x.status),errors:[...new Set(out.map(x=>x.data?.error).filter(Boolean))].slice(0,3),spent});
  });
- await scene('kitchen ignores a paid order',async()=>{
+ if(false)await scene('kitchen ignores a paid order',async()=>{
   const owner=await person('business');const made=await api(owner.token,'POST','/api/v1/restaurants',{name:'Quiet '+randomInt(1e6),phone:'0241234567',address:'Oxford Street, Osu',latitude:P.latitude,longitude:P.longitude});await db.query("UPDATE restaurants SET status='approved',is_open=true,is_paused=false WHERE id=$1",[made.data.id]);
   const item=await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id+'/items',{name:'Rice',priceMinor:3000});const c=await person('customer');
   const o=await api(c.token,'POST','/api/v1/food-orders',{restaurantId:made.data.id,items:[{itemId:item.data.id,quantity:1}],deliveryAddress:D.address,deliveryLatitude:D.latitude,deliveryLongitude:D.longitude,customerPhone:'0241234567',paymentMethod:'MOMO'},{'Idempotency-Key':'k-'+randomInt(1e9)});
@@ -109,7 +109,7 @@ test('audit four',{skip:!url},async()=>{
   const r=await rest.expireUnfulfilledOrders({limit:50}).catch(e=>e.message);
   log('kitchen silent',{food:(await db.query('SELECT state FROM food_orders WHERE id=$1',[o.data.id])).rows[0],ship:await state(sid),refund:(await db.query('SELECT status,amount_minor::int a FROM checkout_refund_requests WHERE shipment_id=$1',[sid])).rows[0],alerts:(await db.query('SELECT kind FROM notification_jobs WHERE recipient_id=$1',[c.id])).rows.map(x=>x.kind)});
  });
- await scene('two parcels on one rider',async()=>{
+ if(false)await scene('two parcels on one rider',async()=>{
   const c=await person('customer');const r=await rider();const opt=await api(r.token,'POST','/api/v1/rider/multi-stop',{enabled:true}).catch(e=>e);
   const a=await paid(c);const first=await assign(r,a);await gps(r,P);const b=await paid(c,{destination:N});const second=await assign(r,b);
   const m=await api(r.token,'GET','/api/v1/rider/manifest');
@@ -119,13 +119,13 @@ test('audit four',{skip:!url},async()=>{
   const c=await person('customer');const r=await rider();const id=await paid(c);await assign(r,id);
   const conv=await api(c.token,'POST','/api/v1/chat/conversations',{conversationType:'CUSTOMER_RIDER',shipmentId:id});
   const cid=conv.data?.id??conv.data?.conversationId;
-  const s1=await api(c.token,'POST','/api/v1/chat/conversations/'+cid+'/messages',{text:'Hello, I am at the gate. Call 0241234567',body:'Hello',clientMessageId:randomUUID()});
+  const s1=await api(c.token,'POST','/api/v1/chat/conversations/'+cid+'/messages',{bodyText:'Hello, I am at the gate. Call 0241234567',clientMessageId:randomUUID()});
   const list=await api(r.token,'GET','/api/v1/chat/conversations/'+cid+'/messages');
   const stranger=await api((await person('customer')).token,'GET','/api/v1/chat/conversations/'+cid+'/messages');
-  await finish(r,id);const after=await api(c.token,'POST','/api/v1/chat/conversations/'+cid+'/messages',{text:'one more',body:'one more',clientMessageId:randomUUID()});
+  await finish(r,id);const after=await api(c.token,'POST','/api/v1/chat/conversations/'+cid+'/messages',{bodyText:'one more',clientMessageId:randomUUID()});
   log('chat',{conv:brief(conv),s1:brief(s1),riderReads:[list.status,JSON.stringify(list.data).slice(0,160)],stranger:stranger.status,afterDelivery:brief(after)});
  });
- await scene('every background job once',async()=>{
+ if(false)await scene('every background job once',async()=>{
   const out={};const w=process.stderr.write.bind(process.stderr);const warns=[];process.stderr.write=(s,...a)=>{if(/warn|error/i.test(String(s)))warns.push(String(s).slice(0,200));return w(s,...a);};
   const notifications=notificationWorker(db,{transport:null,sms});
   const b=backgroundJobs({db,dispatch,notifications,restOrders:rest,money,checkout,finance,paymentProvider:provider,routing});

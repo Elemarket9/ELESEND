@@ -12,11 +12,7 @@ npx eslint --no-eslintrc -c .eslintrc.json --ext .js src 2>&1 | grep -vE '^$' | 
 cd "$ROOT/apps/mobile"
 npm ci --ignore-scripts 2>&1 | tail -1 | cut -c1-140 | sed 's/^/AUDITMOBILE npm: /'
 export EXPO_PUBLIC_ELESEND_API_BASE_URL=https://api.example.test CI=1
-for entry in customer rider; do
- cp index.$entry.js index.js.tmp 2>/dev/null
- grep -n '"main"' package.json | head -1 | sed 's/^/AUDITMOBILE main: /'
- EXPO_ROUTER_APP_ROOT= npx expo export --platform android --output-dir /tmp/out-$entry 2>&1 | tail -6 | cut -c1-170 | sed "s/^/AUDITMOBILE export $entry: /"
- break
+for v in customer rider; do
+ EXPO_PUBLIC_ELESEND_APP_VARIANT=$v npx expo export --platform android --output-dir /tmp/out-$v 2>&1 | grep -E 'hbc|rror|Exported' | cut -c1-170 | sed "s/^/AUDITMOBILE export $v: /"
 done
-ls -la /tmp/out-customer/_expo/static/js/android 2>/dev/null | tail -2 | sed 's/^/AUDITMOBILE bundle: /'
 exit 0

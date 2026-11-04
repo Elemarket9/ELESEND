@@ -44,6 +44,12 @@ say "me: $(c api.example.test /api/v1/me -H "Authorization: Bearer $TOKEN")"
 say "search: $(c api.example.test '/api/v1/maps/search?q=Accra' -H "Authorization: Bearer $TOKEN")"
 for i in $(seq 1 12); do c api.example.test /api/v1/auth/login -X POST -H "$J" -d "{\"phone\":\"$PHONE\",\"password\":\"wrong password here\"}" >/dev/null; done
 say "wrong passwords then: $(c api.example.test /api/v1/auth/login -X POST -H "$J" -d "{\"phone\":\"$PHONE\",\"password\":\"mango river lantern\"}") $(cut -c1-100 /tmp/out)"
+say "company policy: $(curl -sk -D - -o /dev/null --resolve app.example.test:443:127.0.0.1 https://app.example.test/company | grep -i content-security | cut -c1-120 | tr -d '\r')"
+P3=+23255$(printf %07d $((RANDOM*30)))
+P3=+23355$(printf %07d $((RANDOM*30)))
+c api.example.test /api/v1/auth/register -X POST -H "$J" -d "{\"phone\":\"$P3\",\"password\":\"mango river lantern\",\"kind\":\"customer\"}" >/dev/null
+for i in $(seq 1 12); do c api.example.test /api/v1/auth/login -X POST -H "$J" -H "X-Forwarded-For: 8.8.$i.$i" -d "{\"phone\":\"$P3\",\"password\":\"wrong password here\"}" >/dev/null; done
+say "spoofed addresses then: $(c api.example.test /api/v1/auth/login -X POST -H "$J" -H 'X-Forwarded-For: 9.9.9.9' -d "{\"phone\":\"$P3\",\"password\":\"mango river lantern\"}") $(cut -c1-60 /tmp/out)"
 docker compose restart api >/dev/null 2>&1; sleep 15
 say "after restart: $(c api.example.test /api/v1/me -H "Authorization: Bearer $TOKEN") state $(docker compose ps api --format '{{.State}} {{.Health}}')"
 # Limited database login, exactly as the security guide asks.
