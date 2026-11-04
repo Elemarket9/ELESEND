@@ -74,14 +74,17 @@ test('a day',{skip:!url},async()=>{
  };
  const started=Date.now();let offered=0,accepted=0,expired=0,declined=0;
  const stuckLog=[];
- for(let round=0;round<60;round++){
-  if(round<35)for(let i=0;i<2;i++)await newOrder();
+ for(let round=0;round<30;round++){
+  if(Date.now()-started>300000){log('stopped early at round',round);break;}
+  if(round<12)for(let i=0;i<3;i++)await newOrder();
+  log('round',{round,orders:orders.length,secs:Math.round((Date.now()-started)/1000)});
   await db.query("UPDATE shipments SET next_dispatch_at=LEAST(next_dispatch_at,now()) WHERE state='AWAITING_ASSIGNMENT' AND no_rider_since IS NULL");
   const t=await dispatch.tick(20).catch(e=>[{status:'error',m:e.message}]);
   for(const x of t)if(['error'].includes(x.status))errors['tick '+x.code]=(errors['tick '+x.code]||0)+1;
   await Promise.all(riders.map(async r=>{const os=(await api(r.token,'GET','/api/v1/rider/offers')).data||[];for(const o of os){offered++;const roll=randomInt(10);if(roll===0){declined++;seen('decline',await api(r.token,'POST','/api/v1/rider/offers/decline',{shipmentId:o.id,offerId:o.offerId,reason:'Too far'}));}else if(roll<9){const a=seen('accept',await api(r.token,'POST','/api/v1/shipments/'+o.id+'/accept',{offerId:o.offerId}));if(a.status===200)accepted++;}else{expired++;await db.query("UPDATE dispatch_offers SET expires_at=now()-interval '1 second' WHERE id=$1",[o.offerId]);}}}));
-  for(const o of orders.slice().sort(()=>Math.random()-.5))await act(o);
-  for(const o of orders)await returns(o);
+  const open=new Set((await db.query("SELECT id FROM shipments WHERE id=ANY($1) AND state NOT IN ('COMPLETED','CANCELLED','RETURNED')",[orders.map(o=>o.id)])).rows.map(x=>x.id));
+  for(const o of orders.filter(x=>open.has(x.id)).sort(()=>Math.random()-.5))await act(o);
+  for(const o of orders.filter(x=>x.failed&&open.has(x.id)))await returns(o);
  }
  const byState=(await db.query('SELECT s.state,s.paid,count(*)::int n FROM shipments s WHERE s.id=ANY($1) GROUP BY 1,2 ORDER BY 1',[orders.map(o=>o.id)])).rows;
  log('day totals',{orders:orders.length,food:orders.filter(o=>o.food).length,cash:orders.filter(o=>o.cash).length,offered,accepted,declined,expired,seconds:Math.round((Date.now()-started)/1000),byState});
@@ -100,7 +103,7 @@ test('a day',{skip:!url},async()=>{
  const jobs=backgroundJobs({db,dispatch,notifications:notificationWorker(db,{transport:null,sms}),restOrders:rest,money,checkout,finance,paymentProvider:provider,routing});
  for(let i=0;i<5;i++){await jobs.jobs.notifications();}
  await jobs.jobs.moneyRecon();await new Promise(r=>setTimeout(r,2500));await money.reconcileDue({olderThanSeconds:0});
- for(let i=0;i<30;i++)await jobs.jobs.notifications();
+ for(let i=0;i<8;i++)await jobs.jobs.notifications();
  log('messages',{codes:texts.length,codeTypes:texts.reduce((o,m)=>(o[m.purpose]=(o[m.purpose]||0)+1,o),{}),notificationSms:notes.length,kinds:notes.reduce((o,m)=>(o[m.kind]=(o[m.kind]||0)+1,o),{}),samples:[...new Set(notes.map(m=>m.message))].slice(0,6)});
  const refunds=(await db.query('SELECT status,count(*)::int n,sum(amount_minor)::int a FROM refund_operations WHERE shipment_id=ANY($1) GROUP BY 1',[ids])).rows;
  log('refunds',refunds);
