@@ -35,6 +35,7 @@ import { cacheJobs, readCachedJobs, readLastCachedJobs, clearCachedJobs } from '
 import { normalizeGhanaPhone, isValidGhanaPhone } from '../phone';
 import { colors, typography, spacing, radii } from '../theme';
 import { riderStatus } from '../status-labels';
+import RiderNavigation from './RiderNavigation';
 import { prepareDeviceLocation } from '../customer-location';
 
 const initialCreds = {
@@ -82,6 +83,7 @@ export default function RiderApp() {
   const [online, setOnline] = useState(false);
   const [vehicle, setVehicle] = useState(null);
   const [offers, setOffers] = useState([]);
+  const [navigating, setNavigating] = useState(null);
   const [manifest, setManifest] = useState(null);
   const [speed, setSpeed] = useState(null);
   const [mapReportShipment, setMapReportShipment] = useState(null);
@@ -1425,11 +1427,12 @@ export default function RiderApp() {
                     {/* Turn-by-Turn GPS Button */}
                     <TouchableOpacity
                       onPress={() => {
-                        const target = s.state === 'RIDER_ASSIGNED' ? s.pickup : s.destination;
-                        if (target) openTurnByTurnNavigation(target);
+                        const toPickup = s.state === 'RIDER_ASSIGNED' || s.state === 'RETURN_REQUESTED';
+                        const target = toPickup ? s.pickup : s.destination;
+                        if (target) setNavigating({ shipmentId: s.id, target, label: s.state === 'RETURN_REQUESTED' ? 'the sender' : toPickup ? 'pickup' : 'dropoff' });
                       }}
                       style={styles.navButton}>
-                      <Text style={styles.navButtonText}>📍 Open Turn-by-Turn Navigation</Text>
+                      <Text style={styles.navButtonText}>📍 Start navigation</Text>
                     </TouchableOpacity>
 
                     {/* Order-Scoped Chat Buttons (Customer & Kitchen) */}
@@ -1959,6 +1962,7 @@ export default function RiderApp() {
         onClose={() => setDeleteAccountOpen(false)}
         onDeleted={finishAccountDeletion}
       />
+      {navigating && <RiderNavigation {...navigating} onClose={() => setNavigating(null)} />}
     </View>
   );
 }
