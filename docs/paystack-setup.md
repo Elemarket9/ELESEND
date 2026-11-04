@@ -53,6 +53,9 @@ There is no limit on the amount a person can withdraw. Keep `WITHDRAWAL_FEE_MINO
 - **Failed parcel deliveries after pickup:** the sender pays the full fare, with no refund. The rider returns the parcel and gets the sender's SMS code, then earnings and commission settle like a completed delivery. If the fare was cash payable by the recipient, the rider collects it from the sender first.
 - **Parcels never picked up:** the rider releases the job, and the sender can cancel for a full refund.
 
+## Exception payouts
+The propose-and-approve screen in the admin portal is for correcting a problem payout only. Normal payouts are withdrawals.
+
 ## Deploying without providers
 ELESEND starts with no Paystack, SMS, Didit, map or routing settings. Features that need a missing provider stay off until you add its settings. Without SMS, bookings and account verification pause. Without a payment provider, only cash is available.
 

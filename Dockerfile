@@ -6,6 +6,7 @@ COPY --chown=node:node services services
 COPY --chown=node:node scripts scripts
 COPY --chown=node:node database database
 COPY --chown=node:node apps/restaurant-web apps/restaurant-web
+COPY --chown=node:node apps/company-web apps/company-web
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 USER node
 ENV HOST=0.0.0.0 PORT=3090 NODE_ENV=production

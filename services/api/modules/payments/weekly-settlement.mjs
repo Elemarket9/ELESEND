@@ -107,6 +107,13 @@ export async function getWeeklySettlementSettings(c) {
   };
 }
 
+/** The current and previous weekly commission periods under the given settings. */
+function settlementWeeks(settings, now) {
+  const options = {graceHours: settings.grace_hours, cutoffDayOfWeek: settings.cutoff_day_of_week, cutoffTimeUtc: settings.cutoff_time_utc};
+  const currentWeek = getGhanaWeekRange(now, options);
+  return {currentWeek, priorWeek: getGhanaWeekRange(new Date(currentWeek.start.getTime() - (7 * 86400000)), options)};
+}
+
 /**
  * Evaluates rider obligations and breaks down into:
  * - currentWeekAccruedMinor: active current week debt (not overdue before cutoff)
@@ -115,20 +122,7 @@ export async function getWeeklySettlementSettings(c) {
  */
 export async function getRiderWeeklyBalance(c, riderId, {now = new Date()} = {}) {
   const settings = await getWeeklySettlementSettings(c);
-  const currentWeek = getGhanaWeekRange(now, {
-    graceHours: settings.grace_hours,
-    cutoffDayOfWeek: settings.cutoff_day_of_week,
-    cutoffTimeUtc: settings.cutoff_time_utc
-  });
-
-  // Prior week cutoff: when did the immediate previous week expire?
-  // Previous week started 7 days before currentWeek.start
-  const priorWeekStart = new Date(currentWeek.start.getTime() - (7 * 86400000));
-  const priorWeek = getGhanaWeekRange(priorWeekStart, {
-    graceHours: settings.grace_hours,
-    cutoffDayOfWeek: settings.cutoff_day_of_week,
-    cutoffTimeUtc: settings.cutoff_time_utc
-  });
+  const {currentWeek, priorWeek} = settlementWeeks(settings, now);
 
   // Fetch all obligations and their current allocated amounts
   const rows = (await c.query(`
@@ -523,17 +517,7 @@ export async function getAdminSettlementOverview(db, {actor = null, filter = 'al
 export async function getRiderWeeklyHistory(db, riderId, {limitWeeks = 12, now = new Date()} = {}) {
   return db.tx(async c => {
     const settings = await getWeeklySettlementSettings(c);
-    const currentWeek = getGhanaWeekRange(now, {
-      graceHours: settings.grace_hours,
-      cutoffDayOfWeek: settings.cutoff_day_of_week,
-      cutoffTimeUtc: settings.cutoff_time_utc
-    });
-    const priorWeekStart = new Date(currentWeek.start.getTime() - (7 * 86400000));
-    const priorWeek = getGhanaWeekRange(priorWeekStart, {
-      graceHours: settings.grace_hours,
-      cutoffDayOfWeek: settings.cutoff_day_of_week,
-      cutoffTimeUtc: settings.cutoff_time_utc
-    });
+    const {currentWeek, priorWeek} = settlementWeeks(settings, now);
 
     // Aggregate allocations per obligation FIRST so multiple allocations on a single
     // obligation never multiply original_minor or job_count, and separate shipment jobs

@@ -1,3 +1,5 @@
+import {assessDeliveryHealth,RIDER_LATE_OR_SILENT_SQL} from './algorithms/delivery-health.mjs';
+import {recordRiderRiskSignals} from './risk-signals.mjs';
 import {restaurantFinanceSummary,firstConfirmedPaymentAt} from './modules/payments/index.mjs';
 import {randomUUID,createHash} from 'node:crypto';
 import {lockFoodOrder,requireFoodPayment,restaurantOpenNow} from './modules/payments/index.mjs';
@@ -13,6 +15,13 @@ import {commissionEngine} from './commission-engine.mjs';
 import {chatEngine} from './chat-engine.mjs';
 
 const uuid = z.string().uuid();
+
+const ASSIGNABLE_RIDER_SELECT=`SELECT r.id, r.vehicle, r.max_weight_g AS capacity_g,
+         COALESCE(l.latitude, ST_Y(r.current_position::geometry)) AS latitude,
+         COALESCE(l.longitude, ST_X(r.current_position::geometry)) AS longitude
+  FROM riders r
+  LEFT JOIN locations l ON l.rider_id = r.id
+  LEFT JOIN commission_accounts ca ON ca.rider_id = r.id`;
 
 export function restaurantOrderService(db, options = {}) {
   const {platform = null, dispatcher = null, routing = null, sms = undefined, acceptanceTimeoutSeconds=300,courierTimeoutSeconds=1200,unpaidTimeoutSeconds=1800} = options;
@@ -728,16 +737,7 @@ export function restaurantOrderService(db, options = {}) {
         [orderId]
       )).rows[0];
 
-      if (order.shipment_id) {
-        const shipment=(await c.query('SELECT * FROM shipments WHERE id=$1',[order.shipment_id])).rows[0];
-        check(shipment&&['AWAITING_PAYMENT','AWAITING_ASSIGNMENT'].includes(shipment.state),409,'Courier already assigned; operational cancellation required');
-        await requestCheckoutRefund(c,shipment,reason);
-        await c.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[order.shipment_id]);
-        await c.query("UPDATE dispatch_offers SET status='expired' WHERE shipment_id=$1 AND status='offered'",[order.shipment_id]);
-        await promos.releaseOrderPromotions(c, orderId, {reason: `rejected:${reason}`, isRefund: Boolean(shipment.paid)});
-      } else {
-        await promos.releaseOrderPromotions(c, orderId, {reason: `rejected:${reason}`, isRefund: false});
-      }
+      await releaseOrderBeforeKitchen(c, order, orderId, reason, 'rejected');
 
       await c.query(
         'INSERT INTO audit_logs (actor_id, action, entity_id) VALUES ($1, $2, $3)',
@@ -761,16 +761,7 @@ export function restaurantOrderService(db, options = {}) {
         [orderId]
       )).rows[0];
 
-      if (order.shipment_id) {
-        const shipment=(await c.query('SELECT * FROM shipments WHERE id=$1',[order.shipment_id])).rows[0];
-        check(shipment&&['AWAITING_PAYMENT','AWAITING_ASSIGNMENT'].includes(shipment.state),409,'Courier already assigned; operational cancellation required');
-        await requestCheckoutRefund(c,shipment,reason);
-        await c.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[order.shipment_id]);
-        await c.query("UPDATE dispatch_offers SET status='expired' WHERE shipment_id=$1 AND status='offered'",[order.shipment_id]);
-        await promos.releaseOrderPromotions(c, orderId, {reason: `cancelled:${reason}`, isRefund: Boolean(shipment.paid)});
-      } else {
-        await promos.releaseOrderPromotions(c, orderId, {reason: `cancelled:${reason}`, isRefund: false});
-      }
+      await releaseOrderBeforeKitchen(c, order, orderId, reason, 'cancelled');
 
       await c.query(
         'INSERT INTO audit_logs (actor_id, action, entity_id) VALUES ($1, $2, $3)',
@@ -779,6 +770,34 @@ export function restaurantOrderService(db, options = {}) {
 
       return updated;
     });
+  }
+
+  async function releaseOrderBeforeKitchen(c, order, orderId, reason, label) {
+    if (!order.shipment_id) {
+      await promos.releaseOrderPromotions(c, orderId, {reason: `${label}:${reason}`, isRefund: false});
+      return;
+    }
+    const shipment=(await c.query('SELECT * FROM shipments WHERE id=$1',[order.shipment_id])).rows[0];
+    check(shipment&&['AWAITING_PAYMENT','AWAITING_ASSIGNMENT'].includes(shipment.state),409,'Courier already assigned; operational cancellation required');
+    await requestCheckoutRefund(c,shipment,reason);
+    await c.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[order.shipment_id]);
+    await c.query("UPDATE dispatch_offers SET status='expired' WHERE shipment_id=$1 AND status='offered'",[order.shipment_id]);
+    await promos.releaseOrderPromotions(c, orderId, {reason: `${label}:${reason}`, isRefund: Boolean(shipment.paid)});
+  }
+
+  /** Records each step on the way to RETURNED so the shipment history stays complete. */
+  async function moveShipmentToReturned(c, shipment) {
+    await clearRiderAssignmentArtifacts(c, shipment);
+    const record = async kind => {
+      await c.query(`UPDATE shipments SET state = '${kind}' WHERE id = $1`, [shipment.id]);
+      await c.query(`INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, '${kind}', $2)`, [shipment.id, JSON.stringify({shipmentId: shipment.id, kind})]);
+    };
+    if (['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(shipment.state)) {
+      await record('FAILED');
+      shipment.state = 'FAILED';
+    }
+    if (shipment.state === 'FAILED') await record('RETURN_REQUESTED');
+    if (shipment.state !== 'RETURNED') await record('RETURNED');
   }
 
   async function clearRiderAssignmentArtifacts(c, shipment) {
@@ -858,20 +877,7 @@ export function restaurantOrderService(db, options = {}) {
       if (v.action === 'returned') {
         check(isAdmin || isOwner, 403, 'Only restaurant owner or administrator may confirm physical return');
         check(pickedUp && (['FAILED', 'RETURN_REQUESTED', 'RETURNED'].includes(shipment.state) || (isAdmin && ['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(shipment.state))), 409, 'Return confirmation requires a post-pickup failed or return-requested shipment');
-        await clearRiderAssignmentArtifacts(c, shipment);
-        if (['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(shipment.state)) {
-          await c.query("UPDATE shipments SET state = 'FAILED' WHERE id = $1", [shipment.id]);
-          await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'FAILED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'FAILED'})]);
-          shipment.state = 'FAILED';
-        }
-        if (shipment.state === 'FAILED') {
-          await c.query("UPDATE shipments SET state = 'RETURN_REQUESTED' WHERE id = $1", [shipment.id]);
-          await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'RETURN_REQUESTED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'RETURN_REQUESTED'})]);
-        }
-        if (shipment.state !== 'RETURNED') {
-          await c.query("UPDATE shipments SET state = 'RETURNED' WHERE id = $1", [shipment.id]);
-          await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'RETURNED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'RETURNED'})]);
-        }
+        await moveShipmentToReturned(c, shipment);
         await requestCheckoutRefund(c, shipment, v.reason);
         const updated = (await c.query("UPDATE food_orders SET state = 'CANCELLED', updated_at = now() WHERE id = $1 RETURNING *", [orderId])).rows[0];
         await promos.releaseOrderPromotions(c, orderId, {reason: `returned_cancelled:${v.reason}`, isRefund: Boolean(shipment.paid)});
@@ -894,20 +900,7 @@ export function restaurantOrderService(db, options = {}) {
       } else {
         check(isAdmin || isOwner || (isCustomer && shipment.state === 'RETURNED'), 403, 'Post-pickup refund requires restaurant return confirmation or operator decision');
         check(['FAILED', 'RETURN_REQUESTED', 'RETURNED'].includes(shipment.state) || (isAdmin && ['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(shipment.state)), 409, 'Post-pickup order can only be cancelled after delivery failure or return');
-        await clearRiderAssignmentArtifacts(c, shipment);
-        if (['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(shipment.state)) {
-          await c.query("UPDATE shipments SET state = 'FAILED' WHERE id = $1", [shipment.id]);
-          await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'FAILED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'FAILED'})]);
-          shipment.state = 'FAILED';
-        }
-        if (shipment.state === 'FAILED') {
-          await c.query("UPDATE shipments SET state = 'RETURN_REQUESTED' WHERE id = $1", [shipment.id]);
-          await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'RETURN_REQUESTED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'RETURN_REQUESTED'})]);
-        }
-        if (shipment.state !== 'RETURNED') {
-          await c.query("UPDATE shipments SET state = 'RETURNED' WHERE id = $1", [shipment.id]);
-          await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'RETURNED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'RETURNED'})]);
-        }
+        await moveShipmentToReturned(c, shipment);
         await requestCheckoutRefund(c, shipment, v.reason);
         const updated = (await c.query("UPDATE food_orders SET state = 'CANCELLED', updated_at = now() WHERE id = $1 RETURNING *", [orderId])).rows[0];
         await promos.releaseOrderPromotions(c, orderId, {reason: `post_pickup_cancelled:${v.reason}`, isRefund: Boolean(shipment.paid)});
@@ -960,14 +953,7 @@ export function restaurantOrderService(db, options = {}) {
         AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP')
         AND (NOT $4::boolean OR COALESCE(f.watchdog_next_review_at, s.watchdog_next_review_at, '-infinity'::timestamptz) <= clock_timestamp())
         AND (
-          r.online = false
-          OR GREATEST(COALESCE(r.position_at, '-infinity'::timestamptz), COALESCE(l.updated_at, '-infinity'::timestamptz)) < now() - ($1::int * interval '1 second')
-          OR (s.state='RIDER_ASSIGNED' AND f.ready_at IS NOT NULL AND f.ready_at < now() - ($2::int * interval '1 second'))
-          OR (s.state='RIDER_ASSIGNED' AND EXISTS (
-            SELECT 1 FROM dispatch_offers o
-            WHERE o.shipment_id=s.id AND o.rider_id=s.rider_id AND o.status='accepted'
-              AND o.accepted_at + ((COALESCE(o.pickup_eta_seconds, 300) + $2::int) * interval '1 second') < now()
-          ))
+          ${RIDER_LATE_OR_SILENT_SQL}
           OR (s.state IN ('PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP') AND (
             (dc.promised_delivery_before IS NOT NULL AND dc.promised_delivery_before < now())
             OR (dc.promised_delivery_before IS NULL AND COALESCE(f.ready_at, f.accepted_at, f.created_at) < now() - interval '45 minutes')
@@ -997,35 +983,10 @@ export function restaurantOrderService(db, options = {}) {
           const accOffer=(await c.query("SELECT id,accepted_at,pickup_eta_seconds FROM dispatch_offers WHERE shipment_id=$1 AND rider_id=$2 AND status='accepted' ORDER BY accepted_at DESC LIMIT 1",[s.id,s.rider_id])).rows[0];
           const pickedUp=s.state!=='RIDER_ASSIGNED'||f.state==='IN_TRANSIT'||
             Boolean((await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount);
-          const nowMs=Date.now();
-          const latestGpsMs=Math.max(
-            r?.position_at?new Date(r.position_at).getTime():-Infinity,
-            loc?.updated_at?new Date(loc.updated_at).getTime():-Infinity
-          );
-          const isStaleGps=!r?.online||!Number.isFinite(latestGpsMs)||(nowMs-latestGpsMs)>staleSec*1000;
-          const pickupDeadlineMs=Math.min(
-            f.ready_at?new Date(f.ready_at).getTime()+pickupGraceSec*1000:Infinity,
-            accOffer?.accepted_at?new Date(accOffer.accepted_at).getTime()+(Number(accOffer.pickup_eta_seconds||300)+pickupGraceSec)*1000:Infinity
-          );
-          const isOverduePickup=!pickedUp&&Number.isFinite(pickupDeadlineMs)&&nowMs>pickupDeadlineMs;
-          const deliveryDeadlineMs=dc?.promised_delivery_before
-            ?new Date(dc.promised_delivery_before).getTime()
-            :(new Date(f.ready_at||f.accepted_at||f.created_at).getTime()+45*60*1000);
-          const isOverdueDelivery=pickedUp&&Number.isFinite(deliveryDeadlineMs)&&nowMs>deliveryDeadlineMs;
-          const reasons=[];
-          const signals=[];
-          if(isStaleGps){reasons.push('stale_gps');signals.push({code:'STALE_GPS',severity:pickedUp?'high':'medium'});}
-          if(isOverduePickup){reasons.push('overdue_pickup');signals.push({code:'OVERDUE_PICKUP',severity:'medium'});}
-          if(isOverdueDelivery){reasons.push('overdue_delivery');signals.push({code:'OVERDUE_DELIVERY',severity:'high'});}
+          const {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,latestGpsMs,nowMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f.ready_at,offer:accOffer,deliveryDeadlineMs:dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():new Date(f.ready_at||f.accepted_at||f.created_at).getTime()+45*60*1000});
           if(!reasons.length)return null;
           const oldRiderId=s.rider_id;
-          for(const sig of signals){
-            const existingSig=(await c.query("SELECT id FROM operational_risk_signals WHERE rider_id=$1 AND shipment_id=$2 AND signal_code=$3 AND review_status='pending' LIMIT 1",[oldRiderId,s.id,sig.code])).rows[0];
-            if(!existingSig){
-              await c.query('INSERT INTO operational_risk_signals(rider_id,shipment_id,signal_code,severity,evidence) VALUES($1,$2,$3,$4,$5)',
-                [oldRiderId,s.id,sig.code,sig.severity,JSON.stringify({orderId:f.id,reasons,state:s.state,lastGpsAt:Number.isFinite(latestGpsMs)?new Date(latestGpsMs).toISOString():null})]);
-            }
-          }
+          await recordRiderRiskSignals(c, oldRiderId, s.id, signals, {orderId:f.id,reasons,state:s.state,lastGpsAt:Number.isFinite(latestGpsMs)?new Date(latestGpsMs).toISOString():null});
           const reasonSummary=`Assigned food delivery watchdog detected ${reasons.join(', ')} for rider ${oldRiderId}`;
           if(!pickedUp){
             await c.query("INSERT INTO dispatch_exceptions(shipment_id,actor_id,kind,reason) VALUES($1,NULL,'reassignment_review',$2)",[s.id,reasonSummary]);
@@ -1131,12 +1092,7 @@ export function restaurantOrderService(db, options = {}) {
     if (riderId) {
       uuid.parse(riderId);
       const riderRow = (await db.query(
-        `SELECT r.id, r.vehicle, r.max_weight_g AS capacity_g,
-                COALESCE(l.latitude, ST_Y(r.current_position::geometry)) AS latitude,
-                COALESCE(l.longitude, ST_X(r.current_position::geometry)) AS longitude
-         FROM riders r
-         LEFT JOIN locations l ON l.rider_id = r.id
-         LEFT JOIN commission_accounts ca ON ca.rider_id = r.id
+        `${ASSIGNABLE_RIDER_SELECT}
          WHERE r.id = $1
            AND r.status = 'approved'
            AND r.financial_restriction IS NULL
@@ -1155,12 +1111,7 @@ export function restaurantOrderService(db, options = {}) {
     } else {
       // Find nearest approved, debt-eligible active rider using live current_position or active location pin
       const riderRow = (await db.query(
-        `SELECT r.id, r.vehicle, r.max_weight_g AS capacity_g,
-                COALESCE(l.latitude, ST_Y(r.current_position::geometry)) AS latitude,
-                COALESCE(l.longitude, ST_X(r.current_position::geometry)) AS longitude
-         FROM riders r
-         LEFT JOIN locations l ON l.rider_id = r.id
-         LEFT JOIN commission_accounts ca ON ca.rider_id = r.id
+        `${ASSIGNABLE_RIDER_SELECT}
          WHERE r.status = 'approved'
            AND r.online = true
            AND r.financial_restriction IS NULL

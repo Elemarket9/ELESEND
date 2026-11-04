@@ -135,10 +135,10 @@ export function RiderTools() {
       </View>
       <View style={card}>
         <Text style={title}>Busy Areas</Text>
-        {!areas.length && <Text style={body}>No busy areas in the last hour.</Text>}
+        {!areas.length && <Text style={body}>No busy areas right now.</Text>}
         {areas.map(a => (
           <TouchableOpacity key={`${a.latitude},${a.longitude}`} onPress={() => Linking.openURL(`https://maps.google.com/?q=${a.latitude},${a.longitude}`).catch(() => {})}>
-            <Text style={[body, { color: '#0F172A', paddingVertical: 4 }]}>{a.orders} orders{a.distanceMeters != null ? `, ${(a.distanceMeters / 1000).toFixed(1)} km away` : ''}. Open map</Text>
+            <Text style={[body, { color: '#0F172A', paddingVertical: 4 }]}>{a.orders} customers waiting{a.distanceMeters != null ? `, ${(a.distanceMeters / 1000).toFixed(1)} km away` : ''}. Open map</Text>
           </TouchableOpacity>
         ))}
       </View>

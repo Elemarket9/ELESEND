@@ -1,3 +1,4 @@
+import {requireAnyPermission} from './permissions.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from './security.mjs';
@@ -61,6 +62,47 @@ const createRuleSchema = z.object({
   confirmHighRate: z.boolean().optional(),
   highRateRationale: z.string().min(10).max(500).optional()
 }).strict();
+
+/** Pause, resume and revoke share one audited status change. */
+async function changeRuleStatus(requireAdminPermission, db, actor, ruleId, rationale, { to, action, allowed, blocked }) {
+  await requireAdminPermission(db, actor, ['finance:configure', 'pricing:write']);
+  check(rationale && rationale.trim().length >= 5, 400, 'Rationale required (min 5 chars)');
+  return db.tx(async c => {
+    const rule = await lockRule(c, ruleId);
+    check(allowed(rule), 409, blocked(rule));
+    await c.query(
+      `UPDATE commission_rules SET status = '${to}', updated_at = now() WHERE id = $1`,
+      [ruleId]
+    );
+    await c.query(
+      `INSERT INTO commission_audit_logs (
+         id, rule_id, action, actor_id, previous_rate_bps, new_rate_bps, rationale
+       ) VALUES ($1, $2, '${action}', $3, $4, $4, $5)`,
+      [id(), ruleId, actor.id, rule.rate_bps, rationale]
+    );
+    return { id: ruleId, status: to };
+  });
+}
+
+async function lockRule(c, ruleId) {
+  const rule = (await c.query(
+    'SELECT * FROM commission_rules WHERE id = $1 FOR UPDATE',
+    [ruleId]
+  )).rows[0];
+  check(rule, 404, 'Commission rule not found');
+  return rule;
+}
+
+function resolvedFromRule(rule, restRow, settings) {
+  return {
+    rateBps: rule.rate_bps,
+    ruleId: rule.id,
+    source: rule.category,
+    reason: rule.reason,
+    contractReference: rule.contract_reference || null,
+    calculationBasis: rule.calculation_basis || restRow?.commission_calculation_basis || settings.default_calculation_basis
+  };
+}
 
 export function calculateCommissionBreakdown(amountMinor, rateBps) {
   if (!Number.isSafeInteger(amountMinor) || amountMinor < 0) {
@@ -146,13 +188,7 @@ export function computeRestaurantCommissionBreakdown({
 
 export function commissionEngine(db) {
   async function requireAdminPermission(c, actor, permissions) {
-    check(actor?.kind === 'admin', 403, 'Administrator access required');
-    const list = Array.isArray(permissions) ? permissions : [permissions];
-    const has = (await c.query(
-      'SELECT 1 FROM permissions WHERE user_id = $1 AND permission = ANY($2::text[])',
-      [actor.id, list]
-    )).rowCount;
-    check(has, 403, 'Commission configuration permission required');
+    return requireAnyPermission(c, actor, permissions, 'Commission configuration permission required');
   }
 
   async function loadGlobalRestaurantSettings(c = db) {
@@ -321,15 +357,7 @@ export function commissionEngine(db) {
         )).rows;
 
         if (restRules.length > 0) {
-          const rule = restRules[0];
-          resolved = {
-            rateBps: rule.rate_bps,
-            ruleId: rule.id,
-            source: rule.category,
-            reason: rule.reason,
-            contractReference: rule.contract_reference || null,
-            calculationBasis: rule.calculation_basis || restRow?.commission_calculation_basis || settings.default_calculation_basis
-          };
+          resolved = resolvedFromRule(restRules[0], restRow, settings);
         }
       }
 
@@ -422,15 +450,7 @@ export function commissionEngine(db) {
         )).rows;
 
         if (globalRules.length > 0) {
-          const rule = globalRules[0];
-          resolved = {
-            rateBps: rule.rate_bps,
-            ruleId: rule.id,
-            source: rule.category,
-            reason: rule.reason,
-            contractReference: rule.contract_reference || null,
-            calculationBasis: rule.calculation_basis || restRow?.commission_calculation_basis || settings.default_calculation_basis
-          };
+          resolved = resolvedFromRule(globalRules[0], restRow, settings);
         } else {
           const fallbackRate = Number.isInteger(settings.default_rate_bps)
             ? settings.default_rate_bps
@@ -902,93 +922,21 @@ export function commissionEngine(db) {
      * Pause an active commission rule.
      */
     async pauseRule(actor, ruleId, rationale) {
-      await requireAdminPermission(db, actor, ['finance:configure', 'pricing:write']);
-      check(rationale && rationale.trim().length >= 5, 400, 'Rationale required (min 5 chars)');
-
-      return db.tx(async c => {
-        const rule = (await c.query(
-          'SELECT * FROM commission_rules WHERE id = $1 FOR UPDATE',
-          [ruleId]
-        )).rows[0];
-        check(rule, 404, 'Commission rule not found');
-        check(rule.status === 'active', 409, `Cannot pause rule in ${rule.status} state`);
-
-        await c.query(
-          "UPDATE commission_rules SET status = 'paused', updated_at = now() WHERE id = $1",
-          [ruleId]
-        );
-
-        await c.query(
-          `INSERT INTO commission_audit_logs (
-             id, rule_id, action, actor_id, previous_rate_bps, new_rate_bps, rationale
-           ) VALUES ($1, $2, 'paused', $3, $4, $4, $5)`,
-          [id(), ruleId, actor.id, rule.rate_bps, rationale]
-        );
-
-        return { id: ruleId, status: 'paused' };
-      });
+      return changeRuleStatus(requireAdminPermission, db, actor, ruleId, rationale, { to: 'paused', action: 'paused', allowed: rule => rule.status === 'active', blocked: rule => `Cannot pause rule in ${rule.status} state` });
     },
 
     /**
      * Resume a paused commission rule.
      */
     async resumeRule(actor, ruleId, rationale) {
-      await requireAdminPermission(db, actor, ['finance:configure', 'pricing:write']);
-      check(rationale && rationale.trim().length >= 5, 400, 'Rationale required (min 5 chars)');
-
-      return db.tx(async c => {
-        const rule = (await c.query(
-          'SELECT * FROM commission_rules WHERE id = $1 FOR UPDATE',
-          [ruleId]
-        )).rows[0];
-        check(rule, 404, 'Commission rule not found');
-        check(rule.status === 'paused', 409, `Cannot resume rule in ${rule.status} state`);
-
-        await c.query(
-          "UPDATE commission_rules SET status = 'active', updated_at = now() WHERE id = $1",
-          [ruleId]
-        );
-
-        await c.query(
-          `INSERT INTO commission_audit_logs (
-             id, rule_id, action, actor_id, previous_rate_bps, new_rate_bps, rationale
-           ) VALUES ($1, $2, 'resumed', $3, $4, $4, $5)`,
-          [id(), ruleId, actor.id, rule.rate_bps, rationale]
-        );
-
-        return { id: ruleId, status: 'active' };
-      });
+      return changeRuleStatus(requireAdminPermission, db, actor, ruleId, rationale, { to: 'active', action: 'resumed', allowed: rule => rule.status === 'paused', blocked: rule => `Cannot resume rule in ${rule.status} state` });
     },
 
     /**
      * Revoke a commission rule permanently.
      */
     async revokeRule(actor, ruleId, rationale) {
-      await requireAdminPermission(db, actor, ['finance:configure', 'pricing:write']);
-      check(rationale && rationale.trim().length >= 5, 400, 'Rationale required (min 5 chars)');
-
-      return db.tx(async c => {
-        const rule = (await c.query(
-          'SELECT * FROM commission_rules WHERE id = $1 FOR UPDATE',
-          [ruleId]
-        )).rows[0];
-        check(rule, 404, 'Commission rule not found');
-        check(rule.status !== 'revoked', 409, 'Rule is already revoked');
-
-        await c.query(
-          "UPDATE commission_rules SET status = 'revoked', updated_at = now() WHERE id = $1",
-          [ruleId]
-        );
-
-        await c.query(
-          `INSERT INTO commission_audit_logs (
-             id, rule_id, action, actor_id, previous_rate_bps, new_rate_bps, rationale
-           ) VALUES ($1, $2, 'revoked', $3, $4, $4, $5)`,
-          [id(), ruleId, actor.id, rule.rate_bps, rationale]
-        );
-
-        return { id: ruleId, status: 'revoked' };
-      });
+      return changeRuleStatus(requireAdminPermission, db, actor, ruleId, rationale, { to: 'revoked', action: 'revoked', allowed: rule => rule.status !== 'revoked', blocked: rule => 'Rule is already revoked' });
     },
 
     /**
@@ -1010,11 +958,7 @@ export function commissionEngine(db) {
       const v = updateSchema.parse(updates);
 
       return db.tx(async c => {
-        const rule = (await c.query(
-          'SELECT * FROM commission_rules WHERE id = $1 FOR UPDATE',
-          [ruleId]
-        )).rows[0];
-        check(rule, 404, 'Commission rule not found');
+        const rule = await lockRule(c, ruleId);
         check(rule.status !== 'revoked', 409, 'Cannot update a revoked rule');
 
         const newRate = v.rateBps !== undefined ? v.rateBps : rule.rate_bps;

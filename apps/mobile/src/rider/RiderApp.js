@@ -14,6 +14,7 @@
  * zero customer screens, zero client-side pricing or commission manipulation.
  */
 
+import { runGuarded, useSignInState, signInWithPassword } from '../account-actions';
 import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, TextInput, Pressable, ScrollView, StyleSheet,
@@ -22,6 +23,7 @@ import {
 } from 'react-native';
 import * as Location from 'expo-location';
 import { WithdrawalHistory } from '../rider-withdrawal-history';
+import { CompanyInvitations } from '../rider-company-invitations';
 import { EmergencyButton, RatingPrompts, RiderTools, ShareLiveLocation, TrustedContactCard } from '../rider-safety';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline, openTurnByTurnNavigation } from '../maps/map-adapter';
@@ -46,22 +48,28 @@ const initialCreds = {
 
 const isStationary = speed => speed === null || speed < 2.5;
 
+function BrandRow({ tagline }) {
+  return (
+    <View style={styles.brandRow}>
+      <View style={styles.brandBadge}><Text style={styles.brandBadgeText}>E</Text></View>
+      <View>
+        <Text style={styles.brandTitle}>ELESEND</Text>
+        <Text style={styles.brandTagline}>{tagline}</Text>
+      </View>
+    </View>
+  );
+}
+
 export default function RiderApp() {
   const [auth, setAuth] = useState(null);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
-  const [phoneState, setPhoneState] = useState(null); // { phone, verified }
-  const [phoneChallenge, setPhoneChallenge] = useState(null); // { challengeId, expiresInSeconds }
-  const [phoneCode, setPhoneCode] = useState('');
-  const [credentials, setCredentials] = useState(initialCreds);
-  const [isSignup, setIsSignup] = useState(false);
-  const [forgotModal, setForgotModal] = useState(false);
-  const [recoveryPhone, setRecoveryPhone] = useState('');
-  const [recoveryChallenge, setRecoveryChallenge] = useState(null);
-  const [recoveryCode, setRecoveryCode] = useState('');
-  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const {
+    phoneState, setPhoneState, phoneChallenge, setPhoneChallenge, phoneCode, setPhoneCode,
+    credentials, setCredentials, isSignup, setIsSignup, loading, setLoading, busy, setBusy, error, setError,
+    forgotModal, setForgotModal, recoveryPhone, setRecoveryPhone, recoveryChallenge, setRecoveryChallenge,
+    recoveryCode, setRecoveryCode, recoveryNewPassword, setRecoveryNewPassword,
+    requestPasswordRecoveryChallenge, submitPasswordReset
+  } = useSignInState(initialCreds);
   const [tab, setTab] = useState('Jobs'); // 'Jobs' | 'Manifest' | 'Earnings' | 'Profile'
 
   // Courier Operational State
@@ -116,18 +124,18 @@ export default function RiderApp() {
 
   const edit = (k, v) => setCredentials(c => ({ ...c, [k]: v }));
 
-  const execute = async task => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      setError('');
-      await task();
-    } catch (e) {
-      setError(e.message || 'Operation failed');
-    } finally {
-      setBusy(false);
+  const execute = task => runGuarded(task, { busy, setBusy, setError });
+
+  async function applyManifest(m) {
+    if (m) {
+      setManifest(m);
+      setOfflineCopy(null);
+      await cacheJobs(auth.id, m).catch(() => {});
+      return;
     }
-  };
+    const cached = await readCachedJobs(auth.id).catch(() => null);
+    if (cached) { setOfflineCopy(cached); setManifest(null); }
+  }
 
   // Auth Initialization
   useEffect(() => {
@@ -206,14 +214,7 @@ export default function RiderApp() {
           call('GET', '/api/v1/rider/wallet/summary').catch(() => null)
         ]);
         if (!cancelled) {
-          if (m) {
-            setManifest(m);
-            setOfflineCopy(null);
-            await cacheJobs(auth.id, m).catch(() => {});
-          } else {
-            const cached = await readCachedJobs(auth.id).catch(() => null);
-            if (cached) { setOfflineCopy(cached); setManifest(null); }
-          }
+          await applyManifest(m);
           applyOfferList(o || []);
           if (v) {
             setVehicle(v);
@@ -288,59 +289,16 @@ export default function RiderApp() {
   }, [auth, online, phoneState?.verified, shifts?.background, trackingSeconds]);
 
   // --- Auth & Onboarding Actions ---
-  async function requestPasswordRecoveryChallenge() {
-    const normPhone = normalizeGhanaPhone(recoveryPhone || credentials.phone);
-    if (!isValidGhanaPhone(normPhone)) throw Error('Enter a valid registered Ghana mobile number');
-    const ch = await call('POST', '/api/v1/auth/password-recovery', { phone: normPhone });
-    setRecoveryPhone(normPhone);
-    setRecoveryChallenge(ch);
-    setRecoveryCode('');
-    setError('6-digit password recovery code sent via SMS to ' + normPhone);
-  }
-
-  async function submitPasswordReset() {
-    const normPhone = normalizeGhanaPhone(recoveryPhone || credentials.phone);
-    if (!isValidGhanaPhone(normPhone)) throw Error('Enter a valid registered Ghana mobile number');
-    if (!recoveryChallenge?.challengeId) throw Error('Request a 6-digit recovery code first');
-    if (!/^\d{6}$/.test(recoveryCode.trim())) throw Error('Enter the 6-digit SMS recovery code');
-    if (recoveryNewPassword.length < 12 || recoveryNewPassword.length > 128) {
-      throw Error('New password must be between 12 and 128 characters');
-    }
-    await call('POST', '/api/v1/auth/password-reset', {
-      phone: normPhone,
-      challengeId: recoveryChallenge.challengeId,
-      code: recoveryCode.trim(),
-      newPassword: recoveryNewPassword
-    });
-    setForgotModal(false);
-    setRecoveryChallenge(null);
-    setRecoveryCode('');
-    setRecoveryNewPassword('');
-    setCredentials(c => ({ ...c, phone: normPhone, password: '' }));
-    setError('Password reset complete. All previous sessions have been revoked. Sign in with your new password.');
-  }
-
   async function signIn() {
-    const normPhone = normalizeGhanaPhone(credentials.phone);
-    if (!isValidGhanaPhone(normPhone)) throw Error('Enter a valid Ghana phone (e.g. 024 123 4567)');
-    if (!credentials.password) throw Error('Enter your password');
-
-    const data = await call('POST', '/api/v1/auth/login', {
-      phone: normPhone,
-      password: credentials.password
+    const { data, normPhone, pStatus } = await signInWithPassword(credentials, user => {
+      if (user.kind !== 'rider') throw Error('This account is registered as a customer. Please use the standard ELESEND app.');
     });
-    if (data.user.kind !== 'rider') {
-      throw Error('This account is registered as a customer. Please use the standard ELESEND app.');
-    }
-    await saveToken(data.token);
-    const pStatus = await call('GET', '/api/v1/me/phone').catch(() => ({ phone: normPhone, verified: false }));
     setPhoneState(pStatus);
     setAuth({ ...data.user, phone: pStatus.phone || normPhone });
     setCredentials(initialCreds);
     if (!pStatus.verified) {
       try {
-        const ch = await call('POST', '/api/v1/me/phone-challenge', {});
-        setPhoneChallenge(ch);
+        setPhoneChallenge(await call('POST', '/api/v1/me/phone-challenge', {}));
       } catch (e) {
         setError(e.message || 'Enter the verification code sent to your phone or request a new code.');
       }
@@ -486,14 +444,7 @@ export default function RiderApp() {
     setOffers(prev => prev.filter(x => x.offerId !== offer.offerId));
     setTab('Manifest');
     const m = await call('GET', '/api/v1/rider/manifest').catch(() => null);
-    if (m) {
-            setManifest(m);
-            setOfflineCopy(null);
-            await cacheJobs(auth.id, m).catch(() => {});
-          } else {
-            const cached = await readCachedJobs(auth.id).catch(() => null);
-            if (cached) { setOfflineCopy(cached); setManifest(null); }
-          }
+    await applyManifest(m);
   }
 
   async function declineOffer(offer) {
@@ -698,6 +649,19 @@ export default function RiderApp() {
     if (w) setFinanceSnapshot(w);
   }
 
+  const networkPicker = (
+    <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
+      {['MTN', 'Telecel', 'AT'].map(net => (
+        <TouchableOpacity
+          key={net}
+          onPress={() => setMomoNetwork(net)}
+          style={[styles.networkPill, momoNetwork === net && styles.networkPillActive]}>
+          <Text style={styles.networkPillText}>{net}</Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+
   async function submitLicence() {
     const form = licenceForm;
     await call('POST', '/api/v1/rider/licence', {
@@ -787,13 +751,7 @@ export default function RiderApp() {
         <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
         <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled">
           <View style={styles.authHeader}>
-            <View style={styles.brandRow}>
-              <View style={styles.brandBadge}><Text style={styles.brandBadgeText}>E</Text></View>
-              <View>
-                <Text style={styles.brandTitle}>ELESEND</Text>
-                <Text style={styles.brandTagline}>RIDER COURIER APP</Text>
-              </View>
-            </View>
+            <BrandRow tagline="RIDER COURIER APP" />
             <Text style={styles.authSubtitle}>Drive and earn on your schedule with transparent, administrator-published commission and clear weekly settlements.</Text>
           </View>
 
@@ -980,13 +938,7 @@ export default function RiderApp() {
         <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
         <ScrollView contentContainerStyle={styles.authScroll} keyboardShouldPersistTaps="handled">
           <View style={styles.authHeader}>
-            <View style={styles.brandRow}>
-              <View style={styles.brandBadge}><Text style={styles.brandBadgeText}>E</Text></View>
-              <View>
-                <Text style={styles.brandTitle}>ELESEND</Text>
-                <Text style={styles.brandTagline}>VERIFY COURIER PHONE</Text>
-              </View>
-            </View>
+            <BrandRow tagline="VERIFY COURIER PHONE" />
             <Text style={styles.authSubtitle}>
               Verify your registered Ghana mobile number ({phoneState.phone || auth.phone}) before going online for dispatch.
             </Text>
@@ -1685,16 +1637,7 @@ export default function RiderApp() {
                   <Text style={styles.momoSub}>A prompt will be sent directly to your phone to approve the payment.</Text>
 
                   <Text style={[styles.inputLabel, { marginTop: 12 }]}>Select Network</Text>
-                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
-                    {['MTN', 'Telecel', 'AT'].map(net => (
-                      <TouchableOpacity
-                        key={net}
-                        onPress={() => setMomoNetwork(net)}
-                        style={[styles.networkPill, momoNetwork === net && styles.networkPillActive]}>
-                        <Text style={styles.networkPillText}>{net}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
+                  {networkPicker}
 
                   <Text style={[styles.inputLabel, { marginTop: 12 }]}>Amount in GH₵</Text>
                   <TextInput
@@ -1804,16 +1747,7 @@ export default function RiderApp() {
                   <Text style={styles.momoSub}>Payouts go to Mobile Money on your verified phone ({auth.phone}).</Text>
 
                   <Text style={[styles.inputLabel, { marginTop: 12 }]}>Select Network</Text>
-                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
-                    {['MTN', 'Telecel', 'AT'].map(net => (
-                      <TouchableOpacity
-                        key={net}
-                        onPress={() => setMomoNetwork(net)}
-                        style={[styles.networkPill, momoNetwork === net && styles.networkPillActive]}>
-                        <Text style={styles.networkPillText}>{net}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
+                  {networkPicker}
 
                   <Text style={[styles.inputLabel, { marginTop: 12 }]}>Name on Mobile Money Account</Text>
                   <TextInput
@@ -1846,6 +1780,7 @@ export default function RiderApp() {
         )}
         {tab === 'Earnings' && (
           <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+            <CompanyInvitations />
             <WithdrawalHistory refreshKey={`${financeSnapshot?.inPayoutMinor}:${availableNow}`} />
             <RatingPrompts />
             <RiderTools />

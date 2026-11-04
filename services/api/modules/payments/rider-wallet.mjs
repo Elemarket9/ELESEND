@@ -1,3 +1,4 @@
+import {payoutSettings} from './payout-settings.mjs';
 import {MARKET_CURRENCY} from '../../market.mjs';
 /**
  * Rider wallet: a read/write facade over ELESEND's EXISTING immutable ledgers.
@@ -227,7 +228,7 @@ export async function settleCompletedDelivery(c,shipment){
  return out;
 }
 
-const earningsHoldHours=()=>{const n=Number(process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS);return process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS&&Number.isSafeInteger(n)&&n>=0?n:24;};
+const earningsHoldHours=()=>payoutSettings().earningsHoldHours;
 async function earningsBreakdown(c,riderId){
  const rows=(await c.query(`SELECT j.shipment_id,s.company_id,
     sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)::bigint AS payable_minor,
@@ -269,8 +270,8 @@ export async function walletSummary(db,actor){
   withdrawableMinor,
   availableNowMinor:debtMinor>0?0:Math.max(0,withdrawableMinor-e.onHoldMinor),
   onHoldMinor:e.onHoldMinor,
-  withdrawalMinMinor:(n=>process.env.WITHDRAWAL_MIN_MINOR&&Number.isSafeInteger(n)&&n>=1?n:10000)(Number(process.env.WITHDRAWAL_MIN_MINOR)),
-  withdrawalFeeMinor:(n=>process.env.WITHDRAWAL_FEE_MINOR&&Number.isSafeInteger(n)&&n>=0?n:100)(Number(process.env.WITHDRAWAL_FEE_MINOR)),
+  withdrawalMinMinor:payoutSettings().minMinor,
+  withdrawalFeeMinor:payoutSettings().feeMinor,
   outstandingDebtMinor:debtMinor,
   debtLimitMinor:debt.limitMinor,
   debtRestricted:debt.restricted,

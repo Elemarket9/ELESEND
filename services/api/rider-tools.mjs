@@ -2,20 +2,19 @@
 import {randomBytes,randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from './security.mjs';
+import {envInt} from './env-values.mjs';
+import {riderEarningsTotals} from './modules/payments/index.mjs';
 import {haversine} from './dispatch-geometry.mjs';
 import {awardPromotionCredit} from './modules/payments/index.mjs';
 
 const requireRider=actor=>check(actor?.kind==='rider',403,'Rider account required');
-const envInt=(value,fallback)=>{const n=Number(value);return value&&Number.isSafeInteger(n)&&n>=0?n:fallback;};
+const setting=(value,fallback)=>envInt(value,fallback,0);
 
 export async function riderEarningsGoals(db,actor){
  requireRider(actor);
- const r=(await db.query(`SELECT r.daily_goal_minor,r.weekly_goal_minor,r.rest_until,
-   coalesce((SELECT sum(amount_minor-commission_minor) FROM shipments s WHERE s.rider_id=r.id AND s.company_id IS NULL AND s.state IN ('COMPLETED','RETURNED') AND (s.completed_at AT TIME ZONE 'UTC')::date=(now() AT TIME ZONE 'UTC')::date),0)::bigint AS today,
-   coalesce((SELECT sum(amount_minor-commission_minor) FROM shipments s WHERE s.rider_id=r.id AND s.company_id IS NULL AND s.state IN ('COMPLETED','RETURNED') AND (s.completed_at AT TIME ZONE 'UTC')>=date_trunc('week',now() AT TIME ZONE 'UTC')),0)::bigint AS week
-  FROM riders r WHERE r.id=$1`,[actor.id])).rows[0];
+ const r=(await db.query('SELECT daily_goal_minor,weekly_goal_minor,rest_until FROM riders WHERE id=$1',[actor.id])).rows[0];
  check(r,403,'Rider account required');
- return {todayMinor:Number(r.today),weekMinor:Number(r.week),dailyGoalMinor:r.daily_goal_minor===null?null:Number(r.daily_goal_minor),weeklyGoalMinor:r.weekly_goal_minor===null?null:Number(r.weekly_goal_minor),restUntil:r.rest_until};
+ return {...await riderEarningsTotals(db,actor.id),dailyGoalMinor:r.daily_goal_minor===null?null:Number(r.daily_goal_minor),weeklyGoalMinor:r.weekly_goal_minor===null?null:Number(r.weekly_goal_minor),restUntil:r.rest_until};
 }
 export async function setEarningsGoals(db,actor,input){
  requireRider(actor);
@@ -28,10 +27,11 @@ export async function setEarningsGoals(db,actor,input){
 export async function demandAreas(db,actor){
  requireRider(actor);
  const me=(await db.query('SELECT ST_Y(current_position::geometry) AS latitude,ST_X(current_position::geometry) AS longitude FROM riders WHERE id=$1',[actor.id])).rows[0];
- const rows=(await db.query(`SELECT round((q.request->'pickup'->>'latitude')::numeric,2)::float AS latitude,round((q.request->'pickup'->>'longitude')::numeric,2)::float AS longitude,count(*)::int AS orders
+ // Same demand as surge pricing: distinct customers waiting for a rider in the last 10 minutes.
+ const rows=(await db.query(`SELECT round((q.request->'pickup'->>'latitude')::numeric,2)::float AS latitude,round((q.request->'pickup'->>'longitude')::numeric,2)::float AS longitude,count(DISTINCT s.customer_id)::int AS orders
    FROM shipments s JOIN quotes q ON q.id=s.quote_id
-   WHERE s.created_at>now()-interval '60 minutes' AND s.state<>'CANCELLED' AND q.request->'pickup'->>'latitude' IS NOT NULL
-   GROUP BY 1,2 HAVING count(*)>=3 ORDER BY orders DESC LIMIT 10`)).rows;
+   WHERE s.state='AWAITING_ASSIGNMENT' AND (s.paid OR s.payment_method='CASH') AND s.created_at>now()-interval '10 minutes' AND q.request->'pickup'->>'latitude' IS NOT NULL
+   GROUP BY 1,2 HAVING count(DISTINCT s.customer_id)>=3 ORDER BY orders DESC LIMIT 10`)).rows;
  return {areas:rows.map(a=>({...a,distanceMeters:me?.latitude!=null?Math.round(haversine(me,a)):null}))};
 }
 export async function referralSummary(db,actor){
@@ -43,7 +43,7 @@ export async function referralSummary(db,actor){
   code=(await db.query('SELECT referral_code FROM riders WHERE id=$1',[actor.id])).rows[0].referral_code;
  }
  const stats=(await db.query("SELECT count(*)::int AS invited,count(*) FILTER(WHERE status='earned')::int AS earned,coalesce(sum(reward_minor),0)::bigint AS rewarded FROM rider_referrals WHERE referrer_id=$1",[actor.id])).rows[0];
- return {code,invited:stats.invited,earned:stats.earned,rewardedMinor:Number(stats.rewarded),targetDeliveries:envInt(process.env.REFERRAL_TARGET_DELIVERIES,10),rewardMinor:envInt(process.env.REFERRAL_REWARD_MINOR,0)};
+ return {code,invited:stats.invited,earned:stats.earned,rewardedMinor:Number(stats.rewarded),targetDeliveries:setting(process.env.REFERRAL_TARGET_DELIVERIES,10),rewardMinor:setting(process.env.REFERRAL_REWARD_MINOR,0)};
 }
 export async function applyReferralCode(db,actor,input){
  requireRider(actor);
@@ -61,7 +61,7 @@ const awardCredit=awardPromotionCredit;
 const completedSince=(c,riderId,from,to)=>c.query("SELECT count(*)::int AS n FROM shipments WHERE rider_id=$1 AND state='COMPLETED' AND completed_at>=$2 AND completed_at<=$3",[riderId,from,to]).then(r=>r.rows[0].n);
 /** Rewards are commission credit, used automatically against future cash commission. */
 export async function settleRiderRewards(db,{limit=100}={}){
- const target=envInt(process.env.REFERRAL_TARGET_DELIVERIES,10),reward=envInt(process.env.REFERRAL_REWARD_MINOR,0);
+ const target=setting(process.env.REFERRAL_TARGET_DELIVERIES,10),reward=setting(process.env.REFERRAL_REWARD_MINOR,0);
  const due=(await db.query(`SELECT f.referred_id,f.referrer_id FROM rider_referrals f
    WHERE f.status='pending' AND (SELECT count(*) FROM shipments s WHERE s.rider_id=f.referred_id AND s.state='COMPLETED')>=$1 ORDER BY f.created_at LIMIT $2`,[target,limit])).rows;
  for(const f of due)await db.tx(async c=>{
@@ -98,7 +98,7 @@ export async function riderCampaigns(db,actor){
 }
 /** Long online shifts force a rest. Short breaks do not reset the clock. */
 export async function enforceDrivingLimits(db){
- const hours=envInt(process.env.RIDER_MAX_ONLINE_HOURS,12)||12,rest=envInt(process.env.RIDER_REST_HOURS,6)||6;
+ const hours=setting(process.env.RIDER_MAX_ONLINE_HOURS,12)||12,rest=setting(process.env.RIDER_REST_HOURS,6)||6;
  await db.query('UPDATE riders SET shift_started_at=NULL WHERE NOT online AND shift_started_at IS NOT NULL AND last_offline_at<now()-make_interval(hours=>$1)',[rest]);
  const rows=(await db.query(`UPDATE riders SET online=false,rest_until=now()+make_interval(hours=>$2),shift_started_at=NULL
    WHERE online AND shift_started_at<now()-make_interval(hours=>$1) RETURNING id`,[hours,rest])).rows;
@@ -109,7 +109,7 @@ export async function enforceDrivingLimits(db){
  return rows.map(r=>r.id);
 }
 /** A rider who has not moved for a long time mid-delivery is flagged, and the rider is asked if they are safe. */
-export async function flagUnusualStops(db,{minutes=envInt(process.env.UNUSUAL_STOP_MINUTES,20),metres=100}={}){
+export async function flagUnusualStops(db,{minutes=setting(process.env.UNUSUAL_STOP_MINUTES,20),metres=100}={}){
  await db.query("DELETE FROM delivery_stop_watch w USING shipments s WHERE s.id=w.shipment_id AND s.state NOT IN ('PICKUP_VERIFIED','IN_TRANSIT')");
  const rows=(await db.query(`SELECT s.id,s.rider_id,ST_Y(r.current_position::geometry) AS latitude,ST_X(r.current_position::geometry) AS longitude,
     w.latitude AS w_lat,w.longitude AS w_lng,w.since,w.alerted_at

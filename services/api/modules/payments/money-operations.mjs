@@ -1,3 +1,5 @@
+import {payoutSettings} from './payout-settings.mjs';
+import {errorText,pool,raceTimeout} from './async-helpers.mjs';
 import {recoverCompanyDebt} from './company-commission.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
@@ -9,16 +11,8 @@ const uuid=z.string().uuid();
 const LIVE_REFUND=['initiating','pending','needs_review'];
 const LIVE_PAYOUT=['initiating','pending','needs_review'];
 
-function withTimeout(promise,ms){
- let timer;
- return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(Error('Provider verification timed out'),{code:'provider_timeout'})),ms);})]).finally(()=>clearTimeout(timer));
-}
-async function pool(items,limit,fn){
- const out=new Array(items.length);let next=0;
- await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{while(next<items.length){const i=next++;out[i]=await fn(items[i]);}}));
- return out;
-}
-const reasonText=e=>String(e?.message||e||'unknown').slice(0,500);
+const withTimeout=(promise,ms)=>raceTimeout(promise,ms,()=>Object.assign(Error('Provider verification timed out'),{code:'provider_timeout'}));
+const reasonText=e=>errorText(e);
 
 /** Receipt must describe exactly this operation. Echoed values are compared,
  * never substituted with our own identifiers. */
@@ -43,14 +37,14 @@ function assertPayoutReceipt(p,record,providerName){
  if(p.provider_id&&record.providerId!=null)check(String(record.providerId)===String(p.provider_id),409,'Payout evidence mismatch: provider ID');
 }
 
-const envInt=(value,fallback,min=1)=>{const n=Number(value);return value!==undefined&&value!==''&&Number.isSafeInteger(n)&&n>=min?n:fallback;};
+const settings=payoutSettings();
 const WITHDRAWAL_SPEND_LOCK=839212,RESUBMIT_AFTER_SECONDS=300,GIVE_UP_AFTER_SECONDS=86400,MAX_DAILY_FAILURES=3;
 export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4,leaseSeconds=120,
- withdrawalMinMinor=envInt(process.env.WITHDRAWAL_MIN_MINOR,10000),
- withdrawalFeeMinor=envInt(process.env.WITHDRAWAL_FEE_MINOR,100,0),
- platformDailyLimitMinor=envInt(process.env.WITHDRAWAL_PLATFORM_DAILY_LIMIT_MINOR,0,0),
- earningsHoldHours=envInt(process.env.WITHDRAWAL_EARNINGS_HOLD_HOURS,24,0),
- securityHoldHours=envInt(process.env.WITHDRAWAL_SECURITY_HOLD_HOURS,24,0)}={}){
+ withdrawalMinMinor=settings.minMinor,
+ withdrawalFeeMinor=settings.feeMinor,
+ platformDailyLimitMinor=settings.platformDailyLimitMinor,
+ earningsHoldHours=settings.earningsHoldHours,
+ securityHoldHours=settings.securityHoldHours}={}){
  async function permit(actor,permissions=['finance:configure']){
   check(actor?.kind==='admin',403,'Administrator required');
   check((await db.query('SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])',[actor.id,[permissions].flat()])).rowCount,403,'Finance permission required');

@@ -1,3 +1,6 @@
+import {ACTIVE_PUSH_TOKEN_FILTER} from './notifications.mjs';
+import {approveVehicleRecord} from './vehicle.mjs';
+import {ACCEPTED_SERVICES,assertCompanyDelivery} from './company.mjs';
 import {ensureCommissionAccount,paymentMethodEnabled,findPaymentEvent,recordPaymentEvent,recordFinancialEntry,earningsEntriesFor,senderCashCollectedInFull,cashCollectionFor,accrueRestaurantSettlement} from './modules/payments/index.mjs';
 import {approveRiderDocuments} from './rider-documents.mjs';
 import {approveRiderLicence} from './rider-licence.mjs';
@@ -5,7 +8,7 @@ import {randomUUID} from 'node:crypto';
 import {MARKET_CURRENCY,MARKET_TIME_ZONE} from './market.mjs';
 import {decryptAdminSecret,verifyAdminTotp} from './admin-mfa.mjs';
 import {z} from 'zod';
-import {check,phone,hash,passwordHash,passwordMatches,newToken,newCode,mac,equal,limit} from './security.mjs';
+import {assertAcceptablePassword,passwordNeedsUpgrade,UNKNOWN_ACCOUNT_HASH,check,phone,hash,passwordHash,passwordMatches,newToken,newCode,mac,equal,limit} from './security.mjs';
 import {carRegistration,registerVehicleInTx} from './vehicle.mjs';
 import {removeStop,removeShipment} from './multi-parcel.mjs';
 import {settleCompletedDelivery,debtState} from './modules/payments/index.mjs';
@@ -23,7 +26,7 @@ import {promotionEngine} from './promotion-engine.mjs';
 import {disconnectRealtimeUser} from './chat-engine.mjs';
 const id=()=>randomUUID();
 const uuid=z.string().uuid();
-const registration=z.object({phone:z.string().max(30),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional()}).strict();
+const registration=z.object({phone:z.string().max(30),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
 const address=z.object({address:z.string().min(5).max(400),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict();
 const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(['motorcycle','car','van']).optional(),recipientPhone:z.string().max(30),weightG:z.number().int().min(1).max(10000000),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
 const ACCOUNT_SMS_PER_NUMBER=5,ACCOUNT_SMS_BLOCK_SECONDS=900;
@@ -153,6 +156,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const v=z.object({phone:z.string().max(30),challengeId:uuid,code:z.string().regex(/^\d{6}$/),newPassword:z.string().min(12).max(128)}).strict().parse(input);
   const p=phone(v.phone);
   await limit(db,'pw-reset:'+hash(p),10,900);
+  assertAcceptablePassword(v.newPassword,{phone:v.phone});
   const pw=await passwordHash(v.newPassword);
   const result=await db.tx(async c=>{
    const u=(await c.query('SELECT id,phone,kind FROM users WHERE phone=$1 FOR UPDATE',[p])).rows[0];
@@ -262,22 +266,12 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   return (await db.query(
    `SELECT id,platform,app_scope,push_token,channel_id,device_id,app_state,battery_saver_enabled,background_location_enabled,active,last_seen_at
       FROM user_push_tokens t
-     WHERE t.user_id=$1
-       AND t.active=true
-       AND (
-         t.session_token_hash IS NULL
-         OR EXISTS (
-           SELECT 1 FROM sessions s
-            WHERE s.token_hash=t.session_token_hash
-              AND s.user_id=t.user_id
-              AND s.expires_at>now()
-         )
-       )
+     WHERE ${ACTIVE_PUSH_TOKEN_FILTER}
      ORDER BY t.updated_at DESC`,
    [actor.id]
   )).rows;
  },
- async register(input){const v=registration.parse(input);const uid=id(),p=phone(v.phone),pw=await passwordHash(v.password);
+ async register(input){const v=registration.parse(input);const uid=id(),p=phone(v.phone);assertAcceptablePassword(v.password,{phone:p});const pw=await passwordHash(v.password);
   await db.tx(async c=>{await c.query('INSERT INTO users(id,phone,password_hash,kind) VALUES($1,$2,$3,$4)',[uid,p,pw,v.kind]);
    if(v.kind==='rider'){
     const type=v.vehicle??'motorcycle';check(type!=='car'||v.car,400,'Car registration details required');
@@ -285,7 +279,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     await ensureCommissionAccount(c,uid);
     if(type==='car')await registerVehicleInTx(c,uid,{vehicle:type,maxWeightG:v.maxWeightG??20000,car:v.car});
    }
-   if(v.kind==='company'){check(v.name,400,'Company name required');await c.query('INSERT INTO companies(id,owner_id,name) VALUES($1,$2,$3)',[id(),uid,v.name]);}
+   if(v.kind==='company'){check(v.name,400,'Company name required');await c.query('INSERT INTO companies(id,owner_id,name,services) VALUES($1,$2,$3,$4)',[id(),uid,v.name,[...new Set(v.services??['riders'])]]);}
    await audit(c,uid,'registered',uid);
   });return {id:uid,kind:v.kind,phone:p,phoneVerified:false};
  },
@@ -295,12 +289,13 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   await limit(db,'login-source:'+hash(p+'|'+clientIp),10,900);await limit(db,'login:'+hash(p),100,900);
   const u=(await db.query('SELECT * FROM users WHERE phone=$1',[p])).rows[0];
   // Spend equivalent password derivation work for unknown identities.
-  const ok=await passwordMatches(v.password,u?.password_hash??('0'.repeat(32)+':'+ '0'.repeat(128)));check(u&&ok,401,'Invalid credentials');
+  const ok=await passwordMatches(v.password,u?.password_hash??UNKNOWN_ACCOUNT_HASH);check(u&&ok,401,'Invalid credentials');
   const token=newToken();
   return db.tx(async c=>{
    const current=(await c.query('SELECT * FROM users WHERE phone=$1 FOR UPDATE',[p])).rows[0];
    const stillValid=Boolean(current&&current.id===u.id&&current.password_hash===u.password_hash&&(await passwordMatches(v.password,current.password_hash)));
    check(stillValid,401,'Invalid credentials');
+   if(passwordNeedsUpgrade(current.password_hash))await c.query('UPDATE users SET password_hash=$2 WHERE id=$1',[current.id,await passwordHash(v.password)]);
    if(current.kind==='admin'){
     check(v.totpCode,401,'Administrator authenticator code required');
     // FOR UPDATE serializes counter consumption across concurrent mobile logins.
@@ -318,7 +313,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    return {token,user:{id:current.id,kind:current.kind}};
   });
  },
- async authenticate(token){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const tokenHash=hash(token);const u=(await db.query("SELECT u.id,u.kind,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR s.admin_mfa_verified=true)",[tokenHash])).rows[0];check(u,401,'Session expired or administrator MFA required');if(u.kind==='rider'){const r=(await db.query("SELECT r.status, c.status AS company_status, r.company_id FROM riders r LEFT JOIN companies c ON c.id=r.company_id WHERE r.id=$1",[u.id])).rows[0];check(r&&r.status==='approved'&&(!r.company_id||r.company_status==='approved'),403,'Rider account suspended or not approved');}if(u.kind==='company'){const c=(await db.query("SELECT status FROM companies WHERE owner_id=$1",[u.id])).rows[0];check(c&&c.status==='approved',403,'Company suspended or not approved');}return {...u,sessionTokenHash:tokenHash};},
+ async authenticate(token){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const tokenHash=hash(token);const u=(await db.query("SELECT u.id,u.kind,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR (s.admin_mfa_verified=true AND s.last_seen_at>now()-interval '30 minutes'))",[tokenHash])).rows[0];check(u,401,'Session expired or administrator MFA required');if(u.kind==='admin')await db.query("UPDATE sessions SET last_seen_at=now() WHERE token_hash=$1 AND last_seen_at<now()-interval '1 minute'",[tokenHash]);if(u.kind==='rider'){const r=(await db.query("SELECT r.status, c.status AS company_status, r.company_id FROM riders r LEFT JOIN companies c ON c.id=r.company_id WHERE r.id=$1",[u.id])).rows[0];check(r&&r.status==='approved'&&(!r.company_id||r.company_status==='approved'),403,'Rider account suspended or not approved');}if(u.kind==='company'){const c=(await db.query("SELECT status FROM companies WHERE owner_id=$1",[u.id])).rows[0];check(c&&c.status==='approved',403,'Company suspended or not approved');}return {...u,sessionTokenHash:tokenHash};},
  async logout(token,input={},actor=null){
   const tokenHash=typeof token==='string'&&token.length>0?hash(token):(actor?.sessionTokenHash??null);
   const deviceId=typeof input?.deviceId==='string'&&input.deviceId.trim().length>0
@@ -389,7 +384,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await audit(c,actor.id,'pricing.vehicle_version_created',pid);return {id:pid,...v};
   });
  },
- async vehicleTariffs(actor){check(['customer','business','admin'].includes(actor.kind),403);return (await db.query('SELECT id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled FROM pricing_policies WHERE active AND vehicle IS NOT NULL ORDER BY vehicle')).rows;},
+ async vehicleTariffs(actor){check(['customer','business','company','admin'].includes(actor.kind),403);return (await db.query('SELECT id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled FROM pricing_policies WHERE active AND vehicle IS NOT NULL ORDER BY vehicle')).rows;},
  async getPricing(actor){check(actor?.kind==='admin',403);check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])",[actor.id,['pricing:write','finance:read','finance:approve','finance:configure']])).rowCount,403,'Pricing permission required');return (await db.query('SELECT * FROM pricing_policies WHERE active ORDER BY vehicle NULLS FIRST')).rows;},
  async configureCommission(actor,input){
   const v=z.object({vehicle:z.enum(['motorcycle','car','van']).nullable().optional(),commissionBps:z.number().int().min(0).max(10000),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null)}).strict().parse(input);
@@ -421,7 +416,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async approve(actor,type,target,status){check(['riders','companies'].includes(type),400);uuid.parse(target);check(['approved','suspended','rejected'].includes(status),400);
   return db.tx(async c=>{await permission(c,actor,'verification:write');
    if(type==='riders'){
-    if(status==='approved'){await approveRiderLicence(c,target,actor.id);await approveRiderDocuments(c,target,actor.id);}
+    if(status==='approved'){await approveRiderLicence(c,target,actor.id);await approveRiderDocuments(c,target,actor.id);await approveVehicleRecord(c,target,actor.id);}
     const result=await c.query('UPDATE riders SET status=$2,online=CASE WHEN $2=\'approved\' THEN online ELSE false END WHERE id=$1 RETURNING id',[target,status]);check(result.rowCount,404);
     if(status!=='approved'){
      await c.query('DELETE FROM sessions WHERE user_id = $1',[target]);disconnectRealtimeUser(target,'account_'+status);await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[target]);
@@ -451,7 +446,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     check(!rest,409,'You have reached your driving time limit. You can go online again after your rest');
    }
    await c.query('UPDATE riders SET online=$2 WHERE id=$1',[actor.id,v.online]);if(!v.online){await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[actor.id]);getRedisClient().removeRiderLocation(actor.id).catch(()=>{});}return v;});},
- async quote(actor,input){check(['customer','business'].includes(actor.kind),403);
+ async quote(actor,input){check(['customer','business','company'].includes(actor.kind),403);await assertCompanyDelivery(db,actor);
   // Do not accept live bookings when an essential custody-verification provider is absent.
   if(process.env.NODE_ENV==='production'){
    check(sms&&typeof sms.send==='function'&&dispatch,503,'Delivery booking paused: dispatch or SMS verification unavailable');
@@ -483,7 +478,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const capacity=dispatch?await dispatch.availability({pickup:v.pickup,weightG:v.weightG,vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize}):{status:'unknown',guaranteed:false};
   return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEvidence:evidence,surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
  },
- async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business'].includes(actor.kind),403);
+ async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business','company'].includes(actor.kind),403);await assertCompanyDelivery(db,actor);
   if(process.env.NODE_ENV==='production')check(sms&&typeof sms.send==='function'&&dispatch,503,'Delivery booking paused: dispatch or SMS verification unavailable');
   return db.tx(async c=>{if(process.env.NODE_ENV==='production')await requireVerifiedPhone(c,actor);await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[actor.id+key]);
    const old=(await c.query('SELECT * FROM shipments WHERE customer_id=$1 AND idempotency_key=$2',[actor.id,key])).rows[0];if(old){check(old.quote_id===v.quoteId,409,'Idempotency key reused with different request');return old;}
@@ -505,9 +500,9 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async offers(actor){check(dispatch,503,'Dispatch engine unavailable');return dispatch.offers(actor);},
  async accept(actor,sid,offerId){check(dispatch,503,'Dispatch engine unavailable');return dispatch.accept(actor,sid,offerId);},
  async get(actor,sid){uuid.parse(sid);const s=(await db.query('SELECT * FROM shipments WHERE id=$1',[sid])).rows[0];check(s,404);await access(db,actor,s);const q=(await db.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];return {...s,details:q.request};},
- async list(actor){
+ async list(actor,{asClient=Boolean(actor.api_client_id)}={}){
   const baseQuery=`SELECT s.*, (SELECT id FROM food_orders WHERE shipment_id=s.id) AS food_order_id, (SELECT phone FROM users WHERE id=s.rider_id) AS rider_phone, q.request AS details, q.request->'pickup' AS pickup, q.request->'destination' AS destination FROM shipments s JOIN quotes q ON q.id=s.quote_id`;
-  if(['customer','business'].includes(actor.kind))return (await db.query(`${baseQuery} WHERE s.customer_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
+  if(['customer','business'].includes(actor.kind)||(actor.kind==='company'&&asClient))return (await db.query(`${baseQuery} WHERE s.customer_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
   if(actor.kind==='rider')return (await db.query(`${baseQuery} WHERE s.rider_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
   if(actor.kind==='company')return (await db.query(`${baseQuery} JOIN companies c ON c.id=s.company_id WHERE c.owner_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
   await permission(db,actor,'shipments:read');return (await db.query(`${baseQuery} ORDER BY s.created_at DESC LIMIT 100`)).rows;
@@ -744,7 +739,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   });
  },
  async earnings(actor){return earningsEntriesFor(db,actor.id);},
- async reviewQueue(actor){await permission(db,actor,'verification:write');return {riders:(await db.query('SELECT r.id,u.phone,r.company_id,r.status,r.vehicle,r.max_weight_g FROM riders r LEFT JOIN users u ON u.id=r.id ORDER BY r.id LIMIT 100')).rows,companies:(await db.query('SELECT id,name,status FROM companies ORDER BY name LIMIT 100')).rows,vehicles:(await db.query('SELECT * FROM rider_vehicle_registrations ORDER BY submitted_at DESC LIMIT 100')).rows};}
+ async reviewQueue(actor){await permission(db,actor,'verification:write');return {riders:(await db.query('SELECT r.id,u.phone,r.company_id,r.status,r.vehicle,r.max_weight_g FROM riders r LEFT JOIN users u ON u.id=r.id ORDER BY r.id LIMIT 100')).rows,companies:(await db.query('SELECT c.id,c.name,c.status,c.services,u.phone FROM companies c JOIN users u ON u.id=c.owner_id ORDER BY c.name LIMIT 100')).rows,vehicles:(await db.query('SELECT * FROM rider_vehicle_registrations ORDER BY submitted_at DESC LIMIT 100')).rows};}
  ,
   routing,
   dispatch,

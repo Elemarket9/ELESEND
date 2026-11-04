@@ -1,3 +1,4 @@
+import {requirePermission} from './permissions.mjs';
 /** Emergency alerts, trusted contacts, live location links and two-way delivery ratings. */
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
@@ -11,9 +12,7 @@ async function ownShipment(db,actor,shipmentId){
  check(s&&(s.customer_id===actor.id||s.rider_id===actor.id),403,'This delivery is not yours');
  return s;
 }
-async function requireVerifier(c,actor){
- check(actor?.kind==='admin'&&(await c.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission='verification:write'",[actor.id])).rowCount,403,'Permission required');
-}
+const requireVerifier=(c,actor)=>requirePermission(c,actor,'verification:write');
 export async function saveTrustedContact(db,actor,input){
  const v=z.object({name:z.string().trim().min(2).max(80),phone:z.string().trim().min(9).max(16)}).strict().parse(input);
  const normalized=phone(v.phone);

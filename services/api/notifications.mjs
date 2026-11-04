@@ -3,6 +3,8 @@ import {isIP} from 'node:net';
 import {check} from './security.mjs';
 import {emitRealtimeUserEvent} from './chat-engine.mjs';
 
+/** A push token counts only while its signed-in session is still valid. */
+export const ACTIVE_PUSH_TOKEN_FILTER=`t.user_id=$1 AND t.active=true AND (t.session_token_hash IS NULL OR EXISTS (SELECT 1 FROM sessions s WHERE s.token_hash=t.session_token_hash AND s.user_id=t.user_id AND s.expires_at>now()))`;
 export const RIDER_OFFER_ALERT_CHANNEL = 'elesend-rider-offers';
 
 // Deployment-owned bridge to a contracted SMS/push provider. The bridge must
@@ -61,17 +63,7 @@ export function notificationWorker(db,{transport=null,sms=null}={}){
      const pushTokens=(await db.query(
       `SELECT t.id,t.platform,t.push_token,t.app_state,t.battery_saver_enabled,t.background_location_enabled
          FROM user_push_tokens t
-        WHERE t.user_id=$1
-          AND t.active=true
-          AND (
-            t.session_token_hash IS NULL
-            OR EXISTS (
-              SELECT 1 FROM sessions s
-               WHERE s.token_hash=t.session_token_hash
-                 AND s.user_id=t.user_id
-                 AND s.expires_at>now()
-            )
-          )
+        WHERE ${ACTIVE_PUSH_TOKEN_FILTER}
         ORDER BY t.updated_at DESC
         LIMIT 5`,
       [job.recipient_id]

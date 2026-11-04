@@ -8,7 +8,7 @@ import {listCustodyIncidents,resolveCustodyIncident} from './custody-incidents.m
 import {createServer} from 'node:http';
 import {randomUUID} from 'node:crypto';
 import {ZodError} from 'zod';
-import {check,limit,equal,recordAttempt,assertUnderLimit} from './security.mjs';
+import {securityEvent,check,limit,equal,recordAttempt,assertUnderLimit} from './security.mjs';
 import {ipLimits,memoryRateLimiter} from './rate-limits.mjs';
 import {haversine} from './dispatch-geometry.mjs';
 import {network} from './network.mjs';
@@ -24,6 +24,9 @@ import {createMapLifecycleService} from './infrastructure/maps/egia/map-lifecycl
 import {getPublicTracking,renderTrackingHtml} from './infrastructure/maps/web-tracker.mjs';
 import {renderAdminPortalHtml} from './admin-web/admin-portal.mjs';
 import {renderRestaurantPortalHtml,renderRestaurantManifestJson} from './restaurant-web/restaurant-portal.mjs';
+import {companyPortalCsp,renderCompanyPortalHtml} from './company-web/company-portal.mjs';
+import {assertCompanyDelivery,companyService} from './company.mjs';
+import {webhookService} from './api-webhooks.mjs';
 import {restaurantService} from './restaurant.mjs';
 import {etaService} from './eta/eta-service.mjs';
 import {restaurantOrderService} from './restaurant-orders.mjs';
@@ -42,7 +45,7 @@ import {
 import {walletWithdrawals,walletStatement,walletSummary,walletDebt,walletTransactions,adminWalletOverview,adminWalletReconciliation,walletPolicyView,updateWalletPolicy} from './modules/payments/index.mjs';
 import {getSystemHealthReport} from './infrastructure/monitoring/system-health.mjs';
 export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null,readinessToken=null,etaBaselineFactors={}}={}){
-  const net=network(db),vehicles=vehicleService(db),markets=marketService(db);
+  const companies=companyService(db),webhooks=webhookService(db);const net=network(db),vehicles=vehicleService(db),markets=marketService(db);
   const restaurants=restaurant||restaurantService(db);
   const restOrders=restaurantOrders||restaurantOrderService(db,{platform:app,dispatcher,routing:app?.routing,sms:app?.sms});
   const commissions=commissionEngine(db);
@@ -54,7 +57,9 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const server=createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192,keepAliveTimeout:65000},async(req,res)=>{
  const requestId=randomUUID();res.setHeader('X-Request-Id',requestId);
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
- res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+ res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+ res.setHeader('X-Frame-Options','DENY');res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=(), payment=(), usb=()');res.setHeader('Cross-Origin-Opener-Policy','same-origin');res.setHeader('Cross-Origin-Resource-Policy','same-site');res.setHeader('X-Permitted-Cross-Domain-Policies','none');
+ if(process.env.NODE_ENV==='production')res.setHeader('Strict-Transport-Security','max-age=31536000; includeSubDomains');
  // Serialize before writing headers: a failure must stay recoverable by the catch block below.
  const send=(code,body)=>{const payload=JSON.stringify(body);res.writeHead(code,{'Content-Type':'application/json'});res.end(payload);};
  try{
@@ -117,6 +122,12 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    res.end(renderRestaurantPortalHtml());
    return;
   }
+  if(method==='GET'&&(path==='/company'||path==='/company/')){
+   res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});
+   res.setHeader('Content-Security-Policy',companyPortalCsp());
+   res.end(renderCompanyPortalHtml());
+   return;
+  }
   if(method==='GET'&&path==='/restaurant/manifest.json'){
    res.writeHead(200,{'Content-Type':'application/manifest+json; charset=utf-8'});
    res.end(renderRestaurantManifestJson());
@@ -156,6 +167,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   if(method==='POST'&&path==='/api/v1/auth/password-reset'){await limit(db,'pw-reset-ip:'+ipKey,ipLimit.resetPer15Min,900);send(200,await app.resetPassword(body));return;}
   const token=req.headers.authorization?.replace(/^Bearer /,'');const actor=token?.startsWith('es_live_')?await net.authenticateKey(token):await app.authenticate(token);
   net.authorizeKey(actor,method,path);
+  if(actor.api_client_id)await limit(db,'api-key:'+actor.api_client_id,300,60);
   await limit(db,'user:'+actor.id,150,60);
   if(path.startsWith('/api/v1/admin/'))check(actor?.kind==='admin',403,'Administrator required');
   let result;
@@ -192,7 +204,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='GET'&&path==='/api/v1/me'){const {sessionTokenHash:_omitted,...profile}=actor;result=profile;}
   else if(method==='POST'&&path==='/api/v1/maps/ghana-address'){
    check(ghanaPostGps,503,'GhanaPostGPS address lookup is disabled');
-   check(['customer','business'].includes(actor.kind)&&!actor.api_client_id,403,'Customer or business account required');
+   check(['customer','business','company'].includes(actor.kind)&&!actor.api_client_id,403,'Customer or business account required');
    check(body&&typeof body==='object'&&!Array.isArray(body)&&Object.keys(body).length===1&&typeof body.address==='string',400,'Provide only a GhanaPostGPS address');
    await limit(db,'ghana-address:user:'+actor.id,5,60);await limit(db,'ghana-address:global',100,3600);
    result=await ghanaPostGps(body.address);
@@ -447,7 +459,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/rider/location'){check(dispatcher,503,'Dispatch unavailable');result=await dispatcher.riderPosition(actor,body);}
   else if(method==='POST'&&path==='/api/v1/rider/offers/decline'){check(dispatcher,503,'Dispatch unavailable');result=await dispatcher.decline(actor,body.shipmentId,body.offerId);}
   else if(method==='POST'&&path==='/api/v1/rider/assignments/release'){check(dispatcher,503);result=await dispatcher.release(actor,body.shipmentId,body.reason);await chat.revokeRiderConversations(db,{shipmentId:body.shipmentId,oldRiderUserId:actor.id,reason:'rider_released'});}
-  else if(method==='POST'&&path==='/api/v1/delivery/availability'){check(dispatcher,503,'Dispatch unavailable');check(['customer','business'].includes(actor.kind),403);result=await dispatcher.availability(body);}
+  else if(method==='POST'&&path==='/api/v1/delivery/availability'){check(dispatcher,503,'Dispatch unavailable');check(['customer','business','company'].includes(actor.kind),403);result=await dispatcher.availability(body);}
   else if(method==='GET'&&path==='/api/v1/admin/dispatch-policy'){check(dispatcher,503);result=await dispatcher.getPolicy(actor);}
   else if(method==='POST'&&path==='/api/v1/admin/dispatch-policy'){check(dispatcher,503);result=await dispatcher.configure(actor,body);}
   else if(method==='POST'&&path==='/api/v1/admin/dispatch/watchdog'){
@@ -550,10 +562,25 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    result=await getSystemHealthReport(db);
   }
   else if(method==='GET'&&path==='/api/v1/company/riders')result=await net.fleet(actor);
-  else if(method==='POST'&&path==='/api/v1/company/invitations')result=await net.invite(actor,body);
+  else if(method==='POST'&&path==='/api/v1/company/invitations'){await limit(db,'company-invite:'+actor.id,30,3600);result=body?.phone?await companies.inviteByPhone(actor,body):await net.invite(actor,body);}
+  else if(method==='GET'&&path==='/api/v1/company/invitations')result=await companies.invitations(actor);
+  else if(method==='POST'&&/^\/api\/v1\/company\/invitations\/[^/]+\/revoke$/.test(path))result=await companies.revokeInvitation(actor,path.split('/')[5]);
+  else if(method==='GET'&&path==='/api/v1/company/profile')result=await companies.profile(actor);
+  else if(method==='PUT'&&path==='/api/v1/company/services')result=await companies.setServices(actor,body);
+  else if(method==='GET'&&path==='/api/v1/company/deliveries'){check(actor.kind==='company',403);result=await app.list(actor,{asClient:true});}
+  else if(method==='GET'&&path==='/api/v1/rider/invitations')result=await companies.riderInvitations(actor);
+  else if(method==='POST'&&/^\/api\/v1\/rider\/invitations\/[^/]+\/decline$/.test(path))result=await companies.declineInvitation(actor,path.split('/')[5]);
+  else if(method==='POST'&&path==='/api/v1/rider/company/leave')result=await net.leaveCompany(actor);
   else if(method==='POST'&&path==='/api/v1/rider/invitations/accept')result=await net.acceptInvitation(actor,body);
   else if(method==='POST'&&/^\/api\/v1\/company\/riders\/[^/]+\/remove$/.test(path))result=await net.removeRider(actor,path.split('/')[5]);
+  else if(method==='GET'&&path==='/api/v1/business/api-keys')result=await net.listKeys(actor);
   else if(method==='POST'&&path==='/api/v1/business/api-keys')result=await net.createKey(actor,body);
+  else if(path==='/api/v1/business/webhook'&&['GET','PUT','DELETE'].includes(method)){
+   check(['business','company'].includes(actor.kind)&&!actor.api_client_id,403,'Sign in to manage webhooks');
+   if(method==='GET')result=await webhooks.get(actor);
+   else if(method==='DELETE')result=await webhooks.remove(actor);
+   else{await assertCompanyDelivery(db,actor);result=await webhooks.set(actor,body);}
+  }
   else if(method==='POST'&&/^\/api\/v1\/business\/api-keys\/[^/]+\/revoke$/.test(path))result=await net.revokeKey(actor,path.split('/')[5]);
   else if(method==='GET'&&path==='/api/v1/admin/pricing')result=await app.getPricing(actor);
   else if(method==='POST'&&path==='/api/v1/admin/pricing/commission')result=await app.configureCommission(actor,body);
@@ -704,6 +731,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   // Once a response has started the status cannot change; end it rather than crash the process.
   if(res.headersSent){if(!res.writableEnded)res.end();}else send(status,{error:clientError});
   // IDs are removed from the path and query strings left out, because they can hold personal data or tokens.
+  if([401,403,423,429].includes(status))securityEvent('request_refused',{requestId,status,method:req.method,route:String(req.url).split('?')[0].replace(/[0-9a-f-]{36}/gi,':id').slice(0,200)});
   if(status===500)process.stderr.write(JSON.stringify({level:'error',requestId,method:req.method,route:String(req.url).split('?')[0].replace(/[0-9a-f-]{36}/gi,':id').slice(0,200),code:e.code??'internal',message:String(e.message??'').slice(0,300),time:new Date().toISOString()})+'\n');
  }
 });

@@ -32,22 +32,12 @@ export async function acquireDevicePushToken({
  const scope=['rider','customer','restaurant'].includes(appScope)?appScope:'rider';
  const resolvedDeviceId=typeof deviceId==='string'&&deviceId.trim().length>0?deviceId.trim():null;
  const notif=notificationsModule!==undefined?notificationsModule:Notifications;
+ const unavailable=(permissionStatus,reason)=>({ok:false,available:false,status:'unavailable',pushToken:null,deviceId:resolvedDeviceId,platform:null,appScope:scope,channelId,permissionStatus,reason});
 
  const hasPermissionApi=Boolean(notif&&(typeof notif.getPermissionsAsync==='function'||typeof notif.requestPermissionsAsync==='function'));
  const hasTokenApi=Boolean(notif&&(typeof notif.getDevicePushTokenAsync==='function'||typeof notif.getExpoPushTokenAsync==='function'));
  if(!hasPermissionApi||!hasTokenApi){
-  return {
-   ok:false,
-   available:false,
-   status:'unavailable',
-   pushToken:null,
-   deviceId:resolvedDeviceId,
-   platform:null,
-   appScope:scope,
-   channelId,
-   permissionStatus:'unavailable',
-   reason:'notifications_provider_unavailable'
-  };
+  return unavailable('unavailable','notifications_provider_unavailable');
  }
 
  try{
@@ -74,18 +64,7 @@ export async function acquireDevicePushToken({
    else if(req?.granted===true)permissionStatus='granted';
   }
   if(permissionStatus!=='granted'){
-   return {
-    ok:false,
-    available:false,
-    status:'unavailable',
-    pushToken:null,
-    deviceId:resolvedDeviceId,
-    platform:null,
-    appScope:scope,
-    channelId,
-    permissionStatus:permissionStatus||'unavailable',
-    reason:permissionStatus==='denied'?'permission_denied':'permission_not_granted'
-   };
+   return unavailable(permissionStatus||'unavailable',permissionStatus==='denied'?'permission_denied':'permission_not_granted');
   }
 
   let acquiredToken=null;
@@ -111,18 +90,7 @@ export async function acquireDevicePushToken({
   }
 
   if(!acquiredToken){
-   return {
-    ok:false,
-    available:false,
-    status:'unavailable',
-    pushToken:null,
-    deviceId:resolvedDeviceId,
-    platform:null,
-    appScope:scope,
-    channelId,
-    permissionStatus:'granted',
-    reason:'provider_token_unavailable'
-   };
+   return unavailable('granted','provider_token_unavailable');
   }
 
   return {
@@ -137,18 +105,7 @@ export async function acquireDevicePushToken({
    permissionStatus:'granted'
   };
  }catch{
-  return {
-   ok:false,
-   available:false,
-   status:'unavailable',
-   pushToken:null,
-   deviceId:resolvedDeviceId,
-   platform:null,
-   appScope:scope,
-   channelId,
-   permissionStatus:'unavailable',
-   reason:'provider_error'
-  };
+  return unavailable('unavailable','provider_error');
  }
 }
 

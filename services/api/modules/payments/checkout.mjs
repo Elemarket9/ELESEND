@@ -1,3 +1,5 @@
+import {errorText,pool,raceTimeout,submissionChecks} from './async-helpers.mjs';
+import {CONFIRMED_INTENT_FIELDS,claimIntentsToReconcile,markOutcomeUncertain,markRejectedBeforeCharge,reconcileQuietly} from './intent-records.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from '../../security.mjs';
@@ -7,25 +9,23 @@ import {customerMoneyReceived,customerMoneyUnapplied} from './checkout-accountin
 import {validatePayer} from './payment-provider.mjs';
 const uuid=z.string().uuid(),key=z.string().regex(/^[a-zA-Z0-9_-]{8,128}$/);
 const payer=z.object({idempotencyKey:key,email:z.email().max(254).optional()}).strict();
-const reasonText=e=>String(e?.message||'Provider error').slice(0,500);
-function withTimeout(promise,ms){
- if(!Number.isFinite(ms)||ms<=0)return promise;
- let timer;
- return Promise.race([
-  promise,
-  new Promise((_,rej)=>{timer=setTimeout(()=>rej(Object.assign(Error('Payment provider verification timed out'),{status:504,code:'provider_timeout'})),ms);})
- ]).finally(()=>clearTimeout(timer));
-}
-async function pool(items,limit,fn){
- const out=[],n=Math.max(1,limit|0);let i=0;
- await Promise.all(Array.from({length:Math.min(n,items.length)},async()=>{
-  while(i<items.length){const idx=i++;out[idx]=await fn(items[idx]);}
- }));
- return out;
-}
+const reasonText=e=>errorText(e, 'Provider error');
+const withTimeout=(promise,ms)=>raceTimeout(promise,ms,()=>Object.assign(Error('Payment provider verification timed out'),{status:504,code:'provider_timeout'}));
 /** A shipment payment is confirmed ONLY by independently verified provider evidence.
  * The local app never gets to choose amount, currency, provider reference or success.
  */
+const NO_OTHER_OPEN_CHECKOUT=`NOT EXISTS (
+  SELECT 1 FROM shipment_checkout_intents other
+   WHERE other.shipment_id=shipment_checkout_intents.shipment_id
+     AND other.id<>shipment_checkout_intents.id
+     AND other.status IN ('initiating','pending')
+)`;
+const CLOSED_ATTEMPT_FIELDS=`submission_token=NULL,
+               submission_lease_until=NULL,
+               last_reconciled_at=now(),
+               reconcile_lease_until=NULL,
+               updated_at=now()`;
+
 export function checkoutService(db,options={}){
  const {provider=null,sms=undefined,dispatch=undefined,routing=undefined,verifyTimeoutMs=10000,concurrency=4,leaseSeconds=120,submissionLeaseSeconds=60,checkoutExpirySeconds=3600,maxVerifyBackoffSeconds=21600}=options;
  const enforceSmsCapability=process.env.NODE_ENV==='production'||'sms' in options;
@@ -34,18 +34,7 @@ export function checkoutService(db,options={}){
  const cap=method=>!!provider&&DIGITAL_METHODS.includes(method)&&provider.methods?.includes(method)&&typeof provider.createCheckout==='function'&&typeof provider.verifyPayment==='function';
  const inFlightInitiations=new Map();
  const shipmentLocks=new Map();
- function isSubmissionCallActive(row){
-  if(!row||row.status!=='initiating')return false;
-  if(inFlightInitiations.has(row.id))return true;
-  if(!row.submission_token||!row.submission_lease_until)return false;
-  return new Date(row.submission_lease_until).getTime()>Date.now();
- }
- function canCreationStillComplete(row){
-  if(!row||row.status!=='initiating')return false;
-  if(inFlightInitiations.has(row.id))return true;
-  if(!row.submission_lease_until)return false;
-  return new Date(row.submission_lease_until).getTime()>Date.now();
- }
+ const {isSubmissionCallActive,canCreationStillComplete}=submissionChecks(inFlightInitiations);
  async function withShipmentLock(shipmentId,fn){
   const prev=shipmentLocks.get(shipmentId)??Promise.resolve();
   let release;
@@ -114,17 +103,7 @@ export function checkoutService(db,options={}){
    await customerMoneyReceived(c,{shipmentId:s.id,eventKey:'checkout:'+provider.name+':verified:'+verification.eventId,amountMinor:verification.amountMinor,processingFeeMinor:Number(intent.processing_fee_minor||0)});
    await c.query(
     `UPDATE shipment_checkout_intents
-        SET status='confirmed',
-            confirmed_at=coalesce(confirmed_at,now()),
-            failure_reason=NULL,
-            failed_at=NULL,
-            provider_terminal_at=now(),
-            provider_last_status='success',
-            submission_token=NULL,
-            submission_lease_until=NULL,
-            reconcile_lease_until=NULL,
-            last_reconciled_at=now(),
-            updated_at=now()
+        SET ${CONFIRMED_INTENT_FIELDS}
       WHERE id=$1`,
     [intent.id]
    );
@@ -167,7 +146,7 @@ export function checkoutService(db,options={}){
    return db.tx(async c=>{await admin(c,actor);await c.query('UPDATE checkout_method_policies SET enabled=$2,updated_by=$3,updated_at=now() WHERE method=$1',[method,enabled,actor.id]);await c.query('INSERT INTO audit_logs(actor_id,action) VALUES($1,$2)',[actor.id,'checkout.method.'+method+'.'+(enabled?'enabled':'disabled')]);return {method,enabled};});
   },
   async initiate(actor,shipmentId,input){uuid.parse(shipmentId);const v=payer.parse(input);
-   check(['customer','business'].includes(actor?.kind),403,'Customer or business account required');
+   check(['customer','business','company'].includes(actor?.kind),403,'Customer or business account required');
    const email=v.email??null;
    const {intent,task}=await withShipmentLock(shipmentId,async()=>{
     if(provider&&typeof provider.verifyPayment==='function'){
@@ -184,11 +163,7 @@ export function checkoutService(db,options={}){
         LIMIT 5`,
       [shipmentId,actor.id]
      )).rows;
-     for(const cand of candidates){
-      if(!isSubmissionCallActive(cand)){
-       try{await this.reconcileIntent(cand.id,{silentUnavailable:true});}catch{}
-      }
-     }
+     await reconcileQuietly(candidates,isSubmissionCallActive,id=>this.reconcileIntent(id,{silentUnavailable:true}));
     }
 
     const submissionToken=randomUUID();
@@ -273,12 +248,7 @@ export function checkoutService(db,options={}){
           WHERE id=$1
             AND status='initiating'
             AND submission_token=$3
-            AND NOT EXISTS (
-              SELECT 1 FROM shipment_checkout_intents other
-               WHERE other.shipment_id=shipment_checkout_intents.shipment_id
-                 AND other.id<>shipment_checkout_intents.id
-                 AND other.status IN ('initiating','pending')
-            )
+            AND ${NO_OTHER_OPEN_CHECKOUT}
           RETURNING *`,
         [reserved.id,instructions.checkoutUrl,submissionToken]
        )).rows[0];
@@ -296,38 +266,12 @@ export function checkoutService(db,options={}){
       if(e?.definitiveNoCharge===true){
        await db.tx(async c=>{
         await c.query('SELECT id FROM shipments WHERE id=$1 FOR UPDATE',[shipmentId]);
-        await c.query(
-         `UPDATE shipment_checkout_intents
-             SET status='failed',
-                 failure_reason=$2,
-                 failed_at=coalesce(failed_at,now()),
-                 provider_terminal_at=now(),
-                 provider_last_status='rejected_before_charge',
-                 submission_token=NULL,
-                 submission_lease_until=NULL,
-                 updated_at=now()
-           WHERE id=$1
-             AND status='initiating'
-             AND submission_token=$3`,
-         [reserved.id,reasonText(e),submissionToken]
-        );
+        await markRejectedBeforeCharge(c,'shipment_checkout_intents',reserved.id,reasonText(e),submissionToken);
        });
        throw e;
       }
       if(e?.status===409)throw e;
-      // PSP may have accepted transaction although HTTP response failed. Release submission_token
-      // so status/reconcile can check provider, but keep submission_lease_until active so "not_created"
-      // is not treated as definitive failure while creation may still complete at the PSP.
-      await db.query(
-       `UPDATE shipment_checkout_intents
-           SET failure_reason=$2,
-               submission_token=NULL,
-               updated_at=now()
-         WHERE id=$1
-           AND status='initiating'
-           AND submission_token=$3`,
-       [reserved.id,'Initialization outcome uncertain: '+reasonText(e),submissionToken]
-      ).catch(()=>{});
+      await markOutcomeUncertain(db,'shipment_checkout_intents',reserved.id,reasonText(e),submissionToken);
       throw Object.assign(Error('Checkout initialization unconfirmed; query status before retry'),{status:503});
      }
     })();
@@ -357,7 +301,7 @@ export function checkoutService(db,options={}){
     inFlightInitiations.delete(intent.id);
    }
   },
-  async status(actor,shipmentId){uuid.parse(shipmentId);check(['customer','business'].includes(actor?.kind),403);
+  async status(actor,shipmentId){uuid.parse(shipmentId);check(['customer','business','company'].includes(actor?.kind),403);
    const initial=(await db.query(`SELECT i.* FROM shipment_checkout_intents i JOIN shipments s ON s.id=i.shipment_id WHERE i.shipment_id=$1 AND s.customer_id=$2 ORDER BY i.created_at DESC LIMIT 1`,[shipmentId,actor.id])).rows[0];
    check(initial,404,'Checkout not found');
    if(['initiating','pending','expired','failed'].includes(initial.status)&&initial.provider_terminal_at===null&&provider&&typeof provider.verifyPayment==='function'&&!isSubmissionCallActive(initial)){
@@ -415,11 +359,7 @@ export function checkoutService(db,options={}){
                failed_at=coalesce(failed_at,now()),
                provider_terminal_at=now(),
                provider_last_status=$3,
-               submission_token=NULL,
-               submission_lease_until=NULL,
-               last_reconciled_at=now(),
-               reconcile_lease_until=NULL,
-               updated_at=now()
+               ${CLOSED_ATTEMPT_FIELDS}
          WHERE id=$1 AND status IN ('initiating','pending')
          RETURNING *`,
        [locked.id,reason,providerStatus]
@@ -449,12 +389,8 @@ export function checkoutService(db,options={}){
           SET status='expired',
               failure_reason='Checkout window elapsed without verified payment; provider verification continues',
               provider_last_status=$2,
-              submission_token=NULL,
-              submission_lease_until=NULL,
-              last_reconciled_at=now(),
-              reconcile_lease_until=NULL,
-              updated_at=now()
-        WHERE id=$1 AND status IN ('initiating','pending')
+              ${CLOSED_ATTEMPT_FIELDS}
+         WHERE id=$1 AND status IN ('initiating','pending')
         RETURNING *`,
       [locked.id,providerStatus]
      )).rows[0];
@@ -473,12 +409,7 @@ export function checkoutService(db,options={}){
         WHERE id=$1
           AND status='initiating'
           AND (submission_token IS NULL OR submission_lease_until IS NULL OR submission_lease_until<=now())
-          AND NOT EXISTS (
-            SELECT 1 FROM shipment_checkout_intents other
-             WHERE other.shipment_id=shipment_checkout_intents.shipment_id
-               AND other.id<>shipment_checkout_intents.id
-               AND other.status IN ('initiating','pending')
-          )
+          AND ${NO_OTHER_OPEN_CHECKOUT}
         RETURNING *`,
       [locked.id,providerStatus]
      )).rows[0];
@@ -493,25 +424,7 @@ export function checkoutService(db,options={}){
    const minSec=olderThanSeconds!==undefined?olderThanSeconds:(olderThanMinutes!==undefined?olderThanMinutes*60:2);
    check(Number.isInteger(minSec)&&minSec>=0&&Number.isInteger(limit)&&limit>0&&limit<=100,400);
    if(!provider||typeof provider.verifyPayment!=='function')return [];
-   const rows=(await db.query(
-    `UPDATE shipment_checkout_intents
-        SET reconcile_lease_until=now()+make_interval(secs=>$3)
-      WHERE id IN (
-        SELECT id FROM shipment_checkout_intents
-         WHERE provider=$1
-           AND status IN ('initiating','pending','expired','failed')
-           AND provider_terminal_at IS NULL
-           AND (reconcile_lease_until IS NULL OR reconcile_lease_until<now())
-           AND (status<>'initiating' OR submission_token IS NULL OR submission_lease_until IS NULL OR submission_lease_until<=now())
-           AND coalesce(last_reconciled_at,submitted_at,updated_at,created_at)
-               < now()-make_interval(secs=>greatest($4::double precision,least(extract(epoch FROM now()-created_at)/10,$5::double precision)))
-         ORDER BY coalesce(last_reconciled_at,submitted_at,updated_at,created_at) ASC
-         LIMIT $2
-         FOR UPDATE SKIP LOCKED
-      )
-      RETURNING id`,
-    [provider.name,limit,leaseSeconds,minSec,maxVerifyBackoffSeconds]
-   )).rows;
+   const rows=await claimIntentsToReconcile(db,'shipment_checkout_intents',{providerName:provider.name,limit,leaseSeconds,minimumSeconds:minSec,maximumBackoffSeconds:maxVerifyBackoffSeconds});
    return pool(rows,concurrency,async({id})=>{
     try{
      const result=await this.reconcileIntent(id,{silentUnavailable:true});

@@ -22,3 +22,10 @@ test('every table has one owner',()=>{
  const owned=[...Object.values(manifest.modules),manifest.shared].flatMap(m=>m.tables);
  assert.equal(new Set(owned).size,owned.length);
 });
+
+test('repeated code does not grow',async()=>{
+ const {findDuplicates}=await import('../scripts/find-duplicates.mjs');
+ assert.equal(findDuplicates(['services','apps','scripts'],8).length,0,'Remove the new repeated code with a shared helper');
+ // The few 6-line matches left are design scales and short shared control flow; this stops new ones.
+ assert.ok(findDuplicates(['services','apps','scripts'],6).length<=5,'Remove the new repeated code with a shared helper');
+});
