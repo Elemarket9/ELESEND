@@ -7,6 +7,7 @@ import MapView, { Marker, Polyline, RiderMarker, openTurnByTurnNavigation } from
 import { ARRIVED_METERS, formatDistance, formatDuration, locateOnRoute, rerouteCheck, stepArrow, upcomingStep } from './navigation-logic.mjs';
 
 const FOLLOW_ZOOM = 16.5;
+const ROUTE_RETRY_MS = 15000;
 
 /** Turn-by-turn directions on our own map, from our own routing server. */
 export default function RiderNavigation({ shipmentId, target, label, onClose }) {
@@ -18,12 +19,14 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
   const [following, setFollowing] = useState(true);
   const reroute = useRef({});
   const busy = useRef(false);
+  const haveRoute = useRef(false);
 
   const fetchRoute = async from => {
     if (busy.current) return;
     busy.current = true;
     try {
       const next = await call('POST', '/api/v1/rider/navigation', { shipmentId, latitude: from.latitude, longitude: from.longitude });
+      haveRoute.current = true;
       setRoute(next);
       setFailed('');
     } catch (e) {
@@ -35,20 +38,23 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
   };
 
   useEffect(() => {
-    let active = true, watch = null, asked = false;
+    let active = true, watch = null, lastAsk = 0;
     (async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') { setFailed('Allow location to get directions.'); return; }
-        watch = await Location.watchPositionAsync(
+        if (!active) return;
+        const subscription = await Location.watchPositionAsync(
           { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 2000, distanceInterval: 5 },
           fix => {
             if (!active) return;
             const here = { latitude: fix.coords.latitude, longitude: fix.coords.longitude, heading: fix.coords.heading, accuracy: fix.coords.accuracy };
             setPosition(here);
-            if (!asked) { asked = true; fetchRoute(here); }
+            // Keep trying until the first route arrives, in case the first request failed.
+            if (!haveRoute.current && Date.now() - lastAsk >= ROUTE_RETRY_MS) { lastAsk = Date.now(); fetchRoute(here); }
           }
         );
+        if (active) watch = subscription; else subscription.remove?.();
       } catch (e) {
         setFailed(e.message || 'Your location could not be read.');
       }
