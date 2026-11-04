@@ -1886,11 +1886,13 @@ export default function CustomerApp() {
                     onPress={() => openOrderChat({ conversationType: 'CUSTOMER_SUPPORT', shipmentId: s.id })}>
                     <Text style={styles.liveTrackText}>🎧 Support</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.cancelSmallButton}
-                    onPress={() => cancelOrder(s.id, false)}>
-                    <Text style={styles.cancelSmallText}>Cancel</Text>
-                  </TouchableOpacity>
+                  {['AWAITING_PAYMENT', 'AWAITING_ASSIGNMENT', 'RIDER_ASSIGNED'].includes(s.state) && (
+                    <TouchableOpacity
+                      style={styles.cancelSmallButton}
+                      onPress={() => cancelOrder(s.id, false)}>
+                      <Text style={styles.cancelSmallText}>Cancel</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               </View>
             ))}
