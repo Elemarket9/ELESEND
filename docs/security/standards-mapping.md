@@ -56,7 +56,7 @@ Status: **Done** means built, with an automated test where one is named. **Parti
 | Limit failed attempts | Done | Limits per source and per account |
 | Salted, memory-hard storage | Done | Older hashes are upgraded at the next sign-in |
 | Stronger login for privileged accounts (AAL2) | Done | Authenticator code with reuse blocked, for administrators |
-| Idle and overall session limits | Done for administrators | 30 minutes and 4 hours. Other accounts have a 12 hour overall limit |
+| Idle and overall session limits | Done | 30 minutes and 4 hours. Other accounts stay signed in while in use and end after 30 days without use |
 
 ## NIST CSF 2.0
 

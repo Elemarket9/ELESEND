@@ -44,6 +44,9 @@ import {
 } from './modules/payments/index.mjs';
 import {walletWithdrawals,walletStatement,walletSummary,walletDebt,walletTransactions,adminWalletOverview,adminWalletReconciliation,walletPolicyView,updateWalletPolicy} from './modules/payments/index.mjs';
 import {getSystemHealthReport} from './infrastructure/monitoring/system-health.mjs';
+const AWAITING_APPROVAL_ROUTES=new Set(['GET /api/v1/me','GET /api/v1/me/phone','POST /api/v1/me/phone-challenge','POST /api/v1/me/phone-verify','POST /api/v1/auth/logout','POST /api/v1/me/delete-account',
+ 'GET /api/v1/rider/licence','POST /api/v1/rider/licence','POST /api/v1/rider/licence/identity-check','GET /api/v1/rider/documents','POST /api/v1/rider/documents/upload-link',
+ 'GET /api/v1/company/profile','PUT /api/v1/company/services']);
 export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null,readinessToken=null,etaBaselineFactors={}}={}){
   const companies=companyService(db),webhooks=webhookService(db);const net=network(db),vehicles=vehicleService(db),markets=marketService(db);
   const restaurants=restaurant||restaurantService(db);
@@ -165,7 +168,9 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   }
   if(method==='POST'&&path==='/api/v1/auth/password-recovery'){await limit(db,'pw-recovery-ip:'+ipKey,ipLimit.recoveryPer15Min,900);await limit(db,'account-sms-ip:'+ipKey,ipLimit.accountSmsPer15Min,900);send(200,await app.passwordRecoveryChallenge(body));return;}
   if(method==='POST'&&path==='/api/v1/auth/password-reset'){await limit(db,'pw-reset-ip:'+ipKey,ipLimit.resetPer15Min,900);send(200,await app.resetPassword(body));return;}
-  const token=req.headers.authorization?.replace(/^Bearer /,'');const actor=token?.startsWith('es_live_')?await net.authenticateKey(token):await app.authenticate(token);
+  const token=req.headers.authorization?.replace(/^Bearer /,'');const actor=token?.startsWith('es_live_')?await net.authenticateKey(token):await app.authenticate(token,{allowPending:true});
+  // New riders and companies can finish setting up and see their status, and nothing else, until approved.
+  if(actor.awaitingApproval)check(AWAITING_APPROVAL_ROUTES.has(method+' '+path),403,'Your account is waiting for ELESEND approval');
   net.authorizeKey(actor,method,path);
   if(actor.api_client_id)await limit(db,'api-key:'+actor.api_client_id,300,60);
   await limit(db,'user:'+actor.id,150,60);
@@ -561,6 +566,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    check(actor?.kind==='admin',403,'Administrator required');
    result=await getSystemHealthReport(db);
   }
+  else if(method==='GET'&&path==='/api/v1/admin/dispatch/exceptions'){check(dispatcher,503,'Dispatch unavailable');result=await dispatcher.openExceptions(actor);}
   else if(method==='GET'&&path==='/api/v1/company/riders')result=await net.fleet(actor);
   else if(method==='POST'&&path==='/api/v1/company/invitations'){await limit(db,'company-invite:'+actor.id,30,3600);result=body?.phone?await companies.inviteByPhone(actor,body):await net.invite(actor,body);}
   else if(method==='GET'&&path==='/api/v1/company/invitations')result=await companies.invitations(actor);
@@ -715,7 +721,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    const m=path.match(/^\/api\/v1\/shipments\/([^/]+)(?:\/(accept|pickup-challenge|delivery-challenge|return-challenge|verify|transition|location|tracking|dispatch|disputes))?$/);check(m,404,'Endpoint not found');const [,sid,action]=m;
    if(method==='GET'&&!action)result=await app.get(actor,sid);
    else if(method==='GET'&&action==='tracking')result=await app.tracking(actor,sid);
-   else if(method==='GET'&&action==='dispatch'){const shipment=await app.get(actor,sid);result={shipmentId:sid,state:shipment.state,confirmedRider:!!shipment.rider_id,guaranteed:!!shipment.rider_id,attempts:shipment.dispatch_attempts,dispatchStatus:shipment.state==='AWAITING_ASSIGNMENT'?'searching_or_awaiting_offer':shipment.state};}
+   else if(method==='GET'&&action==='dispatch'){const shipment=await app.get(actor,sid);result={shipmentId:sid,state:shipment.state,confirmedRider:!!shipment.rider_id,guaranteed:!!shipment.rider_id,attempts:shipment.dispatch_attempts,dispatchStatus:shipment.state==='AWAITING_ASSIGNMENT'?(shipment.no_rider_since?'no_rider_yet':'searching_or_awaiting_offer'):shipment.state};}
    else if(method==='POST'&&action==='accept')result=await app.accept(actor,sid,body.offerId);
    else if(method==='POST'&&action==='pickup-challenge')result=await app.challenge(actor,sid,'pickup');
    else if(method==='POST'&&action==='delivery-challenge')result=await app.challenge(actor,sid,'delivery');

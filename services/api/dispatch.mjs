@@ -41,6 +41,25 @@ export function dispatchEngine(db,{routing}={}){
    if(v.multiStopEnabled){await c.query("UPDATE dispatch_algorithm_features SET enabled=true,updated_by=$1,updated_at=now() WHERE feature_key IN ('multi_parcel_vrp','dynamic_pickup_insertion')",[actor.id]);
     await audit(c,actor.id,'dispatch.multi_parcel_algorithms_activated',null);}await c.query(`UPDATE dispatch_policy SET search_radii_m=$1,candidate_limit=$2,fresh_seconds=$3,max_sample_age_seconds=$4,max_accuracy_m=$5,max_speed_mps=$6,offer_seconds=$7,retry_seconds=$8,max_attempts=$9,sample_retention_hours=$10,moving_upload_seconds=$11,idle_upload_seconds=$12,multi_stop_enabled=$13,max_active_parcels=$14,max_detour_seconds=$15,delivery_slack_seconds=$16,max_pickup_eta_seconds=$17,max_offer_movement_m=$18,updated_at=now() WHERE id=1`,[v.searchRadiiM,v.candidateLimit,v.freshSeconds,v.maxSampleAgeSeconds,v.maxAccuracyM,v.maxSpeedMps,v.offerSeconds,v.retrySeconds,v.maxAttempts,v.sampleRetentionHours,v.movingUploadSeconds,v.idleUploadSeconds,v.multiStopEnabled,v.maxActiveParcels,v.maxDetourSeconds,v.deliverySlackSeconds,v.maxPickupEtaSeconds,v.maxOfferMovementM]);await audit(c,actor.id,'dispatch.policy_updated',null);return {ok:true,multiStopEnabled:v.multiStopEnabled};});
  }
+ /**
+  * Tells the customer and staff once, then pauses before searching again. Moving the next try forward
+  * also stops orders with no rider from filling every dispatch slot and blocking new orders.
+  */
+ async function noRiderFound(c,sid){
+  const s=(await c.query("SELECT customer_id,no_rider_since FROM shipments WHERE id=$1 AND state='AWAITING_ASSIGNMENT' FOR UPDATE",[sid])).rows[0];
+  if(!s)return {status:'not_dispatchable'};
+  if(!s.no_rider_since){
+   await c.query("INSERT INTO dispatch_exceptions(shipment_id,actor_id,kind,reason) VALUES($1,NULL,'no_rider_found','No rider accepted this order after repeated offers')",[sid]);
+   await c.query("INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,'delivery_watchdog_alert',$3) ON CONFLICT(id) DO NOTHING",
+    [`no-rider:${sid}`,s.customer_id,JSON.stringify({shipmentId:sid,reasons:['NO_RIDER_FOUND'],action:'still_searching',message:'We have not found a rider yet and are still looking. You can wait, or cancel the order for a refund.'})]);
+  }
+  await c.query("UPDATE shipments SET no_rider_since=coalesce(no_rider_since,now()),dispatch_attempts=0,next_dispatch_at=now()+interval '5 minutes' WHERE id=$1",[sid]);
+  return {status:'manual_review_required'};
+ }
+ /** Orders staff should look at. Finished orders drop off the list. */
+ async function openExceptions(actor){await getPolicy(actor);return (await db.query(`SELECT e.id,e.shipment_id,e.kind,e.reason,e.created_at,s.state,s.paid,u.phone AS customer_phone,rp.phone AS rider_phone
+   FROM dispatch_exceptions e JOIN shipments s ON s.id=e.shipment_id JOIN users u ON u.id=s.customer_id LEFT JOIN users rp ON rp.id=s.rider_id
+   WHERE s.state NOT IN ('COMPLETED','CANCELLED','RETURNED') ORDER BY e.created_at DESC LIMIT 100`)).rows;}
  async function riskSignals(actor){await getPolicy(actor);return (await db.query("SELECT id,rider_id,shipment_id,signal_code,severity,review_status,created_at FROM operational_risk_signals WHERE review_status='pending' ORDER BY created_at DESC LIMIT 100")).rows;}
  async function reviewRisk(actor,input){await getPolicy(actor);const v=z.object({signalId:z.number().int().positive(),decision:z.enum(['reviewed','dismissed']),reason:z.string().trim().min(12).max(500)}).strict().parse(input);
   return db.tx(async c=>{const old=(await c.query('SELECT * FROM operational_risk_signals WHERE id=$1 FOR UPDATE',[v.signalId])).rows[0];check(old,404,'Risk event not found');check(old.review_status==='pending',409,'Already reviewed');
@@ -321,7 +340,7 @@ export function dispatchEngine(db,{routing}={}){
   const sh=(await db.query(`SELECT s.*,q.request FROM shipments s JOIN quotes q ON q.id=s.quote_id WHERE s.id=$1`,[sid])).rows[0];check(sh,404,'Shipment unavailable');
   if(sh.state!=='AWAITING_ASSIGNMENT'||!(sh.paid||sh.payment_method==='CASH'))return {status:'not_dispatchable'};
   if(!await foodDispatchAllowed(db,sid))return {status:'awaiting_paid_kitchen_acceptance'};
-  const p=await policy(db);if(sh.dispatch_attempts>=p.max_attempts)return {status:'manual_review_required'};
+  const p=await policy(db);if(sh.dispatch_attempts>=p.max_attempts)return db.tx(c=>noRiderFound(c,sid));
   const nearbyRiders=await nearby(sh.request.pickup,sh.request.weightG,{vehicle:sh.request.vehicle??null,shipmentId:sid,parcelCategory:sh.request.parcelCategory??'general',parcelSize:sh.request.parcelSize??'small'});
   // Avoid buying route-matrix calls for riders already blocked by commission policy.
   // Acceptance STILL independently revalidates under a locked rider transaction.
@@ -349,7 +368,7 @@ export function dispatchEngine(db,{routing}={}){
    if(!await foodDispatchAllowed(c,sid))return {status:'awaiting_paid_kitchen_acceptance'};
    await c.query("UPDATE dispatch_offers SET status='expired' WHERE shipment_id=$1 AND status='offered' AND expires_at<=now()",[sid]);
    if((await c.query("SELECT 1 FROM dispatch_offers WHERE shipment_id=$1 AND status='offered'",[sid])).rowCount)return {status:'offer_pending'};
-   if(s.dispatch_attempts>=p.max_attempts)return {status:'manual_review_required'};
+   if(s.dispatch_attempts>=p.max_attempts)return noRiderFound(c,sid);
    const broadcast=await features.enabled('multi_rider_broadcast');
    const selected=[];
    // The shortlist is already road-feasible, sorted by verified road ETA.
@@ -441,7 +460,7 @@ export function dispatchEngine(db,{routing}={}){
    if(s.payment_method==='CASH')await cashEligible(c,actor.id,s.commission_minor);
    await c.query("UPDATE dispatch_offers SET status='accepted',accepted_at=now() WHERE id=$1",[o.id]);
    await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE shipment_id=$1 AND id<>$2 AND status='offered'",[sid,o.id]);
-   await c.query("UPDATE shipments SET rider_id=$2,company_id=$3,state='RIDER_ASSIGNED',watchdog_last_inspected_at=NULL,watchdog_next_review_at=NULL WHERE id=$1",[sid,r.id,r.company_id]);
+   await c.query("UPDATE shipments SET rider_id=$2,company_id=$3,state='RIDER_ASSIGNED',no_rider_since=NULL,watchdog_last_inspected_at=NULL,watchdog_next_review_at=NULL WHERE id=$1",[sid,r.id,r.company_id]);
    await c.query(`INSERT INTO rider_dispatch_plans(rider_id,revision,stops) VALUES($1,1,$2)
       ON CONFLICT(rider_id) DO UPDATE SET revision=rider_dispatch_plans.revision+1,stops=$2,updated_at=now()`,[r.id,JSON.stringify(o.proposed_stops)]);
    await c.query("INSERT INTO dispatch_commitments(shipment_id,rider_id,promised_delivery_before) VALUES($1,$2,now()+($3::int * interval '1 second'))",[sid,r.id,o.planned_dropoff_seconds+p.delivery_slack_seconds]);
@@ -638,5 +657,5 @@ export function dispatchEngine(db,{routing}={}){
     ORDER BY next_dispatch_at,created_at LIMIT $1`,[limit])).rows;
   const results=[];for(const row of due){try{results.push(await dispatchShipment(row.id));}catch(e){results.push({shipmentId:row.id,status:'error',code:e.code??e.status??'internal'});}}return results;
  }
- return {getPolicy,configure,algorithmFeatures:features.list,setAlgorithmFeature:features.set,riskSignals,reviewRisk,previewFleetBatch,trackingSettings,vehiclePolicy,setVehiclePolicy,riderPosition,optIn,manifest,nearby,availability,evaluate,dispatchShipment,offers,accept,decline,release,pruneSamples,refreshCorridors,watchdog,tick};
+ return {openExceptions,getPolicy,configure,algorithmFeatures:features.list,setAlgorithmFeature:features.set,riskSignals,reviewRisk,previewFleetBatch,trackingSettings,vehiclePolicy,setVehiclePolicy,riderPosition,optIn,manifest,nearby,availability,evaluate,dispatchShipment,offers,accept,decline,release,pruneSamples,refreshCorridors,watchdog,tick};
 }
