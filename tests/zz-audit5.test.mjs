@@ -72,41 +72,22 @@ test('a day',{skip:!url},async()=>{
   if(s.state==='FAILED'&&!o.food){seen('return',await api(r.token,'POST','/api/v1/shipments/'+o.id+'/transition',{action:'return',reason:'Taking it back'}));return;}
   if(s.state==='RETURN_REQUESTED'&&!o.food){const ch=seen('return challenge',await api(r.token,'POST','/api/v1/shipments/'+o.id+'/return-challenge',{}));if(ch.status!==200)return;const code=[...texts].reverse().find(m=>m.challengeId===ch.data.challengeId)?.code;seen('return verify',await api(r.token,'POST','/api/v1/shipments/'+o.id+'/verify',{challengeId:ch.data.challengeId,code}));}
  };
- const started=Date.now();let offered=0,accepted=0,expired=0,declined=0;
- const stuckLog=[];
- for(let round=0;round<30;round++){
-  if(Date.now()-started>300000){log('stopped early at round',round);break;}
-  if(round<12)for(let i=0;i<3;i++)await newOrder();
-  log('round',{round,orders:orders.length,secs:Math.round((Date.now()-started)/1000)});
-  await db.query("UPDATE shipments SET next_dispatch_at=LEAST(next_dispatch_at,now()) WHERE state='AWAITING_ASSIGNMENT' AND no_rider_since IS NULL");
-  const t=await dispatch.tick(20).catch(e=>[{status:'error',m:e.message}]);
-  for(const x of t)if(['error'].includes(x.status))errors['tick '+x.code]=(errors['tick '+x.code]||0)+1;
-  await Promise.all(riders.map(async r=>{const os=(await api(r.token,'GET','/api/v1/rider/offers')).data||[];for(const o of os){offered++;const roll=randomInt(10);if(roll===0){declined++;seen('decline',await api(r.token,'POST','/api/v1/rider/offers/decline',{shipmentId:o.id,offerId:o.offerId,reason:'Too far'}));}else if(roll<9){const a=seen('accept',await api(r.token,'POST','/api/v1/shipments/'+o.id+'/accept',{offerId:o.offerId}));if(a.status===200)accepted++;}else{expired++;await db.query("UPDATE dispatch_offers SET expires_at=now()-interval '1 second' WHERE id=$1",[o.offerId]);}}}));
-  const open=new Set((await db.query("SELECT id FROM shipments WHERE id=ANY($1) AND state NOT IN ('COMPLETED','CANCELLED','RETURNED')",[orders.map(o=>o.id)])).rows.map(x=>x.id));
-  for(const o of orders.filter(x=>open.has(x.id)).sort(()=>Math.random()-.5))await act(o);
-  for(const o of orders.filter(x=>x.failed&&open.has(x.id)))await returns(o);
- }
- const byState=(await db.query('SELECT s.state,s.paid,count(*)::int n FROM shipments s WHERE s.id=ANY($1) GROUP BY 1,2 ORDER BY 1',[orders.map(o=>o.id)])).rows;
- log('day totals',{orders:orders.length,food:orders.filter(o=>o.food).length,cash:orders.filter(o=>o.cash).length,offered,accepted,declined,expired,seconds:Math.round((Date.now()-started)/1000),byState});
- log('what people were refused',Object.entries(errors).sort((a,b)=>b[1]-a[1]).slice(0,22));
- const ids=orders.map(o=>o.id);
- const stuck=(await db.query(`SELECT s.id,s.state,s.paid,s.dispatch_attempts,s.no_rider_since IS NOT NULL no_rider,s.rider_id IS NOT NULL has_rider,(SELECT count(*)::int FROM dispatch_offers o WHERE o.shipment_id=s.id) offers,(SELECT state FROM food_orders f WHERE f.shipment_id=s.id) food FROM shipments s WHERE s.id=ANY($1) AND s.state NOT IN ('COMPLETED','CANCELLED','RETURNED','AWAITING_PAYMENT') LIMIT 12`,[ids])).rows;
- log('left unfinished',stuck.map(({id,...x})=>x));
- const unbal=(await db.query(`SELECT j.id,j.kind,sum(CASE WHEN l.side='debit' THEN l.amount_minor ELSE -l.amount_minor END)::int d FROM checkout_accounting_journals j JOIN checkout_accounting_lines l ON l.journal_id=j.id WHERE j.shipment_id=ANY($1) GROUP BY 1,2 HAVING sum(CASE WHEN l.side='debit' THEN l.amount_minor ELSE -l.amount_minor END)<>0`,[ids])).rows;
- const acc=(await db.query(`SELECT l.account,sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)::int credit FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id WHERE j.shipment_id=ANY($1) GROUP BY 1 ORDER BY 1`,[ids])).rows;
- const cust=(await db.query(`SELECT s.state,count(*)::int n,sum(s.commission_minor)::int commission,sum(s.amount_minor)::int amount FROM shipments s WHERE s.id=ANY($1) AND s.paid AND s.state IN ('COMPLETED','RETURNED') AND s.payment_method<>'CASH' GROUP BY 1`,[ids])).rows;
- const liabilityLeft=(await db.query(`SELECT s.state,s.cancellation_fee_minor::int fee,sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)::int left FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id JOIN shipments s ON s.id=j.shipment_id WHERE j.shipment_id=ANY($1) AND l.account IN ('customer_delivery_liability','customer_processing_fee_liability') GROUP BY 1,2,s.id HAVING sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)<>0 LIMIT 8`,[ids])).rows;
- log('books',{unbalanced:unbal.length,accounts:acc,completed:cust,customerMoneyNotSettled:liabilityLeft});
- const multi=(await db.query(`SELECT count(*)::int n FROM (SELECT a.rider_id FROM dispatch_offers a JOIN dispatch_offers b ON a.rider_id=b.rider_id AND a.shipment_id<>b.shipment_id AND a.status='accepted' AND b.status='accepted' AND a.shipment_id=ANY($1) AND b.shipment_id=ANY($1) AND a.expected_active>0) x`,[ids])).rows[0];
- const busyDrift=(await db.query(`SELECT count(*)::int n FROM rider_dispatch_plans p WHERE p.rider_id=ANY($1) AND jsonb_array_length(p.stops)>0 AND NOT EXISTS(SELECT 1 FROM shipments s WHERE s.rider_id=p.rider_id AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'))`,[riders.map(r=>r.id)])).rows[0];
- log('riders',{secondParcelAccepts:multi.n,ridersStuckWithGhostStops:busyDrift.n,jobs:(await db.query('SELECT rider_id,count(*)::int n FROM shipments WHERE state=$2 AND rider_id=ANY($1) GROUP BY 1',[riders.map(r=>r.id),'COMPLETED'])).rows.map(x=>x.n).sort((a,b)=>b-a)});
- const jobs=backgroundJobs({db,dispatch,notifications:notificationWorker(db,{transport:null,sms}),restOrders:rest,money,checkout,finance,paymentProvider:provider,routing});
- for(let i=0;i<5;i++){await jobs.jobs.notifications();}
- await jobs.jobs.moneyRecon();await new Promise(r=>setTimeout(r,2500));await money.reconcileDue({olderThanSeconds:0});
- for(let i=0;i<8;i++)await jobs.jobs.notifications();
- log('messages',{codes:texts.length,codeTypes:texts.reduce((o,m)=>(o[m.purpose]=(o[m.purpose]||0)+1,o),{}),notificationSms:notes.length,kinds:notes.reduce((o,m)=>(o[m.kind]=(o[m.kind]||0)+1,o),{}),samples:[...new Set(notes.map(m=>m.message))].slice(0,6)});
- const refunds=(await db.query('SELECT status,count(*)::int n,sum(amount_minor)::int a FROM refund_operations WHERE shipment_id=ANY($1) GROUP BY 1',[ids])).rows;
- log('refunds',refunds);
- log('wallet check',(await db.query('SELECT rider_id,count(*)::int n FROM commission_accounts WHERE rider_id=ANY($1) GROUP BY 1',[riders.map(r=>r.id)])).rows.length);
+ const c1=customers[0],c2=customers[1];const r=riders[1];
+ await db.query('UPDATE riders SET online=false WHERE id<>$1',[r.id]);
+ const P=PLACES[0];await gps(r,P);
+ const mk=async(c,from,to)=>{const q=await api(c.token,'POST','/api/v1/quotes',{pickup:from,destination:to,vehicle:'motorcycle',recipientPhone:phone(),weightG:1000,description:'Docs',paymentMethod:'MOMO'});const s=await api(c.token,'POST','/api/v1/shipments',{quoteId:q.data.id},{'Idempotency-Key':'m-'+randomInt(1e9)});await pay(c,s.data.id);await dispatch.tick(20);const o=(await api(r.token,'GET','/api/v1/rider/offers')).data.find(x=>x.id===s.data.id);const a=await api(r.token,'POST','/api/v1/shipments/'+s.data.id+'/accept',{offerId:o?.offerId});return {id:s.data.id,offer:!!o,accept:a.status};};
+ const A=await mk(c1,P,PLACES[1]);const B=await mk(c2,{address:'Tetteh Quarshie, Accra, Ghana',latitude:5.62,longitude:-0.174},PLACES[2]);
+ const man=async()=>(await api(r.token,'GET','/api/v1/rider/manifest')).data.stops.map(s=>[s.shipmentId===A.id?'A':'B',s.kind]);
+ log('plan',{A,B,stops:await man()});
+ const step=async(id,kind)=>{const ch=await api(r.token,'POST','/api/v1/shipments/'+id+'/'+kind+'-challenge',{});const code=[...texts].reverse().find(m=>m.challengeId===ch.data?.challengeId)?.code;const v=await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:ch.data?.challengeId,code});return [ch.status,ch.data?.error,v.status];};
+ const first=(await api(r.token,'GET','/api/v1/rider/manifest')).data.stops;const pa=await step(first[0].shipmentId,'pickup');const pb=await step(first[1].shipmentId,'pickup');
+ for(const x of [A,B])await api(r.token,'POST','/api/v1/shipments/'+x.id+'/transition',{action:'start'});
+ const order=(await api(r.token,'GET','/api/v1/rider/manifest')).data.stops;const firstDrop=order[0].shipmentId,secondDrop=order[1].shipmentId;
+ const fail=await api(r.token,'POST','/api/v1/shipments/'+firstDrop+'/transition',{action:'fail',reason:'Recipient unreachable'});
+ const afterFail=(await api(r.token,'GET','/api/v1/rider/manifest')).data.stops.map(s=>[s.shipmentId===firstDrop?'failed':'other',s.kind]);
+ const other=await step(secondDrop,'delivery');
+ const ret=await api(r.token,'POST','/api/v1/shipments/'+firstDrop+'/transition',{action:'return',reason:'Taking it back'});
+ const other2=await step(secondDrop,'delivery');
+ log('first parcel fails while second is on board',{pa,pb,fail:fail.status,afterFail,otherDelivery:other,ret:[ret.status,ret.data?.error],otherAfterReturnRequest:other2,afterStops:(await api(r.token,'GET','/api/v1/rider/manifest')).data.stops.map(s=>[s.shipmentId===firstDrop?'failed':'other',s.kind])});
  log('ALL DONE',{});setTimeout(()=>process.exit(0),300);await new Promise(()=>{});
 });
