@@ -148,5 +148,5 @@ ELESEND runs without this. To reach people when the app is closed:
 2. Put the downloaded `google-services.json` in `apps/mobile/android/app/` before building. Do not commit it.
 3. Create a service account with Firebase Cloud Messaging access, and set its JSON as `FIREBASE_SERVICE_ACCOUNT_JSON` on the server. Treat it as a secret.
 
-Rider offers and chat messages only go by push, never as paid SMS. Other updates, such as refunds and delays, go by SMS if the person has no device registered and an SMS provider is set up.
+With Firebase set up, rider offers and chat messages go by push only. Other updates, such as refunds and delays, go by SMS if the person has no device registered and an SMS provider is set up. Without Firebase, each rider offer is sent as a paid SMS so riders with a closed app can still hear about it, so set Firebase up before you have many orders.
 

@@ -6,8 +6,8 @@ import {emitRealtimeUserEvent} from './chat-engine.mjs';
 /** A push token counts only while its signed-in session is still valid. */
 export const ACTIVE_PUSH_TOKEN_FILTER=`t.user_id=$1 AND t.active=true AND (t.session_token_hash IS NULL OR EXISTS (SELECT 1 FROM sessions s WHERE s.token_hash=t.session_token_hash AND s.user_id=t.user_id AND s.expires_at>now()))`;
 export const RIDER_OFFER_ALERT_CHANNEL = 'elesend-rider-offers';
-/** Offers expire in seconds and chats are constant, so neither is worth a paid SMS. */
-const NEVER_BY_SMS=new Set(['dispatch_offer','chat_message']);
+/** Where push is set up, offers and chats are not worth a paid SMS. Without push, an offer SMS is the only way to reach a rider whose app is closed. */
+const PUSH_ONLY=new Set(['dispatch_offer','chat_message']);
 
 // Deployment-owned bridge to a contracted SMS/push provider. The bridge must
 // deduplicate Idempotency-Key and return durable provider acceptance evidence.
@@ -84,7 +84,7 @@ export function notificationWorker(db,{transport=null,sms=null}={}){
       });
      }catch{}
      let receipt=null;
-     const smsAllowed=hasNotificationSms&&!NEVER_BY_SMS.has(job.kind);
+     const smsAllowed=hasNotificationSms&&(transport?!PUSH_ONLY.has(job.kind):job.kind!=='chat_message');
      if(transport?.pushOnly){
       receipt=await transport.send({...job,phone:user?.phone,payload:{...job.payload,pushTokens:pushTokens.map(t=>({platform:t.platform,token:t.push_token}))}});
       if(receipt.invalidTokens?.length)await db.query('UPDATE user_push_tokens SET active=false WHERE push_token=ANY($1::text[])',[receipt.invalidTokens]);

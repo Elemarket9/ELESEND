@@ -350,7 +350,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    await take(a);await take(b,{pickup:{address:'Tetteh Quarshie Interchange, Accra',latitude:5.6200,longitude:-0.1740},destination:{address:'Airport Residential, Accra',latitude:5.6050,longitude:-0.1780}});
    const step=async(id,kind)=>{const ch=await api(r.token,'POST','/api/v1/shipments/'+id+'/'+kind+'-challenge',{});assert.equal(ch.status,200,JSON.stringify(ch.data));assert.equal((await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:ch.data.challengeId,code:code()})).status,200);};
    const stops=()=>api(r.token,'GET','/api/v1/rider/manifest').then(x=>x.data.stops);
-   for(const s of await stops()){await step(s.shipmentId,'pickup');await api(r.token,'POST','/api/v1/shipments/'+s.shipmentId+'/transition',{action:'start'});}
+   for(const s of (await stops()).filter(x=>x.kind==='pickup')){await step(s.shipmentId,'pickup');await api(r.token,'POST','/api/v1/shipments/'+s.shipmentId+'/transition',{action:'start'});}
    const [first,second]=(await stops()).map(s=>s.shipmentId);
    assert.equal((await api(r.token,'POST','/api/v1/shipments/'+second+'/delivery-challenge',{})).status,409,'stop order still applies');
    assert.equal((await api(r.token,'POST','/api/v1/shipments/'+first+'/transition',{action:'fail',reason:'Recipient unreachable'})).status,200);

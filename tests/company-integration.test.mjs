@@ -158,13 +158,14 @@ test('Firebase push signs in, sends, and reports dead devices',async()=>{
  assert.equal(calls.some(c=>c.o.body?.toString().includes('skip')),false);
 });
 
-test('offers and chat messages never become paid SMS',async()=>{
+test('chat never becomes a paid SMS, and with push set up neither do offers',async()=>{
  const {notificationWorker}=await import('../services/api/notifications.mjs');
- const sent=[],states={};
  const job=kind=>({id:kind,kind,recipient_id:'u',payload:{message:'m'},attempts:1});
- const db={query:async(sql,p=[])=>{if(/state='expired'/.test(sql)&&p[0])states[p[0]]='expired';if(/state='sent'/.test(sql))states[p[0]]='sent';if(/FROM users/.test(sql))return {rows:[{phone:'+233241234567'}]};return {rows:[]};},tx:async f=>f({query:async sql=>/WITH due/.test(sql)?{rows:[job('dispatch_offer'),job('refund_completed')]}:(/state='sent'/.test(sql)?(states.refund_completed='sent',{rows:[]}):{rows:[]})})};
- await notificationWorker(db,{sms:{sendNotification:async m=>{sent.push(m.kind);return {accepted:true,messageId:'1'};}}}).tick();
- assert.deepEqual(sent,['refund_completed']);assert.equal(states.dispatch_offer,'expired');
+ const run=async transport=>{const sent=[];
+  const db={query:async sql=>/FROM users/.test(sql)?{rows:[{phone:'+233241234567'}]}:{rows:[]},tx:async f=>f({query:async sql=>/WITH due/.test(sql)?{rows:['dispatch_offer','chat_message','refund_completed'].map(job)}:{rows:[]}})};
+  await notificationWorker(db,{transport,sms:{sendNotification:async m=>{sent.push(m.kind);return {accepted:true,messageId:'1'};}}}).tick();return sent;};
+ assert.deepEqual(await run(null),['dispatch_offer','refund_completed']);
+ assert.deepEqual(await run({pushOnly:true,send:async()=>({accepted:false,noDevice:true})}),['refund_completed']);
 });
 
 test('people see plain messages when the connection fails',async()=>{
