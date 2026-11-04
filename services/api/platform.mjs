@@ -753,6 +753,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   });
  },
  async earnings(actor){return earningsEntriesFor(db,actor.id);},
+ /** Orders staff should look at. Finished orders drop off the list. */
+ async openExceptions(actor){await permission(db,actor,'dispatch:configure');return (await db.query(`SELECT e.id,e.shipment_id,e.kind,e.reason,e.created_at,s.state,s.paid,u.phone AS customer_phone,rp.phone AS rider_phone
+   FROM dispatch_exceptions e JOIN shipments s ON s.id=e.shipment_id JOIN users u ON u.id=s.customer_id LEFT JOIN users rp ON rp.id=s.rider_id
+   WHERE s.state NOT IN ('COMPLETED','CANCELLED','RETURNED') ORDER BY e.created_at DESC LIMIT 100`)).rows;},
  async reviewQueue(actor){await permission(db,actor,'verification:write');return {riders:(await db.query('SELECT r.id,u.phone,r.company_id,r.status,r.vehicle,r.max_weight_g FROM riders r LEFT JOIN users u ON u.id=r.id ORDER BY r.id LIMIT 100')).rows,companies:(await db.query('SELECT c.id,c.name,c.status,c.services,u.phone FROM companies c JOIN users u ON u.id=c.owner_id ORDER BY c.name LIMIT 100')).rows,vehicles:(await db.query('SELECT * FROM rider_vehicle_registrations ORDER BY submitted_at DESC LIMIT 100')).rows};}
  ,
   routing,

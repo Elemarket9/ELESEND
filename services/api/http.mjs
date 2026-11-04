@@ -566,7 +566,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    check(actor?.kind==='admin',403,'Administrator required');
    result=await getSystemHealthReport(db);
   }
-  else if(method==='GET'&&path==='/api/v1/admin/dispatch/exceptions'){check(dispatcher,503,'Dispatch unavailable');result=await dispatcher.openExceptions(actor);}
+  else if(method==='GET'&&path==='/api/v1/admin/dispatch/exceptions')result=await app.openExceptions(actor);
   else if(method==='GET'&&path==='/api/v1/company/riders')result=await net.fleet(actor);
   else if(method==='POST'&&path==='/api/v1/company/invitations'){await limit(db,'company-invite:'+actor.id,30,3600);result=body?.phone?await companies.inviteByPhone(actor,body):await net.invite(actor,body);}
   else if(method==='GET'&&path==='/api/v1/company/invitations')result=await companies.invitations(actor);

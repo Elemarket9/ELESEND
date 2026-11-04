@@ -140,7 +140,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    const admin=randomUUID();
    await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'test-only','admin',now())",[admin,phone()]);
    await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'dispatch:configure')",[admin]);
-   const list=await dispatch.openExceptions({id:admin,kind:'admin'});
+   const list=await app.openExceptions({id:admin,kind:'admin'});
    assert.ok(list.some(e=>e.shipment_id===id&&e.kind==='handover_sms_failed'));
    assert.equal((await api(r.token,'POST','/api/v1/shipments/'+id+'/pickup-challenge',{})).status,200,'the rider can try again');
    await offline();

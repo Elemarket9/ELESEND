@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check,hash,newToken,phone as normalPhone} from './security.mjs';
 import {companyBalance} from './modules/payments/index.mjs';
+import {queueNotification} from './notifications.mjs';
 
 const uuid=z.string().uuid();
 const SERVICES=['delivery','riders'];
@@ -56,7 +57,7 @@ export function companyService(db){return {
    // The rider accepts in the app, so this random value is never given to anyone.
    await c.query("INSERT INTO rider_invitations(id,company_id,rider_id,token_hash,expires_at) VALUES($1,$2,$3,$4,now()+interval '48 hours')",[id,co.id,rider.id,hash(newToken())]);
    await audit(c,actor,'company.rider_invited',rider.id);
-   await c.query("INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,'company_invitation',$3) ON CONFLICT(id) DO NOTHING",[`company-invite:${id}`,rider.id,JSON.stringify({invitationId:id,message:`${co.name} has invited you to ride for them. Open the Rider app to answer.`})]);
+   await queueNotification(c,{id:`company-invite:${id}`,recipientId:rider.id,kind:'company_invitation',payload:{invitationId:id,message:`${co.name} has invited you to ride for them. Open the Rider app to answer.`}});
   });
   return {ok:true,message:'If this number belongs to an approved independent rider, they will see your invitation in their app for 48 hours.'};
  },

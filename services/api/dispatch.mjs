@@ -56,10 +56,6 @@ export function dispatchEngine(db,{routing}={}){
   await c.query("UPDATE shipments SET no_rider_since=coalesce(no_rider_since,now()),dispatch_attempts=0,next_dispatch_at=now()+interval '5 minutes' WHERE id=$1",[sid]);
   return {status:'manual_review_required'};
  }
- /** Orders staff should look at. Finished orders drop off the list. */
- async function openExceptions(actor){await getPolicy(actor);return (await db.query(`SELECT e.id,e.shipment_id,e.kind,e.reason,e.created_at,s.state,s.paid,u.phone AS customer_phone,rp.phone AS rider_phone
-   FROM dispatch_exceptions e JOIN shipments s ON s.id=e.shipment_id JOIN users u ON u.id=s.customer_id LEFT JOIN users rp ON rp.id=s.rider_id
-   WHERE s.state NOT IN ('COMPLETED','CANCELLED','RETURNED') ORDER BY e.created_at DESC LIMIT 100`)).rows;}
  async function riskSignals(actor){await getPolicy(actor);return (await db.query("SELECT id,rider_id,shipment_id,signal_code,severity,review_status,created_at FROM operational_risk_signals WHERE review_status='pending' ORDER BY created_at DESC LIMIT 100")).rows;}
  async function reviewRisk(actor,input){await getPolicy(actor);const v=z.object({signalId:z.number().int().positive(),decision:z.enum(['reviewed','dismissed']),reason:z.string().trim().min(12).max(500)}).strict().parse(input);
   return db.tx(async c=>{const old=(await c.query('SELECT * FROM operational_risk_signals WHERE id=$1 FOR UPDATE',[v.signalId])).rows[0];check(old,404,'Risk event not found');check(old.review_status==='pending',409,'Already reviewed');
@@ -657,5 +653,5 @@ export function dispatchEngine(db,{routing}={}){
     ORDER BY next_dispatch_at,created_at LIMIT $1`,[limit])).rows;
   const results=[];for(const row of due){try{results.push(await dispatchShipment(row.id));}catch(e){results.push({shipmentId:row.id,status:'error',code:e.code??e.status??'internal'});}}return results;
  }
- return {openExceptions,getPolicy,configure,algorithmFeatures:features.list,setAlgorithmFeature:features.set,riskSignals,reviewRisk,previewFleetBatch,trackingSettings,vehiclePolicy,setVehiclePolicy,riderPosition,optIn,manifest,nearby,availability,evaluate,dispatchShipment,offers,accept,decline,release,pruneSamples,refreshCorridors,watchdog,tick};
+ return {getPolicy,configure,algorithmFeatures:features.list,setAlgorithmFeature:features.set,riskSignals,reviewRisk,previewFleetBatch,trackingSettings,vehiclePolicy,setVehiclePolicy,riderPosition,optIn,manifest,nearby,availability,evaluate,dispatchShipment,offers,accept,decline,release,pruneSamples,refreshCorridors,watchdog,tick};
 }

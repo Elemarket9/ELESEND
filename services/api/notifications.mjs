@@ -22,6 +22,7 @@ export function notificationGateway({endpoint,allowedHost,token,fetchImpl=fetch}
  }};
 }
 
+export const queueNotification=(c,{id,recipientId,kind,payload})=>c.query('INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO NOTHING',[id,recipientId,kind,JSON.stringify(payload)]);
 export function notificationWorker(db,{transport=null,sms=null}={}){
  let busy=false;
  const hasNotificationSms=Boolean(sms&&typeof sms.sendNotification==='function');
