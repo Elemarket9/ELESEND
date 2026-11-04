@@ -21,6 +21,6 @@ if((Get-FileHash -LiteralPath $taskSource -Algorithm SHA256).Hash.ToLowerInvaria
 $taskOutput=Join-Path $taskDirectory 'ghana.mbtiles'
 if(Test-Path -LiteralPath $taskOutput){throw 'Preserve the existing tiles under a dated filename before rebuilding'}
 $taskSchema=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../deploy/maps/ghana-schema.yml'))
-& java -Xmx3g -jar $taskJar generate-custom "--schema=$taskSchema" "--osm-local-path=$taskSource" "--output=$taskOutput" "--tmpdir=$(Join-Path $taskDirectory 'tile-temp')" --threads=2 --nodemap-storage=ram --bounds=-3.4,4.5,1.4,11.4
+& java -Xmx3g -jar $taskJar generate-custom --download "--schema=$taskSchema" "--osm-local-path=$taskSource" "--output=$taskOutput" "--tmpdir=$(Join-Path $taskDirectory 'tile-temp')" --threads=2 --nodemap-storage=ram --bounds=-3.4,4.5,1.4,11.4
 if($LASTEXITCODE -ne 0){throw 'Ghana vector tile generation failed'}
 Get-FileHash -LiteralPath $taskOutput -Algorithm SHA256

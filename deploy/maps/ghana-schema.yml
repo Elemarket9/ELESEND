@@ -18,6 +18,9 @@ sources:
   osm:
     type: osm
     local_path: '${ args.osm_local_path }'
+  ocean:
+    type: shapefile
+    url: https://osmdata.openstreetmap.de/download/water-polygons-split-3857.zip
 layers:
   - id: roads
     features:
@@ -76,6 +79,9 @@ layers:
           - {key: name, tag_value: name, min_zoom: 11}
   - id: water
     features:
+      - source: ocean
+        geometry: polygon
+        min_zoom: 0
       - source: osm
         geometry: polygon
         min_zoom: 5
