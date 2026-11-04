@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { adjustedSeconds, segmentSpeeds, trafficRouting } from '../services/api/traffic.mjs';
+import { adjustedSeconds, segmentSpeeds, trafficRouting, trafficService } from '../services/api/traffic.mjs';
 import { riderRoadsOsm } from '../scripts/export-rider-roads.mjs';
 
 const at = s => new Date(1800000000000 + s * 1000).toISOString();
@@ -63,4 +63,40 @@ test('rider roads join the network, and a road touching nothing is left out', as
   assert.doesNotMatch(osm, /ref="7"/);
   assert.match(osm, /Rider &lt;Lane&gt;/);
   assert.match(osm, /k="motorcar" v="no"/);
+});
+
+function fakeDb(start) {
+  const state = { cursor: start, inserts: 0 };
+  return { state, query: async (sql, args) => {
+    if (sql.startsWith('SELECT processed_until')) return { rows: state.cursor ? [{ processed_until: state.cursor }] : [] };
+    if (sql.startsWith('INSERT INTO traffic_cursor')) state.cursor = args[0];
+    if (sql.includes('INSERT INTO traffic_observations')) state.inserts += 1;
+    return { rows: [] };
+  } };
+}
+const NOW = 1800000000000;
+const trip = { vehicle: 'motorcycle', points: [0, 30, 60].map(s => ({ latitude: 5.6, longitude: -0.2, accuracyMeters: 10, observedAt: at(s) })) };
+const goodMatch = async () => ({ tracepoints, matchings: [{ confidence: 0.9, legs: [{ distance: 300, annotation: { nodes: [1, 2] } }, { distance: 300, annotation: { nodes: [2, 3] } }] }] });
+
+test('a routing outage does not lose recent trips, and they are read later', async () => {
+  const db = fakeDb(new Date(NOW - 180000));
+  const reads = async (_s, until) => ({ traces: [trip], until });
+  await trafficService(db, { routing: { matchTrace: async () => { throw Error('down'); } }, now: () => NOW }).ingest(reads);
+  assert.equal(db.state.cursor.getTime(), NOW - 180000, 'cursor kept');
+  const result = await trafficService(db, { routing: { matchTrace: goodMatch }, now: () => NOW }).ingest(reads);
+  assert.equal(result.segments, 2);
+  assert.equal(db.state.cursor.getTime(), NOW - 60000);
+});
+
+test('a batch cut short carries on from its last row, and old failures stop blocking', async () => {
+  const db = fakeDb(new Date(NOW - 600000));
+  const seen = [];
+  await trafficService(db, { routing: { matchTrace: goodMatch }, now: () => NOW }).ingest(async (since, until) => {
+    seen.push(since.getTime());
+    return { traces: [], until: seen.length === 1 ? new Date(since.getTime() + 1000) : until };
+  });
+  assert.equal(seen[1], NOW - 600000 + 1000);
+  const stale = fakeDb(new Date(NOW - 3600000));
+  await trafficService(stale, { routing: { matchTrace: async () => { throw Error('no match'); } }, now: () => NOW }).ingest(async (_s, until) => ({ traces: [trip], until }));
+  assert.ok(stale.state.cursor.getTime() > NOW - 3600000);
 });

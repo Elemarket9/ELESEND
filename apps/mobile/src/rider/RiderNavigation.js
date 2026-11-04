@@ -32,6 +32,7 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
     try {
       const next = await call('POST', '/api/v1/rider/navigation', { shipmentId, latitude: from.latitude, longitude: from.longitude });
       haveRoute.current = true;
+      voice.current = {};
       setRoute(next);
       setFailed('');
     } catch (e) {

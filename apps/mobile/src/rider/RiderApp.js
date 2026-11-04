@@ -1944,7 +1944,7 @@ export default function RiderApp() {
               <Text style={styles.switchAuthText}>Sign Out</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setDeleteAccountOpen(true)} style={styles.switchAuthBtn} accessibilityRole="button">
-              <Text style={[styles.switchAuthText, { color: '#B91C1C' }]}>Delete Account</Text>
+              <Text style={[styles.switchAuthText, { color: '#FCA5A5' }]}>Delete Account</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -1964,7 +1964,7 @@ export default function RiderApp() {
         onClose={() => setDeleteAccountOpen(false)}
         onDeleted={finishAccountDeletion}
       />
-      {navigating && <RiderNavigation {...navigating} onClose={() => setNavigating(null)} />}
+      {navigating && <RiderNavigation key={navigating.shipmentId} {...navigating} onClose={() => setNavigating(null)} />}
     </View>
   );
 }
