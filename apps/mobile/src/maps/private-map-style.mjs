@@ -1,3 +1,4 @@
+import {GHANA_SEA} from './ghana-sea.mjs';
 export const OSM_ATTRIBUTION='© OpenStreetMap contributors';
 export function isLocalOrPrivateMapHost(hostname){
  if(!hostname)return false;
@@ -37,10 +38,11 @@ export function privateMapStyle(tileUrl,{glyphsUrl=null,night=false}={}){
  const label=(id,layer,extra,paintExtra={})=>({id,type:'symbol',source:'ghana','source-layer':layer,...extra,paint:{'text-color':c.text,'text-halo-color':c.halo,'text-halo-width':1.4,...paintExtra}});
  return {version:8,name:night?'ELESEND Ghana Night':'ELESEND Ghana',
   ...(glyphsUrl?{glyphs:glyphsUrl}:{}),
-  sources:tileUrl?{ghana:{type:'vector',tiles:[tileUrl],minzoom:0,maxzoom:14,attribution:OSM_ATTRIBUTION}}:{},
+  sources:tileUrl?{ghana:{type:'vector',tiles:[tileUrl],minzoom:0,maxzoom:14,attribution:OSM_ATTRIBUTION},sea:{type:'geojson',data:{type:'Feature',properties:{},geometry:{type:'Polygon',coordinates:[GHANA_SEA]}}}}:{},
   layers:[
    {id:'background',type:'background',paint:{'background-color':c.background}},
    ...(tileUrl?[
+    {id:'sea',type:'fill',source:'sea',paint:{'fill-color':c.water}},
     landFill('land-residential',['in',['get','landuse'],['literal',['residential']]],c.residential,11),
     landFill('land-commercial',['in',['get','landuse'],['literal',['commercial','retail']]],c.commercial,11),
     landFill('land-industrial',['in',['get','landuse'],['literal',['industrial','military']]],c.industrial,11),
