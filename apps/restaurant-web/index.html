@@ -48,7 +48,7 @@
     .brand-name { font-size: 17px; font-weight: 800; letter-spacing: -0.3px; }
     .brand-subtitle { font-size: 11px; color: var(--primary); font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; }
     
-    .header-actions { display: flex; align-items: center; gap: 12px; }
+    .header-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px 12px; min-width: 0; }
     .status-toggle { display: flex; align-items: center; gap: 8px; background: var(--card); border: 1px solid var(--card-border); padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; }
     .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #64748B; }
     .status-dot.online { background: #10B981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.6); }
@@ -132,8 +132,10 @@
     .modal-card { background: var(--surface); border: 1px solid var(--card-border); border-radius: 16px; width: 100%; max-width: 440px; padding: 24px; }
     .modal-title { font-size: 18px; font-weight: 800; margin-bottom: 12px; }
     
+    .status-toggle { color: var(--text); }
     @media (max-width: 768px) {
       .kitchen-grid { grid-template-columns: 1fr; }
+      #fullscreenBtn { display: none; }
     }
   </style>
 </head>
@@ -215,11 +217,11 @@
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
             <div class="field">
               <label>Latitude (Ghana)</label>
-              <input type="number" step="0.0001" id="regLatitude" class="input" value="5.5560">
+              <input type="number" step="0.0001" id="regLatitude" class="input" placeholder="Latitude">
             </div>
             <div class="field">
               <label>Longitude (Ghana)</label>
-              <input type="number" step="0.0001" id="regLongitude" class="input" value="-0.1825">
+              <input type="number" step="0.0001" id="regLongitude" class="input" placeholder="Longitude">
             </div>
           </div>
           <div style="display: flex; gap: 8px; margin-bottom: 16px;">
@@ -288,11 +290,11 @@
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
             <div class="field">
               <label>Latitude</label>
-              <input type="number" step="0.0001" id="profileLatitude" class="input" value="5.5560">
+              <input type="number" step="0.0001" id="profileLatitude" class="input" placeholder="Latitude">
             </div>
             <div class="field">
               <label>Longitude</label>
-              <input type="number" step="0.0001" id="profileLongitude" class="input" value="-0.1825">
+              <input type="number" step="0.0001" id="profileLongitude" class="input" placeholder="Longitude">
             </div>
           </div>
           <button class="btn" onclick="submitCreateRestaurantProfile()">Save Restaurant & Open Terminal</button>
@@ -761,8 +763,12 @@
       }
       navigator.geolocation.getCurrentPosition(
         pos => {
-          document.getElementById('regLatitude').value = pos.coords.latitude.toFixed(6);
-          document.getElementById('regLongitude').value = pos.coords.longitude.toFixed(6);
+          for (const prefix of ['reg', 'profile']) {
+            const lat = document.getElementById(prefix + 'Latitude');
+            const lon = document.getElementById(prefix + 'Longitude');
+            if (lat) lat.value = pos.coords.latitude.toFixed(6);
+            if (lon) lon.value = pos.coords.longitude.toFixed(6);
+          }
           setAuthMessage('', 'Kitchen GPS coordinates updated.');
         },
         () => setAuthMessage('Could not read browser GPS; enter latitude and longitude manually.')
@@ -940,6 +946,9 @@
       const longitude = Number(document.getElementById('profileLongitude')?.value);
       if (name.length < 2 || !/^\+233[25]\d{8}$/.test(phone) || address.length < 3) {
         return setAuthMessage('Please provide restaurant name, valid Ghana phone, and kitchen address.');
+      }
+      if (!Number.isFinite(latitude) || latitude < 4.5 || latitude > 11.5 || !Number.isFinite(longitude) || longitude < -3.5 || longitude > 1.5) {
+        return setAuthMessage('Enter your kitchen location. Customers and riders are sent to these coordinates, which must be within Ghana.');
       }
       try {
         await apiRequest('/api/v1/restaurants', {

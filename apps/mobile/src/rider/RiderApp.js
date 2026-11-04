@@ -811,7 +811,7 @@ export default function RiderApp() {
           )}
 
           <View style={styles.authCard}>
-            <Text style={styles.authCardTitle}>{isSignup ? (credentials.accountType === 'company' ? 'Company Registration' : 'Courier Driver Registration') : 'Rider & Company Sign In'}</Text>
+            <Text style={styles.authCardTitle}>{isSignup ? (credentials.accountType === 'company' ? 'Company Registration' : 'Rider registration') : 'Rider & Company Sign In'}</Text>
             <Text style={styles.authCardSubtitle}>{isSignup ? (credentials.accountType === 'company' ? 'Register to send deliveries, provide riders, or both' : 'Register your vehicle to start accepting delivery offers') : 'Sign in to go online and earn'}</Text>
 
             {isSignup && (

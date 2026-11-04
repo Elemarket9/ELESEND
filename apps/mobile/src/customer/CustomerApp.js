@@ -3224,7 +3224,7 @@ const styles = StyleSheet.create({
   cancelSmallButton: { flexGrow: 1, flexBasis: '45%', minHeight: 46, backgroundColor: '#FEE2E2', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' },
   cancelSmallText: { color: '#B91C1C', fontSize: 13, fontWeight: '800', textAlign: 'center' },
   emptyStateBox: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 32, alignItems: 'center', marginTop: 24, borderWidth: 1, borderColor: '#E2E8F0' },
-  emptyStateTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A' },
+  emptyStateTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A', textAlign: 'center' },
   emptyStateSub: { fontSize: 13, color: '#64748B', textAlign: 'center', marginTop: 4 },
 
   // Profile Screen Styles (Reference 3)
