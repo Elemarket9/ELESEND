@@ -367,9 +367,15 @@ export function dispatchEngine(db,{routing}={}){
    if(s.dispatch_attempts>=p.max_attempts)return noRiderFound(c,sid);
    const broadcast=await features.enabled('multi_rider_broadcast');
    const selected=[];
+   let ridersBusyWithOffers=false;
    // The shortlist is already road-feasible, sorted by verified road ETA.
    // Check each candidate again; advisory candidate discovery does NOT grant access.
    for(const r of ranked){
+    // A rider answers one offer at a time, so a rush of orders spreads across free riders.
+    // Accepting one offer changes the rider's route, which would make any other offer to them fail.
+    const free=(await c.query("SELECT pg_try_advisory_xact_lock(hashtext($1)) AS got",['rider-offer:'+r.id])).rows[0].got
+     &&!(await c.query("SELECT 1 FROM dispatch_offers WHERE rider_id=$1 AND status='offered' AND expires_at>now() LIMIT 1",[r.id])).rowCount;
+    if(!free){ridersBusyWithOffers=true;continue;}
     const current=(await c.query(`SELECT r.id FROM riders r LEFT JOIN companies co ON co.id=r.company_id JOIN vehicle_capabilities vc ON vc.vehicle=r.vehicle
       WHERE r.id=$1 AND r.online AND r.status='approved' AND (r.company_id IS NULL OR co.status='approved')
        AND r.position_at>now()-($2::int * interval '1 second') AND r.max_weight_g>=$3 AND vc.enabled
@@ -381,6 +387,11 @@ export function dispatchEngine(db,{routing}={}){
     const found=current && active===r.plan?.expectedActive && Number(snapshot?.revision??0)===r.plan?.revision;
     if(found)selected.push(r);
     if(found&&!broadcast)break;
+   }
+   // Riders are only deciding on other offers, so this order keeps its tries and looks again shortly.
+   if(!selected.length&&ridersBusyWithOffers){
+    await c.query("UPDATE shipments SET next_dispatch_at=now()+interval '5 seconds' WHERE id=$1",[sid]);
+    return {status:'riders_busy_with_offers'};
    }
    const attempts=s.dispatch_attempts+1;
    await c.query("UPDATE shipments SET dispatch_attempts=$2,next_dispatch_at=now()+($3::int * interval '1 second') WHERE id=$1",[sid,attempts,p.retry_seconds]);

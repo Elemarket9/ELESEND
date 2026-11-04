@@ -44,13 +44,19 @@ import {
 } from './modules/payments/index.mjs';
 import {walletWithdrawals,walletStatement,walletSummary,walletDebt,walletTransactions,adminWalletOverview,adminWalletReconciliation,walletPolicyView,updateWalletPolicy} from './modules/payments/index.mjs';
 import {getSystemHealthReport} from './infrastructure/monitoring/system-health.mjs';
-const INTERNAL_FIGURES=/commission|riderEarnings|driverEarning/i;
-/** A customer sees what they pay, not what ELESEND and the rider each keep. */
+const INTERNAL_FIGURES=/commission|riderEarnings|driverEarning|elesend|funded|funding|restaurant_?(food|delivery)?_?discount|restaurant(Food|Delivery)|netPayable|net_payable/i;
+const withoutInternalFigures=value=>{
+ if(Array.isArray(value))return value.map(withoutInternalFigures);
+ if(!value||typeof value!=='object'||value instanceof Date)return value;
+ return Object.fromEntries(Object.entries(value).filter(([key])=>!INTERNAL_FIGURES.test(key)).map(([key,item])=>[key,withoutInternalFigures(item)]));
+};
+/** A customer sees what they pay, not what ELESEND, the restaurant and the rider each keep or fund. */
 function forCustomer(actor,value){
  if(Array.isArray(value))return value.map(row=>forCustomer(actor,row));
- if(!value||typeof value!=='object'||value.customer_id!==actor.id)return value;
- return Object.fromEntries(Object.entries(value).filter(([key])=>!INTERNAL_FIGURES.test(key)));
+ return value?.customer_id===actor.id?withoutInternalFigures(value):value;
 }
+const CUSTODY_ROUTES=new Set(['GET /api/v1/me','GET /api/v1/me/phone','POST /api/v1/auth/logout','GET /api/v1/rider/manifest']);
+const CUSTODY_SHIPMENT_ROUTE=/^(GET \/api\/v1\/shipments\/[0-9a-f-]{36}(\/tracking)?|POST \/api\/v1\/shipments\/[0-9a-f-]{36}\/(delivery-challenge|return-challenge|verify|transition|location))$/;
 const AWAITING_APPROVAL_ROUTES=new Set(['GET /api/v1/me','GET /api/v1/me/phone','POST /api/v1/me/phone-challenge','POST /api/v1/me/phone-verify','POST /api/v1/auth/logout','POST /api/v1/me/delete-account',
  'GET /api/v1/rider/licence','POST /api/v1/rider/licence','POST /api/v1/rider/licence/identity-check','GET /api/v1/rider/documents','POST /api/v1/rider/documents/upload-link',
  'GET /api/v1/company/profile','PUT /api/v1/company/services']);
@@ -178,6 +184,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const token=req.headers.authorization?.replace(/^Bearer /,'');const actor=token?.startsWith('es_live_')?await net.authenticateKey(token):await app.authenticate(token,{allowPending:true});
   // New riders and companies can finish setting up and see their status, and nothing else, until approved.
   if(actor.awaitingApproval)check(AWAITING_APPROVAL_ROUTES.has(method+' '+path),403,'Your account is waiting for ELESEND approval');
+  if(actor.custodyOnly)check(CUSTODY_ROUTES.has(method+' '+path)||CUSTODY_SHIPMENT_ROUTE.test(method+' '+path),403,'Your account is suspended. You can only finish the parcel you are carrying.');
   net.authorizeKey(actor,method,path);
   if(actor.api_client_id)await limit(db,'api-key:'+actor.api_client_id,300,60);
   await limit(db,'user:'+actor.id,150,60);
@@ -704,7 +711,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='GET'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/settlements$/.test(path))result=await restOrders.getRestaurantSettlements(actor,path.split('/')[4]);
   else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/batch-dispatch$/.test(path))result=await restOrders.evaluateBatchDispatch(actor,path.split('/')[4],body);
   // Food Ordering Endpoints
-  else if(method==='POST'&&path==='/api/v1/food-orders/quote'){await limit(db,'quote:'+actor.id,30,60);result=await restOrders.quoteFoodOrder(actor,body);}
+  else if(method==='POST'&&path==='/api/v1/food-orders/quote'){await limit(db,'quote:'+actor.id,30,60);result=withoutInternalFigures(await restOrders.quoteFoodOrder(actor,body));}
   else if(method==='POST'&&path==='/api/v1/food-orders')result=forCustomer(actor,await restOrders.createFoodOrder(actor,body,{paymentMethod:body.paymentMethod,specialInstructions:body.specialInstructions,promoCode:body.promoCode,promoCodes:body.promoCodes,campaignIds:body.campaignIds,idempotencyKey:req.headers['idempotency-key']}));
   else if(method==='GET'&&path==='/api/v1/food-orders'){
     const u=new URL(req.url,'http://localhost').searchParams;

@@ -1,6 +1,6 @@
 import {ACTIVE_PUSH_TOKEN_FILTER,queueNotification} from './notifications.mjs';
 import {envInt} from './env-values.mjs';
-import {cashAlreadyReported,confirmedPaymentMinor} from './modules/payments/index.mjs';
+import {cashAlreadyReported,confirmedPaymentMinor,unpaidEarningsMinor,withdrawalFeeMinor} from './modules/payments/index.mjs';
 import {approveVehicleRecord} from './vehicle.mjs';
 import {ACCEPTED_SERVICES,assertCompanyDelivery} from './company.mjs';
 import {ensureCommissionAccount,paymentMethodEnabled,findPaymentEvent,recordPaymentEvent,recordFinancialEntry,earningsEntriesFor,senderCashCollectedInFull,cashCollectionFor,accrueRestaurantSettlement} from './modules/payments/index.mjs';
@@ -66,6 +66,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  /** A provider that answers without accepting the message counts as a failure. */
  async function sendSms(message){const result=await sms.send(message);if(result?.accepted===false)throw Error('SMS not accepted');return result;}
  async function rider(c,actor){
+  if(actor.custodyOnly){const held=(await c.query('SELECT * FROM riders WHERE id=$1 FOR UPDATE',[actor.id])).rows[0];check(held,403,'Rider required');return held;}
   // Lock company before rider, serializing verification with company suspension.
   const pre=(await c.query('SELECT company_id FROM riders WHERE id=$1',[actor.id])).rows[0];
   check(pre,403,'Rider required');
@@ -305,12 +306,13 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const u=(await db.query('SELECT * FROM users WHERE phone=$1',[p])).rows[0];
   // Spend equivalent password derivation work for unknown identities.
   const ok=await passwordMatches(v.password,u?.password_hash??UNKNOWN_ACCOUNT_HASH);check(u&&ok,401,'Invalid credentials');
+  const upgradedHash=passwordNeedsUpgrade(u.password_hash)?await passwordHash(v.password):null;
   const token=newToken();
   return db.tx(async c=>{
    const current=(await c.query('SELECT * FROM users WHERE phone=$1 FOR UPDATE',[p])).rows[0];
-   const stillValid=Boolean(current&&current.id===u.id&&current.password_hash===u.password_hash&&(await passwordMatches(v.password,current.password_hash)));
-   check(stillValid,401,'Invalid credentials');
-   if(passwordNeedsUpgrade(current.password_hash))await c.query('UPDATE users SET password_hash=$2 WHERE id=$1',[current.id,await passwordHash(v.password)]);
+   // The password was checked above and this confirms it has not changed since, without holding a database connection through the slow check.
+   check(current&&current.id===u.id&&current.password_hash===u.password_hash,401,'Invalid credentials');
+   if(upgradedHash)await c.query('UPDATE users SET password_hash=$2 WHERE id=$1',[current.id,upgradedHash]);
    if(current.kind==='admin'){
     check(v.totpCode,401,'Administrator authenticator code required');
     // FOR UPDATE serializes counter consumption across concurrent mobile logins.
@@ -332,7 +334,11 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async authenticate(token,{allowPending=false}={}){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const tokenHash=hash(token);const u=(await db.query("SELECT u.id,u.kind,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR (s.admin_mfa_verified=true AND s.last_seen_at>now()-interval '30 minutes'))",[tokenHash])).rows[0];check(u,401,'Session expired or administrator MFA required');if(u.kind==='admin')await db.query("UPDATE sessions SET last_seen_at=now() WHERE token_hash=$1 AND last_seen_at<now()-interval '1 minute'",[tokenHash]);
   // Anyone using the app stays signed in. The session ends after 30 days without use.
   else await db.query("UPDATE sessions SET last_seen_at=now(),expires_at=now()+interval '30 days' WHERE token_hash=$1 AND last_seen_at<now()-interval '1 hour'",[tokenHash]);
-  let awaitingApproval=false;if(u.kind==='rider'){const r=(await db.query("SELECT r.status, c.status AS company_status, r.company_id FROM riders r LEFT JOIN companies c ON c.id=r.company_id WHERE r.id=$1",[u.id])).rows[0];awaitingApproval=allowPending&&r?.status==='pending'&&!r.company_id;check(awaitingApproval||(r&&r.status==='approved'&&(!r.company_id||r.company_status==='approved')),403,'Rider account suspended or not approved');}if(u.kind==='company'){const c=(await db.query("SELECT status FROM companies WHERE owner_id=$1",[u.id])).rows[0];awaitingApproval=allowPending&&c?.status==='pending';check(awaitingApproval||c?.status==='approved',403,'Company suspended or not approved');}return {...u,...(awaitingApproval?{awaitingApproval:true}:{}),sessionTokenHash:tokenHash};},
+  let awaitingApproval=false,custodyOnly=false;if(u.kind==='rider'){const r=(await db.query("SELECT r.status, c.status AS company_status, r.company_id FROM riders r LEFT JOIN companies c ON c.id=r.company_id WHERE r.id=$1",[u.id])).rows[0];awaitingApproval=allowPending&&r?.status==='pending'&&!r.company_id;if(!awaitingApproval&&!(r&&r.status==='approved'&&(!r.company_id||r.company_status==='approved'))){
+    // A rider stopped while carrying a parcel can still finish that delivery, and take no new work.
+    custodyOnly=allowPending&&Boolean(r)&&(await db.query("SELECT 1 FROM shipments WHERE rider_id=$1 AND state IN ('PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP','FAILED','RETURN_REQUESTED') LIMIT 1",[u.id])).rowCount>0;
+    check(custodyOnly,403,'Rider account suspended or not approved');
+   }}if(u.kind==='company'){const c=(await db.query("SELECT status FROM companies WHERE owner_id=$1",[u.id])).rows[0];awaitingApproval=allowPending&&c?.status==='pending';check(awaitingApproval||c?.status==='approved',403,'Company suspended or not approved');}return {...u,...(awaitingApproval?{awaitingApproval:true}:{}),...(custodyOnly?{custodyOnly:true}:{}),sessionTokenHash:tokenHash};},
  async logout(token,input={},actor=null){
   const tokenHash=typeof token==='string'&&token.length>0?hash(token):(actor?.sessionTokenHash??null);
   const deviceId=typeof input?.deviceId==='string'&&input.deviceId.trim().length>0
@@ -368,9 +374,14 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async deleteAccount(actor,input){
   const v=z.object({password:z.string().min(1).max(128)}).strict().parse(input);
   check(actor?.id&&actor.kind!=='admin',403,'Administrator accounts are removed by another administrator');
+  const stored=(await db.query('SELECT password_hash FROM users WHERE id=$1',[actor.id])).rows[0]?.password_hash;
+  check(stored&&await passwordMatches(v.password,stored),401,'Incorrect password');
   return db.tx(async c=>{
    const user=(await c.query('SELECT id,kind,password_hash FROM users WHERE id=$1 FOR UPDATE',[actor.id])).rows[0];
-   check(user&&await passwordMatches(v.password,user.password_hash),401,'Incorrect password');
+   check(user?.password_hash===stored,401,'Incorrect password');
+   // Earned money is paid out first, because a deleted account cannot receive it.
+   const unpaid=await unpaidEarningsMinor(c,actor.id);
+   check(unpaid<=withdrawalFeeMinor(),409,`You have GH₵${(unpaid/100).toFixed(2)} in unpaid earnings. Withdraw or receive it before deleting your account. Earnings become available 24 hours after each delivery.`);
    check(!(await c.query("SELECT 1 FROM shipments WHERE (customer_id=$1 OR rider_id=$1) AND state NOT IN ('COMPLETED','CANCELLED','RETURNED') LIMIT 1",[actor.id])).rowCount,409,'Finish or cancel your active deliveries first');
    check(!(await c.query("SELECT 1 FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id WHERE r.owner_id=$1 AND f.state NOT IN ('DELIVERED','CANCELLED','REJECTED') LIMIT 1",[actor.id])).rowCount,409,'Finish your open restaurant orders first');
    if(user.kind==='rider'){

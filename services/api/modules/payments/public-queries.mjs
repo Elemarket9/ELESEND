@@ -92,3 +92,4 @@ export async function riderEarningsTotals(c,riderId){
   FROM financial_entries WHERE beneficiary_id=$1`,[riderId])).rows[0];
  return {todayMinor:Number(r.today),weekMinor:Number(r.week)};
 }
+export const withdrawalFeeMinor=()=>payoutSettings().feeMinor;
