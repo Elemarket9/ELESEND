@@ -24,6 +24,7 @@ import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline } from '../maps/map-adapter';
 import { call, loadToken, saveToken, clearToken, ghc, BASE } from '../api';
+import { acquireDevicePushToken, registerDevicePushChannel } from '../tracking';
 import { EmergencyButton, RatingPrompts, TrustedContactCard } from '../rider-safety';
 import DeleteAccountModal from '../delete-account';
 import { detectCustomerLocation, buildConfirmedLocation } from '../customer-location';
@@ -213,6 +214,16 @@ export default function CustomerApp() {
   };
 
   const execute = task => runGuarded(task, { busy, setBusy, setError });
+
+  // Lets ELESEND reach this customer about refunds and delays when the app is closed.
+  useEffect(() => {
+    if (!auth?.id || phoneState?.verified === false) return;
+    acquireDevicePushToken({ appScope: 'customer', channelId: 'elesend-updates' })
+      .then(acquired => (acquired?.ok && acquired?.pushToken)
+        ? registerDevicePushChannel({ appScope: 'customer', pushToken: acquired.pushToken, deviceId: acquired.deviceId, platform: acquired.platform || 'android', appState: 'active', backgroundLocationEnabled: false })
+        : null)
+      .catch(() => null);
+  }, [auth?.id, phoneState?.verified]);
 
   // Auth Initialization
   useEffect(() => {

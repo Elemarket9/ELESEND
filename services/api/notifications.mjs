@@ -6,6 +6,8 @@ import {emitRealtimeUserEvent} from './chat-engine.mjs';
 /** A push token counts only while its signed-in session is still valid. */
 export const ACTIVE_PUSH_TOKEN_FILTER=`t.user_id=$1 AND t.active=true AND (t.session_token_hash IS NULL OR EXISTS (SELECT 1 FROM sessions s WHERE s.token_hash=t.session_token_hash AND s.user_id=t.user_id AND s.expires_at>now()))`;
 export const RIDER_OFFER_ALERT_CHANNEL = 'elesend-rider-offers';
+/** Offers expire in seconds and chats are constant, so neither is worth a paid SMS. */
+const NEVER_BY_SMS=new Set(['dispatch_offer','chat_message']);
 
 // Deployment-owned bridge to a contracted SMS/push provider. The bridge must
 // deduplicate Idempotency-Key and return durable provider acceptance evidence.
@@ -82,12 +84,21 @@ export function notificationWorker(db,{transport=null,sms=null}={}){
       });
      }catch{}
      let receipt=null;
-     if(transport){
+     const smsAllowed=hasNotificationSms&&!NEVER_BY_SMS.has(job.kind);
+     if(transport?.pushOnly){
+      receipt=await transport.send({...job,phone:user?.phone,payload:{...job.payload,pushTokens:pushTokens.map(t=>({platform:t.platform,token:t.push_token}))}});
+      if(receipt.invalidTokens?.length)await db.query('UPDATE user_push_tokens SET active=false WHERE push_token=ANY($1::text[])',[receipt.invalidTokens]);
+      if(!receipt.accepted){
+       if(smsAllowed&&receipt.noDevice)receipt=await sms.sendNotification({phone:user?.phone,message:job.payload?.message||`ELESEND notification (${job.kind})`,jobId:job.id,clientReference:job.id,kind:job.kind});
+       else if(receipt.noDevice){await db.query("UPDATE notification_jobs SET state='expired',lease_until=NULL WHERE id=$1",[job.id]);continue;}
+      }
+     }else if(transport){
       const enrichedPayload=pushTokens.length
        ?{...job.payload,channelId:job.payload?.channelId||RIDER_OFFER_ALERT_CHANNEL,priority:'high',wakeScreen:true,pushTokens:pushTokens.map(t=>({platform:t.platform,token:t.push_token,appState:t.app_state,batterySaverEnabled:t.battery_saver_enabled}))}
        :job.payload;
       receipt=await transport.send({...job,phone:user?.phone,payload:enrichedPayload});
      }else if(hasNotificationSms){
+      if(!smsAllowed){await db.query("UPDATE notification_jobs SET state='expired',lease_until=NULL WHERE id=$1",[job.id]);continue;}
       receipt=await sms.sendNotification({
        phone:user?.phone,
        message:job.payload?.message||`ELESEND notification (${job.kind})`,

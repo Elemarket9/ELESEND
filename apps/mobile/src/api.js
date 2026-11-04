@@ -1,6 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 import {API_BASE_URL} from './config.js';
 
+import { friendlyNetworkError, readResponse } from './api-errors';
 export const BASE = API_BASE_URL;
 
 export const loadToken = () => SecureStore.getItemAsync('elesend.session');
@@ -23,9 +24,9 @@ export async function call(method, path, body = null, {token = null, idempotency
       body: body === null ? undefined : JSON.stringify(body),
       signal: controller.signal
     });
-    const data = await response.json();
-    if (!response.ok) throw Object.assign(Error(data.error || `Request failed: ${response.status}`), {status: response.status});
-    return data;
+    return await readResponse(response);
+  } catch (error) {
+    throw friendlyNetworkError(error);
   } finally {
     clearTimeout(timeout);
   }

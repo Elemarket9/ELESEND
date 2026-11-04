@@ -63,6 +63,11 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   }
   return {canCancel:['AWAITING_PAYMENT','AWAITING_ASSIGNMENT','RIDER_ASSIGNED'].includes(s.state),feeMinor,refundMinor:Math.max(0,paidMinor-feeMinor),freeSecondsLeft};
  }
+ /** A failed parcel is skipped, so it cannot hold up another customer's parcel on the same bike. */
+ async function nextOpenStop(c,stops){
+  const failed=new Set((await c.query("SELECT id FROM shipments WHERE id=ANY($1::uuid[]) AND state IN ('FAILED','RETURN_REQUESTED')",[[...new Set(stops.map(s=>s.shipmentId))]])).rows.map(r=>r.id));
+  return stops.find(s=>!failed.has(s.shipmentId));
+ }
  /** A provider that answers without accepting the message counts as a failure. */
  async function sendSms(message){const result=await sms.send(message);if(result?.accepted===false)throw Error('SMS not accepted');return result;}
  async function rider(c,actor){
@@ -562,7 +567,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const target=await db.tx(async c=>{await rider(c,actor);const {s,destination}=await resolveChallengeRecipient(c);check(s.rider_id===actor.id,403,'Assigned rider required');check(s.verification_authority==='elesend',409,'External verification not enabled');
    check((purpose==='pickup'?['RIDER_ASSIGNED']:purpose==='return'?['RETURN_REQUESTED']:['PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP']).includes(s.state),409,'Shipment not eligible for challenge');
    const manifest=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
-   if(purpose!=='return'&&manifest?.stops.length)check(manifest.stops[0].shipmentId===sid&&manifest.stops[0].kind===(purpose==='pickup'?'pickup':'dropoff'),409,'Complete the next verified route stop first');
+   if(purpose!=='return'&&manifest?.stops.length){const next=await nextOpenStop(c,manifest.stops);check(next?.shipmentId===sid&&next?.kind===(purpose==='pickup'?'pickup':'dropoff'),409,'Complete the next verified route stop first');}
    await limit(c,'otp:'+sid+':'+purpose,3,900);
    check(!(await c.query('SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose=$2 AND expires_at>now() AND consumed_at IS NULL AND attempts<5',[sid,purpose])).rowCount,409,'Challenge still active');
    const digest=mac(otpKey,[purpose,cid,sid,actor.id,destination,code]);
@@ -588,7 +593,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    check(ch&&ch.sent&&ch.live&&!ch.consumed_at&&ch.attempts<5,409,'Challenge unavailable');
    check(s.state===({pickup:'RIDER_ASSIGNED',return:'RETURN_REQUESTED'}[ch.purpose]??'AWAITING_DELIVERY_OTP'),409,'Wrong delivery state');
    const pending=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
-   if(ch.purpose!=='return'&&pending?.stops.length)check(pending.stops[0].shipmentId===sid&&pending.stops[0].kind===(ch.purpose==='pickup'?'pickup':'dropoff'),409,'Stop order changed; verification blocked');
+   if(ch.purpose!=='return'&&pending?.stops.length){const next=await nextOpenStop(c,pending.stops);check(next?.shipmentId===sid&&next?.kind===(ch.purpose==='pickup'?'pickup':'dropoff'),409,'Stop order changed; verification blocked');}
    let expectedPhone=s.recipient_phone;
    if(ch.purpose==='return')expectedPhone=(await c.query('SELECT phone FROM users WHERE id=$1',[s.customer_id])).rows[0]?.phone;
    if(ch.purpose==='pickup'){

@@ -1025,6 +1025,21 @@ export function restaurantOrderService(db, options = {}) {
     return watched;
   }
 
+  /** A rider holding a failed food order gets no new work until it is confirmed back, so a silent restaurant must not strand them. */
+  async function alertUnconfirmedReturns({limit=25,minutes=Number(process.env.RETURN_CONFIRM_ALERT_MINUTES)||30}={}){
+    const rows=(await db.query(`SELECT s.id,r.owner_id FROM food_orders f JOIN shipments s ON s.id=f.shipment_id JOIN restaurants r ON r.id=f.restaurant_id
+      WHERE s.state IN ('FAILED','RETURN_REQUESTED')
+        AND (SELECT max(o.created_at) FROM outbox o WHERE o.shipment_id=s.id AND o.kind IN ('FAILED','RETURN_REQUESTED'))<now()-$1::int*interval '1 minute'
+        AND NOT EXISTS(SELECT 1 FROM dispatch_exceptions e WHERE e.shipment_id=s.id AND e.kind='return_unconfirmed') LIMIT $2`,[minutes,limit])).rows;
+    for(const row of rows){
+      await db.tx(async c=>{
+        await c.query("INSERT INTO dispatch_exceptions(shipment_id,actor_id,kind,reason) VALUES($1,NULL,'return_unconfirmed','The restaurant has not confirmed a failed food order coming back')",[row.id]);
+        await c.query("INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,'food_return_unconfirmed',$3) ON CONFLICT(id) DO NOTHING",[`return-unconfirmed:${row.id}`,row.owner_id,JSON.stringify({shipmentId:row.id,message:'A rider is waiting for you to confirm a failed food order came back. Please confirm it in your restaurant portal.'})]);
+      });
+    }
+    return rows.length;
+  }
+
   async function expireUnfulfilledOrders({limit=25,includeAssignedWatchdog=true,staleGpsSeconds=null,pickupGraceSeconds=null,autoReassignPreCustody=true}={}){
     check(Number.isInteger(limit)&&limit>=1&&limit<=100,400,'Invalid expiry batch size');
     const results=[];
@@ -1182,6 +1197,7 @@ export function restaurantOrderService(db, options = {}) {
   }
 
   return {
+    alertUnconfirmedReturns,
     quoteFoodOrder,
     createFoodOrder,
     getFoodOrder,

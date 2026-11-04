@@ -19,6 +19,7 @@ import { privateRoutingPriority } from './infrastructure/maps/PrivateRoutingPoli
 import { financeService } from './modules/payments/index.mjs';
 import { checkoutService } from './modules/payments/index.mjs';
 import { moneyOperations } from './modules/payments/index.mjs';
+import { firebasePush } from './providers/firebase-push.mjs';
 import { platform } from './platform.mjs';
 import { restaurantOrderService } from './restaurant-orders.mjs';
 import { reconcileAndEnforceWeeklyRestrictions } from './modules/payments/index.mjs';
@@ -70,7 +71,7 @@ export async function startWorker(options = {}) {
     : null);
 
   const notifications = options.notifications || notificationWorker(db, {
-    transport: config.notifications.endpoint ? notificationGateway(config.notifications) : null,
+    transport: config.notifications.firebaseAccount ? firebasePush(config.notifications.firebaseAccount) : config.notifications.endpoint ? notificationGateway(config.notifications) : null,
     sms
   });
 

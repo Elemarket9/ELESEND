@@ -141,3 +141,37 @@ test('companies register in the Rider app and manage riders there',()=>{
  const customer=readFileSync(new URL('../apps/mobile/src/customer/CustomerApp.js',import.meta.url),'utf8');
  assert.ok(!customer.includes("kind: 'company'"));
 });
+
+test('Firebase push signs in, sends, and reports dead devices',async()=>{
+ const {generateKeyPairSync}=await import('node:crypto');
+ const {firebasePush}=await import('../services/api/providers/firebase-push.mjs');
+ const {privateKey}=generateKeyPairSync('rsa',{modulusLength:2048,privateKeyEncoding:{type:'pkcs8',format:'pem'},publicKeyEncoding:{type:'spki',format:'pem'}});
+ const calls=[];
+ const fetchImpl=async(u,o)=>{calls.push({u:String(u),o});if(String(u).includes('oauth2'))return {ok:true,json:async()=>({access_token:'tok',expires_in:3600})};const t=JSON.parse(o.body).message.token;return t==='dead'?{ok:false,status:404}:{ok:true,status:200,json:async()=>({name:'projects/p/messages/1'})};};
+ const push=firebasePush({project_id:'p',client_email:'a@b.c',private_key:privateKey},{fetchImpl});
+ assert.deepEqual(await push.send({id:'j',kind:'refund_completed',payload:{message:'x',pushTokens:[]}}),{accepted:false,noDevice:true});
+ const r=await push.send({id:'j',kind:'refund_completed',payload:{message:'Your refund',amountMinor:5,pushTokens:[{platform:'fcm',token:'good'},{platform:'fcm',token:'dead'},{platform:'expo',token:'skip'}]}});
+ assert.equal(r.accepted,true);assert.deepEqual(r.invalidTokens,['dead']);
+ const sent=JSON.parse(calls.find(c=>c.u.includes('messages:send')).o.body).message;
+ assert.equal(sent.android.notification.body,'Your refund');assert.equal(sent.data.amountMinor,'5');assert.equal(sent.android.notification.channel_id,'elesend-updates');
+ assert.equal(calls.filter(c=>c.u.includes('oauth2')).length,1);
+ assert.equal(calls.some(c=>c.o.body?.toString().includes('skip')),false);
+});
+
+test('offers and chat messages never become paid SMS',async()=>{
+ const {notificationWorker}=await import('../services/api/notifications.mjs');
+ const sent=[],states={};
+ const job=kind=>({id:kind,kind,recipient_id:'u',payload:{message:'m'},attempts:1});
+ const db={query:async(sql,p=[])=>{if(/state='expired'/.test(sql)&&p[0])states[p[0]]='expired';if(/state='sent'/.test(sql))states[p[0]]='sent';if(/FROM users/.test(sql))return {rows:[{phone:'+233241234567'}]};return {rows:[]};},tx:async f=>f({query:async sql=>/WITH due/.test(sql)?{rows:[job('dispatch_offer'),job('refund_completed')]}:(/state='sent'/.test(sql)?(states.refund_completed='sent',{rows:[]}):{rows:[]})})};
+ await notificationWorker(db,{sms:{sendNotification:async m=>{sent.push(m.kind);return {accepted:true,messageId:'1'};}}}).tick();
+ assert.deepEqual(sent,['refund_completed']);assert.equal(states.dispatch_offer,'expired');
+});
+
+test('people see plain messages when the connection fails',async()=>{
+ const {friendlyNetworkError,readResponse}=await import('../apps/mobile/src/api-errors.js');
+ assert.match(friendlyNetworkError(new TypeError('Network request failed')).message,/internet connection/);
+ assert.match(friendlyNetworkError(Object.assign(new Error('Aborted'),{name:'AbortError'})).message,/slow/);
+ assert.equal(friendlyNetworkError(Object.assign(new Error('Refused'),{status:403})).message,'Refused');
+ await assert.rejects(readResponse({ok:false,status:502,json:async()=>{throw new SyntaxError('Unexpected token <');}}),/having a problem/);
+ await assert.rejects(readResponse({ok:false,status:400,json:async()=>({error:'Bad phone'})}),{message:'Bad phone',status:400});
+});
