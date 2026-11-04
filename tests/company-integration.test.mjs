@@ -162,7 +162,7 @@ test('chat never becomes a paid SMS, and with push set up neither do offers',asy
  const {notificationWorker}=await import('../services/api/notifications.mjs');
  const job=kind=>({id:kind,kind,recipient_id:'u',payload:{message:'m'},attempts:1});
  const run=async transport=>{const sent=[];
-  const db={query:async sql=>/FROM users/.test(sql)?{rows:[{phone:'+233241234567'}]}:{rows:[]},tx:async f=>f({query:async sql=>/WITH due/.test(sql)?{rows:['dispatch_offer','chat_message','refund_completed'].map(job)}:{rows:[]}})};
+  const db={query:async sql=>/FROM users/.test(sql)?{rows:[{phone:'+233241234567'}]}:/SELECT 1 FROM dispatch_offers/.test(sql)?{rows:[{}],rowCount:1}:{rows:[]},tx:async f=>f({query:async sql=>/WITH due/.test(sql)?{rows:['dispatch_offer','chat_message','refund_completed'].map(job)}:{rows:[]}})};
   await notificationWorker(db,{transport,sms:{sendNotification:async m=>{sent.push(m.kind);return {accepted:true,messageId:'1'};}}}).tick();return sent;};
  assert.deepEqual(await run(null),['dispatch_offer','refund_completed']);
  assert.deepEqual(await run({pushOnly:true,send:async()=>({accepted:false,noDevice:true})}),['refund_completed']);
