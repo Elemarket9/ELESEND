@@ -92,3 +92,14 @@ export async function riderEarningsTotals(c,riderId){
   FROM financial_entries WHERE beneficiary_id=$1`,[riderId])).rows[0];
  return {todayMinor:Number(r.today),weekMinor:Number(r.week)};
 }
+/** Money still owed to this person: their own rider earnings, plus their company's and restaurant's. */
+export async function unpaidEarningsMinor(c,userId){
+ return Number((await c.query(`SELECT coalesce(sum(owed),0)::bigint AS total FROM (
+   SELECT sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END) AS owed
+     FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id JOIN shipments s ON s.id=j.shipment_id
+    WHERE ((l.account='rider_payable' AND ((s.rider_id=$1 AND s.company_id IS NULL) OR s.company_id IN (SELECT id FROM companies WHERE owner_id=$1)))
+       OR (l.account='restaurant_payable' AND s.id IN (SELECT f.shipment_id FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id WHERE r.owner_id=$1)))
+      AND NOT EXISTS(SELECT 1 FROM payout_operations p WHERE p.shipment_id=s.id AND p.kind=CASE WHEN l.account='restaurant_payable' THEN 'restaurant' ELSE 'rider' END AND p.status NOT IN ('failed','superseded'))
+    GROUP BY s.id,l.account HAVING sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)>0) earnings`,[userId])).rows[0].total);
+}
+export const withdrawalFeeMinor=()=>payoutSettings().feeMinor;

@@ -260,7 +260,7 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
     GROUP BY s.id HAVING sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)>0 ORDER BY min(coalesce(s.completed_at,s.created_at)) LIMIT 500`,[userId,kind,account,earningsHoldHours])).rows;
  }
  /** Every automatic safety check lives here. Anything that fails leaves the money in the balance. */
- async function createWithdrawal(c,userId,{idempotencyKey,earnings}){
+ async function createWithdrawal(c,userId,{idempotencyKey,earnings,finalPayout=false}){
   const prior=(await c.query('SELECT * FROM payout_withdrawals WHERE beneficiary_id=$1 AND idempotency_key=$2',[userId,idempotencyKey])).rows[0];
   if(prior)return {existing:prior};
   check(!(await c.query("SELECT 1 FROM payout_withdrawals WHERE beneficiary_id=$1 AND status IN ('initiating','pending','needs_review')",[userId])).rowCount,409,'You already have a withdrawal in progress');
@@ -276,7 +276,7 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   const stats=(await c.query("SELECT count(*) FILTER(WHERE status IN ('failed','reversed'))::int AS failures FROM payout_withdrawals WHERE beneficiary_id=$1 AND created_at>now()-interval '24 hours'",[userId])).rows[0];
   check(stats.failures<MAX_DAILY_FAILURES,429,'Several withdrawals failed today. Check your Mobile Money account and try again tomorrow');
   const grossMinor=earnings.reduce((sum,e)=>sum+Number(e.amount),0);
-  check(grossMinor>=withdrawalMinMinor&&grossMinor>withdrawalFeeMinor,409,`You need at least GH₵${(withdrawalMinMinor/100).toFixed(2)} available to withdraw`);
+  check((finalPayout||grossMinor>=withdrawalMinMinor)&&grossMinor>withdrawalFeeMinor,409,`You need at least GH₵${(withdrawalMinMinor/100).toFixed(2)} available to withdraw`);
   // The person pays the transfer fee, so what leaves the provider balance equals what they earned.
   const amountMinor=grossMinor-withdrawalFeeMinor;
   // An optional platform-wide ceiling, off unless configured.
@@ -433,7 +433,7 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
   /** Pays the rider's available balance as one transfer through the provider, with no staff step. */
   async requestWithdrawal(actor,input){
    check(actor?.kind==='rider',403,'Rider account required');
-   const v=z.object({idempotencyKey:z.string().regex(/^[a-zA-Z0-9_-]{8,128}$/),password:z.string().min(1).max(256)}).strict().parse(input);
+   const v=z.object({idempotencyKey:z.string().regex(/^[a-zA-Z0-9_-]{8,128}$/),password:z.string().min(1).max(256),finalPayout:z.boolean().optional()}).strict().parse(input);
    check(typeof provider?.createPayout==='function'&&typeof provider?.verifyPayout==='function',503,'Withdrawals are not available yet');
    // A stolen or unlocked phone is not enough to move money.
    const stored=(await db.query('SELECT password_hash FROM users WHERE id=$1',[actor.id])).rows[0]?.password_hash;
@@ -445,7 +445,15 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
     await recoverDebtFromEarnings(c,actor.id,{trigger:'payout_precheck'});
     check((await debtState(c,actor.id)).debtMinor===0,409,'Your earnings first repay your outstanding commission');
     const earnings=await availableEarnings(c,'rider','s.rider_id=$1 AND s.company_id IS NULL',actor.id);
-    return createWithdrawal(c,actor.id,{idempotencyKey:v.idempotencyKey,earnings});
+    if(v.finalPayout){
+     // Lets a rider leaving ELESEND collect a small balance. It works once, so it cannot become a way around the minimum.
+     const already=(await c.query('SELECT final_payout_at FROM users WHERE id=$1 FOR UPDATE',[actor.id])).rows[0]?.final_payout_at;
+     const prior=(await c.query('SELECT 1 FROM payout_withdrawals WHERE beneficiary_id=$1 AND idempotency_key=$2',[actor.id,v.idempotencyKey])).rowCount;
+     check(!already||prior,409,'Your final payout has already been used');
+    }
+    const created=await createWithdrawal(c,actor.id,{idempotencyKey:v.idempotencyKey,earnings,finalPayout:Boolean(v.finalPayout)});
+    if(v.finalPayout)await c.query('UPDATE users SET final_payout_at=coalesce(final_payout_at,now()) WHERE id=$1',[actor.id]);
+    return created;
    });
    if(result.existing)return {id:result.existing.id,status:result.existing.status,amountMinor:Number(result.existing.amount_minor),feeMinor:Number(result.existing.fee_minor)};
    return submitWithdrawal(result.created);
