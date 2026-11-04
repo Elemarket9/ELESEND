@@ -15,7 +15,7 @@ test('real world walk-through',{skip:!url},async()=>{
  const db=database(url);await migrate(db);
  const texts=[];let smsWorks=true;
  const sms={async send(m){if(!smsWorks)return {accepted:false};texts.push(m);return {accepted:true,providerId:'x'};},async sendNotification(m){texts.push(m);return {accepted:true};}};
- const routing={async route(a,b){const m=Math.round(Math.hypot((a.latitude-b.latitude)*111000,(a.longitude-b.longitude)*111000));return {distanceMeters:m,durationSeconds:Math.round(m/8),distance:m,duration:m/8};},async matrix(o,d){return o.map(x=>d.map(y=>{const m=Math.round(Math.hypot((x.latitude-y.latitude)*111000,(x.longitude-y.longitude)*111000));return {distanceMeters:m,durationSeconds:Math.round(m/8),distance:m,duration:m/8};}));}};
+ const routing={async route(a,b){const m=Math.round(Math.hypot((a.latitude-b.latitude)*111000,(a.longitude-b.longitude)*111000));return {source:'routing-provider',distanceMeters:m,durationSeconds:Math.round(m/8),distance:m,duration:m/8,geometry:{type:'LineString',coordinates:[[a.longitude,a.latitude],[b.longitude,b.latitude]]}};},async matrix(o,d){return o.map(x=>d.map(y=>{const m=Math.round(Math.hypot((x.latitude-y.latitude)*111000,(x.longitude-y.longitude)*111000));return {source:'routing-provider',distanceMeters:m,durationSeconds:Math.round(m/8),distance:m,duration:m/8};}));}};
  const dispatch=dispatchEngine(db,{routing});
  const payments=[];
  const provider={name:'audit_fx',methods:['MOMO','CARD','DIGITAL'],allowedCheckoutHosts:['checkout.test'],async createPayment(x){payments.push(x);return {reference:x.reference,checkoutUrl:'https://checkout.test/'+x.reference};},async verifyPayment(ref){return {verified:true,status:'pending',reference:ref};},commissionIntentId:()=>null,async parseVerifiedWebhook(){return null;},async createPayout(x){return {providerId:'po_'+x.requestId};},async verifyPayout(){return {verified:true,status:'pending'};},async verifyBeneficiary({beneficiaryId,recipientReference}){return {verified:true,beneficiaryId,recipientReference};},async createBeneficiary(){return {recipientReference:'RCP_x'};}};
@@ -35,13 +35,22 @@ test('real world walk-through',{skip:!url},async()=>{
   const reg=await api(null,'POST','/api/v1/auth/register',{phone:number,password:PW,kind,...extra});
   const login=await api(null,'POST','/api/v1/auth/login',{phone:number,password:PW});
   const token=login.data?.token,id=login.data?.user?.id;
+  // What a brand new, unapproved account can actually reach.
+  if(kind==='rider'||kind==='company'){
+   const probes={};
+   for(const [m,path,body] of [['GET','/api/v1/me'],['GET','/api/v1/me/phone'],['POST','/api/v1/me/phone-challenge',{}],...(kind==='rider'?[['GET','/api/v1/rider/licence'],['POST','/api/v1/rider/licence',{}],['POST','/api/v1/rider/licence/identity-check',{}]]:[['GET','/api/v1/company/profile']])]){const x=await api(token,m,path,body);probes[m+' '+path]=[x.status,x.data?.error];}
+   log('brand new '+kind+' can reach',probes);
+   if(kind==='rider')await db.query("UPDATE riders SET status='approved' WHERE id=$1",[id]);
+   else await db.query("UPDATE companies SET status='approved' WHERE owner_id=$1",[id]);
+  }
   const ch=await api(token,'POST','/api/v1/me/phone-challenge',{});
   const ver=await api(token,'POST','/api/v1/me/phone-verify',{challengeId:ch.data?.challengeId,code:lastCode()});
+  if(kind==='rider')await db.query("UPDATE riders SET status='pending' WHERE id=$1",[id]);
   return {number,token,id,reg:reg.status,verified:ver.status,kind};
  }
  const P={address:'Accra Mall, Tetteh Quarshie',latitude:5.6221,longitude:-0.1735},D={address:'Osu Oxford Street, Accra',latitude:5.5571,longitude:-0.1817};
  const booking=(over={})=>({pickup:P,destination:D,vehicle:'motorcycle',recipientPhone:phone(),weightG:1000,description:'Documents',paymentMethod:'MOMO',...over});
- const gps=async(r,lat=P.latitude,lng=P.longitude)=>api(r.token,'POST','/api/v1/rider/location',{latitude:lat,longitude:lng,accuracyMeters:15,accuracy:15,speedMps:0,observedAt:new Date().toISOString()});
+ const gps=async(r,lat=P.latitude,lng=P.longitude)=>api(r.token,'POST','/api/v1/rider/location',{latitude:lat,longitude:lng,accuracyMeters:15,speedMps:0,observedAt:new Date().toISOString()});
  async function goOnline(r){await db.query("UPDATE riders SET status='approved' WHERE id=$1",[r.id]);const a=await api(r.token,'POST','/api/v1/rider/availability',{online:true});const g=await gps(r);return {online:a.status,onlineErr:a.data?.error,gps:g.status,gpsErr:g.data?.error};}
  async function bookAndPay(c,over){
   const q=await api(c.token,'POST','/api/v1/quotes',booking(over));
@@ -66,7 +75,7 @@ test('real world walk-through',{skip:!url},async()=>{
   const pv=await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:pc.data?.challengeId,code:lastCode()});steps.pickupVerify=[pv.status,pv.data?.error];
   const st=await api(r.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'start'});steps.start=[st.status,st.data?.error];
   await gps(r,D.latitude,D.longitude);
-  await api(r.token,'POST','/api/v1/shipments/'+id+'/location',{latitude:D.latitude,longitude:D.longitude,accuracyMeters:15,accuracy:15,observedAt:new Date().toISOString()});
+  await api(r.token,'POST','/api/v1/shipments/'+id+'/location',{latitude:D.latitude,longitude:D.longitude,accuracyMeters:15,observedAt:new Date().toISOString()});
   const dc=await api(r.token,'POST','/api/v1/shipments/'+id+'/delivery-challenge',{});steps.deliveryChallenge=[dc.status,dc.data?.error];
   const dv=await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:dc.data?.challengeId,code:lastCode()});steps.deliveryVerify=[dv.status,dv.data?.error];
   const state=(await db.query('SELECT state,paid,company_id FROM shipments WHERE id=$1',[id])).rows[0];
@@ -120,7 +129,7 @@ test('real world walk-through',{skip:!url},async()=>{
   smsWorks=false;
   const pc=await api(r.token,'POST','/api/v1/shipments/'+k.id+'/pickup-challenge',{});
   smsWorks=true;
-  log('SMS down',{status:pc.status,err:pc.data?.error,state:(await db.query('SELECT state FROM shipments WHERE id=$1',[k.id])).rows[0].state});
+  log('SMS down',{status:pc.status,err:pc.data?.error,state:(await db.query('SELECT state FROM shipments WHERE id=$1',[k.id])).rows[0]?.state});
   await db.query("UPDATE riders SET online=false WHERE id=$1",[r.id]);
  });
 
@@ -136,7 +145,6 @@ test('real world walk-through',{skip:!url},async()=>{
 
  await scene('company both ways',async()=>{
   const co=await account('company',{name:'Audit Logistics',services:['delivery','riders']});log('company account',{reg:co.reg,verified:co.verified});
-  const early=await api(co.token,'POST','/api/v1/quotes',booking());log('company quote before approval',{status:early.status,err:early.data?.error});
   await db.query("UPDATE companies SET status='approved' WHERE owner_id=$1",[co.id]);
   const r=await account('rider',{vehicle:'motorcycle',maxWeightG:20000});await db.query("UPDATE riders SET status='approved' WHERE id=$1",[r.id]);
   const inv=await api(co.token,'POST','/api/v1/company/invitations',{phone:r.number});log('invite',{status:inv.status,err:inv.data?.error});
