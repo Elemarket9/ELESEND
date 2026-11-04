@@ -1,0 +1,16 @@
+import {osrmRouting} from '../../services/api/dispatch-routing.mjs';
+import {segmentSpeeds,trafficRouting} from '../../services/api/traffic.mjs';
+const routing=osrmRouting({endpoint:'http://127.0.0.1:5001',profiles:{motorcycle:'driving'},timeoutMs:8000});
+const a={latitude:5.5560,longitude:-0.1825},b={latitude:5.6221,longitude:-0.1735};
+const r=await routing.route(a,b,{vehicle:'motorcycle',annotations:true,alternatives:true,steps:true});
+console.log('route km',r.distanceMeters/1000,'min',Math.round(r.durationSeconds/60),'nodes',r.segments.nodes.length,'alternatives',(r.alternatives||[]).length,(r.alternatives||[]).map(x=>[x.distanceMeters,x.durationSeconds]));
+console.log(r.steps.slice(0,6).map(s=>s.instruction));
+const coords=r.geometry.coordinates;const step=Math.max(1,Math.floor(coords.length/20));const pts=coords.filter((_,i)=>i%step===0).slice(0,20).map((c,i)=>({longitude:c[0],latitude:c[1],accuracyMeters:10,observedAt:new Date(Date.now()-600000+i*25000).toISOString()}));
+const m=await routing.matchTrace(pts,{vehicle:'motorcycle'});
+console.log('match',m.code,'confidence',m.matchings?.map(x=>x.confidence));
+const rows=segmentSpeeds(m,pts);console.log('segments',rows.length,'sample',rows.slice(0,3).map(x=>[x.fromNode,x.toNode,Math.round(x.speedKmh)]));
+const jam=new Set(rows.map(x=>`${x.fromNode}:${x.toNode}`));
+const hit=r.segments.nodes.slice(0,-1).filter((n,i)=>jam.has(`${n}:${r.segments.nodes[i+1]}`)).length;console.log('route segments with measured speed',hit,'of',r.segments.nodes.length-1);
+const speedsFor=async()=>new Map([...jam].map(k=>[k,6]));
+const best=await trafficRouting(routing,{speedsFor}).route(a,b,{vehicle:'motorcycle',traffic:true,steps:true});
+console.log('with a simulated jam: km',best.distanceMeters/1000,'min',Math.round(best.durationSeconds/60),'trafficAware',best.trafficAware,'plain min',Math.round(r.durationSeconds/60));

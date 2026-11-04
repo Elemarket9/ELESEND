@@ -1,23 +1,33 @@
 #!/usr/bin/env bash
 set +e
 R=$PWD; D=$HOME/ghana-map-data; O=/tmp/out; mkdir -p $O $D; exec > >(tee $O/log.txt) 2>&1
-sh scripts/download-ghana.sh $D; ls -la $D
-sh scripts/build-ghana-tiles.sh $D 2>&1 | tail -25; ls -la $D/ghana.mbtiles
-TK=$(curl -s "https://ghcr.io/token?scope=repository:project-osrm/osrm-backend:pull" | python3 -c "import json,sys;print(json.load(sys.stdin)['token'])")
-curl -s -H "Authorization: Bearer $TK" "https://ghcr.io/v2/project-osrm/osrm-backend/tags/list?n=5000" > /tmp/tags.json
-TAG=$(python3 -c "import json,re;t=[x for x in json.load(open('/tmp/tags.json'))['tags'] if re.fullmatch(r'v\d+\.\d+\.\d+',x)];t.sort(key=lambda x:[int(n) for n in x[1:].split('.')]);print(t[-1]);print(' '.join(t[-8:]),file=__import__('sys').stderr)")
-echo "OSRM_TAG=$TAG"; docker pull -q ghcr.io/project-osrm/osrm-backend:$TAG
-sh scripts/prepare-ghana-osrm.sh $D 2>&1 | tail -25
-cd /tmp && curl -fsSL -o fonts.zip https://github.com/openmaptiles/fonts/releases/download/v2.0/v2.0.zip && mkdir -p f && cd f && unzip -q ../fonts.zip; ls | head -40
-for n in "Noto Sans Regular" "Noto Sans Bold"; do mkdir -p "$R/services/maps/fonts/$n" "$O/fonts/$n"; for r in 0-255 256-511 512-767 8192-8447; do cp "$n/$r.pbf" "$R/services/maps/fonts/$n/" && cp "$n/$r.pbf" "$O/fonts/$n/"; done; done; du -sh $O/fonts
+IMG=ghcr.io/project-osrm/osrm-backend:v26.4.0
+# 1. lockfile for new native packages, and offline API check
+(cd apps/mobile && npm install --package-lock-only --ignore-scripts --no-audit --no-fund 2>&1 | tail -3; git diff --stat package-lock.json | tail -1; cp package-lock.json $O/mobile-package-lock.json; npm view expo-speech@14 version 2>/dev/null | tail -1; npm view expo-keep-awake@15 version 2>/dev/null | tail -1)
+(npm install --no-audit --no-fund --ignore-scripts >/dev/null 2>&1; echo root-deps $?)
+mkdir -p /tmp/ml && cd /tmp/ml && npm pack --silent @maplibre/maplibre-react-native@10.4.2 >/dev/null && tar xzf *.tgz && grep -n "OfflineManager\b" package/src/MLNModule.ts package/src/*.ts* 2>/dev/null | head -5; F=$(find package/src -name "OfflineManager.ts"); sed -n 1,5p "$F" >/dev/null; grep -nE "createPack|getPack|deletePack|bounds|styleURL|percentage" "$F" $(find package/src -name "OfflineCreatePackOptions.ts") $(find package/src -name "OfflinePack.ts") | head -24 | cut -c1-130
 cd $R
-docker run -d --name car -p 5000:5000 -v $D:/data ghcr.io/project-osrm/osrm-backend:$TAG osrm-routed --algorithm mld /data/ghana-latest.osrm
-docker run -d --name moto -p 5001:5000 -v $D:/data ghcr.io/project-osrm/osrm-backend:$TAG osrm-routed --algorithm mld /data/ghana-motorcycle.osrm
-GHANA_MBTILES=$D/ghana.mbtiles MAP_PORT=3145 node services/maps/tile-server.mjs & sleep 25
-docker logs moto 2>&1 | tail -3
-curl -s -o /dev/null -w "font %{http_code} %{size_download}\n" "http://127.0.0.1:3145/fonts/Noto%20Sans%20Regular/0-255.pbf"
-ls -la $D/ghana.mbtiles; du -sh $D/ghana.mbtiles
-node scripts/maplab/routes.mjs | tee $O/routes.txt
-pip install --quiet --break-system-packages osmium shapely 2>&1 | tail -1; python3 scripts/maplab/sea.py $D/ghana-latest.osm.pbf apps/mobile/src/maps/ghana-sea.mjs 0.00015; cp apps/mobile/src/maps/ghana-sea.mjs $O/; ls -la $O/ghana-sea.mjs
-mkdir -p /tmp/lab && cd /tmp/lab && npm init -y >/dev/null && npm i --silent maplibre-gl@4.7.1 playwright@1.48 >/dev/null 2>&1 && npx playwright install --with-deps chromium >/dev/null 2>&1
-cd /tmp/lab && ROOT=$R node --input-type=commonjs -e "require('$R/scripts/maplab/render.cjs')"
+sh scripts/download-ghana.sh $D >/dev/null; docker pull -q $IMG
+# 2. rider roads: base graph, then a made-up test road off the end of a real one
+sh scripts/prepare-ghana-osrm.sh $D 2>&1 | tail -1
+docker run -d --name moto0 -p 5001:5000 -v $D:/data $IMG osrm-routed --algorithm mld /data/ghana-motorcycle.osrm; sleep 15
+npm_cfg=1 ROOT=$R node --input-type=module -e "
+import {riderRoadsOsm,osrmNearest} from '$R/scripts/export-rider-roads.mjs';import fs from 'node:fs';
+const start=(await (await fetch('http://127.0.0.1:5001/nearest/v1/driving/-0.1880,5.6130')).json()).waypoints[0].location;
+const c=[start,[start[0]+0.0015,start[1]+0.0012],[start[0]+0.003,start[1]+0.0024]];console.log('test road',JSON.stringify(c));
+const {osm,count}=await riderRoadsOsm([{name:'Rider Test Lane',allowedVehicles:['motorcycle'],coordinates:c}],osrmNearest('http://127.0.0.1:5001'));
+fs.writeFileSync('/tmp/rr.osm',osm);fs.writeFileSync('/tmp/rr.json',JSON.stringify(c));console.log('ways',count);"
+END=$(python3 -c "import json;c=json.load(open('/tmp/rr.json'));print(f'{c[2][0]},{c[2][1]}')")
+curl -s "http://127.0.0.1:5001/nearest/v1/driving/$END" | python3 -c "import json,sys;print('before merge, nearest road m',json.load(sys.stdin)['waypoints'][0]['distance'])"
+docker rm -f moto0 >/dev/null
+sh scripts/merge-rider-roads.sh $D /tmp/rr.osm 2>&1 | tail -2
+rm -f $D/ghana-latest.osrm* $D/ghana-motorcycle.osrm*
+sh scripts/prepare-ghana-osrm.sh $D 2>&1 | tail -1
+docker run -d --name car -p 5000:5000 -v $D:/data $IMG osrm-routed --algorithm mld /data/ghana-latest.osrm
+docker run -d --name moto -p 5001:5000 -v $D:/data $IMG osrm-routed --algorithm mld /data/ghana-motorcycle.osrm; sleep 15
+curl -s "http://127.0.0.1:5001/nearest/v1/driving/$END" | python3 -c "import json,sys;w=json.load(sys.stdin)['waypoints'][0];print('after merge, nearest road m',w['distance'],w['name'])"
+curl -s "http://127.0.0.1:5001/route/v1/driving/-0.1825,5.5560;$END?overview=false" | python3 -c "import json,sys;r=json.load(sys.stdin);print('route to rider road',r['code'],r['routes'][0]['distance'] if r.get('routes') else '')"
+curl -s "http://127.0.0.1:5000/route/v1/driving/-0.1825,5.5560;$END?overview=false" | python3 -c "import json,sys;r=json.load(sys.stdin);print('car (should stop short)',r['code'],r['waypoints'][1]['distance'] if r.get('waypoints') else '')"
+# 3. real adapter: traffic flow against the real graph
+node scripts/maplab/traffic.mjs
+# 4. nearest node test of voice wording on a real route
