@@ -3,6 +3,17 @@ import {verifiedRoadEstimate,memoRoadRouting} from './algorithms/roads.mjs';
 
 const validPoint=p=>p&&Number.isFinite(p.latitude)&&Number.isFinite(p.longitude);
 const stop=(shipmentId,kind,place,weightG)=>({shipmentId,kind,latitude:place.latitude,longitude:place.longitude,weightG});
+const radians=d=>d*Math.PI/180;
+function bearing(from,to){
+ const y=Math.sin(radians(to.longitude-from.longitude))*Math.cos(radians(to.latitude));
+ const x=Math.cos(radians(from.latitude))*Math.sin(radians(to.latitude))-Math.sin(radians(from.latitude))*Math.cos(radians(to.latitude))*Math.cos(radians(to.longitude-from.longitude));
+ return (Math.atan2(y,x)*180/Math.PI+360)%360;
+}
+/** Two parcels share a route when both trips head the same way. The road detour limit then checks the actual route. */
+export function sameDirection(a,b,maxAngleDegrees=45){
+ const gap=Math.abs(bearing(a.pickup,a.destination)-bearing(b.pickup,b.destination));
+ return Math.min(gap,360-gap)<=maxAngleDegrees;
+}
 export const activeStates=['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP','FAILED','RETURN_REQUESTED'];
 export function freshStops(shipmentId,request){return [stop(shipmentId,'pickup',request.pickup,request.weightG),stop(shipmentId,'dropoff',request.destination,request.weightG)];}
 export function removeStop(stops,shipmentId,kind){return stops.filter(s=>!(s.shipmentId===shipmentId&&s.kind===kind));}

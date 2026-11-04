@@ -49,7 +49,7 @@ export async function unpaidEarningsMinor(c,userId){
       AND NOT EXISTS(SELECT 1 FROM payout_operations p WHERE p.shipment_id=s.id AND p.kind=CASE WHEN l.account='restaurant_payable' THEN 'restaurant' ELSE 'rider' END AND p.status NOT IN ('failed','superseded'))
     GROUP BY s.id,l.account HAVING sum(CASE WHEN l.side='credit' THEN l.amount_minor ELSE -l.amount_minor END)>0) earnings`,[userId])).rows[0].total);
 }
-export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4,leaseSeconds=120,
+export function moneyOperations(db,{provider,notify=null,verifyTimeoutMs=10000,concurrency=4,leaseSeconds=120,
  withdrawalMinMinor=settings.minMinor,
  withdrawalFeeMinor=settings.feeMinor,
  platformDailyLimitMinor=settings.platformDailyLimitMinor,
@@ -88,6 +88,8 @@ export function moneyOperations(db,{provider,verifyTimeoutMs=10000,concurrency=4
    check(!used,409,'Provider receipt already applied to another operation');
    await recordEvent(c,r,'refund',record);
    await checkoutJournal(c,{shipmentId:r.shipment_id,eventKey:'refund:'+r.source_key.split(':retry:')[0],kind:'refund_completed',entries:[['customer_refund_liability','debit',record.amountMinor],['provider_receivable','credit',record.amountMinor]]});
+   const owner=(await c.query('SELECT customer_id FROM shipments WHERE id=$1',[r.shipment_id])).rows[0];
+   if(owner&&notify)await notify(c,{id:'refund-done:'+r.id,recipientId:owner.customer_id,kind:'refund_completed',payload:{shipmentId:r.shipment_id,amountMinor:Number(r.amount_minor),message:`Your refund of GH₵${(Number(r.amount_minor)/100).toFixed(2)} has been sent. It can take a little time to reach your account.`}});
    await c.query("UPDATE refund_operations SET status='refunded',provider_id=coalesce(provider_id,$2),updated_at=now() WHERE id=$1",[r.id,record.providerId!=null?String(record.providerId):null]);
    if(r.source_key.startsWith('cancellation:')){
     await c.query("UPDATE checkout_refund_requests SET status='refunded' WHERE shipment_id=$1",[r.shipment_id]);

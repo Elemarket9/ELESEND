@@ -278,6 +278,70 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    assert.equal(q.status,200);assert.ok(q.data.totalMinor>0);
    assert.equal(/commission|elesend|funded|riderEarnings/i.test(JSON.stringify(q.data)),false);
   });
+  await t.test('a rider carries a second parcel only on the same route, and each parcel pays its own commission',async()=>{
+   await db.query("UPDATE shipments SET state='CANCELLED' WHERE state='AWAITING_ASSIGNMENT'");await db.query("UPDATE dispatch_offers SET status='expired' WHERE status='offered'");
+   await offline();
+   const a=await customer(),b=await customer(),other=await customer();const r=await readyRider();
+   const first=await paidOrder(a);await dispatch.tick();
+   const o1=await offerFor(r,first);assert.equal((await api(r.token,'POST','/api/v1/shipments/'+first+'/accept',{offerId:o1.offerId})).status,200);
+   const opposite=await paidOrder(other,{destination:{address:'Madina, Accra, Ghana',latitude:5.6700,longitude:-0.1660}});
+   await dispatch.tick();
+   assert.equal(await offerFor(r,opposite),undefined,'not opted in, so no second parcel');
+   assert.equal((await api(r.token,'POST','/api/v1/rider/multi-stop',{enabled:true})).status,200);
+   await db.query('UPDATE shipments SET next_dispatch_at=now() WHERE id=$1',[opposite]);await dispatch.tick();
+   assert.equal(await offerFor(r,opposite),undefined,'the opposite direction is never offered');
+   await db.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[opposite]);
+   const way=await paidOrder(b,{pickup:{address:'Tetteh Quarshie Interchange, Accra',latitude:5.6200,longitude:-0.1740},destination:{address:'Airport Residential, Accra',latitude:5.6050,longitude:-0.1780}});
+   await dispatch.tick();
+   const o2=await offerFor(r,way);assert.ok(o2,'the same direction is offered');
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+way+'/accept',{offerId:o2.offerId})).status,200,'accepted');
+   const stops=(await api(r.token,'GET','/api/v1/rider/manifest')).data.stops;
+   assert.equal(stops.length,4,'each parcel has its own pickup and dropoff');
+   for(const stop of stops){
+    const purpose=stop.kind==='pickup'?'pickup':'delivery';
+    if(purpose==='delivery'){await api(r.token,'POST','/api/v1/rider/location',{latitude:stop.latitude,longitude:stop.longitude,accuracyMeters:15,observedAt:new Date().toISOString()});}
+    const ch=await api(r.token,'POST','/api/v1/shipments/'+stop.shipmentId+'/'+purpose+'-challenge',{});assert.equal(ch.status,200,JSON.stringify(ch.data));
+    assert.equal((await api(r.token,'POST','/api/v1/shipments/'+stop.shipmentId+'/verify',{challengeId:ch.data.challengeId,code:code()})).status,200);
+    if(purpose==='pickup')await api(r.token,'POST','/api/v1/shipments/'+stop.shipmentId+'/transition',{action:'start'});
+   }
+   for(const id of [first,way]){
+    const row=(await db.query('SELECT state,commission_minor::int c,amount_minor::int a FROM shipments WHERE id=$1',[id])).rows[0];
+    assert.equal(row.state,'COMPLETED');assert.ok(row.c>0);
+    const lines=(await db.query("SELECT l.account,l.amount_minor::int m FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id WHERE j.shipment_id=$1 AND j.kind='delivery_completed'",[id])).rows;
+    assert.equal(lines.find(l=>l.account==='platform_commission_revenue').m,row.c,'commission on this parcel');
+    assert.equal(lines.find(l=>l.account==='rider_payable').m,row.a-row.c,'rider pay on this parcel');
+   }
+   await offline();
+  });
+  await t.test('chat closes two minutes after delivery',async()=>{
+   await offline();
+   const c=await customer();const r=await readyRider();const id=await paidOrder(c);await dispatch.tick();
+   const o=await offerFor(r,id);await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:o.offerId});
+   const conv=await api(c.token,'POST','/api/v1/chat/conversations',{conversationType:'CUSTOMER_RIDER',shipmentId:id});
+   const send=()=>api(c.token,'POST','/api/v1/chat/conversations/'+conv.data.id+'/messages',{bodyText:'Are you close?',clientMessageId:randomUUID()});
+   assert.equal((await send()).status,200);
+   const pc=await api(r.token,'POST','/api/v1/shipments/'+id+'/pickup-challenge',{});await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:pc.data.challengeId,code:code()});
+   await api(r.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'start'});
+   const dc=await api(r.token,'POST','/api/v1/shipments/'+id+'/delivery-challenge',{});await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:dc.data.challengeId,code:code()});
+   assert.equal((await send()).status,200,'still open right after delivery');
+   await db.query("UPDATE shipments SET completed_at=now()-interval '3 minutes' WHERE id=$1",[id]);
+   await db.query("UPDATE chat_conversations SET restricted_after=now()-interval '1 minute' WHERE id=$1",[conv.data.id]);
+   assert.notEqual((await send()).status,200,'closed after two minutes');
+   const set=(await db.query('SELECT restricted_after FROM chat_conversations WHERE id=$1',[conv.data.id])).rows[0];assert.ok(set.restricted_after);
+   await offline();
+  });
+  await t.test('the customer is told when a refund has gone out, and the company page loads',async()=>{
+   const page=await fetch(base+'/company');const html=await page.text();
+   assert.equal(page.status,200);assert.match(html,/ELESEND for Companies/);
+   assert.equal((page.headers.get('content-security-policy')||'').includes('unsafe'),false);
+   const {queueNotification}=await import('../services/api/notifications.mjs');
+   const refunding=moneyOperations(db,{notify:queueNotification,provider:{...provider,async createRefund(x){return {providerId:'77'};},async verifyRefund(x){return {verified:true,type:'refund',provider:provider.name,status:'refunded',requestId:x.requestId,providerId:'77',eventId:'refund-ev-'+x.requestId,amountMinor:x.amountMinor,currency:x.currency,reference:x.reference};}}});
+   const c=await customer();const id=await paidOrder(c);
+   await api(c.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'cancel',reason:'Changed my mind'});
+   await refunding.syncRefunds();await refunding.refundUncollectedOrders({limit:100});
+   const told=(await db.query("SELECT payload FROM notification_jobs WHERE recipient_id=$1 AND kind='refund_completed'",[c.id])).rows;
+   assert.equal(told.length,1);assert.match(told[0].payload.message,/refund/i);
+  });
   await t.test('people in use stay signed in, and riders with ended sessions go offline',async()=>{
    const r=await readyRider();
    const lifetime=(await db.query("SELECT expires_at>now()+interval '29 days' AS long FROM sessions WHERE user_id=$1",[r.id])).rows[0];

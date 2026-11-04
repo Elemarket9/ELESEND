@@ -1,4 +1,5 @@
 import {randomUUID, createHash} from 'node:crypto';
+import {envInt} from './env-values.mjs';
 import {z} from 'zod';
 import {check, limit} from './security.mjs';
 import {validateGhanaBoundary} from './pricing-surge.mjs';
@@ -775,10 +776,10 @@ export function chatEngine(db, options = {}) {
 
       if (isCompleted && !conv.restricted_after) {
         // Delivered food problems are settled here, so this chat stays open for a full day.
-        const resolutionMinutes = conv.conversation_type === 'CUSTOMER_RESTAURANT'
-          ? Math.max(policy.post_delivery_resolution_minutes, 1440)
-          : policy.post_delivery_resolution_minutes;
-        const resAfter = new Date((shipment?.completed_at || foodOrder?.completed_at || now).getTime() + resolutionMinutes * 60 * 1000);
+        const closeAfterSeconds = conv.conversation_type === 'CUSTOMER_RESTAURANT'
+          ? Math.max(policy.post_delivery_resolution_minutes, 1440) * 60
+          : envInt(process.env.CHAT_CLOSE_AFTER_DELIVERY_SECONDS, 120, 0);
+        const resAfter = new Date((shipment?.completed_at || foodOrder?.completed_at || now).getTime() + closeAfterSeconds * 1000);
         await c.query(
           `UPDATE chat_conversations SET restricted_after = $2, updated_at = now() WHERE id = $1`,
           [conv.id, resAfter]
