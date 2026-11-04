@@ -3,7 +3,7 @@ on:
   push:
     branches: ['audit/ui','fix/ui-ux']
 permissions:
-  contents: read
+  contents: write
 jobs:
   screens:
     runs-on: ubuntu-latest
@@ -13,6 +13,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: {node-version: '22'}
       - run: bash scripts/ui/run.sh
-      - uses: actions/upload-artifact@v4
+      - name: Publish screens to a branch
         if: always()
-        with: {name: screens, path: /tmp/screens}
+        run: |
+          cd /tmp/screens && git init -q && git config user.email a@example.com && git config user.name audit && git add -A && git commit -qm screens
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:refs/heads/audit/ui-shots
