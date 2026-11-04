@@ -319,6 +319,16 @@ export function renderAdminPortalHtml() {
       <!-- PANEL 3: Fleet & Onboarding -->
       <div id="fleetTab" class="panel">
         <div class="card">
+          <div class="card-title"><span>Orders Needing Attention</span></div>
+          <div class="card-subtitle">Orders with no rider, handover codes that could not be sent, and riders who became unresponsive.</div>
+          <div class="table-container">
+            <table>
+              <thead><tr><th>Time</th><th>Problem</th><th>Order state</th><th>Customer</th><th>Rider</th></tr></thead>
+              <tbody id="attentionTable"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
           <div class="card-title">
             <span>Pending Courier Approvals</span>
             <button class="action-btn" onclick="loadFleet()">Refresh Queue</button>
@@ -1046,7 +1056,22 @@ export function renderAdminPortalHtml() {
       }
     }
 
+    async function loadAttention() {
+      const rows = await api('/api/v1/admin/dispatch/exceptions').catch(() => null);
+      const tb = document.getElementById('attentionTable');
+      if (!rows) { tb.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">You do not have permission to view this list.</td></tr>'; return; }
+      tb.innerHTML = rows.length ? rows.map(r => \`
+        <tr>
+          <td>\${escapeHtml(new Date(r.created_at).toLocaleString())}</td>
+          <td>\${escapeHtml(r.reason)}</td>
+          <td>\${escapeHtml(r.state)}\${r.paid ? ' (paid)' : ''}</td>
+          <td>\${escapeHtml(r.customer_phone)}</td>
+          <td>\${escapeHtml(r.rider_phone || '-')}</td>
+        </tr>\`).join('') : '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Nothing needs attention.</td></tr>';
+    }
+
     async function loadFleet() {
+      loadAttention();
       try {
         const queue = await api('/api/v1/admin/review');
         const tb = document.getElementById('fleetTable');

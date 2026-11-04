@@ -1,6 +1,6 @@
 import {suspendExpiredDocuments} from './rider-documents.mjs';
 import {suspendExpiredLicences,syncOpenIdentityChecks,requireIdentityRefresh} from './rider-licence.mjs';
-import {enforceDrivingLimits,flagUnusualStops,settleRiderRewards} from './rider-tools.mjs';
+import {enforceDrivingLimits,flagUnusualStops,offlineSignedOutRiders,settleRiderRewards} from './rider-tools.mjs';
 import {flagOverdueParcels} from './custody-incidents.mjs';
 import {webhookService} from './api-webhooks.mjs';
 /**
@@ -50,7 +50,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
   }),
   moneyRecon:guarded('money_reconciliation',LOCKS.moneyRecon,async()=>{if(!money)return;await money.syncRefunds();await money.reconcileDue();}),
   businessPayouts:guarded('business_payouts',LOCKS.businessPayouts,async()=>{await money?.settleBusinessesDue?.();}),
-  riderSafety:guarded('rider_safety',LOCKS.riderSafety,async()=>{await enforceDrivingLimits(db);await flagUnusualStops(db);}),
+  riderSafety:guarded('rider_safety',LOCKS.riderSafety,async()=>{await enforceDrivingLimits(db);await flagUnusualStops(db);await offlineSignedOutRiders(db);}),
   parcelCustody:guarded('parcel_custody',LOCKS.parcelCustody,async()=>{await flagOverdueParcels(db);}),
   dispatch:guarded('dispatch',null,async()=>{if(!dispatch)return;const rows=await dispatch.tick();const errors=rows.filter(r=>r.status==='error');if(errors.length)warn('dispatch','tick_errors',{errors});}),
   paymentRecon:guarded('payment_reconciliation',LOCKS.paymentRecon,async()=>{

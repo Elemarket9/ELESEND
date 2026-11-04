@@ -28,7 +28,7 @@ const id=()=>randomUUID();
 const uuid=z.string().uuid();
 const registration=z.object({phone:z.string().max(30),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
 const address=z.object({address:z.string().min(5).max(400),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict();
-const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(['motorcycle','car','van']).optional(),recipientPhone:z.string().max(30),weightG:z.number().int().min(1).max(10000000),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
+const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(['motorcycle','car','van']).optional(),recipientPhone:z.string().max(30),pickupPhone:z.string().max(30).optional(),weightG:z.number().int().min(1).max(10000000),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
 const ACCOUNT_SMS_PER_NUMBER=5,ACCOUNT_SMS_BLOCK_SECONDS=900;
 /** Allows 5 account SMS per number per 15 minutes; the 6th attempt starts a full 15-minute block.
  * Call outside a transaction, so a failed request cannot roll the count back. */
@@ -50,6 +50,8 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  check(/^[a-f0-9]{64}$/i.test(otpKey??''),500,'OTP_KEY must be 32 random bytes encoded as hex');
  async function event(c,s,kind){await c.query('INSERT INTO outbox(shipment_id,kind,payload) VALUES($1,$2,$3)',[s,kind,JSON.stringify({shipmentId:s,kind})]);}
  async function permission(c,actor,p){check((await c.query('SELECT 1 FROM permissions WHERE user_id=$1 AND permission=$2',[actor.id,p])).rowCount,403,'Permission required');}
+ /** A provider that answers without accepting the message counts as a failure. */
+ async function sendSms(message){const result=await sms.send(message);if(result?.accepted===false)throw Error('SMS not accepted');return result;}
  async function rider(c,actor){
   // Lock company before rider, serializing verification with company suspension.
   const pre=(await c.query('SELECT company_id FROM riders WHERE id=$1',[actor.id])).rows[0];
@@ -85,7 +87,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await c.query("INSERT INTO account_phone_challenges(id,user_id,phone,digest,expires_at) VALUES($1,$2,$3,$4,now()+interval '5 minutes')",[cid,actor.id,u.phone,digest]);
    await audit(c,actor.id,'auth.phone_challenge_requested',actor.id);return u.phone;
   });
-  try{await sms.send({phone:to,code,purpose:'account',challengeId:cid});
+  try{await sendSms({phone:to,code,purpose:'account',challengeId:cid});
    await db.tx(async c=>{
     const u=(await c.query('SELECT phone,phone_verified_at FROM users WHERE id=$1 FOR UPDATE',[actor.id])).rows[0];
     check(u?.phone===to&&!u.phone_verified_at,409,'Phone verification is no longer required');
@@ -137,7 +139,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   });
   if(target){
    try{
-    await sms.send({phone:target.phone,code,purpose:'account_recovery',challengeId:cid});
+    await sendSms({phone:target.phone,code,purpose:'account_recovery',challengeId:cid});
     await db.tx(async c=>{
      check((await c.query('UPDATE account_recovery_challenges SET sent=true WHERE id=$1 AND user_id=$2 AND expires_at>now() AND consumed_at IS NULL RETURNING id',[cid,target.userId])).rowCount,409,'Recovery challenge expired before SMS acceptance');
     });
@@ -309,11 +311,15 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     await audit(c,current.id,'auth.admin_mfa_login',current.id);
     return {token,user:{id:current.id,kind:current.kind}};
    }
-   await c.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '12 hours')",[hash(token),current.id]);
-   return {token,user:{id:current.id,kind:current.kind}};
+   await c.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '30 days')",[hash(token),current.id]);
+   const review=current.kind==='rider'?(await c.query('SELECT status,company_id FROM riders WHERE id=$1',[current.id])).rows[0]:current.kind==='company'?(await c.query('SELECT status FROM companies WHERE owner_id=$1',[current.id])).rows[0]:null;
+   return {token,user:{id:current.id,kind:current.kind,...(review?.status==='pending'&&!review.company_id?{awaitingApproval:true}:{})}};
   });
  },
- async authenticate(token){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const tokenHash=hash(token);const u=(await db.query("SELECT u.id,u.kind,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR (s.admin_mfa_verified=true AND s.last_seen_at>now()-interval '30 minutes'))",[tokenHash])).rows[0];check(u,401,'Session expired or administrator MFA required');if(u.kind==='admin')await db.query("UPDATE sessions SET last_seen_at=now() WHERE token_hash=$1 AND last_seen_at<now()-interval '1 minute'",[tokenHash]);if(u.kind==='rider'){const r=(await db.query("SELECT r.status, c.status AS company_status, r.company_id FROM riders r LEFT JOIN companies c ON c.id=r.company_id WHERE r.id=$1",[u.id])).rows[0];check(r&&r.status==='approved'&&(!r.company_id||r.company_status==='approved'),403,'Rider account suspended or not approved');}if(u.kind==='company'){const c=(await db.query("SELECT status FROM companies WHERE owner_id=$1",[u.id])).rows[0];check(c&&c.status==='approved',403,'Company suspended or not approved');}return {...u,sessionTokenHash:tokenHash};},
+ async authenticate(token,{allowPending=false}={}){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const tokenHash=hash(token);const u=(await db.query("SELECT u.id,u.kind,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR (s.admin_mfa_verified=true AND s.last_seen_at>now()-interval '30 minutes'))",[tokenHash])).rows[0];check(u,401,'Session expired or administrator MFA required');if(u.kind==='admin')await db.query("UPDATE sessions SET last_seen_at=now() WHERE token_hash=$1 AND last_seen_at<now()-interval '1 minute'",[tokenHash]);
+  // Anyone using the app stays signed in. The session ends after 30 days without use.
+  else await db.query("UPDATE sessions SET last_seen_at=now(),expires_at=now()+interval '30 days' WHERE token_hash=$1 AND last_seen_at<now()-interval '1 hour'",[tokenHash]);
+  let awaitingApproval=false;if(u.kind==='rider'){const r=(await db.query("SELECT r.status, c.status AS company_status, r.company_id FROM riders r LEFT JOIN companies c ON c.id=r.company_id WHERE r.id=$1",[u.id])).rows[0];awaitingApproval=allowPending&&r?.status==='pending'&&!r.company_id;check(awaitingApproval||(r&&r.status==='approved'&&(!r.company_id||r.company_status==='approved')),403,'Rider account suspended or not approved');}if(u.kind==='company'){const c=(await db.query("SELECT status FROM companies WHERE owner_id=$1",[u.id])).rows[0];awaitingApproval=allowPending&&c?.status==='pending';check(awaitingApproval||c?.status==='approved',403,'Company suspended or not approved');}return {...u,...(awaitingApproval?{awaitingApproval:true}:{}),sessionTokenHash:tokenHash};},
  async logout(token,input={},actor=null){
   const tokenHash=typeof token==='string'&&token.length>0?hash(token):(actor?.sessionTokenHash??null);
   const deviceId=typeof input?.deviceId==='string'&&input.deviceId.trim().length>0
@@ -453,6 +459,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await requireVerifiedPhone(db,actor);
   }
   await marketService(db).assertGhanaOperating();const v=quoteSchema.parse(input);v.recipientPhone=phone(v.recipientPhone);
+  // A business can name who hands over parcels, so the code does not go to the account owner.
+  if(v.pickupPhone){check(['business','company'].includes(actor.kind),400,'Pickup contact is for business accounts');v.pickupPhone=phone(v.pickupPhone);}
+  // Companies pay through hosted checkout, which the older DIGITAL method cannot start.
+  if(actor.kind==='company'&&v.paymentMethod==='DIGITAL')v.paymentMethod='MOMO';
   if(process.env.NODE_ENV==='production')check(v.vehicle,400,'Select a vehicle before requesting a fare');
   // Preserve prior API clients' implicit DIGITAL method in existing tests/migrations.
   // Native clients explicitly choose CASH/MOMO/CARD/QR. Legacy DIGITAL cannot
@@ -519,6 +529,8 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     check(restPhone,409,'Restaurant handover contact phone unavailable');
     return {s,destination:restPhone};
    }
+   const contact=(await c.query("SELECT request->>'pickupPhone' AS phone FROM quotes WHERE id=$1",[s.quote_id])).rows[0]?.phone;
+   if(contact)return {s,destination:contact};
    const cust=(await c.query('SELECT phone FROM users WHERE id=$1',[s.customer_id])).rows[0];
    check(cust?.phone,409,'Sender handover contact phone unavailable');
    return {s,destination:cust.phone};
@@ -533,7 +545,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await c.query("INSERT INTO challenges(id,shipment_id,rider_id,purpose,phone,digest,expires_at) VALUES($1,$2,$3,$4,$5,$6,now()+interval '5 minutes')",[cid,sid,actor.id,purpose,destination,digest]);
    if(purpose==='delivery'){if(s.state==='PICKUP_VERIFIED')await c.query("UPDATE shipments SET state='IN_TRANSIT' WHERE id=$1",[sid]);await c.query("UPDATE shipments SET state='AWAITING_DELIVERY_OTP' WHERE id=$1",[sid]);await c.query("UPDATE food_orders SET state='IN_TRANSIT',updated_at=now() WHERE shipment_id=$1 AND state IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')",[sid]);}await audit(c,actor.id,purpose+'.challenge_requested',sid);return destination;
   });
-  try{await sms.send({phone:target,code,purpose,challengeId:cid});await db.tx(async c=>{
+  try{await sendSms({phone:target,code,purpose,challengeId:cid});await db.tx(async c=>{
     const current=await locked(c,sid);
     check(current.rider_id===actor.id&&current.verification_authority==='elesend',409,'Shipment verification authority changed');
     check((await c.query('UPDATE challenges SET sent=true WHERE id=$1 AND rider_id=$2 AND consumed_at IS NULL AND expires_at>now() RETURNING id',[cid,actor.id])).rowCount,409,'OTP challenge expired before SMS acceptance');
@@ -541,7 +553,9 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   catch {await db.tx(async c=>{await locked(c,sid);await c.query('UPDATE challenges SET expires_at=now() WHERE id=$1',[cid]);if(purpose==='delivery'){
     // A failed SMS cannot be marked sent; operator must use failure flow, no status bypass.
     await audit(c,actor.id,'delivery.sms_failed',sid);
-   }});check(false,503,'SMS delivery unavailable; shipment requires recovery');}
+   }
+   await c.query("INSERT INTO dispatch_exceptions(shipment_id,actor_id,kind,reason) VALUES($1,$2,'handover_sms_failed',$3)",[sid,actor.id,`The ${purpose} code could not be sent by SMS`]);
+  });check(false,503,'We could not send the code by SMS. Try again in a minute. ELESEND support has been alerted.');}
   return {challengeId:cid,expiresInSeconds:300};
  },
  async verify(actor,sid,input){const v=z.object({challengeId:uuid.optional(),code:z.string().regex(/^\d{6}$/)}).strict().parse(input);
@@ -739,6 +753,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   });
  },
  async earnings(actor){return earningsEntriesFor(db,actor.id);},
+ /** Orders staff should look at. Finished orders drop off the list. */
+ async openExceptions(actor){await permission(db,actor,'dispatch:configure');return (await db.query(`SELECT e.id,e.shipment_id,e.kind,e.reason,e.created_at,s.state,s.paid,u.phone AS customer_phone,rp.phone AS rider_phone
+   FROM dispatch_exceptions e JOIN shipments s ON s.id=e.shipment_id JOIN users u ON u.id=s.customer_id LEFT JOIN users rp ON rp.id=s.rider_id
+   WHERE s.state NOT IN ('COMPLETED','CANCELLED','RETURNED') ORDER BY e.created_at DESC LIMIT 100`)).rows;},
  async reviewQueue(actor){await permission(db,actor,'verification:write');return {riders:(await db.query('SELECT r.id,u.phone,r.company_id,r.status,r.vehicle,r.max_weight_g FROM riders r LEFT JOIN users u ON u.id=r.id ORDER BY r.id LIMIT 100')).rows,companies:(await db.query('SELECT c.id,c.name,c.status,c.services,u.phone FROM companies c JOIN users u ON u.id=c.owner_id ORDER BY c.name LIMIT 100')).rows,vehicles:(await db.query('SELECT * FROM rider_vehicle_registrations ORDER BY submitted_at DESC LIMIT 100')).rows};}
  ,
   routing,

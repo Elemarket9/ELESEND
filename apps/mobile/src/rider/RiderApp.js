@@ -172,9 +172,20 @@ export default function RiderApp() {
     })();
   }, []);
 
+  // Opens the rider app as soon as ELESEND approves this account.
+  useEffect(() => {
+    if (auth?.kind !== 'rider' || !auth.awaitingApproval || phoneState?.verified === false) return;
+    const t = setInterval(() => {
+      call('GET', '/api/v1/me').then(user => {
+        if (!user.awaitingApproval) setAuth(current => ({ ...current, awaitingApproval: false }));
+      }).catch(() => {});
+    }, 20000);
+    return () => clearInterval(t);
+  }, [auth?.kind, auth?.awaitingApproval, phoneState?.verified]);
+
   // Periodic Refresh + Background Offer Alert Channel (Screen-Off / Battery-Saving Resilient)
   useEffect(() => {
-    if (!auth || auth.kind !== 'rider' || phoneState?.verified === false) return;
+    if (!auth || auth.kind !== 'rider' || auth.awaitingApproval || phoneState?.verified === false) return;
     let cancelled = false;
 
     acquireDevicePushToken({ appScope: 'rider' })
@@ -228,7 +239,15 @@ export default function RiderApp() {
           if (fin) setFinanceSnapshot(fin);
         }
       } catch (e) {
-        if (!cancelled) setError(e.message);
+        if (cancelled) return;
+        if (e.status === 401) {
+          await clearToken();
+          setAuth(null);
+          setPhoneState(null);
+          setError('You have been signed out. Please sign in again.');
+          return;
+        }
+        setError(e.message);
       }
     };
 
@@ -348,6 +367,13 @@ export default function RiderApp() {
     await call('POST', '/api/v1/auth/register', body);
     setIsSignup(false);
     await signIn();
+  }
+
+  async function openLicenceAndDocuments() {
+    setLicence(await call('GET', '/api/v1/rider/licence'));
+    const docs = await call('GET', '/api/v1/rider/documents').catch(() => null);
+    setRiderDocuments(docs?.documents || []);
+    setLicenceModal(true);
   }
 
   async function requestPhoneVerificationChallenge() {
@@ -1063,6 +1089,88 @@ export default function RiderApp() {
     );
   }
 
+  const licenceDocumentsModal = (
+            <Modal visible={licenceModal} animationType="fade" transparent>
+              <View style={styles.modalOverlay}>
+                <View style={styles.momoCard}>
+                  <Text style={styles.momoTitle}>Driver's Licence</Text>
+                  <Text style={styles.momoSub}>
+                    {licence?.status === 'approved' ? `Approved, valid until ${licence.validUntil}.`
+                      : licence?.status === 'pending' ? 'Waiting for review. You can start deliveries once it is approved.'
+                        : licence?.status === 'rejected' ? `Rejected: ${licence.rejectionReason}. Please correct it and submit again.`
+                          : 'Required before you can take deliveries. Bicycle riders enter their Ghana Card instead.'}
+                  </Text>
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Full Legal Name</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.legalName} onChangeText={value => setLicenceForm(f => ({ ...f, legalName: value }))} />
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Licence Number</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceNumber} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceNumber: value }))} />
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Licence Class</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceClass} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceClass: value }))} />
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Expiry Date (YYYY-MM-DD)</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.expiresOn} onChangeText={value => setLicenceForm(f => ({ ...f, expiresOn: value }))} />
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Vehicle Plate Number</Text>
+                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.vehiclePlate} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, vehiclePlate: value }))} />
+                  {licence && licence.status !== 'missing' && licence.identityAvailable && (
+                    <Text style={[styles.momoSub, { marginTop: 10 }]}>
+                      Photo check: {licence.identityStatus === 'approved' ? 'passed'
+                        : licence.identityStatus === 'in_progress' ? 'in progress'
+                          : licence.identityStatus === 'failed' ? `failed. ${licence.identityReason || ''}` : 'not started'}
+                    </Text>
+                  )}
+                  {licence && licence.status !== 'missing' && licence.identityAvailable && licence.identityStatus !== 'approved' && (
+                    <TouchableOpacity disabled={busy} onPress={() => execute(startIdentityPhotos)} style={[styles.primaryBtn, { marginTop: 10 }]}>
+                      <Text style={styles.primaryBtnText}>Take Licence Photo and Selfie</Text>
+                    </TouchableOpacity>
+                  )}
+                  {riderDocuments.map(d => (
+                    <Text key={d.kind} style={[styles.momoSub, { marginTop: 6 }]}>
+                      {d.kind.replace('_', ' ')}: {d.status}{d.rejectionReason ? ` (${d.rejectionReason})` : ''}
+                    </Text>
+                  ))}
+                  <TouchableOpacity disabled={busy} onPress={() => execute(openDocumentUpload)} style={[styles.secondaryBtn, { marginTop: 10 }]}>
+                    <Text style={styles.secondaryBtnText}>Upload Photo & Certificates</Text>
+                  </TouchableOpacity>
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
+                    <TouchableOpacity onPress={() => setLicenceModal(false)} style={[styles.secondaryBtn, { flex: 1 }]}>
+                      <Text style={styles.secondaryBtnText}>Close</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity disabled={busy} onPress={() => execute(submitLicence)} style={[styles.primaryBtn, { flex: 2 }]}>
+                      <Text style={styles.primaryBtnText}>Save Details</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+  );
+
+  if (auth?.kind === 'rider' && auth.awaitingApproval) {
+    return (
+      <View style={styles.screen}>
+        <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
+        <ScrollView contentContainerStyle={styles.authScroll}>
+          <View style={styles.authHeader}>
+            <BrandRow tagline="ACCOUNT UNDER REVIEW" />
+            <Text style={styles.authSubtitle}>Submit your licence and documents. Your jobs screen opens automatically once ELESEND approves them.</Text>
+          </View>
+          <View style={styles.authCard}>
+            {!!error && <Text style={styles.errorText}>⚠️ {error}</Text>}
+            <TouchableOpacity accessibilityRole="button" style={styles.primaryBtn} disabled={busy} onPress={() => execute(openLicenceAndDocuments)}>
+              <Text style={styles.primaryBtnText}>Licence & Documents</Text>
+            </TouchableOpacity>
+            <TouchableOpacity accessibilityRole="button" onPress={() => execute(logout)} style={styles.switchAuthBtn}>
+              <Text style={styles.switchAuthText}>Sign Out</Text>
+            </TouchableOpacity>
+            <TouchableOpacity accessibilityRole="button" onPress={() => setDeleteAccountOpen(true)}>
+              <Text style={[styles.switchAuthText, { color: '#B91C1C' }]}>Delete Account</Text>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+        {licenceDocumentsModal}
+        <DeleteAccountModal visible={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} onDeleted={finishAccountDeletion} />
+      </View>
+    );
+  }
+
   if (auth?.kind === 'company') {
     return (
       <View style={styles.screen}>
@@ -1154,6 +1262,7 @@ export default function RiderApp() {
         {/* ================================================================= */}
         {tab === 'Jobs' && (
           <View>
+            <CompanyInvitations />
             {online && shifts && shifts.background === false && (
               <View style={styles.motionWarningBanner}>
                 <Text style={styles.motionWarningTitle}>⚠️ BACKGROUND LOCATION / BATTERY SAVER ACTIVE</Text>
@@ -1622,12 +1731,7 @@ export default function RiderApp() {
                 <Text style={styles.debtSub}>Fleet-company job earnings ({ghc(financeSnapshot.companyEarningsMinor)}) are paid to your company.</Text>
               )}
               <TouchableOpacity
-                onPress={() => execute(async () => {
-                  setLicence(await call('GET', '/api/v1/rider/licence'));
-                  const docs = await call('GET', '/api/v1/rider/documents').catch(() => null);
-                  setRiderDocuments(docs?.documents || []);
-                  setLicenceModal(true);
-                })}
+                onPress={() => execute(openLicenceAndDocuments)}
                 style={[styles.secondaryBtn, { marginTop: 12 }]}>
                 <Text style={styles.secondaryBtnText}>Licence & Documents</Text>
               </TouchableOpacity>
@@ -1730,57 +1834,7 @@ export default function RiderApp() {
             </Modal>
 
             {/* Withdrawal Modal */}
-            <Modal visible={licenceModal} animationType="fade" transparent>
-              <View style={styles.modalOverlay}>
-                <View style={styles.momoCard}>
-                  <Text style={styles.momoTitle}>Driver's Licence</Text>
-                  <Text style={styles.momoSub}>
-                    {licence?.status === 'approved' ? `Approved, valid until ${licence.validUntil}.`
-                      : licence?.status === 'pending' ? 'Waiting for review. You can start deliveries once it is approved.'
-                        : licence?.status === 'rejected' ? `Rejected: ${licence.rejectionReason}. Please correct it and submit again.`
-                          : 'Required before you can take deliveries. Bicycle riders enter their Ghana Card instead.'}
-                  </Text>
-                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Full Legal Name</Text>
-                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.legalName} onChangeText={value => setLicenceForm(f => ({ ...f, legalName: value }))} />
-                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Licence Number</Text>
-                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceNumber} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceNumber: value }))} />
-                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Licence Class</Text>
-                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceClass} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceClass: value }))} />
-                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Expiry Date (YYYY-MM-DD)</Text>
-                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.expiresOn} onChangeText={value => setLicenceForm(f => ({ ...f, expiresOn: value }))} />
-                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Vehicle Plate Number</Text>
-                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.vehiclePlate} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, vehiclePlate: value }))} />
-                  {licence && licence.status !== 'missing' && licence.identityAvailable && (
-                    <Text style={[styles.momoSub, { marginTop: 10 }]}>
-                      Photo check: {licence.identityStatus === 'approved' ? 'passed'
-                        : licence.identityStatus === 'in_progress' ? 'in progress'
-                          : licence.identityStatus === 'failed' ? `failed. ${licence.identityReason || ''}` : 'not started'}
-                    </Text>
-                  )}
-                  {licence && licence.status !== 'missing' && licence.identityAvailable && licence.identityStatus !== 'approved' && (
-                    <TouchableOpacity disabled={busy} onPress={() => execute(startIdentityPhotos)} style={[styles.primaryBtn, { marginTop: 10 }]}>
-                      <Text style={styles.primaryBtnText}>Take Licence Photo and Selfie</Text>
-                    </TouchableOpacity>
-                  )}
-                  {riderDocuments.map(d => (
-                    <Text key={d.kind} style={[styles.momoSub, { marginTop: 6 }]}>
-                      {d.kind.replace('_', ' ')}: {d.status}{d.rejectionReason ? ` (${d.rejectionReason})` : ''}
-                    </Text>
-                  ))}
-                  <TouchableOpacity disabled={busy} onPress={() => execute(openDocumentUpload)} style={[styles.secondaryBtn, { marginTop: 10 }]}>
-                    <Text style={styles.secondaryBtnText}>Upload Photo & Certificates</Text>
-                  </TouchableOpacity>
-                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
-                    <TouchableOpacity onPress={() => setLicenceModal(false)} style={[styles.secondaryBtn, { flex: 1 }]}>
-                      <Text style={styles.secondaryBtnText}>Close</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity disabled={busy} onPress={() => execute(submitLicence)} style={[styles.primaryBtn, { flex: 2 }]}>
-                      <Text style={styles.primaryBtnText}>Save Details</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-            </Modal>
+            {licenceDocumentsModal}
 
             <Modal visible={confirmWithdraw} animationType="fade" transparent>
               <View style={styles.modalOverlay}>

@@ -13,7 +13,11 @@ const no = { flex: 1, borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 8, p
 export function CompanyInvitations() {
   const [invitations, setInvitations] = useState([]);
   const load = useCallback(() => call('GET', '/api/v1/rider/invitations').then(setInvitations).catch(() => {}), []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 60000);
+    return () => clearInterval(t);
+  }, [load]);
   const answer = async (path, payload) => {
     try {
       await call('POST', path, payload);

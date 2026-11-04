@@ -106,19 +106,19 @@ function sendForm(){
  if(!ready()){panel().innerHTML='<div class="card muted">Booking opens once your company is approved.</div>';return;}
  place.pickup=place.destination=null;
  panel().innerHTML=`<div class="card"><h2>Book a delivery</h2><form id="f">${placePicker('pickup','Pickup')}${placePicker('destination','Destination')}
- ${field('rp','Recipient phone','tel','required')}${field('desc','What is being sent?','text','required minlength="2" maxlength="500"')}${field('w','Weight in kilograms','number','required min="0.1" step="0.1" value="1"')}
+ ${field('rp','Recipient phone','tel','required')}${field('pc','Pickup contact phone, if not this account','tel')}${field('desc','What is being sent?','text','required minlength="2" maxlength="500"')}${field('em','Email for the payment receipt','email','required autocomplete="email"')}${field('w','Weight in kilograms','number','required min="0.1" step="0.1" value="1"')}
  <label for="veh">Vehicle</label><select id="veh"><option value="motorcycle">Motorcycle</option><option value="car">Car</option><option value="van">Van</option></select>
  <div class="error" id="m"></div><button>Get price</button></form><div id="q"></div></div>`;
  wirePicker('pickup');wirePicker('destination');
  document.getElementById('f').onsubmit=guard(async e=>{e.preventDefault();
   if(!place.pickup||!place.destination)throw new Error('Choose the pickup and destination from the search results');
-  const q=await api('/api/v1/quotes','POST',{pickup:place.pickup,destination:place.destination,vehicle:val('veh'),recipientPhone:val('rp'),weightG:Math.round(Number(val('w'))*1000),description:val('desc'),paymentMethod:'DIGITAL'});
+  const q=await api('/api/v1/quotes','POST',{pickup:place.pickup,destination:place.destination,vehicle:val('veh'),recipientPhone:val('rp'),weightG:Math.round(Number(val('w'))*1000),description:val('desc'),paymentMethod:'MOMO',...(val('pc')?{pickupPhone:val('pc')}:{})});
   const total=q.amount_minor;
   const box=document.getElementById('q');box.innerHTML=`<p><b>${total!=null?ghc(total):'Price ready'}</b></p><div class="error" id="bm"></div><button id="book">Book and pay</button>`;
   const key=crypto.randomUUID();
   document.getElementById('book').onclick=guard(async ev=>{ev.target.disabled=true;
    try{const s=await api('/api/v1/shipments','POST',{quoteId:q.id},{'Idempotency-Key':key});
-    const pay=await api('/api/v1/shipments/'+s.id+'/checkout','POST',{idempotencyKey:key});
+    const pay=await api('/api/v1/shipments/'+s.id+'/checkout','POST',{idempotencyKey:key,email:val('em')});
     const url=pay.checkoutUrl;
     if(url&&/^https:\/\//.test(url))location.assign(url);else box.innerHTML='<p class="ok">Delivery booked. See it under Our deliveries.</p>';
    }finally{ev.target.disabled=false;}
@@ -154,10 +154,10 @@ async function apiAccess(){
  <div class="card"><h2>How to connect</h2>
  <pre>curl -X POST ${esc(base)}/api/v1/quotes \\
   -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \\
-  -d '{"pickup":{"address":"…","latitude":0,"longitude":0},"destination":{"address":"…","latitude":0,"longitude":0},"recipientPhone":"…","weightG":1000,"description":"…"}'
+  -d '{"pickup":{"address":"…","latitude":0,"longitude":0},"destination":{"address":"…","latitude":0,"longitude":0},"recipientPhone":"…","pickupPhone":"…","vehicle":"motorcycle","paymentMethod":"MOMO","weightG":1000,"description":"…"}'
 
 POST ${esc(base)}/api/v1/shipments            {"quoteId":"…"}  plus an Idempotency-Key header
-POST ${esc(base)}/api/v1/shipments/ID/checkout {"idempotencyKey":"…"}
+POST ${esc(base)}/api/v1/shipments/ID/checkout {"idempotencyKey":"…","email":"…"}
 GET  ${esc(base)}/api/v1/shipments/ID/tracking</pre>
  <p class="muted">To check a status update, compute HMAC-SHA256 of <code>t.body</code> with your signing secret and compare it to <code>v1</code> in the <code>X-Elesend-Signature</code> header. Reject old timestamps, and ignore repeats of the same <code>id</code>.</p></div>`;
  document.getElementById('k').onsubmit=guard(async e=>{e.preventDefault();const r=await api('/api/v1/business/api-keys','POST',{name:val('kn'),scopes:['quotes:write','shipments:write','shipments:read','payments:write']});await apiAccess();document.getElementById('kNew').innerHTML=`<p class="ok">Copy this key now. It will not be shown again.</p><code class="secret">${esc(r.key)}</code>`;},'km');
