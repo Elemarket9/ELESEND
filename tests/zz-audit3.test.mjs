@@ -51,7 +51,7 @@ test('audit three',{skip:!url},async()=>{
  const book=async(c,o)=>{const q=await api(c.token,'POST','/api/v1/quotes',trip(o));const key='a3-'+randomInt(1e9);const s=await api(c.token,'POST','/api/v1/shipments',{quoteId:q.data.id},{'Idempotency-Key':key});return {id:s.data?.id,key,q,s};};
  const pay=async(c,b)=>{const p=await api(c.token,'POST','/api/v1/shipments/'+b.id+'/checkout',{idempotencyKey:b.key,email:'a@example.com'});const amt=paystackState[p.data?.reference]?.amount;return {p,amt,ev:{event:'charge.success',data:{id:randomInt(1e9),domain:'live',reference:p.data?.reference,status:'success',amount:amt,currency:'GHS',channel:'mobile_money',paid_at:new Date().toISOString()}}};};
  const state=async id=>(await db.query('SELECT state,paid,rider_id IS NOT NULL has_rider FROM shipments WHERE id=$1',[id])).rows[0];
- const scene=async(n,f)=>{try{await f();}catch(e){log(n+' CRASHED',{m:e.message,at:e.stack?.split('\n')[1]});}};
+ const scene=async(n,f)=>{const s=Date.now();log('START '+n,{});try{await Promise.race([f(),new Promise((_,rej)=>setTimeout(()=>rej(new Error('STUCK after 150s')),150000).unref())]);log('END '+n,{ms:Date.now()-s});}catch(e){log(n+' CRASHED',{m:e.message,at:e.stack?.split('\n')[1]});}};
  const assign=async(r,id)=>{await dispatch.tick();const o=(await api(r.token,'GET','/api/v1/rider/offers')).data?.find?.(x=>x.id===id);return brief(await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:o?.offerId}));};
  const pickup=async(r,id)=>{const c=await api(r.token,'POST','/api/v1/shipments/'+id+'/pickup-challenge',{});return brief(await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:c.data?.challengeId,code:code()}));};
  const paid=async(c)=>{const b=await book(c);const x=await pay(c,b);await webhook(x.ev);return b.id;};
@@ -154,5 +154,5 @@ test('audit three',{skip:!url},async()=>{
   const assigned=(await db.query("SELECT count(*)::int n,count(DISTINCT rider_id)::int riders FROM shipments WHERE id=ANY($1) AND state='RIDER_ASSIGNED'",[ids])).rows[0];
   log('dispatch at once',{ms:Date.now()-s,sameOrderOfferedTwice:dup.length,accepts:offers,assigned});
  });
- process.env.NODE_ENV=prev;server.closeAllConnections?.();await new Promise(r=>server.close(r));await db.close();
+ process.env.NODE_ENV=prev;server.closeAllConnections?.();log('ALL DONE',{});setTimeout(()=>process.exit(0),500);
 });
