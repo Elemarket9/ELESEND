@@ -53,7 +53,7 @@ export function etaService(db,{routing=null,baselineFactors={},routingLabel='osr
  async function routeThroughStops(start,earlierStops,target,vehicle){
   let previous=start,durationSeconds=0,distanceMeters=0;const coordinates=[];
   for(const point of [...earlierStops,target]){
-   const leg=await routing.route(previous,point,{vehicle});
+   const leg=await routing.route(previous,point,{vehicle,traffic:true});
    if(leg?.source!=='routing-provider'&&leg?.source!=='fixture')return null;
    durationSeconds+=leg.durationSeconds;distanceMeters+=leg.distanceMeters;
    coordinates.push(...(leg.geometry?.coordinates??[]));

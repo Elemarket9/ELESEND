@@ -1,0 +1,66 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { adjustedSeconds, segmentSpeeds, trafficRouting } from '../services/api/traffic.mjs';
+import { riderRoadsOsm } from '../scripts/export-rider-roads.mjs';
+
+const at = s => new Date(1800000000000 + s * 1000).toISOString();
+const points = [0, 30, 60].map(s => ({ observedAt: at(s) }));
+const tracepoints = [0, 1, 2].map(i => ({ matchings_index: 0, waypoint_index: i }));
+
+test('a matched trip gives a speed for each road segment', () => {
+  const match = { tracepoints, matchings: [{ confidence: 0.9, legs: [{ distance: 300, annotation: { nodes: [1, 2, 3] } }, { distance: 150, annotation: { nodes: [3, 4] } }] }] };
+  const rows = segmentSpeeds(match, points);
+  assert.deepEqual(rows.map(r => [r.fromNode, r.toNode, Math.round(r.speedKmh)]), [[1, 2, 36], [2, 3, 36], [3, 4, 18]]);
+  assert.equal(rows.some(r => 'riderId' in r || 'rider_id' in r), false);
+});
+
+test('stops, impossible speeds and weak matches are ignored', () => {
+  const legs = distance => [{ distance, annotation: { nodes: [1, 2] } }, { distance, annotation: { nodes: [2, 3] } }];
+  assert.equal(segmentSpeeds({ tracepoints, matchings: [{ confidence: 0.9, legs: legs(5) }] }, points).length, 0, 'parked');
+  assert.equal(segmentSpeeds({ tracepoints, matchings: [{ confidence: 0.9, legs: legs(3000) }] }, points).length, 0, 'too fast');
+  assert.equal(segmentSpeeds({ tracepoints, matchings: [{ confidence: 0.1, legs: legs(300) }] }, points).length, 0, 'weak match');
+  assert.deepEqual(segmentSpeeds(null, points), []);
+});
+
+const leg = (name, durationSeconds, nodes) => ({ name, source: 'routing-provider', distanceMeters: 1000, durationSeconds, segments: { nodes, distances: nodes.slice(1).map(() => 500), durations: nodes.slice(1).map(() => durationSeconds / 2) } });
+const a = { latitude: 5.6, longitude: -0.2 }, b = { latitude: 5.61, longitude: -0.2 };
+
+test('measured speeds replace graph time only where measured', () => {
+  const route = leg('x', 100, [1, 2, 3]);
+  assert.equal(adjustedSeconds(route, new Map()).durationSeconds, 100);
+  const slow = adjustedSeconds(route, new Map([['1:2', 9]]));
+  assert.equal(slow.durationSeconds, 250);
+  assert.equal(slow.measuredMeters, 500);
+});
+
+test('traffic picks the alternative that is really faster, and hides internals', async () => {
+  const routing = { route: async () => ({ ...leg('main', 100, [1, 2, 3]), alternatives: [leg('side', 140, [1, 5, 3])] }) };
+  const traffic = { speedsFor: async (_v, nodes) => new Map(nodes.includes(2) ? [['1:2', 5], ['2:3', 5]] : []) };
+  const best = await trafficRouting(routing, traffic).route(a, b, { vehicle: 'motorcycle', traffic: true });
+  assert.equal(best.name, 'side');
+  assert.equal(best.durationSeconds, 140);
+  assert.equal(best.trafficAware, false);
+  assert.equal(best.segments, undefined);
+  assert.equal(best.alternatives, undefined);
+});
+
+test('with no data or a failure, routing behaves as before', async () => {
+  const calls = [];
+  const routing = { route: async (_a, _b, opts) => { calls.push(opts); if (opts.annotations) throw Error('too big'); return leg('plain', 100, []); } };
+  const best = await trafficRouting(routing, { speedsFor: async () => new Map() }).route(a, b, { vehicle: 'car', traffic: true });
+  assert.equal(best.name, 'plain');
+  assert.deepEqual(calls.at(-1), { vehicle: 'car' });
+  assert.equal(trafficRouting(null, {}), null);
+  const far = await trafficRouting(routing, { speedsFor: async () => new Map() }).route(a, { latitude: 9.4, longitude: -0.8 }, { vehicle: 'car', traffic: true });
+  assert.equal(far.name, 'plain');
+});
+
+test('rider roads join the network, and a road touching nothing is left out', async () => {
+  const roads = [{ name: 'Rider <Lane>', allowedVehicles: ['motorcycle'], coordinates: [[-0.18, 5.56], [-0.181, 5.561], [-0.182, 5.562]] }, { coordinates: [[-1, 7], [-1.001, 7.001]] }];
+  const { osm, count } = await riderRoadsOsm(roads, async p => (p.longitude === -0.18 ? { meters: 8, node: 42 } : { meters: 500, node: 7 }));
+  assert.equal(count, 1);
+  assert.match(osm, /<nd ref="42"\/>/);
+  assert.doesNotMatch(osm, /ref="7"/);
+  assert.match(osm, /Rider &lt;Lane&gt;/);
+  assert.match(osm, /k="motorcar" v="no"/);
+});

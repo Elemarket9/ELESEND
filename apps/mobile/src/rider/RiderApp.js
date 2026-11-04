@@ -36,6 +36,7 @@ import { normalizeGhanaPhone, isValidGhanaPhone } from '../phone';
 import { colors, typography, spacing, radii } from '../theme';
 import { riderStatus } from '../status-labels';
 import RiderNavigation from './RiderNavigation';
+import OfflineMapCard from './OfflineMapCard';
 import { prepareDeviceLocation } from '../customer-location';
 
 const initialCreds = {
@@ -1950,6 +1951,7 @@ export default function RiderApp() {
         {tab === 'Earnings' && (
           <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
             <CompanyInvitations />
+            <OfflineMapCard />
             <WithdrawalHistory refreshKey={`${financeSnapshot?.inPayoutMinor}:${availableNow}`} />
             <RatingPrompts />
             <RiderTools />

@@ -1,3 +1,4 @@
+import {trafficService} from './traffic.mjs';
 import {suspendExpiredDocuments} from './rider-documents.mjs';
 import {suspendExpiredLicences,syncOpenIdentityChecks,requireIdentityRefresh} from './rider-licence.mjs';
 import {enforceDrivingLimits,flagUnusualStops,offlineSignedOutRiders,settleRiderRewards} from './rider-tools.mjs';
@@ -13,7 +14,7 @@ import {runScheduledRecovery} from './modules/payments/index.mjs';
 import {runGeographicLearningCycle} from './infrastructure/maps/egia/background-learner.mjs';
 import {chatEngine} from './chat-engine.mjs';
 
-export const LOCKS={dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209,etaRefresh:839210,businessPayouts:839211,parcelCustody:839213,riderSafety:839214};
+export const LOCKS={traffic:839291,dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209,etaRefresh:839210,businessPayouts:839211,parcelCustody:839213,riderSafety:839214};
 
 const warn=(component,code,extra={})=>process.stderr.write(JSON.stringify({level:'warn',component,code,...extra})+'\n');
 
@@ -76,6 +77,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
   }),
   // Records each stage's estimate even when no customer is watching, so accuracy can be measured.
   etaRefresh:guarded('eta_refresh',LOCKS.etaRefresh,async()=>{await eta?.refreshActive();}),
+  traffic:guarded('road_traffic',LOCKS.traffic,async()=>{if(dispatch&&routing)await trafficService(db,{routing}).ingest(dispatch.recentRiderTraces);}),
   pruning:guarded('location_retention',LOCKS.dispatchPruning,async()=>{await dispatch?.pruneSamples();}),
    geoLearning:guarded('geo_learning',LOCKS.geoLearning,async()=>{await runGeographicLearningCycle(db,{routing});}),
   corridors:guarded('corridor_refresh',LOCKS.corridors,async()=>{await dispatch?.refreshCorridors();}),
@@ -116,6 +118,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
   every(jobs.dispatch,3000,!!dispatch);
   every(jobs.paymentRecon,30000,!!paymentProvider&&(!!checkout||!!finance));
   every(jobs.etaRefresh,60000,!!eta);
+  every(jobs.traffic,300000,!!dispatch&&!!routing);
   every(jobs.pruning,3600000,!!dispatch);
   every(jobs.corridors,60000,!!dispatch);
   every(jobs.maintenance,3600000);
