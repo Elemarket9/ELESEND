@@ -18,5 +18,6 @@ docker logs moto 2>&1 | tail -3
 curl -s -o /dev/null -w "font %{http_code} %{size_download}\n" "http://127.0.0.1:3145/fonts/Noto%20Sans%20Regular/0-255.pbf"
 ls -la $D/ghana.mbtiles; du -sh $D/ghana.mbtiles
 node scripts/maplab/routes.mjs | tee $O/routes.txt
+pip install --quiet --break-system-packages osmium shapely 2>&1 | tail -1; python3 scripts/maplab/sea.py $D/ghana-latest.osm.pbf apps/mobile/src/maps/ghana-sea.mjs 0.00015; cp apps/mobile/src/maps/ghana-sea.mjs $O/; ls -la $O/ghana-sea.mjs
 mkdir -p /tmp/lab && cd /tmp/lab && npm init -y >/dev/null && npm i --silent maplibre-gl@4.7.1 playwright@1.48 >/dev/null 2>&1 && npx playwright install --with-deps chromium >/dev/null 2>&1
 cd /tmp/lab && ROOT=$R node --input-type=commonjs -e "require('$R/scripts/maplab/render.cjs')"
