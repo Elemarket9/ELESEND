@@ -8,8 +8,8 @@
    "tables":["challenges","delivery_milestones","dispatch_algorithm_features","dispatch_commitments","dispatch_exceptions","dispatch_offers","dispatch_policy","eta_predictions","locations","notification_jobs","operational_risk_signals","api_webhook_deliveries","api_webhooks","outbox","parcel_custody_incidents","pricing_policies","pricing_surge_state","pricing_surge_zones","quotes","rider_dispatch_plans","rider_location_samples","rider_route_corridors","shipment_eta_state","shipments"]},
   "food":{"paths":["restaurant.mjs","restaurant-orders.mjs","commission-engine.mjs","promotion-engine.mjs"],
    "tables":["commission_audit_logs","commission_rules","food_order_items","food_orders","mapped_restaurants","menu_categories","menu_item_modifiers","menu_items","menu_modifier_options","promotion_audit_logs","promotion_campaign_restaurants","promotion_campaigns","promotion_redemptions","restaurant_commission_settings","restaurants"]},
-  "maps":{"paths":["map-config.mjs","infrastructure/maps/","providers/ghanapostgps.mjs"],
-   "tables":["candidate_landmarks","candidate_roads","map_update_versions","national_businesses","rider_map_reports","spatial_landmarks","temporary_delivery_references"]},
+  "maps":{"paths":["traffic.mjs","map-config.mjs","infrastructure/maps/","providers/ghanapostgps.mjs"],
+   "tables":["candidate_landmarks","candidate_roads","map_update_versions","national_businesses","rider_map_reports","spatial_landmarks","temporary_delivery_references","traffic_cursor","traffic_observations","traffic_typical_speeds"]},
   "safety":{"paths":["safety.mjs","chat-engine.mjs"],
    "tables":["chat_abuse_reports","chat_audit_logs","chat_conversations","chat_messages","chat_messaging_policy","chat_participants","chat_realtime_outbox","delivery_ratings","delivery_stop_watch","safety_alerts","trusted_contacts"]}
  },

@@ -76,3 +76,19 @@ test('the motorcycle graph has its own rules and keeps one-way streets', () => {
 test('a suspended rider finishing a parcel can still get directions', () => {
   assert.match(readFileSync(new URL('../services/api/http.mjs', import.meta.url), 'utf8'), /CUSTODY_ROUTES=new Set\([^)]*POST \/api\/v1\/rider\/navigation/);
 });
+
+test('voice says each turn once from afar and once when close', async () => {
+  const { voicePrompt } = await import('../apps/mobile/src/rider/navigation-logic.mjs');
+  const step = { instruction: 'Turn left onto Oxford Street' };
+  let v = voicePrompt({}, { index: 0, metersToStep: 900, step });
+  assert.equal(v.say, null);
+  v = voicePrompt(v.state, { index: 0, metersToStep: 280, step });
+  assert.equal(v.say, 'In 280 m, turn left onto Oxford Street');
+  v = voicePrompt(v.state, { index: 0, metersToStep: 250, step });
+  assert.equal(v.say, null);
+  v = voicePrompt(v.state, { index: 0, metersToStep: 50, step });
+  assert.equal(v.say, 'Turn left onto Oxford Street');
+  v = voicePrompt(v.state, { index: 0, metersToStep: 20, step });
+  assert.equal(v.say, null);
+  assert.equal(voicePrompt(v.state, { index: 1, metersToStep: 50, step }).say, 'Turn left onto Oxford Street');
+});
