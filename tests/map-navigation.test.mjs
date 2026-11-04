@@ -68,7 +68,7 @@ test('the style has day and night looks, and the night one stays on our tiles', 
 
 test('the motorcycle graph has its own rules and keeps one-way streets', () => {
   const lua = readFileSync(new URL('../deploy/maps/motorcycle.lua', import.meta.url), 'utf8');
-  assert.match(lua, /'motorcycle', 'motor_vehicle'/);
+  assert.match(lua, /access_tags_hierarchy = Sequence { 'motorcycle', 'motor_vehicle'/);
   assert.doesNotMatch(lua, /oneway\s*=\s*false/);
   for (const file of ['prepare-ghana-osrm.sh', 'prepare-ghana-osrm.ps1']) assert.match(readFileSync(new URL('../scripts/' + file, import.meta.url), 'utf8'), /\/data\/motorcycle\.lua/);
 });
