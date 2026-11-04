@@ -1,7 +1,8 @@
 import {createServer} from 'node:http';
 import {DatabaseSync} from 'node:sqlite';
-import {resolve} from 'node:path';
-import {pathToFileURL} from 'node:url';
+import {readFileSync} from 'node:fs';
+import {join,resolve} from 'node:path';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 
 function encodeVarint(value){
  let v=value>>>0;
@@ -199,6 +200,15 @@ export function generateGlyphsPbf(fontstack,start,end){
  return pbf;
 }
 
+const FONT_DIR=fileURLToPath(new URL('./fonts/',import.meta.url));
+const FONT_NAMES=new Set(['Noto Sans Regular','Noto Sans Bold']);
+/** Real Noto Sans glyphs when bundled; the built-in fallback font otherwise. */
+function realGlyphs(fontstack,start,end){
+ const name=fontstack.split(',').map(s=>s.trim()).find(s=>FONT_NAMES.has(s));
+ if(!name)return null;
+ try{return readFileSync(join(FONT_DIR,name,`${start}-${end}.pbf`));}catch{return null;}
+}
+
 export function tileServer(filename){
  const db=new DatabaseSync(filename,{readOnly:true});
  const tile=db.prepare('SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?');
@@ -218,12 +228,12 @@ export function tileServer(filename){
    const [fontstack,startStr,endStr]=fontMatch.slice(1);
    const start=Number(startStr),end=Number(endStr);
    if(start<0||end>65535||start>=end||end-start>256){res.writeHead(400).end();return;}
-   const etag=`"font-sdf-v2-${fontstack}-${start}-${end}"`;
+   const etag=`"font-sdf-v3-${fontstack}-${start}-${end}"`;
    if(req.headers['if-none-match']===etag){
      res.writeHead(304,{'ETag':etag,'Cache-Control':'public,max-age=2592000,immutable'}).end();
      return;
    }
-   const body=generateGlyphsPbf(fontstack,start,end);
+   const body=realGlyphs(fontstack,start,end)||generateGlyphsPbf(fontstack,start,end);
    res.writeHead(200,{'Content-Type':'application/x-protobuf','Cache-Control':'public,max-age=2592000,immutable','ETag':etag,'Content-Length':body.length});
    res.end(req.method==='HEAD'?undefined:body);
    return;

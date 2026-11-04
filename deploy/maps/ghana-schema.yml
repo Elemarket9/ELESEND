@@ -1,11 +1,19 @@
 schema_name: ELESEND Ghana
-schema_description: Private OSM roads, inland water, land use, buildings and settlements
+schema_description: Private OSM roads, water, land use, buildings, places and points of interest
 attribution: © OpenStreetMap contributors
-version: 1
+version: 2
 args:
   osm_local_path: ghana-latest.osm.pbf
   minzoom: 0
   maxzoom: 14
+definitions:
+  road_attributes: &road_attributes
+    - {key: class, tag_value: highway}
+    - {key: name, tag_value: name, min_zoom: 12}
+    - {key: ref, tag_value: ref, min_zoom: 10}
+    - {key: oneway, tag_value: oneway, min_zoom: 14}
+    - {key: bridge, tag_value: bridge, min_zoom: 12}
+    - {key: tunnel, tag_value: tunnel, min_zoom: 12}
 sources:
   osm:
     type: osm
@@ -15,40 +23,339 @@ layers:
     features:
       - source: osm
         geometry: line
-        min_zoom: 6
+        min_zoom: 5
         include_when:
-          highway: [motorway, trunk, primary, secondary, tertiary, unclassified, residential, living_street, service, motorway_link, trunk_link, primary_link, secondary_link, tertiary_link, track, path, footway, cycleway]
+          highway: [motorway, motorway_link, trunk, trunk_link]
+        attributes: *road_attributes
+      - source: osm
+        geometry: line
+        min_zoom: 7
+        include_when:
+          highway: [primary, primary_link]
+        attributes: *road_attributes
+      - source: osm
+        geometry: line
+        min_zoom: 9
+        include_when:
+          highway: [secondary, secondary_link]
+        attributes: *road_attributes
+      - source: osm
+        geometry: line
+        min_zoom: 10
+        include_when:
+          highway: [tertiary, tertiary_link]
+        attributes: *road_attributes
+      - source: osm
+        geometry: line
+        min_zoom: 12
+        include_when:
+          highway: [unclassified, residential, living_street]
+        attributes: *road_attributes
+      - source: osm
+        geometry: line
+        min_zoom: 13
+        include_when:
+          highway: [service, track, path, pedestrian, footway, steps]
+        attributes: *road_attributes
+  - id: railway
+    features:
+      - source: osm
+        geometry: line
+        min_zoom: 9
+        include_when:
+          railway: [rail, narrow_gauge, light_rail]
+  - id: waterway
+    features:
+      - source: osm
+        geometry: line
+        min_zoom: 8
+        include_when:
+          waterway: [river, canal, stream]
         attributes:
-          - {key: class, tag_value: highway}
-          - {key: name, tag_value: name, min_zoom: 12}
+          - {key: class, tag_value: waterway}
+          - {key: name, tag_value: name, min_zoom: 11}
   - id: water
     features:
       - source: osm
         geometry: polygon
-        min_zoom: 6
+        min_zoom: 5
         include_when:
-          natural: water
+          __any__:
+            - {natural: [water, bay]}
+            - {landuse: [reservoir, basin]}
+            - {waterway: riverbank}
   - id: landuse
     features:
       - source: osm
         geometry: polygon
-        min_zoom: 9
+        min_zoom: 8
         include_when:
-          landuse: [forest, grass, meadow, recreation_ground, village_green, farmland, orchard]
+          __any__:
+            - {landuse: [forest, grass, meadow, recreation_ground, village_green, farmland, orchard, cemetery, residential, commercial, retail, industrial, military]}
+            - {natural: [wood, scrub, wetland, beach, sand]}
+            - {leisure: [park, garden, pitch, stadium, golf_course, nature_reserve]}
+            - {amenity: [hospital, university, school, college, marketplace]}
+            - {aeroway: [aerodrome, apron, runway, taxiway]}
+        attributes:
+          - {key: landuse, tag_value: landuse}
+          - {key: natural, tag_value: natural}
+          - {key: leisure, tag_value: leisure}
+          - {key: amenity, tag_value: amenity}
+          - {key: aeroway, tag_value: aeroway}
   - id: building
     features:
       - source: osm
         geometry: polygon
-        min_zoom: 12
+        min_zoom: 13
         include_when:
           building: __any__
+  - id: poi
+    features:
+      - source: osm
+        geometry: point
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [restaurant, fast_food, cafe, bar, pub, food_court]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: food}
+      - source: osm
+        geometry: point
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {shop: __any__}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: shop}
+      - source: osm
+        geometry: point
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [hospital, clinic, pharmacy, doctors, dentist]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: health}
+      - source: osm
+        geometry: point
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [bank, atm, bureau_de_change]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: money}
+      - source: osm
+        geometry: point
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [fuel, charging_station]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: fuel}
+      - source: osm
+        geometry: point
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [school, university, college, kindergarten]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: education}
+      - source: osm
+        geometry: point
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: place_of_worship}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: worship}
+      - source: osm
+        geometry: point
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [bus_station, ferry_terminal, taxi]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: transport}
+      - source: osm
+        geometry: point
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {tourism: [hotel, guest_house, hostel, motel]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: stay}
+      - source: osm
+        geometry: point
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {tourism: [attraction, museum, viewpoint, zoo]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: sights}
+      - source: osm
+        geometry: point
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [police, fire_station, post_office, townhall, courthouse, community_centre, marketplace]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: civic}
+      - source: osm
+        geometry: polygon_centroid
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [restaurant, fast_food, cafe, bar, pub, food_court]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: food}
+      - source: osm
+        geometry: polygon_centroid
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {shop: __any__}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: shop}
+      - source: osm
+        geometry: polygon_centroid
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [hospital, clinic, pharmacy, doctors, dentist]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: health}
+      - source: osm
+        geometry: polygon_centroid
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [bank, atm, bureau_de_change]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: money}
+      - source: osm
+        geometry: polygon_centroid
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [fuel, charging_station]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: fuel}
+      - source: osm
+        geometry: polygon_centroid
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [school, university, college, kindergarten]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: education}
+      - source: osm
+        geometry: polygon_centroid
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: place_of_worship}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: worship}
+      - source: osm
+        geometry: polygon_centroid
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [bus_station, ferry_terminal, taxi]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: transport}
+      - source: osm
+        geometry: polygon_centroid
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {tourism: [hotel, guest_house, hostel, motel]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: stay}
+      - source: osm
+        geometry: polygon_centroid
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {tourism: [attraction, museum, viewpoint, zoo]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: sights}
+      - source: osm
+        geometry: polygon_centroid
+        min_zoom: 14
+        include_when:
+          __all__:
+            - {amenity: [police, fire_station, post_office, townhall, courthouse, community_centre, marketplace]}
+            - {name: __any__}
+        attributes:
+          - {key: name, tag_value: name}
+          - {key: group, value: civic}
   - id: places
     features:
       - source: osm
         geometry: point
-        min_zoom: 6
+        min_zoom: 4
         include_when:
-          place: [city, town, village, suburb, neighbourhood]
-        attributes:
+          place: [city]
+        attributes: &place_attributes
           - {key: name, tag_value: name}
           - {key: class, tag_value: place}
+      - source: osm
+        geometry: point
+        min_zoom: 7
+        include_when:
+          place: [town]
+        attributes: *place_attributes
+      - source: osm
+        geometry: point
+        min_zoom: 10
+        include_when:
+          place: [suburb, village]
+        attributes: *place_attributes
+      - source: osm
+        geometry: point
+        min_zoom: 12
+        include_when:
+          place: [neighbourhood, quarter, hamlet]
+        attributes: *place_attributes
