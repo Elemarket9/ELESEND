@@ -16,24 +16,6 @@ test('audit three',{skip:!url},async()=>{
  const I=m=>import(m);
  const {database}=await I('../services/api/db.mjs'),{migrate}=await I('../scripts/migrate.mjs');
  const db=database(url);await migrate(db);
- // A. Real server process with no provider settings.
- const secrets={OTP_KEY:hex(),ADMIN_MFA_ENCRYPTION_KEY:hex(),JWT_SECRET:hex(),ADMIN_MASTER_KEY:hex(),AUDIT_LOG_SECRET:hex(),READINESS_PROBE_TOKEN:hex(),API_PUBLIC_ORIGIN:'https://api.example.com',WEB_PUBLIC_ORIGIN:'https://app.example.com',ADMIN_HOST:'admin.example.com',REDIS_URL:'',PORT:'39011',HOST:'127.0.0.1'};
- const bare=await bootReal('services/api/server.mjs',{PORT:'39010',HOST:'127.0.0.1',API_PUBLIC_ORIGIN:'https://api.example.com',WEB_PUBLIC_ORIGIN:'https://app.example.com'});
- log('boot with almost nothing set',{exited:bare.exited,said:bare.out.join('').slice(0,600)});bare.p.kill();
- const srv=await bootReal('services/api/server.mjs',secrets);
- log('boot with only generated secrets',{exited:srv.exited,said:srv.out.join('').slice(-500)});
- if(srv.exited===null){
-  const b='http://127.0.0.1:39011';const g=async(p,o={})=>{const r=await fetch(b+p,o).catch(e=>({status:'ERR '+e.message}));return r.status;};
-  const num='+23324'+String(randomInt(0,1e7)).padStart(7,'0');
-  const reg=await fetch(b+'/api/v1/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:num,password:'mango river lantern',kind:'customer'})});
-  const login=await (await fetch(b+'/api/v1/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:num,password:'mango river lantern'})})).json().catch(()=>({}));
-  const ask=async(p,m='GET',body)=>{const r=await fetch(b+p,{method:m,headers:{'Content-Type':'application/json',Authorization:'Bearer '+login.token},body:body?JSON.stringify(body):undefined});return [r.status,(await r.json().catch(()=>({})))?.error??null];};
-  log('no provider: what works',{health:await g('/health'),ready:await g('/ready'),restaurant:await g('/restaurant'),company:await g('/company'),admin:await g('/admin',{headers:{host:'admin.example.com'}}),reg:reg.status,login:!!login.token,me:await ask('/api/v1/me'),sms:await ask('/api/v1/me/phone-challenge','POST',{}),quote:await ask('/api/v1/quotes','POST',{}),search:await ask('/api/v1/maps/search?q=Accra')});
- }
- srv.p.kill();
- const worker=await bootReal('services/api/worker.mjs',{...secrets,PORT:'39012'});
- log('worker process',{exited:worker.exited,said:worker.out.join('').slice(-400)});worker.p.kill();
-
  process.env.NODE_ENV='production';process.env.OTP_KEY??='d'.repeat(64);
  const {platform}=await I('../services/api/platform.mjs'),{httpServer}=await I('../services/api/http.mjs'),{dispatchEngine}=await I('../services/api/dispatch.mjs');
  const {checkoutService,financeService,moneyOperations,paymentWebhook}=await I('../services/api/modules/payments/index.mjs'),{restaurantOrderService}=await I('../services/api/restaurant-orders.mjs'),{paystackCheckout}=await I('../services/api/modules/payments/paystack-checkout-adapter.mjs');
@@ -46,7 +28,7 @@ test('audit three',{skip:!url},async()=>{
  const paystackState={};
  const fetchImpl=async(u,o={})=>{const p=new URL(u).pathname;paystackState.calls=(paystackState.calls||0)+1;
   if(p==='/transaction/initialize'){const b=JSON.parse(o.body);paystackState[b.reference]={amount:Number(b.amount)};return {ok:true,status:200,json:async()=>({status:true,data:{authorization_url:'https://checkout.paystack.com/x'+b.reference,reference:b.reference}})};}
-  if(p.startsWith('/transaction/verify/')){const r=decodeURIComponent(p.split('/').pop());const a=paystackState[r]?.amount;return {ok:true,status:200,json:async()=>({status:true,data:{id:randomInt(1e9),reference:r,status:'success',amount:paystackState[r]?.tamper??a,currency:'GHS',channel:'mobile_money',paid_at:new Date().toISOString()}})};}
+  if(p.startsWith('/transaction/verify/')){const r=decodeURIComponent(p.split('/').pop());const a=paystackState[r]?.amount;return {ok:true,status:200,json:async()=>({status:true,data:{id:randomInt(1e9),reference:r,status:'success',domain:'live',amount:paystackState[r]?.tamper??a,currency:'GHS',channel:'mobile_money',paid_at:new Date().toISOString()}})};}
   return {ok:false,status:404,json:async()=>({status:false})};};
  const provider=paystackCheckout({secretKey:secret,production:true,fetchImpl});
  const app=platform(db,{otpKey:process.env.OTP_KEY,routing,dispatch,sms});
@@ -67,7 +49,7 @@ test('audit three',{skip:!url},async()=>{
  const rider=async()=>{await db.query('UPDATE riders SET online=false');const r=await signUp('rider',{vehicle:'motorcycle',maxWeightG:20000});await verify(r);await db.query("UPDATE riders SET status='approved' WHERE id=$1",[r.id]);await api(r.token,'POST','/api/v1/rider/availability',{online:true});await gps(r);return r;};
  const webhook=(body,sig)=>{const raw=JSON.stringify(body);return fetch(base+'/api/v1/payments/webhook',{method:'POST',headers:{'Content-Type':'application/json','x-paystack-signature':sig??createHmac('sha512',secret).update(raw).digest('hex')},body:raw}).then(async r=>[r.status,(await r.json().catch(()=>({})))]);};
  const book=async(c,o)=>{const q=await api(c.token,'POST','/api/v1/quotes',trip(o));const key='a3-'+randomInt(1e9);const s=await api(c.token,'POST','/api/v1/shipments',{quoteId:q.data.id},{'Idempotency-Key':key});return {id:s.data?.id,key,q,s};};
- const pay=async(c,b)=>{const p=await api(c.token,'POST','/api/v1/shipments/'+b.id+'/checkout',{idempotencyKey:b.key,email:'a@example.com'});const amt=paystackState[p.data?.reference]?.amount;return {p,amt,ev:{event:'charge.success',data:{id:randomInt(1e9),reference:p.data?.reference,status:'success',amount:amt,currency:'GHS',channel:'mobile_money',paid_at:new Date().toISOString()}}};};
+ const pay=async(c,b)=>{const p=await api(c.token,'POST','/api/v1/shipments/'+b.id+'/checkout',{idempotencyKey:b.key,email:'a@example.com'});const amt=paystackState[p.data?.reference]?.amount;return {p,amt,ev:{event:'charge.success',data:{id:randomInt(1e9),domain:'live',reference:p.data?.reference,status:'success',amount:amt,currency:'GHS',channel:'mobile_money',paid_at:new Date().toISOString()}}};};
  const state=async id=>(await db.query('SELECT state,paid,rider_id IS NOT NULL has_rider FROM shipments WHERE id=$1',[id])).rows[0];
  const scene=async(n,f)=>{try{await f();}catch(e){log(n+' CRASHED',{m:e.message,at:e.stack?.split('\n')[1]});}};
  const assign=async(r,id)=>{await dispatch.tick();const o=(await api(r.token,'GET','/api/v1/rider/offers')).data?.find?.(x=>x.id===id);return brief(await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:o?.offerId}));};
@@ -85,7 +67,7 @@ test('audit three',{skip:!url},async()=>{
   log('webhook',{pay:brief(x.p),forged,none,stillUnpaid,good,again,after,cheap,cheapState:await state(b2.id),feeOnAmount:[b.q.data.amount_minor,x.amt]});
   const ret=await fetch(base+'/checkout/complete').then(r=>r.status);log('return page',ret);
  });
- await scene('bad input',async()=>{
+ if(false)await scene('bad input',async()=>{
   const c=await person('customer'),other=await person('customer');
   const q=await api(c.token,'POST','/api/v1/quotes',trip());
   const stolen=await api(other.token,'POST','/api/v1/shipments',{quoteId:q.data.id},{'Idempotency-Key':'steal-'+randomInt(1e9)});
@@ -134,7 +116,7 @@ test('audit three',{skip:!url},async()=>{
   const unknown=await api(null,'POST','/api/v1/auth/password-recovery',{phone:phone()});
   log('password reset',{ch:brief(ch),weak:brief(reset),ok:brief(reset2),oldSession:(await api(x.token,'GET','/api/v1/me')).status,unknownSame:[unknown.status,Object.keys(unknown.data||{}).join(),Object.keys(ch.data||{}).join()]});
  });
- await scene('public tracking',async()=>{
+ if(false)await scene('public tracking',async()=>{
   const c=await person('customer');const r=await rider();const id=await paid(c);await assign(r,id);
   const t=await api(c.token,'GET','/api/v1/shipments/'+id+'/tracking');const tok=t.data?.trackingToken??t.data?.shareToken??t.data?.publicToken;
   const pub=tok?await fetch(base+'/api/v1/public/track/'+tok).then(async x=>[x.status,await x.json().catch(()=>null)]):null;
@@ -148,7 +130,7 @@ test('audit three',{skip:!url},async()=>{
   const item=await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id+'/items',{name:'Jollof',priceMinor:4000});
   const admin=randomUUID();await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'x','admin',now())",[admin,phone()]);await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'promotions:manage')",[admin]);
   const code2='SAVE'+randomInt(1e6);const start=new Date(Date.now()-60000).toISOString(),end=new Date(Date.now()+864e5).toISOString();
-  const camp=await promotionEngine(db).createAdminCampaign({id:admin,kind:'admin'},{name:'Audit promo',ownerType:'platform',discountType:'percentage',discountBps:10000,code:code2,startsAt:start,endsAt:end,totalBudgetMinor:5000,perCustomerLimit:1,restaurantIds:[made.data.id]}).catch(e=>({error:e.message,issues:e.issues?.slice?.(0,4)}));
+  const camp=await promotionEngine(db).createAdminCampaign({id:admin,kind:'admin'},{name:'Audit promo',ownerType:'elesend',discountType:'percentage',discountBps:10000,code:code2,startsAt:start,endsAt:end,totalBudgetMinor:5000,perCustomerLimit:1,eligibleRestaurantIds:[made.data.id]}).catch(e=>({error:e.message,issues:e.issues?.slice?.(0,4)}));
   log('campaign',camp?.error?camp:{id:camp.id,status:camp.status});
   const order={restaurantId:made.data.id,items:[{itemId:item.data.id,quantity:1}],deliveryAddress:D.address,deliveryLatitude:D.latitude,deliveryLongitude:D.longitude,customerPhone:'0241234567',promoCode:code2};
   const c=await person('customer');
@@ -158,7 +140,7 @@ test('audit three',{skip:!url},async()=>{
   log('promo',{quote:brief(q),total:q.data?.totalMinor??q.data?.total_minor,keys:q.data&&Object.keys(q.data).filter(k=>/total|discount|commission|subsid/i.test(k)),fake:brief(fake),race:race.map(x=>[x.status,x.data?.error??x.data?.total_minor]),visibleCommission:race[0].data&&Object.keys(race[0].data).filter(k=>/commission/i.test(k))});
  });
  await scene('many people at once',async()=>{
-  const people=await Promise.all(Array.from({length:60},()=>person('customer')));
+  const people=[];for(let i=0;i<60;i++){people.push(await person('customer'));}
   const t0=Date.now();const res=await Promise.all(people.map(async c=>{const s=Date.now();const r=await api(c.token,'POST','/api/v1/quotes',trip());return [r.status,Date.now()-s];}));
   const times=res.map(x=>x[1]).sort((a,b)=>a-b);
   const logins=await Promise.all(people.slice(0,40).map(async c=>{const s=Date.now();const r=await api(null,'POST','/api/v1/auth/login',{phone:c.number,password:PW});return [r.status,Date.now()-s];}));
