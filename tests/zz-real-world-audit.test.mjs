@@ -29,7 +29,7 @@ test('real world walk-through',{skip:!url},async()=>{
  const api=async(token,method,path,body,headers={})=>{const res=await fetch(base+path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{}),...headers},body:body===undefined?undefined:JSON.stringify(body)});const data=await res.json().catch(()=>null);return {status:res.status,data};};
  const phone=()=>'+23324'+String(randomInt(0,10000000)).padStart(7,'0');
  const PW='mango river lantern';
- const lastCode=()=>{for(let i=texts.length-1;i>=0;i--){const m=/\b(\d{6})\b/.exec(JSON.stringify(texts[i]));if(m)return m[1];}return null;};
+ const lastCode=()=>{for(let i=texts.length-1;i>=0;i--){if(texts[i].code)return texts[i].code;}return null;};
  async function account(kind,extra={}){
   const number=phone();
   const reg=await api(null,'POST','/api/v1/auth/register',{phone:number,password:PW,kind,...extra});
@@ -65,9 +65,9 @@ test('real world walk-through',{skip:!url},async()=>{
  }
  async function deliver(r,id){
   const offers=await api(r.token,'GET','/api/v1/rider/offers');
-  const offer=(offers.data||[]).find?.(o=>o.shipment_id===id||o.shipmentId===id);
-  log('offer seen by rider',{count:offers.data?.length,keys:offer?Object.keys(offer):offers.data});
-  const acc=await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:offer?.offer_id??offer?.offerId??offer?.id});
+  const offer=(offers.data||[]).find?.(o=>o.id===id);
+  log('offer seen by rider',{count:offers.data?.length,mine:!!offer});
+  const acc=await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:offer?.offerId});
   log('accept',{status:acc.status,err:acc.data?.error});
   const steps={};
   const pc=await api(r.token,'POST','/api/v1/shipments/'+id+'/pickup-challenge',{});steps.pickupChallenge=[pc.status,pc.data?.error];
@@ -97,7 +97,7 @@ test('real world walk-through',{skip:!url},async()=>{
   const wallet=await api(r.token,'GET','/api/v1/rider/finance');log('rider finance route',{status:wallet.status,keys:wallet.data&&Object.keys(wallet.data)});
   const lines=(await db.query(`SELECT j.kind,l.account,l.side,l.amount_minor FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id WHERE j.shipment_id=$1`,[b.id])).rows;
   log('ledger',{balanced:lines.reduce((s,l)=>s+(l.side==='debit'?1:-1)*Number(l.amount_minor),0),lines});
-  const texted=texts.slice(-6).map(m=>String(m.body??m.message??m.text??JSON.stringify(m)).replace(/\d{6}/g,'CODE').slice(0,110));log('texts sent',texted);
+  log('texts sent',texts.slice(-6).map(m=>({purpose:m.purpose,keys:Object.keys(m).join(),samePhoneAsRecipient:m.phone})));
  });
 
  await scene('two riders one offer',async()=>{
@@ -125,7 +125,7 @@ test('real world walk-through',{skip:!url},async()=>{
   const c=await account('customer');const r=await account('rider',{vehicle:'motorcycle',maxWeightG:20000});await goOnline(r);
   const k=await bookAndPay(c);await dispatch.tick();
   const offers=await api(r.token,'GET','/api/v1/rider/offers');const o=offers.data?.[0];
-  await api(r.token,'POST','/api/v1/shipments/'+k.id+'/accept',{offerId:o?.offer_id??o?.offerId??o?.id});
+  await api(r.token,'POST','/api/v1/shipments/'+k.id+'/accept',{offerId:o?.offerId});
   smsWorks=false;
   const pc=await api(r.token,'POST','/api/v1/shipments/'+k.id+'/pickup-challenge',{});
   smsWorks=true;
@@ -164,7 +164,7 @@ test('real world walk-through',{skip:!url},async()=>{
   log('company after job',{state,balance:profile.data?.balance,deliveries:list.data?.length,fleetJobs:fleetJobs.data?.length,riderFinanceStatus:finance.status});
   const pay=await api(co.token,'POST','/api/v1/me/payout-beneficiary',{momoNetwork:'MTN',accountName:'Audit Logistics'});
   log('company payout account',{status:pay.status,err:pay.data?.error});
-  log('automatic payout',await money.settleBusinessesDue().catch(e=>({error:e.message})));
+  await db.query("UPDATE checkout_accounting_journals SET created_at=created_at WHERE false");log('automatic payout',await money.settleBusinessesDue().catch(e=>({error:e.message})));log('company balance after payout',(await api(co.token,'GET','/api/v1/company/profile')).data?.balance);log('rider wallet view',(await api(r.token,'GET','/api/v1/rider/finance')).data?.warning);
   const keyR=await api(co.token,'POST','/api/v1/business/api-keys',{name:'Warehouse',scopes:['quotes:write','shipments:write','shipments:read','payments:write']});
   const q=await api(keyR.data?.key,'POST','/api/v1/quotes',booking());
   const s=await api(keyR.data?.key,'POST','/api/v1/shipments',{quoteId:q.data?.id},{'Idempotency-Key':'audit-key-'+randomInt(1e9)});
@@ -179,7 +179,7 @@ await scene('rider phone dies mid delivery',async()=>{
   const c=await account('customer');const r=await account('rider',{vehicle:'motorcycle',maxWeightG:20000});await goOnline(r);
   const k=await bookAndPay(c);await dispatch.tick();
   const o=(await api(r.token,'GET','/api/v1/rider/offers')).data?.[0];
-  const acc=await api(r.token,'POST','/api/v1/shipments/'+k.id+'/accept',{offerId:o?.offer_id??o?.id});
+  const acc=await api(r.token,'POST','/api/v1/shipments/'+k.id+'/accept',{offerId:o?.offerId});
   await db.query("UPDATE riders SET position_at=now()-interval '2 hours' WHERE id=$1",[r.id]);await db.query("UPDATE locations SET updated_at=now()-interval '2 hours' WHERE rider_id=$1",[r.id]);
   await db.query("UPDATE dispatch_offers SET accepted_at=now()-interval '2 hours' WHERE shipment_id=$1",[k.id]);
   const out=await dispatch.tick().catch(e=>({error:e.message}));
