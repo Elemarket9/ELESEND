@@ -27,7 +27,7 @@ import { call, loadToken, saveToken, clearToken, ghc, BASE } from '../api';
 import { acquireDevicePushToken, registerDevicePushChannel } from '../tracking';
 import { EmergencyButton, RatingPrompts, TrustedContactCard } from '../rider-safety';
 import DeleteAccountModal from '../delete-account';
-import { detectCustomerLocation, buildConfirmedLocation } from '../customer-location';
+import { detectCustomerLocation, buildConfirmedLocation, prepareDeviceLocation } from '../customer-location';
 import {
   ENDPOINTS,
   toAddressPayload,
@@ -227,6 +227,25 @@ export default function CustomerApp() {
       .catch(() => null);
   }, [auth?.id, phoneState?.verified]);
 
+  // Ask for location as soon as the app opens, before sign-in, so GPS is ready.
+  const locationReady = useRef(null);
+  if (!locationReady.current) locationReady.current = prepareDeviceLocation(Location);
+
+  // Once signed in, fill in the current location: a recent device fix first, then a measured one.
+  useEffect(() => {
+    if (!auth?.id) return;
+    (async () => {
+      if (await locationReady.current !== 'granted') return;
+      const first = await requestLocation({ silent: true, quickFirst: true });
+      if (first?.ok && first.isLastKnown) await requestLocation({ silent: true });
+    })();
+  }, [auth?.id]);
+
+  // Restaurants are listed by distance, so reload them when the location arrives.
+  useEffect(() => {
+    if (auth?.id && detectedLocation?.coordinates) loadFoodRestaurants();
+  }, [auth?.id, detectedLocation?.latitude, detectedLocation?.longitude]);
+
   // Auth Initialization
   useEffect(() => {
     (async () => {
@@ -373,7 +392,8 @@ export default function CustomerApp() {
     setTab('Home');
   }
 
-  async function requestLocation() {
+  // silent: the launch lookup. It fills in the location without opening a panel or showing errors.
+  async function requestLocation({ silent = false, quickFirst = false } = {}) {
     setDetectingGps(true);
     try {
       const res = await detectCustomerLocation({
@@ -385,9 +405,11 @@ export default function CustomerApp() {
             return null;
           }
         },
-        timeoutMs: 12000
+        timeoutMs: 12000,
+        quickFirst
       });
 
+      if (!res.ok && silent) return res;
       if (!res.ok) {
         if (res.error === 'services_disabled') {
           Alert.alert(
@@ -451,10 +473,13 @@ export default function CustomerApp() {
         }, 800);
       }
 
+      if (silent) return res;
+
       // Never write a GPS fix into the booking silently (it may be a cached or approximate fix).
       // The customer reviews it on the confirmation panel and can drag the pin before confirming.
       openGpsConfirmation(detected);
     } catch (e) {
+      if (silent) return null;
       Alert.alert('GPS Notice', 'Unable to retrieve precise GPS coordinates. You can select your address from the landmark list or pin on map.');
     } finally {
       setDetectingGps(false);

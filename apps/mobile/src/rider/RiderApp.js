@@ -35,6 +35,7 @@ import { cacheJobs, readCachedJobs, readLastCachedJobs, clearCachedJobs } from '
 import { normalizeGhanaPhone, isValidGhanaPhone } from '../phone';
 import { colors, typography, spacing, radii } from '../theme';
 import { riderStatus } from '../status-labels';
+import { prepareDeviceLocation } from '../customer-location';
 
 const initialCreds = {
   phone: '',
@@ -275,6 +276,12 @@ export default function RiderApp() {
       try { Vibration.cancel(); } catch {}
     };
   }, [auth, online, phoneState?.verified, vibrationEnabled]);
+
+  // Ask for location when the app opens so going online is quicker. Nothing is uploaded until
+  // the rider goes online, and company accounts, which do not use GPS, are not asked.
+  useEffect(() => {
+    if (!loading && auth?.kind !== 'company') prepareDeviceLocation(Location);
+  }, [loading, auth?.kind]);
 
   // GPS Movement & Location Tracking Watcher
   useEffect(() => {
