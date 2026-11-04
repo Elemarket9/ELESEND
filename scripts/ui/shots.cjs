@@ -1,0 +1,40 @@
+const {chromium}=require('playwright'),fs=require('fs'),path=require('path');const R=process.env.ROOT;
+const now=Date.now(),soon=new Date(now+25000).toISOString();
+const P={address:'Accra Mall, Tetteh Quarshie',latitude:5.6221,longitude:-0.1735},D={address:'Oxford Street, Osu, Accra',latitude:5.5571,longitude:-0.1817};
+const ship=(state,o={})=>({id:'11111111-1111-4111-8111-11111111111'+(o.n||1),state,customer_id:'c',created_at:new Date().toISOString(),amount_minor:1728,payment_method:'MOMO',paid:true,details:{pickup:P,destination:D,description:'Documents'},pickup:P,destination:D,request:{pickup:P,destination:D,description:'Documents'},rider_phone:'+233241234567',recipient_phone:'+233249876543',...o});
+const base={'/api/v1/me/phone':{phone:'+233241234567',verified:true},'/api/v1/pricing/vehicles':[{vehicle:'motorcycle',base_minor:800,per_km_minor:120},{vehicle:'car',base_minor:1500,per_km_minor:200},{vehicle:'van',base_minor:3000,per_km_minor:300}],'/api/v1/restaurants':[{id:'r1',name:'Auntie Muni Waakye',cuisine:'Ghanaian',address:'Osu',status:'approved',is_open:true,prep_time_minutes:20,rating:4.6},{id:'r2',name:'Kofi Chop Bar',cuisine:'Local',address:'Labone',status:'approved',is_open:true,prep_time_minutes:25}],'/api/v1/maps/search':[{id:'a',name:'Accra Mall',label:'Accra Mall, Accra',latitude:5.6221,longitude:-0.1735}]};
+const riderBase={...base,'/api/v1/rider/vehicle':{online:true,vehicle:'motorcycle',max_weight_g:20000,status:'approved'},'/api/v1/rider/commissions/summary':{},'/api/v1/rider/wallet/summary':{walletBalanceMinor:12024,availableEarningsMinor:12024,availableNowMinor:9500,onHoldMinor:2524,withdrawalMinMinor:10000,withdrawalFeeMinor:100,debtMinor:225},'/api/v1/rider/wallet/debt':{outstandingDebtMinor:225,debtLimitMinor:4000,obligations:[],restrictions:[]},'/api/v1/rider/wallet/withdrawals':[],'/api/v1/rider/licence':{status:'pending'},'/api/v1/rider/documents':{documents:[]},'/api/v1/rider/invitations':[{id:'i',company_name:'Volta Logistics',expires_at:soon}],'/api/v1/rider/tracking/settings':{}};
+const offer={offerId:'o1',id:ship('AWAITING_ASSIGNMENT').id,expiresAt:soon,pickupEtaSeconds:300,pickupRoadMeters:1800,distance_m:1800,entitlement_minor:1503,amount_minor:1728,payment_method:'MOMO',vehicle:'motorcycle',description:'Documents',pickup:P,destination:D,estimatedDropoffSeconds:1100,existingParcels:0};
+const manifestOf=(state)=>({optedIn:false,vehicle:'motorcycle',capacityG:20000,revision:1,shipments:[{id:ship(state).id,state,amount_minor:1728,commission_minor:225,payment_method:'MOMO',description:'Documents',pickup:P,destination:D,recipient_phone:'+233249876543'}],stops:[{shipmentId:ship(state).id,id:ship(state).id,kind:state==='RIDER_ASSIGNED'?'pickup':'dropoff',latitude:5.6,longitude:-0.18,state,amount_minor:1728,commission_minor:225,payment_method:'MOMO',description:'Documents',pickup:P,destination:D,recipient_phone:'+233249876543',weightG:1000}]});
+async function run(app,name,me,api,steps,vp={width:360,height:740}){
+ const b=await run.browser.newContext({viewport:vp,deviceScaleFactor:1});const page=await b.newPage();const errs=[];
+ page.on('pageerror',e=>errs.push(e.message.slice(0,160)));
+ await page.route('**/*',r=>{const u=new URL(r.request().url());if(u.hostname==='ui.test')return r.fulfill({contentType:'text/html',body:`<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><style>html,body,#root{height:100%;margin:0}#root{display:flex}</style><div id=root></div><script src="/${app}.js"></script>`.replace('/'+app+'.js','/b.js')}) .catch(()=>{});return null;}).catch(()=>{});
+ await page.unroute('**/*');
+ await page.route('**/*',r=>{const u=new URL(r.request().url());
+  if(u.pathname==='/')return r.fulfill({contentType:'text/html',body:`<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><style>html,body,#root{height:100%;margin:0}#root{display:flex;flex-direction:column}</style><div id=root></div><script src="/b.js"></script>`});
+  if(u.pathname==='/b.js')return r.fulfill({contentType:'text/javascript',body:fs.readFileSync(`/tmp/ui/${app}.js`)});
+  if(u.pathname.startsWith('/api/v1/me')&&u.pathname==='/api/v1/me')return me?r.fulfill({json:me}):r.fulfill({status:401,json:{error:'x'}});
+  const data=api[u.pathname];if(data!==undefined)return r.fulfill({json:data,headers:{'access-control-allow-origin':'*'}});
+  return r.fulfill({json:u.pathname.endsWith('s')?[]:{},headers:{'access-control-allow-origin':'*'}});});
+ if(me)await page.addInitScript(()=>localStorage.setItem('elesend.session','x'));
+ await page.goto('http://ui.test/');await page.waitForTimeout(900);
+ await page.screenshot({path:`/tmp/screens/${name}.png`,fullPage:false});
+ for(const [label,click,full] of steps){try{if(click){await page.getByText(click,{exact:false}).first().click({timeout:2500});await page.waitForTimeout(450);}await page.screenshot({path:`/tmp/screens/${name}-${label}.png`,fullPage:!!full});
+   const m=await page.evaluate(()=>({over:document.documentElement.scrollWidth>innerWidth,small:[...document.querySelectorAll('[role=button],button,a')].filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&(r.height<40)}).length}));console.log(name,label,JSON.stringify(m));}catch(e){console.log(name,label,'FAILED',String(e.message).slice(0,110));}}
+ if(errs.length)console.log(name,'errors',[...new Set(errs)].slice(0,4));
+ await b.close();
+}
+(async()=>{run.browser=await chromium.launch();
+ const cu={id:'c',kind:'customer',phone:'+233241234567'};
+ await run('customer','c-signin',null,base,[['signup','Create']]);
+ await run('customer','c-home',cu,{...base,'/api/v1/shipments':[ship('RIDER_ASSIGNED'),ship('COMPLETED',{n:2})],'/api/v1/food-orders':[]},[['send','Send'],['food','Food'],['activity','Activity'],['profile','Profile']]);
+ const ru={id:'r',kind:'rider',phone:'+233241234567'};
+ await run('rider','r-signin',null,riderBase,[['signup','Register here'],['company','A company']]);
+ await run('rider','r-pending',{...ru,awaitingApproval:true},riderBase,[['docs','Licence & Documents']]);
+ await run('rider','r-offer',ru,{...riderBase,'/api/v1/rider/offers':[offer],'/api/v1/rider/manifest':{optedIn:false,shipments:[],stops:[]}},[['earnings','Earnings']]);
+ await run('rider','r-job',ru,{...riderBase,'/api/v1/rider/manifest':manifestOf('RIDER_ASSIGNED')},[['manifest','Manifest']]);
+ await run('rider','r-drop',ru,{...riderBase,'/api/v1/rider/manifest':manifestOf('IN_TRANSIT')},[['manifest','Manifest']]);
+ await run('rider','co-home',{id:'o',kind:'company',phone:'+233241234567'},{...riderBase,'/api/v1/company/profile':{id:'c1',name:'Volta Logistics',status:'approved',services:['riders','delivery'],riders:{total:3,online:2},balance:{debtMinor:1200,debtLimitMinor:50000,unpaidEarningsMinor:45000,nextPayoutMinor:43800}},'/api/v1/company/riders':[{id:'r1',phone:'+233241234567',vehicle:'motorcycle',online:true,completed_jobs:12}]},[]);
+ await run.browser.close();
+})();

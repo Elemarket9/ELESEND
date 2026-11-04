@@ -1,0 +1,18 @@
+name: UI screens
+on:
+  push:
+    branches: ['audit/ui','fix/ui-ux']
+permissions:
+  contents: read
+jobs:
+  screens:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: {node-version: '22'}
+      - run: bash scripts/ui/run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: screens, path: /tmp/screens}
