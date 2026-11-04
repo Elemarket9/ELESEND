@@ -27,7 +27,7 @@ pre{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow-x:a
 <main id="app"></main>
 <script>
 const app=document.getElementById('app');let token=null;try{token=localStorage.getItem('elesend_company_token');}catch{}
-let profile=null,tab='overview',authMode='in',challenge=null;
+let profile=null,tab='overview',challenge=null;
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ghc=m=>'GH₵'+(Number(m||0)/100).toFixed(2);
 const when=v=>v?new Date(v).toLocaleString():'';
@@ -47,23 +47,13 @@ const show=(id,msg,ok)=>{const e=document.getElementById(id);if(e){e.className=o
 function guard(fn,msgId){return async(...a)=>{try{await fn(...a);}catch(e){if(msgId)show(msgId,e.message);else alert(e.message);}};}
 
 function renderAuth(){
- const up=authMode==='up';
- app.innerHTML=`<div class="auth card"><h2>${up?'Register your company':'Sign in'}</h2>
- <form id="f">${up?field('name','Company name','text','required minlength="2" maxlength="160" autocomplete="organization"'):''}
- ${field('phone','Phone number','tel','required autocomplete="tel" placeholder="024 123 4567"')}
- ${field('password','Password','password',`required ${up?'minlength="12"':''} autocomplete="${up?'new-password':'current-password'}"`)}
- ${up?`<label>What will you use ELESEND for?</label>
- <label class="check"><input type="checkbox" id="svcD" checked><span><b>Send our deliveries</b><br><span class="muted">Book deliveries here or connect your own system by API.</span></span></label>
- <label class="check"><input type="checkbox" id="svcR"><span><b>Provide riders</b><br><span class="muted">Your riders take ELESEND jobs and their earnings are paid to your company.</span></span></label>`:''}
- <div class="error" id="m"></div><button>${up?'Register':'Sign in'}</button></form>
- <p class="muted"><a href="#" id="sw">${up?'Already registered? Sign in':'New company? Register'}</a></p></div>`;
- document.getElementById('sw').onclick=e=>{e.preventDefault();authMode=up?'in':'up';render();};
+ app.innerHTML=`<div class="auth card"><h2>Sign in</h2>
+ <form id="f">${field('phone','Phone number','tel','required autocomplete="tel" placeholder="024 123 4567"')}
+ ${field('password','Password','password','required autocomplete="current-password"')}
+ <div class="error" id="m"></div><button>Sign in</button></form>
+ <p class="muted">New company? Register in the ELESEND Rider app, then sign in here with the same details.</p></div>`;
  document.getElementById('f').onsubmit=guard(async e=>{e.preventDefault();
-  const phone=val('phone'),password=document.getElementById('password').value;
-  if(up){const services=[document.getElementById('svcD').checked&&'delivery',document.getElementById('svcR').checked&&'riders'].filter(Boolean);
-   if(!services.length)throw new Error('Choose at least one service');
-   await api('/api/v1/auth/register','POST',{kind:'company',name:val('name'),phone,password,services});}
-  const r=await api('/api/v1/auth/login','POST',{phone,password});
+  const r=await api('/api/v1/auth/login','POST',{phone:val('phone'),password:document.getElementById('password').value});
   if(r.user.kind!=='company')throw new Error('This account is not a company account. Please use the matching ELESEND app.');
   save(r.token);await start();
  },'m');

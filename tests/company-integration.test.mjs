@@ -129,3 +129,15 @@ test('company works through approval, API access, riders and status updates',{sk
   }
  }finally{await db.close();}
 });
+
+test('companies register in the Rider app and manage riders there',()=>{
+ const rider=readFileSync(new URL('../apps/mobile/src/rider/RiderApp.js',import.meta.url),'utf8');
+ assert.match(rider,/kind: 'company', name: credentials\.name\.trim\(\), services/);
+ assert.match(rider,/user\.kind !== 'rider' && user\.kind !== 'company'/);
+ assert.match(rider,/auth\?\.kind === 'company'/);
+ const html=renderCompanyPortalHtml();
+ assert.ok(html.includes('Register in the ELESEND Rider app'));
+ assert.ok(!html.includes('/api/v1/auth/register'),'the portal does not register companies');
+ const customer=readFileSync(new URL('../apps/mobile/src/customer/CustomerApp.js',import.meta.url),'utf8');
+ assert.ok(!customer.includes("kind: 'company'"));
+});
