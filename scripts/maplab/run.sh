@@ -2,11 +2,7 @@
 set +e
 R=$PWD; D=$HOME/ghana-map-data; O=/tmp/out; mkdir -p $O $D; exec > >(tee $O/log.txt) 2>&1
 IMG=ghcr.io/project-osrm/osrm-backend:v26.4.0
-# 1. lockfile for new native packages, and offline API check
-(cd apps/mobile && npm install --package-lock-only --ignore-scripts --no-audit --no-fund 2>&1 | tail -3; git diff --stat package-lock.json | tail -1; cp package-lock.json $O/mobile-package-lock.json; npm view expo-speech@14 version 2>/dev/null | tail -1; npm view expo-keep-awake@15 version 2>/dev/null | tail -1)
-(npm install --no-audit --no-fund --ignore-scripts >/dev/null 2>&1; echo root-deps $?)
-mkdir -p /tmp/ml && cd /tmp/ml && npm pack --silent @maplibre/maplibre-react-native@10.4.2 >/dev/null && tar xzf *.tgz && grep -n "OfflineManager\b" package/src/MLNModule.ts package/src/*.ts* 2>/dev/null | head -5; F=$(find package/src -name "OfflineManager.ts"); sed -n 1,5p "$F" >/dev/null; grep -nE "createPack|getPack|deletePack|bounds|styleURL|percentage" "$F" $(find package/src -name "OfflineCreatePackOptions.ts") $(find package/src -name "OfflinePack.ts") | head -24 | cut -c1-130
-cd $R
+npm ci --ignore-scripts --no-audit --no-fund >/dev/null 2>&1
 sh scripts/download-ghana.sh $D >/dev/null; docker pull -q $IMG
 # 2. rider roads: base graph, then a made-up test road off the end of a real one
 sh scripts/prepare-ghana-osrm.sh $D 2>&1 | tail -1
@@ -30,4 +26,4 @@ curl -s "http://127.0.0.1:5001/route/v1/driving/-0.1825,5.5560;$END?overview=fal
 curl -s "http://127.0.0.1:5000/route/v1/driving/-0.1825,5.5560;$END?overview=false" | python3 -c "import json,sys;r=json.load(sys.stdin);print('car (should stop short)',r['code'],r['waypoints'][1]['distance'] if r.get('waypoints') else '')"
 # 3. real adapter: traffic flow against the real graph
 node scripts/maplab/traffic.mjs
-# 4. nearest node test of voice wording on a real route
+node scripts/maplab/routes.mjs 2>&1 | head -8
