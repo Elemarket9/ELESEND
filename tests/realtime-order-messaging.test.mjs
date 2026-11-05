@@ -16,7 +16,7 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
   try {
     await migrate(root);
 
-    async function fixture(fn) {
+    const fixture = fn => async () => {
       const c = await root.pool.connect();
       await c.query('BEGIN');
       let savepoint = 0;
@@ -148,7 +148,7 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
         await c.query('ROLLBACK');
         c.release();
       }
-    }
+    };
 
     await t.test('1. Strict participant authorization & IDOR protection across all 4 conversation categories', () =>
       fixture(async ({ c, chat, order, customer, intruderCustomer, kitchenA, kitchenB, rider1, rider2 }) => {
