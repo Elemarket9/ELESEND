@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
-O=/tmp/out; mkdir -p $O; exec > >(tee $O/log.txt) 2>&1
-cd apps/mobile; npm install --package-lock-only --ignore-scripts --no-audit --no-fund 2>&1 | tail -2; cp package-lock.json $O/mobile-package-lock.json; npm view expo-audio versions --json | tail -5; npm view expo@~54.0.0 version | tail -1
-mkdir -p /tmp/a && cd /tmp/a && npm pack --silent expo-audio@1.1.1 expo-file-system@19 >/dev/null; for f in *.tgz; do mkdir -p x-$f; tar xzf $f -C x-$f; done; ls; ls x-expo-file-system*/package/ | head -20; ls x-expo-file-system*/package/build/legacy 2>/dev/null | head -3; grep -n "export" x-expo-audio*/package/src/index.ts | head; grep -n "useAudioRecorder\|useAudioPlayerStatus\|requestRecordingPermissionsAsync\|export function setAudioModeAsync\|export async function setAudioModeAsync\|export function useAudioPlayer" x-expo-audio*/package/src/*.ts | cut -c1-140 | head; grep -n "headers" x-expo-audio*/package/src/Audio.types.ts | head -3; grep -n "outputFormat\|audioEncoder\|audioQuality\|'aac" x-expo-audio*/package/src/RecordingConstants.ts | head -10 | cut -c1-120;grep -n "AudioMode =" -A12 x-expo-audio*/package/src/Audio.types.ts | grep -n "allowsRecording\|playsInSilent" 
+R=$PWD; O=/tmp/out; mkdir -p $O; exec > >(tee $O/log.txt) 2>&1
+npm install --package-lock-only --ignore-scripts --no-audit --no-fund 2>&1 | tail -2; cp package-lock.json $O/package-lock.json; npm view geotiff version; npm view proj4 version
+npm ci --ignore-scripts --no-audit --no-fund 2>&1 | tail -1
+echo SCAN; node scripts/maplab/scan.mjs
+echo REFRESH1; export GHANA_MAP_DATA=$HOME/live MAP_REFRESH_NO_RESTART=1 ELESEND_ENV_FILE=/dev/null MAP_REFRESH_ROADS_FILE=/tmp/none.osm MAP_REFRESH_MIN_FREE_GB=4
+echo '<osm></osm>' > /tmp/none.osm
+docker pull -q ghcr.io/project-osrm/osrm-backend:v26.4.0 >/dev/null
+bash deploy/runtime/refresh-map.sh 2>&1 | tail -5; echo exit=$?; ls -la $HOME/live | head -8 | cut -c24-; du -sh $HOME/live
+echo FAILCASE; MAP_REFRESH_SMOKE_TO=-1.6240,70.0 MAP_REFRESH_SMOKE_FROM=-1.6240,71.0 bash deploy/runtime/refresh-map.sh 2>&1 | tail -3; echo "exit=${PIPESTATUS[0]}"; ls $HOME/ | tr '\n' ' '; test -e $HOME/live/ghana.mbtiles && echo live-intact; test -e $HOME/live.next && echo NEXT-LEFT
