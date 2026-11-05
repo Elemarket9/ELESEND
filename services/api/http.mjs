@@ -4,6 +4,8 @@ import {trafficRouting,trafficService} from './traffic.mjs';
 import {privateMapStyle} from '../../apps/mobile/src/maps/private-map-style.mjs';
 import {settlementIntentForRider} from './modules/payments/index.mjs';
 import {publicMapConfig} from './map-config.mjs';
+import {baselineFactorFor} from './eta/baseline-factors.mjs';
+import {cityBucket,timeBucket} from './eta/stage-eta.mjs';
 import {saveTrustedContact,getTrustedContact,raiseEmergency,listSafetyAlerts,resolveSafetyAlert,createShareLink,rateDelivery,myRating,pendingRatings} from './safety.mjs';
 import {riderEarningsGoals,setEarningsGoals,demandAreas,referralSummary,applyReferralCode,riderCampaigns,createRewardCampaign} from './rider-tools.mjs';
 import {createDocumentUploadLink,uploadRiderDocument,riderDocumentStatus,rejectRiderDocument,viewRiderDocument,attachDocumentStatuses,renderDocumentUploadPage} from './rider-documents.mjs';
@@ -502,7 +504,11 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    const to={latitude:Number(stop?.latitude),longitude:Number(stop?.longitude)};
    check(Number.isFinite(to.latitude)&&Number.isFinite(to.longitude),422,'This stop has no confirmed location');
    check(typeof app?.routing?.route==='function',503,'Directions are not available right now');
-   result=await trafficRoutes.route(from,to,{vehicle:job.request?.vehicle||'motorcycle',steps:true,traffic:true});
+   const vehicle=job.request?.vehicle||'motorcycle',heading=Number(body.heading);
+   // The rider sees the same trip time as the customer, and congestion is counted once.
+   const factor=baselineFactorFor(etaBaselineFactors,vehicle,timeBucket(new Date()),cityBucket(from));
+   const leg=await trafficRoutes.route(from,to,{vehicle,steps:true,traffic:factor===1,...(Number.isFinite(heading)?{bearing:heading}:{})});
+   result={...leg,durationSeconds:Math.round(leg.durationSeconds*factor)};
   }
   else if(method==='GET'&&path==='/api/v1/rider/manifest'){check(dispatcher,503);result=await dispatcher.manifest(actor);}
   else if(method==='POST'&&path==='/api/v1/rider/multi-stop'){check(dispatcher,503);result=await dispatcher.optIn(actor,body);}

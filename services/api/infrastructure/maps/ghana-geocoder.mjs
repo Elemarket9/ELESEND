@@ -94,7 +94,8 @@ const ABBREVIATIONS = {
   akyem: 'akim',
   coomassie: 'kumasi',
   oguaa: 'cape coast',
-  khaf: 'kaaf'
+  khaf: 'kaaf',
+  bolga: 'bolgatanga',
 };
 
 const STOP_WORDS = new Set([
@@ -222,6 +223,8 @@ const GENERIC_CATEGORY_WORDS = new Set([
   'junction', 'complex', 'service', 'services', 'police', 'post', 'office', 'shs', 
   'jhs', 'presby', 'methodist', 'catholic', 'international', 'general', 'district', 'municipal'
 ]);
+
+const DUPLICATE_METERS = 250, REVERSE_MAX_METERS = 10000;
 
 // Bounded LRU Cache for geocoding queries (1,000 queries)
 const QUERY_CACHE = new Map();
@@ -476,6 +479,11 @@ export function ghanaSearch(query, {limit = 10, db = null} = {}) {
       score += 25;
     }
 
+    // A well-known town name means the town, not a small place elsewhere that shares it.
+    if (place._cityLower === expandedQuery && (place.popularity || 0) >= 70 && place._nameLower.startsWith(expandedQuery)) {
+      score += 300;
+    }
+
     // F. POPULARITY & VERIFIED STATUS TIE-BREAKER (Max 35 pts)
     score += (place.popularity || 50) * 0.25;
     if (place.verification_status === 'business_verified') {
@@ -485,12 +493,21 @@ export function ghanaSearch(query, {limit = 10, db = null} = {}) {
       score += 10;
     }
 
-    scored.push({place, score});
+    scored.push({place, score, exact: terms.length >= 2 && place._nameLower === cleanLower});
   }
 
-  scored.sort((a, b) => b.score - a.score);
+  // The exact name of a multi-word place comes first, whatever its context scores.
+  scored.sort((a, b) => (b.exact - a.exact) || (b.score - a.score));
 
-  const results = scored.slice(0, Math.max(1, Math.min(limit, 30))).map(({place, score}) => ({
+  // The same place listed twice shows once.
+  const wanted = Math.max(1, Math.min(limit, 30)), distinct = [];
+  for (const row of scored) {
+    if (distinct.length >= wanted) break;
+    const repeat = distinct.some(kept => kept.place._nameLower === row.place._nameLower && haversine(kept.place, row.place) <= DUPLICATE_METERS);
+    if (!repeat) distinct.push(row);
+  }
+
+  const results = distinct.map(({place, score}) => ({
     id: place.id,
     name: place.name,
     label: `${place.locality || place.region}, ${place.city || place.region}`,
@@ -562,7 +579,8 @@ export function ghanaReverseGeocode(lat, lon) {
     }
   }
 
-  if (!closest) {
+  // A place this far away describes nothing useful, so the pin is reported as it is.
+  if (!closest || minDist > REVERSE_MAX_METERS) {
     return {address: `Ghana (${lat.toFixed(5)}, ${lon.toFixed(5)})`, latitude: lat, longitude: lon};
   }
 

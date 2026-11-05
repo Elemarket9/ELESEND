@@ -6,10 +6,13 @@ import { useKeepAwake } from 'expo-keep-awake';
 import { call } from '../api';
 import { colors, radii } from '../theme';
 import MapView, { Marker, Polyline, RiderMarker, openTurnByTurnNavigation } from '../maps/map-adapter';
-import { ARRIVED_METERS, formatDistance, formatDuration, locateOnRoute, rerouteCheck, stepArrow, upcomingStep, voicePrompt } from './navigation-logic.mjs';
+import { OFF_ROUTE_METERS, formatDistance, formatDuration, hasArrived, locateOnRoute, rerouteCheck, stepArrow, upcomingStep, usableFix, voicePrompt } from './navigation-logic.mjs';
 
 const FOLLOW_ZOOM = 16.5;
 const ROUTE_RETRY_MS = 15000;
+// Keeps a route if this screen is closed and reopened without a connection. Lost if the app is killed.
+const savedRoutes = new Map();
+const SAVED_ROUTE_MS = 2 * 3600000;
 
 /** Turn-by-turn directions on our own map, from our own routing server. */
 export default function RiderNavigation({ shipmentId, target, label, onClose }) {
@@ -17,22 +20,28 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
   const [muted, setMuted] = useState(false);
   const voice = useRef({});
   const map = useRef(null);
-  const [route, setRoute] = useState(null);
+  const routeKey = `${shipmentId}:${target.latitude},${target.longitude}`;
+  const saved = savedRoutes.get(routeKey);
+  const [route, setRoute] = useState(saved && Date.now() - saved.at < SAVED_ROUTE_MS ? saved.route : null);
+  const progress = useRef(null);
   const [position, setPosition] = useState(null);
   const [failed, setFailed] = useState('');
   const [rerouting, setRerouting] = useState(false);
   const [following, setFollowing] = useState(true);
   const reroute = useRef({});
+  const lastFix = useRef(null);
   const busy = useRef(false);
-  const haveRoute = useRef(false);
+  const haveRoute = useRef(Boolean(route));
 
   const fetchRoute = async from => {
     if (busy.current) return;
     busy.current = true;
     try {
-      const next = await call('POST', '/api/v1/rider/navigation', { shipmentId, latitude: from.latitude, longitude: from.longitude });
+      const next = await call('POST', '/api/v1/rider/navigation', { shipmentId, latitude: from.latitude, longitude: from.longitude, ...(Number.isFinite(from.heading) ? { heading: from.heading } : {}) });
       haveRoute.current = true;
       voice.current = {};
+      progress.current = null;
+      savedRoutes.set(routeKey, { route: next, at: Date.now() });
       setRoute(next);
       setFailed('');
     } catch (e) {
@@ -54,7 +63,9 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
           { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 2000, distanceInterval: 5 },
           fix => {
             if (!active) return;
-            const here = { latitude: fix.coords.latitude, longitude: fix.coords.longitude, heading: fix.coords.heading, accuracy: fix.coords.accuracy };
+            const here = usableFix(lastFix.current, fix);
+            if (!here) return;
+            lastFix.current = here;
             setPosition(here);
             // Keep trying until the first route arrives, in case the first request failed.
             if (!haveRoute.current && Date.now() - lastAsk >= ROUTE_RETRY_MS) { lastAsk = Date.now(); fetchRoute(here); }
@@ -69,9 +80,13 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
   }, [shipmentId]);
 
   const points = useMemo(() => (route?.geometry?.coordinates || []).map(([longitude, latitude]) => ({ latitude, longitude })), [route]);
-  const place = useMemo(() => locateOnRoute(position, points), [position, points]);
+  const place = useMemo(() => {
+    const found = locateOnRoute(position, points, { after: progress.current });
+    if (found && found.offRouteMeters <= OFF_ROUTE_METERS) progress.current = found.traveledMeters;
+    return found;
+  }, [position, points]);
   const next = place ? upcomingStep(route.steps, place.traveledMeters) : null;
-  const arrived = place && place.remainingMeters <= ARRIVED_METERS;
+  const arrived = hasArrived(place);
   const secondsLeft = place && route?.distanceMeters ? route.durationSeconds * (place.remainingMeters / route.distanceMeters) : route?.durationSeconds;
 
   useEffect(() => {
@@ -87,9 +102,10 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
 
   useEffect(() => {
     if (!next) return;
-    const prompt = voicePrompt(voice.current, { index: next.index, metersToStep: next.metersToStep, step: next.step });
+    const prompt = voicePrompt(voice.current, { index: next.index, metersToStep: next.metersToStep, step: next.step, speed: position?.speed });
     voice.current = prompt.state;
-    if (prompt.say && !muted) Speech.speak(prompt.say, { language: 'en' });
+    // A newer instruction replaces an unfinished one, so nothing is spoken late.
+    if (prompt.say && !muted) { Speech.stop(); Speech.speak(prompt.say, { language: 'en' }); }
   }, [next?.index, next?.metersToStep, muted]);
   useEffect(() => () => { Speech.stop(); }, []);
 
@@ -129,6 +145,7 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
             </View>
           )}
           {rerouting && <Text style={styles.rerouting}>Finding a new route</Text>}
+          {!rerouting && failed && next && <Text style={styles.rerouting}>No new route yet. Showing the last one.</Text>}
         </View>
 
         {!following && (

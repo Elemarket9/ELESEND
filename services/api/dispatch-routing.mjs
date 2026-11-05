@@ -7,7 +7,7 @@ export function stepInstruction({maneuver:m={},name,ref}={},last=false){
  const road=name||ref||'',onto=road?` onto ${road}`:'';
  if(m.type==='arrive'||last)return 'You have arrived';
  if(m.type==='depart')return road?`Head out on ${road}`:'Head out';
- if(m.type==='roundabout'||m.type==='rotary')return `At the roundabout, take exit ${m.exit||1}${onto}`;
+ if(m.type==='roundabout'||m.type==='rotary')return m.exit?`At the roundabout, take exit ${m.exit}${onto}`:`Enter the roundabout${onto}`;
  if(m.type==='exit roundabout'||m.type==='exit rotary')return `Leave the roundabout${onto}`;
  if(m.type==='merge')return `Merge${onto}`;
  const turn=ROAD_TURNS[m.modifier]||'Continue';
@@ -67,8 +67,12 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,m
  }
  function normalize(distance,duration){check(Number.isFinite(distance)&&distance>=0&&distance<=10000000&&Number.isFinite(duration)&&duration>=0&&duration<=604800,503,'Invalid road estimate');return {distanceMeters:Math.ceil(distance),durationSeconds:Math.ceil(duration),source:'routing-provider',trafficAware:false};}
  return {
-  async route(from,to,{vehicle='car',steps=false,annotations=false,alternatives=false,billing=false}={}){
-   const p=profile(vehicle),body=await request(`/route/v1/${p}/${coords(from)};${coords(to)}?overview=full&geometries=geojson&steps=${steps?'true':'false'}${annotations?'&annotations=nodes,distance,duration':''}${alternatives?'&alternatives=true':''}`,vehicle);
+  async route(from,to,{vehicle='car',steps=false,annotations=false,alternatives=false,billing=false,bearing=null}={}){
+   const p=profile(vehicle);
+   const path=hint=>`/route/v1/${p}/${coords(from)};${coords(to)}?${hint}overview=full&geometries=geojson&steps=${steps?'true':'false'}${annotations?'&annotations=nodes,distance,duration':''}${alternatives?'&alternatives=true':''}`;
+   // Starts in the rider's direction of travel, so a reroute does not begin with a needless U-turn.
+   const hint=Number.isFinite(bearing)&&bearing>=0&&bearing<360?`bearings=${Math.round(bearing)%360},60;&`:'';
+   const body=await request(path(hint),vehicle).catch(e=>{if(!hint)throw e;return request(path(''),vehicle);});
    check(body.routes?.length&&body.routes[0].geometry,503,'No connected road route');
    // A fare pays for the road between the pins, so a pin far from the road would ride unbilled.
    if(billing)validateWaypoints(body.waypoints,billingSnapMeters,'This pin is too far from a mapped road. Move it closer to the road.');
