@@ -1,0 +1,211 @@
+spatial_landmarks rows in a fresh database: 0
+Payment methods [{"method":"CASH","enabled":true},{"method":"MOMO","enabled":true},{"method":"CARD","enabled":true},{"method":"QR","enabled":true}]
+Prices [{"vehicle":"motorcycle","base_minor":1200,"per_km_minor":320,"per_minute_minor":25,"minimum_minor":2000,"commission_bps":1300},{"vehicle":"car","base_minor":2200,"per_km_minor":500,"per_minute_minor":60,"minimum_minor":3500,"commission_bps":1300},{"vehicle":"van","base_minor":5500,"per_km_minor":850,"per_minute_minor":110,"minimum_minor":7500,"commission_bps":1300},{"vehicle":null,"base_minor":2000,"per_km_minor":150,"per_minute_minor":0,"minimum_minor":0,"commission_bps":1300}]
+
+== 1. Mock GPS
+Random point 5.53561 -0.43690 on road: 5.535431 -0.436942 "" 21m away
+Reverse geocode: {"address":"~251m from Mighty Chapel International, Kasoa, Kasoa","nearestPlace":"Mighty Chapel International","locality":"Kasoa","city":"Kasoa","region":"Central","distanceMeters":251,"latitude":5.535431,"longitude":-0.436942} 20ms
+
+== 2. Search
+"Kasoa Nyinyano" app-search 200 28ms -> [
+  'Nyanyano Post Office [Kasoa] ',
+  'Nyanyano Kakraba [Kasoa] ',
+  'Kasoa [Kasoa] ',
+  'Kasoa [Kasoa] '
+]
+   gazetteer 200 9ms -> [
+  'Nyanyano Post Office [Kasoa]',
+  'Nyanyano Kakraba [Kasoa]',
+  'Kasoa [Kasoa]',
+  'Kasoa [Kasoa]'
+]
+"Nyinyano" app-search 200 18ms -> [
+  'Nyanyano Kakraba JHS [Central] ',
+  'Nyanyano Post Office [Kasoa] ',
+  'Nyanyano Kakraba [Kasoa] ',
+  'Nyanyano [Central] '
+]
+   gazetteer 200 16ms -> [
+  'Nyanyano [Central]',
+  'Nyanyanu [Central]',
+  'Nyanyano Kakraba JHS [Central]',
+  'Nyanyano Post Office [Kasoa]'
+]
+"Nyanyano" app-search 200 18ms -> [
+  'Nyanyano Kakraba JHS [Central] ',
+  'Nyanyano Post Office [Kasoa] ',
+  'Nyanyano Kakraba [Kasoa] ',
+  'Nyanyano [Central] '
+]
+   gazetteer 200 16ms -> [
+  'Nyanyanu [Central]',
+  'Nyanyano [Central]',
+  'Nyanyano Kakraba JHS [Central]',
+  'Nyanyano Post Office [Kasoa]'
+]
+"Kasoa Nyanyano" app-search 200 20ms -> [
+  'Nyanyano Post Office [Kasoa] ',
+  'Nyanyano Kakraba [Kasoa] ',
+  'Kasoa [Kasoa] ',
+  'Kasoa [Kasoa] '
+]
+   gazetteer 200 16ms -> [
+  'Nyanyano Post Office [Kasoa]',
+  'Nyanyano Kakraba [Kasoa]',
+  'Kasoa [Kasoa]',
+  'Kasoa [Kasoa]'
+]
+"Nyanyano Kasoa" app-search 200 18ms -> [
+  'Nyanyano Post Office [Kasoa] ',
+  'Nyanyano Kakraba [Kasoa] ',
+  'Kasoa [Kasoa] ',
+  'Kasoa [Kasoa] '
+]
+   gazetteer 200 18ms -> [
+  'Nyanyano Post Office [Kasoa]',
+  'Nyanyano Kakraba [Kasoa]',
+  'Kasoa [Kasoa]',
+  'Kasoa [Kasoa]'
+]
+"Kasoa" app-search 200 19ms -> [
+  'Kasoa [Kasoa] ',
+  'Kasoa [Kasoa] ',
+  'Kasoa [Kasoa] ',
+  'Kasoa [Kasoa] '
+]
+   gazetteer 200 17ms -> [ 'Kasoa [Kasoa]', 'Kasoa [Kasoa]', 'Kasoa [Kasoa]', 'Kasoa [Kasoa]' ]
+"Airport" app-search 200 18ms -> [
+  'Airport [Accra] ',
+  'Airport Residential Area [Airport] ',
+  'Kotoka International Airport (Terminal 3) [Airport] ',
+  'Airport Side Hotel [Greater Accra] '
+]
+   gazetteer 200 17ms -> [
+  'Airport [Accra]',
+  'Airport Residential Area [Airport]',
+  'Kotoka International Airport (Terminal 3) [Airport]',
+  'Airport Side Hotel [Greater Accra]'
+]
+"Kotoka" app-search 200 20ms -> [
+  'Kotoka International Airport (Terminal 3) [Airport] ',
+  'Kotoka International Airport [Accra] ',
+  'Kotoko [Kumasi] ',
+  'Kotwia [Ashanti] '
+]
+   gazetteer 200 17ms -> [
+  'Kotoko [Kumasi]',
+  'Kotoka International Airport (Terminal 3) [Airport]',
+  'Kotoka International Airport [Accra]',
+  'Kotwia [Ashanti]'
+]
+"Kotoka Airport" app-search 200 20ms -> [
+  'Kotoka International Airport (Terminal 3) [Airport] ',
+  'Kotoka International Airport [Accra] ',
+  'Airport [Accra] ',
+  'Airport Residential Area [Airport] '
+]
+   gazetteer 200 18ms -> [
+  'Kotoka International Airport (Terminal 3) [Airport]',
+  'Kotoka International Airport [Accra]',
+  'Airport [Accra]',
+  'Airport Residential Area [Airport]'
+]
+"Accra airport" app-search 200 15ms -> [
+  'Airport [Accra] ',
+  'Airport Residential Area [Airport] ',
+  'Kotoka International Airport (Terminal 3) [Airport] ',
+  'Airport Side Hotel [Greater Accra] '
+]
+   gazetteer 200 85ms -> [
+  'Airport [Accra]',
+  'Holiday Inn Accra Airport [Accra]',
+  'Bw Premier Accra Airport Hotel [Accra]',
+  'Best Western Permier Accra Airport [Accra]'
+]
+Delivery point used: {"address":"Kotoka International Airport (Terminal 3)","latitude":5.6052,"longitude":-0.1698}
+
+== 3. Routes
+motorcycle 35.3km 40min steps 23
+car 35.3km 41min steps 23
+
+== 4. Quote and order
+Quote 200 65ms {"id":"b347934f-1f92-4895-86de-5e39f49abb4e","amount_minor":18907,"expires_at":"2026-11-05T16:50:41.750Z","payment_method":"MOMO","currency":"GHS","vehicle":"motorcycle","pricingEvidence":{"policyId":"c56812fd-fb6d-40b7-a831-3be838f3e39f","vehicle":"motorcycle","routeVehicle":"motorcycle","distanceMeters":35325,"durationSeconds":2401,"source":"routing-provider","surgeBps":14000,"scheduledMultiplier":1.4,"surgeObservation":{"multiplierBps":10000,"reason":"disabled"},"quotedAt":"2026-11-05T16:35:41.749Z","minimumMinor":2000},"surgeMultiplier":1.4,"distanceMeters":35325,"distanceMethod":"provider road routing","travelSeconds":2401,"trafficAware":false,"availability":{"status":"none_identified","eligibleNearbyCount":0,"guaranteed":false,"note":"A nearby rider has not necessarily accepted. Road feasibility and rider acceptance remain unconfirmed."},"customer_id":"45116a65-a192-4ed5-b675-bf123dec9927"}
+Quote car 200 31220 
+Quote van 409 undefined This vehicle type is not available yet
+Cash quote 200 18907  rider gets undefined platform undefined keys id,amount_minor,expires_at,payment_method,currency,vehicle,pricingEvidence,surgeMultiplier,distanceMeters,distanceMethod,travelSeconds,trafficAware,availability,customer_id
+Shipment 200 AWAITING_ASSIGNMENT
+Rider online 200
+Rider GPS 200
+Offer reached rider: true {"offerId":"b291d0b2-0d1b-4b3b-8a3b-65801286790e","id":"216f311d-f891-42e5-a699-6a4af9f2a30c","expiresAt":"2026-11-05T16:36:15.718Z","pickupEtaSeconds":147,"pickupRoadMeters":1111,"distance_m":1111,"direction":"unknown","entitlement_minor":16449,"existingParcels":0,"estimatedDropoffSeconds":2548,"am
+Accept 200 {"ok":true,"shipmentId":"216f311d-f891-42e5-a699-6a4af9f2a30c","riderEarningsMinor":16449}
+
+== 5. Navigation to pickup, on real routes
+To pickup 200 12ms 1111 ""
+Pickup code 200 ""
+Verify pickup 200 undefined
+Start trip 200 IN_TRANSIT
+To airport 200 20ms 35.3km 39min
+  1. Head out (350 m)
+  2. Turn left (20 m)
+  3. Keep left onto Comfort Mensah Road (960 m)
+  4. Turn right onto Bawjiase Road (210 m)
+  5. At the roundabout, take exit 3 onto Winneba Road (90 m)
+  6. Leave the roundabout onto Winneba Road (17 km)
+  7. Turn left (190 m)
+  8. Turn right (130 m)
+  9. Continue onto George Walker Bush Highway (540 m)
+  10. Merge onto George Walker Bush Highway (13 km)
+  11. Keep right onto Tetteh Quarshie Interchange (470 m)
+  12. Continue onto Tetteh Quarshie Interchange (90 m)
+  13. Merge onto Liberation Road (1.5 km)
+  14. Keep left onto Liberation Road (90 m)
+  15. Turn left onto Airport Road (220 m)
+  16. At the roundabout, take exit 2 onto Airport Road (40 m)
+  17. Leave the roundabout onto Airport Road (240 m)
+  18. At the roundabout, take exit 1 onto Airport Road (40 m)
+  19. Leave the roundabout onto Airport Road (100 m)
+  20. At the roundabout, take exit 1 (30 m)
+  21. Leave the roundabout (20 m)
+  22. Turn sharp left (20 m)
+  23. You have arrived (10 m)
+
+== 6. Riding it: GPS follows the route, then leaves it
+Voice prompts on the whole trip: 36
+  In 270 m, turn left
+  Keep left onto Comfort Mensah Road
+  In 260 m, turn right onto Bawjiase Road
+  Turn right onto Bawjiase Road
+  In 200 m, at the roundabout, take exit 3 onto Winneba Road
+  At the roundabout, take exit 3 onto Winneba Road
+  In 90 m, leave the roundabout onto Winneba Road
+  Leave the roundabout onto Winneba Road
+  In 230 m, turn left
+  Turn left
+  In 180 m, turn right
+  Turn right
+  In 120 m, continue onto George Walker Bush Highway
+  Continue onto George Walker Bush Highway
+Left the route by 134m
+  fix 1 reroute? false
+  fix 2 reroute? true
+  fix 3 reroute? false
+New route from there 200 26ms 19.9km first: Head out
+Customer tracking 200 {"latitude":5.5394309999999995,"longitude":-0.432942,"updated_at":"2026-11-05T16:35:45.644Z"}
+Customer eta 404 {"error":"Endpoint not found"}
+Customer 216f311d 200 {"id":"216f311d-f891-42e5-a699-6a4af9f2a30c","customer_id":"45116a65-a192-4ed5-b675-bf123dec9927","quote_id":"c319a303-863a-475c-8ef1-f692f42bd45f","idempotency_key":"k243518288","state":"IN_TRANSIT","rider_id":"75fb22a6-c2f2-4b4f-a47c-caca7051b038","company_id":null,"recipient_phone":"+233241268938","amount_minor":18907,"paid":false,"verification_authority":"elesend","completed_at":null,"created_at":"2026-11-05T16:35:41.868Z","next_dispatch_at":"2026-11-05T16:36:15.718Z","dispatch_attempts":1,"
+node:fs:621
+  return binding.open(
+                 ^
+
+Error: ENOENT: no such file or directory, open '/tmp/ui/rider.js'
+    at Object.openSync (node:fs:621:18)
+    at Object.readFileSync (node:fs:487:35)
+    at file:///home/runner/work/ELESEND/ELESEND/scripts/kasoa/journey.mjs:73:57
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/tmp/ui/rider.js'
+}
+
+Node.js v24.22.2
