@@ -1687,9 +1687,24 @@ export function renderAdminPortalHtml() {
           <div style="margin-bottom:8px; padding:8px; border-radius:6px; background:rgba(255,255,255,0.04);">
             <div style="font-size:11px; color:var(--primary); font-weight:700;">\${escapeHtml(m.senderRole.toUpperCase())} • \${escapeHtml(m.deliveryStatus)}</div>
             <div style="font-size:13px; margin-top:2px;">\${escapeHtml(m.body)}</div>
+            \${m.voiceNote ? (m.voiceNote.available ? \`<button class="action-btn" onclick="playSupportVoiceNote('\${escapeHtml(convId)}','\${escapeHtml(m.id)}',this)">Play voice note</button>\` : '<div style="font-size:12px; color:var(--text-muted);">Audio deleted</div>') : ''}
           </div>
         \`).join('') || '<div style="color:var(--text-muted);">No messages yet.</div>';
         document.getElementById('supportInspectorCard').style.display = 'block';
+      } catch (err) { alert(err.message); }
+    }
+
+    async function playSupportVoiceNote(convId, messageId, button) {
+      try {
+        const response = await fetch(\`/api/v1/chat/conversations/\${convId}/messages/\${messageId}/audio\`, {
+          headers: { 'Authorization': 'Bearer ' + token, 'X-Support-Justification': 'Support Queue Investigation' }
+        });
+        if (!response.ok) throw new Error('This voice note is no longer available');
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.src = URL.createObjectURL(await response.blob());
+        button.replaceWith(audio);
+        audio.play();
       } catch (err) { alert(err.message); }
     }
 

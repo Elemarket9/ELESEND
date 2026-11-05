@@ -414,6 +414,56 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
         assert.ok(adminRead.messages.length >= 2);
       })
     );
+
+    await t.test('5. Voice notes: order participants only, removed after their time unless reported',
+      fixture(async ({ c, chat, order, customer, intruderCustomer, kitchenA, rider1 }) => {
+        process.env.OTP_KEY ||= 'a'.repeat(64);
+        await c.query('UPDATE shipments SET rider_id = $1, state = $2 WHERE id = $3', [rider1.id, 'RIDER_ASSIGNED', order.shipment_id]);
+        const conv = await chat.openOrCreateConversation(customer, { conversationType: 'CUSTOMER_RIDER', shipmentId: order.shipment_id, foodOrderId: order.id });
+        const m4a = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypM4A '), Buffer.alloc(200, 7)]);
+        const send = (key, audio = m4a) => chat.sendVoiceNote(customer, conv.id, { clientMessageId: key, durationSeconds: 12, audioBase64: audio.toString('base64') });
+
+        const note = await send('voice-001');
+        assert.equal(note.messageType, 'voice_note');
+        assert.deepEqual(note.voiceNote, { durationSeconds: 12, available: true });
+        assert.equal((await send('voice-001')).duplicate, true, 'a retry does not duplicate it');
+        await assert.rejects(send('voice-bad', Buffer.alloc(100, 1)), /could not be read/);
+        await assert.rejects(chat.sendMessage(customer, conv.id, { clientMessageId: 'voice-fake', messageType: 'voice_note', body: 'x' }));
+
+        const stored = (await c.query('SELECT audio_encrypted FROM chat_voice_notes WHERE message_id = $1', [note.id])).rows[0];
+        assert.equal(stored.audio_encrypted.includes(m4a.toString('base64')), false, 'audio is encrypted');
+        assert.deepEqual(await chat.voiceNoteAudio(rider1, conv.id, note.id), m4a);
+        await assert.rejects(chat.voiceNoteAudio(intruderCustomer, conv.id, note.id));
+        const listed = (await chat.listMessages(rider1, conv.id)).messages.find(m => m.id === note.id);
+        assert.deepEqual(listed.voiceNote, { durationSeconds: 12, available: true });
+
+        // Not yet due: stays. Due: audio goes, the record stays.
+        assert.equal(await chat.purgeVoiceNotes(), 0);
+        const expiry = (await c.query('SELECT expires_at - created_at AS kept FROM chat_voice_notes WHERE message_id = $1', [note.id])).rows[0].kept;
+        assert.equal(expiry.hours ?? expiry.days * 24, 24);
+        await c.query("UPDATE chat_voice_notes SET expires_at = now() - interval '1 minute' WHERE message_id = $1", [note.id]);
+        assert.equal(await chat.purgeVoiceNotes(), 1);
+        await assert.rejects(chat.voiceNoteAudio(customer, conv.id, note.id), /no longer available/);
+        assert.equal((await chat.listMessages(customer, conv.id)).messages.find(m => m.id === note.id).voiceNote.available, false);
+        assert.equal((await c.query('SELECT duration_seconds FROM chat_voice_notes WHERE message_id = $1', [note.id])).rows[0].duration_seconds, 12);
+
+        // A report keeps audio past its normal time.
+        const reported = await send('voice-002');
+        await chat.reportAbuse(customer, conv.id, { messageId: reported.id, category: 'threats', details: 'Threatening voice note' });
+        await c.query("UPDATE chat_voice_notes SET expires_at = now() - interval '1 minute' WHERE message_id = $1", [reported.id]);
+        assert.equal(await chat.purgeVoiceNotes(), 0);
+        assert.deepEqual(await chat.voiceNoteAudio(customer, conv.id, reported.id), m4a);
+        await c.query("UPDATE chat_voice_notes SET held_until = now() - interval '1 minute' WHERE message_id = $1", [reported.id]);
+        assert.equal(await chat.purgeVoiceNotes(), 1);
+
+        // Delivered and past the two minutes: no more sending.
+        await c.query("UPDATE chat_conversations SET restricted_after = now() - interval '1 minute' WHERE id = $1", [conv.id]);
+        await assert.rejects(send('voice-003'));
+
+        const restaurantChat = await chat.openOrCreateConversation(kitchenA, { conversationType: 'CUSTOMER_RESTAURANT', foodOrderId: order.id });
+        await assert.rejects(chat.sendVoiceNote(kitchenA, restaurantChat.id, { clientMessageId: 'voice-004', durationSeconds: 3, audioBase64: m4a.toString('base64') }), /customers and couriers/);
+      })
+    );
   } finally {
     await root.close();
   }

@@ -105,7 +105,7 @@ export function etaService(db,{routing=null,baselineFactors={},routingLabel='osr
    }else roadSeconds=decision.remainingSeconds;
    if(toPickup&&!routeFailed&&pickupToDropoff===null&&pickup&&dropoff&&routing){
     try{
-     const leg=await routing.route(pickup,dropoff,{vehicle});
+     const leg=await routing.route(pickup,dropoff,{vehicle,traffic:true});
      if(leg?.source==='routing-provider'||leg?.source==='fixture'){
       pickupToDropoff=leg.durationSeconds;
       await db.query('UPDATE shipment_eta_state SET pickup_to_dropoff_seconds=$2 WHERE shipment_id=$1',[shipmentId,pickupToDropoff]);
