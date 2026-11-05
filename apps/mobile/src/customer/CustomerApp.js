@@ -46,6 +46,7 @@ import {
 import { normalizeGhanaPhone, isValidGhanaPhone, formatGhanaDisplayPhone } from '../phone';
 import { colors, typography, spacing, radii, shadows } from '../theme';
 import { customerStatus, paymentLabel } from '../status-labels';
+import { VoiceNoteBubble, VoiceNoteRecorder } from '../chat/VoiceNote';
 import {
   GHANA_REGIONS,
   GHANA_REGIONAL_TOWNS,
@@ -2954,9 +2955,11 @@ export default function CustomerApp() {
                   <Text style={{ fontSize: 10, fontWeight: '700', color: isMine ? '#94A3B8' : '#64748B', marginBottom: 2 }}>
                     {String(msg.senderRole || '').toUpperCase()} • #{msg.seq}
                   </Text>
+                  {msg.messageType === 'voice_note' ? <VoiceNoteBubble message={msg} color={isMine ? '#FFFFFF' : '#0F172A'} /> : (
                   <Text style={{ fontSize: 13, color: isMine ? '#FFFFFF' : '#0F172A' }}>
                     {msg.body || msg.bodyText || (msg.messageType === 'location_pin' ? `📍 Pin: ${msg.locationPin?.label || ''}` : '')}
                   </Text>
+                  )}
                   <Text style={{ fontSize: 10, color: isMine ? '#CBD5E1' : '#94A3B8', marginTop: 4, textAlign: 'right' }}>
                     {msg.deliveryStatus || 'SENT'}
                   </Text>
@@ -2999,6 +3002,13 @@ export default function CustomerApp() {
                 value={chatText}
                 onChangeText={setChatText}
               />
+              {activeConversation?.conversationType === 'CUSTOMER_RIDER' && (
+                <VoiceNoteRecorder
+                  conversationId={activeConversation.id}
+                  onSent={message => setChatMessages(prev => (prev.some(m => m.id === message.id) ? prev : [...prev, message]))}
+                  onError={text => Alert.alert('Voice note', text)}
+                />
+              )}
               <TouchableOpacity
                 style={{ backgroundColor: colors.brandCoral, paddingHorizontal: 16, paddingVertical: 11, borderRadius: 10 }}
                 onPress={() => sendCustomerChatMessage('text', chatText)}>

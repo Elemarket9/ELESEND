@@ -1,3 +1,5 @@
+import {hkdfSync} from 'node:crypto';
+import {seal,unseal} from './sealed-values.mjs';
 import {randomUUID, createHash} from 'node:crypto';
 import {envInt} from './env-values.mjs';
 import {z} from 'zod';
@@ -621,6 +623,23 @@ export function upgradeToChatWebSocket(req, socket, head, { actor, sessionToken 
   socket.on('error', cleanup);
   conn.send('connected', { userId: actor.id, role: actor.kind });
 }
+
+const VOICE_MAX_SECONDS = 60;
+const VOICE_MAX_BYTES = 400 * 1024;
+const voiceRetentionHours = () => envInt(process.env.CHAT_VOICE_RETENTION_HOURS, 24, 1);
+const voiceHoldDays = () => envInt(process.env.CHAT_VOICE_REPORT_HOLD_DAYS, 30, 1);
+const voiceContext = conversationId => `elesend:chat-voice:v1:${conversationId}`;
+function voiceKey() {
+  const root = (process.env.ADMIN_MFA_ENCRYPTION_KEY || process.env.OTP_KEY || '').trim();
+  check(/^[a-fA-F0-9]{64}$/.test(root), 503, 'Voice notes are not available right now');
+  return Buffer.from(hkdfSync('sha256', Buffer.from(root, 'hex'), Buffer.alloc(0), 'elesend:chat-voice:v1', 32));
+}
+/** A reported chat keeps its audio for review instead of being removed on the normal schedule. */
+const holdVoiceNotes = (c, conversationId) => c.query(
+  `UPDATE chat_voice_notes SET held_until = now() + make_interval(days => $2)
+   WHERE conversation_id = $1 AND audio_encrypted IS NOT NULL`,
+  [conversationId, voiceHoldDays()]
+);
 
 export function chatEngine(db, options = {}) {
   check(db && typeof db.query === 'function', 500, 'Database instance required for chatEngine');
@@ -1395,7 +1414,49 @@ export function chatEngine(db, options = {}) {
      * - OTP & Paid-Address safety guards (never triggers OTP or alters paid address)
      * - Push notification enqueueing for authorized recipients
      */
-    async sendMessage(actor, conversationId, input) {
+    async sendVoiceNote(actor, conversationId, input) {
+      check(actor && actor.id, 401, 'Authentication required');
+      const v = z.object({
+        clientMessageId: z.string().trim().min(4).max(120),
+        durationSeconds: z.number().int().min(1).max(VOICE_MAX_SECONDS),
+        audioBase64: z.string().min(16).max(Math.ceil(VOICE_MAX_BYTES * 4 / 3) + 4)
+      }).strict().parse(input);
+      const audio = Buffer.from(v.audioBase64, 'base64');
+      check(audio.length <= VOICE_MAX_BYTES, 413, 'This voice note is too long');
+      check(audio.subarray(4, 8).toString('latin1') === 'ftyp', 400, 'This recording could not be read');
+      return this.sendMessage(actor, conversationId, {
+        clientMessageId: v.clientMessageId,
+        body: `🎤 Voice note, ${v.durationSeconds} sec`
+      }, {
+        voiceNote: {
+          audioEncrypted: seal(voiceKey(), voiceContext(conversationId), audio),
+          byteSize: audio.length,
+          durationSeconds: v.durationSeconds
+        }
+      });
+    },
+
+    async voiceNoteAudio(actor, conversationId, messageId, { supportJustification = null } = {}) {
+      check(uuid.safeParse(messageId).success, 400, 'Invalid message ID');
+      const { conv } = await authorizeConversationAccess(db, actor, conversationId, { supportJustification });
+      const note = (await db.query(
+        'SELECT audio_encrypted FROM chat_voice_notes WHERE message_id = $1 AND conversation_id = $2',
+        [messageId, conv.id]
+      )).rows[0];
+      check(note?.audio_encrypted, 404, 'This voice note is no longer available');
+      return unseal(voiceKey(), voiceContext(conv.id), note.audio_encrypted);
+    },
+
+    /** Removes audio past its time, keeping the record that the note existed. */
+    async purgeVoiceNotes() {
+      const removed = await db.query(
+        `UPDATE chat_voice_notes SET audio_encrypted = NULL, audio_deleted_at = now()
+         WHERE audio_encrypted IS NOT NULL AND expires_at <= now() AND (held_until IS NULL OR held_until <= now())`
+      );
+      return removed.rowCount || 0;
+    },
+
+    async sendMessage(actor, conversationId, input, { voiceNote = null } = {}) {
       check(actor && actor.id, 401, 'Authentication required');
       const schema = z.object({
         clientMessageId: z.string().trim().min(4).max(120),
@@ -1418,6 +1479,8 @@ export function chatEngine(db, options = {}) {
           requireSendable: true,
           supportJustification: 'Support agent sending message'
         });
+
+        if (voiceNote) check(conv.conversation_type === 'CUSTOMER_RIDER', 403, 'Voice notes are for chats between customers and couriers');
 
         // Check idempotency BEFORE rate-limiting so retries of already-accepted messages always succeed
         const existingMsg = (await c.query(
@@ -1489,7 +1552,7 @@ export function chatEngine(db, options = {}) {
             actor.id,
             senderRole,
             v.clientMessageId,
-            v.messageType,
+            voiceNote ? 'voice_note' : v.messageType,
             messageBody,
             v.quickReplyKey || null,
             locationPinPayload ? JSON.stringify(locationPinPayload) : null,
@@ -1497,6 +1560,16 @@ export function chatEngine(db, options = {}) {
             addressChangeWarning
           ]
         )).rows[0];
+
+        if (voiceNote) {
+          await c.query(
+            `INSERT INTO chat_voice_notes (message_id, conversation_id, audio_encrypted, byte_size, duration_seconds, expires_at)
+             VALUES ($1, $2, $3, $4, $5, now() + make_interval(hours => $6))`,
+            [msgId, conv.id, voiceNote.audioEncrypted, voiceNote.byteSize, voiceNote.durationSeconds, voiceRetentionHours()]
+          );
+          msgRow.voice_duration_seconds = voiceNote.durationSeconds;
+          msgRow.voice_available = true;
+        }
 
         const preview = messageBody.slice(0, 120);
         await c.query(
@@ -1596,6 +1669,7 @@ export function chatEngine(db, options = {}) {
         senderRole: row.sender_role,
         clientMessageId: row.client_message_id,
         messageType: row.message_type,
+        ...(row.message_type === 'voice_note' ? { voiceNote: { durationSeconds: Number(row.voice_duration_seconds) || 0, available: Boolean(row.voice_available) } } : {}),
         body: row.moderation_status === 'redacted'
           ? '[Message removed by ELESEND Safety Moderation]'
           : row.body,
@@ -1635,7 +1709,7 @@ export function chatEngine(db, options = {}) {
           supportJustification: effectiveJustification
         });
 
-        const conds = ['conversation_id = $1'];
+        const conds = ['m.conversation_id = $1'];
         const params = [conv.id];
 
         if (afterSeq !== null && afterSeq !== undefined && Number.isFinite(Number(afterSeq))) {
@@ -1650,7 +1724,8 @@ export function chatEngine(db, options = {}) {
         params.push(lim);
         const orderDir = afterSeq !== null && afterSeq !== undefined ? 'ASC' : 'DESC';
         const rows = (await c.query(
-          `SELECT * FROM chat_messages
+          `SELECT m.*, n.duration_seconds AS voice_duration_seconds, n.audio_encrypted IS NOT NULL AS voice_available
+           FROM chat_messages m LEFT JOIN chat_voice_notes n ON n.message_id = m.id
            WHERE ${conds.join(' AND ')}
            ORDER BY seq ${orderDir}
            LIMIT $${params.length}`,
@@ -1935,6 +2010,7 @@ export function chatEngine(db, options = {}) {
           requireSendable: false,
           supportJustification: 'Reporting abuse'
         });
+        await holdVoiceNotes(c, conv.id);
 
         if (v.messageId) {
           const msg = (await c.query(
@@ -1984,6 +2060,7 @@ export function chatEngine(db, options = {}) {
       const v = schema.parse(input);
 
       const { conv } = await authorizeConversationAccess(db, actor, conversationId);
+      await holdVoiceNotes(db, conv.id);
       const supportConv = await this.openOrCreateConversation(actor, {
         conversationType: 'CUSTOMER_SUPPORT',
         shipmentId: conv.shipment_id,

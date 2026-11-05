@@ -36,6 +36,7 @@ import { normalizeGhanaPhone, isValidGhanaPhone } from '../phone';
 import { colors, typography, spacing, radii } from '../theme';
 import { riderStatus } from '../status-labels';
 import RiderNavigation from './RiderNavigation';
+import { VoiceNoteBubble, VoiceNoteRecorder } from '../chat/VoiceNote';
 import OfflineMapCard from './OfflineMapCard';
 import { prepareDeviceLocation } from '../customer-location';
 
@@ -1688,9 +1689,11 @@ export default function RiderApp() {
                         <Text style={{ fontSize: 10, color: colors.textMuted, fontWeight: '700' }}>
                           {String(msg.senderRole || '').toUpperCase()} • #{msg.seq}
                         </Text>
+                        {msg.messageType === 'voice_note' ? <VoiceNoteBubble message={msg} color={colors.text} /> : (
                         <Text style={{ fontSize: 13, color: colors.text, marginTop: 2 }}>
                           {msg.body || msg.bodyText || (msg.messageType === 'location_pin' ? `📍 Pin: ${msg.locationPin?.label || ''}` : '')}
                         </Text>
+                        )}
                         <Text style={{ fontSize: 10, color: colors.textMuted, marginTop: 4, textAlign: 'right' }}>
                           {msg.deliveryStatus || 'SENT'}
                         </Text>
@@ -1729,6 +1732,16 @@ export default function RiderApp() {
                     value={riderChatInput}
                     onChangeText={setRiderChatInput}
                   />
+                  {riderChatConv?.conversationType === 'CUSTOMER_RIDER' && (
+                    <VoiceNoteRecorder
+                      conversationId={riderChatConv.id}
+                      color={colors.text}
+                      disabled={!isStationary(speed)}
+                      disabledReason="Stop safely before recording a voice note."
+                      onSent={message => setRiderChatMessages(prev => (prev.some(m => m.id === message.id) ? prev : [...prev, message]))}
+                      onError={setError}
+                    />
+                  )}
                   <TouchableOpacity
                     disabled={!isStationary(speed)}
                     onPress={() => sendRiderChatMessage({ messageType: 'text', bodyText: riderChatInput })}
