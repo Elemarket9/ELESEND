@@ -94,3 +94,13 @@ test('a fare refuses pins far from the road and routes shorter than the pins all
  assert.equal((await stub(7000,100).route(from,to,{vehicle:'car',billing:true})).distanceMeters,7000);
  assert.equal((await stub(7000,600).route(from,to,{vehicle:'car'})).distanceMeters,7000);
 });
+
+test('a motorbike rush fare adds only the extra trip time, and the migration leaves cars alone',()=>{
+ const seconds=2082,normal=calculateQuote(approved,29850,{durationSeconds:seconds});
+ const rush=calculateQuote(approved,29850,{durationSeconds:Math.round(seconds*1.4)});
+ assert.equal(normal.amountMinor,11620);
+ assert.equal(rush.amountMinor,11967);
+ const sql=readFileSync(new URL('../database/migrations/069_motorbike_rush_by_trip_time.sql',import.meta.url),'utf8');
+ assert.match(sql,/vehicle='motorcycle'/);
+ assert.doesNotMatch(sql,/per_km_minor|base_minor|commission_bps/);
+});
