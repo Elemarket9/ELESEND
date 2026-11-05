@@ -13,7 +13,7 @@ for(const [id,kind] of [[ids.customer,'customer'],[ids.owner,'business']])await 
 await db.query("UPDATE checkout_method_policies SET enabled=true WHERE method='MOMO'");await db.query("UPDATE service_markets SET service_enabled=true WHERE country_code='GH'");
 const tariff=(await db.query("SELECT base_minor,per_km_minor,per_minute_minor,minimum_minor,commission_bps,traffic_time_pricing FROM pricing_policies WHERE active AND vehicle='motorcycle'")).rows[0];console.log('TARIFF',JSON.stringify(tariff));
 const D={latitude:5.5124671,longitude:-0.4931931};
-const BR=process.env.BR==='second'?{latitude:5.5356489,longitude:-0.4185735,n:'Cheezzy Kasoa Second bus stop'}:{latitude:5.5050289,longitude:-0.4181084,n:'Cheezzy Kakraba Kasoa'};const P=BR;console.log('BRANCH',BR.n);
+const BR={latitude:5.5220648,longitude:-0.4745987,n:'Cheezzy Buduburam, fire service pin'};const P=BR;console.log('BRANCH',BR.n);
 await db.query("INSERT INTO restaurants(id,owner_id,name,phone,address,latitude,longitude,status,merchant_tier,cuisine_category,commission_calculation_basis) VALUES($1,$2,'Lab Cheezzy','+233241112222','Kasoa',$3,$4,'approved','standard','grill','gross_subtotal')",[ids.rest,ids.owner,P.latitude,P.longitude]);
 await db.query("UPDATE restaurants SET delivery_radius_m=10000 WHERE id=$1",[ids.rest]);
 await db.query("INSERT INTO menu_items(id,restaurant_id,name,price_minor) VALUES($1,$2,'Sample meal (lab price)',14000)",[ids.item,ids.rest]);
