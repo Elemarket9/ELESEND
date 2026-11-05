@@ -38,7 +38,7 @@ export default function FareSummary({ quote }) {
         <View style={{ marginTop: 6 }}>
           <Line name="Start" amount={ghc(fare.startMinor)} />
           <Line name="Per km" amount={ghc(fare.perKmMinor)} />
-          <Line name="Per minute" amount={ghc(fare.perMinuteMinor)} />
+          <Line name={`Per minute (about ${fare.pricedMinutes} min in current traffic)`} amount={ghc(fare.perMinuteMinor)} />
           <Line name="Minimum price" amount={ghc(fare.minimumMinor)} />
           {fare.rushHourMultiplier > 1 && <Line name="Busy time" amount={`${fare.rushHourMultiplier}×`} />}
           {fare.waitPerMinuteMinor > 0 && (

@@ -237,10 +237,12 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    await offline();
    const c=await customer();const r=await readyRider();
    const q=await api(c.token,'POST','/api/v1/quotes',trip({paymentMethod:'CASH',cashPayer:'recipient'}));assert.equal(q.status,200,JSON.stringify(q.data));
-   assert.equal(q.data.fareBreakdown.perKmMinor,220);
+   assert.equal(q.data.fareBreakdown.perKmMinor,150);
+   assert.equal(q.data.surgeMultiplier,1,'traffic is priced through time, not also a multiplier');
+   const km=q.data.distanceMeters/1000,expected=700+km*150+q.data.pricingEvidence.pricedSeconds/60*89;
+   assert.ok(Math.abs(q.data.amount_minor-Math.max(2000,expected))<=4,'price is start, distance and real time: '+q.data.amount_minor+' vs '+expected);
    assert.equal(q.data.fareBreakdown.waitPerMinuteMinor,56);
    assert.ok(q.data.etaMinutes.low<q.data.etaMinutes.high);
-   if(q.data.surgeMultiplier>1)assert.equal(q.data.surgeMultiplier,1.3);
    const s=await api(c.token,'POST','/api/v1/shipments',{quoteId:q.data.id},{'Idempotency-Key':'wait-'+randomInt(1e9)});assert.equal(s.status,200,JSON.stringify(s.data));
    await dispatch.tick();const offer=await offerFor(r,s.data.id);
    assert.equal((await api(r.token,'POST','/api/v1/shipments/'+s.data.id+'/accept',{offerId:offer.offerId})).status,200);

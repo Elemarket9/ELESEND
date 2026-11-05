@@ -260,3 +260,14 @@ test('waiting fee starts after the free minutes and has a limit',async()=>{
  assert.equal(waitingFeeMinor(36000,56,rules),1500);
  assert.equal(waitingFeeMinor(600,0,rules),0);
 });
+
+test('motorbike rates give realistic prices on real trips',async()=>{
+ const {calculateQuote}=await import('../services/api/pricing.mjs');
+ const bike={base_minor:700,per_km_minor:150,per_minute_minor:89,minimum_minor:2000,commission_bps:2000};
+ const fare=(km,minutes)=>calculateQuote(bike,km*1000,{durationSeconds:minutes*60});
+ const long=fare(35.3,55);
+ assert.ok(Math.abs(long.amountMinor-10890)<60,String(long.amountMinor));
+ assert.ok(long.riderEarningsMinor>8000,'rider covers running costs and time');
+ assert.ok(Math.abs(fare(8,25).amountMinor-4100)<60,'a normal Accra trip stays near the usual GH¢35-60');
+ assert.equal(fare(1,3).amountMinor,2000,'short trips reach the minimum');
+});
