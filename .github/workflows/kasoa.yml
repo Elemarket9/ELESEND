@@ -19,4 +19,4 @@ jobs:
         if: always()
         run: |
           cd /tmp/out && git init -q && git config user.email a@example.com && git config user.name lab && git add -A && git commit -qm lab
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/audit/kasoa-shots
+          for i in 1 2 3 4; do git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/audit/kasoa-shots && break; sleep 20; done

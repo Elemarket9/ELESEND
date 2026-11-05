@@ -41,10 +41,8 @@ const P={address:'Kasoa (GPS)',latitude:KASOA.latitude,longitude:KASOA.longitude
 log('\n== 4. Quote and order');
 const q=await api(c.token,'POST','/api/v1/quotes',{pickup:P,destination:AIR,vehicle:'motorcycle',recipientPhone:phone(),weightG:1000,description:'Documents',paymentMethod:'MOMO'});log('Quote',q.status,q.ms+'ms',JSON.stringify(q.data).slice(0,1100));
 for(const v of ['car','van']){const x=await api(c.token,'POST','/api/v1/quotes',{pickup:P,destination:AIR,vehicle:v,recipientPhone:phone(),weightG:1000,description:'Documents',paymentMethod:'MOMO'});log('Quote',v,x.status,x.data?.amount_minor,x.data?.error||'');}
-const key='k'+randomInt(1e9);const s=await api(c.token,'POST','/api/v1/shipments',{quoteId:q.data.id},{'Idempotency-Key':key});log('Shipment',s.status,s.data?.state);
-const pay=await api(c.token,'POST','/api/v1/shipments/'+s.data.id+'/checkout',{idempotencyKey:key,email:'owner@example.com'});log('Checkout',pay.status,JSON.stringify(pay.data).slice(0,120));
-const row=(await db.query('SELECT amount_minor FROM shipment_checkout_intents WHERE reference=$1',[pay.data.reference])).rows[0];log('Charged GHS',Number(row.amount_minor)/100);
-await checkout.confirmVerified({status:'success',reference:pay.data.reference,amountMinor:Number(row.amount_minor),currency:'GHS',eventId:'ev'+randomInt(1e9),channel:'mobile_money'});
+const cq=await api(c.token,'POST','/api/v1/quotes',{pickup:P,destination:AIR,vehicle:'motorcycle',recipientPhone:phone(),weightG:1000,description:'Documents',paymentMethod:'CASH',cashPayer:'recipient'});log('Cash quote',cq.status,cq.data?.amount_minor,cq.data?.error||'','rider gets',cq.data?.riderEarningsMinor,'platform',cq.data?.platformFeeMinor??cq.data?.commission_minor,'keys',Object.keys(cq.data||{}).join(','));
+const key='k'+randomInt(1e9);const s=await api(c.token,'POST','/api/v1/shipments',{quoteId:cq.data.id},{'Idempotency-Key':key});log('Shipment',s.status,s.data?.state);
 const r=await acct('rider',{vehicle:'motorcycle',maxWeightG:20000});await db.query("UPDATE riders SET status='approved' WHERE id=$1",[r.id]);
 const startRider={latitude:KASOA.latitude+0.004,longitude:KASOA.longitude+0.004};
 log('Rider online',(await api(r.token,'POST','/api/v1/rider/availability',{online:true})).status);
