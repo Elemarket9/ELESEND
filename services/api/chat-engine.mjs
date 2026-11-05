@@ -1750,7 +1750,12 @@ export function chatEngine(db, options = {}) {
 
         return {
           conversation: summary,
-          messages: ordered.map(r => this.formatMessage(r)),
+          messages: ordered.map(r => {
+            const message = this.formatMessage(r);
+            // The reviewer can still hear a note removed from the chat.
+            if (message.voiceNote && actor.kind === 'admin') message.voiceNote.available = Boolean(r.voice_available);
+            return message;
+          }),
           typing: typingUsers,
           hasMore: rows.length === lim
         };
