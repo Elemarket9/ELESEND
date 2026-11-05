@@ -426,7 +426,10 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
         const note = await send('voice-001');
         assert.equal(note.messageType, 'voice_note');
         assert.deepEqual(note.voiceNote, { durationSeconds: 12, available: true });
-        assert.equal((await send('voice-001')).duplicate, true, 'a retry does not duplicate it');
+        const retry = await send('voice-001');
+        assert.equal(retry.duplicate, true, 'a retry does not duplicate it');
+        assert.equal(retry.id, note.id);
+        assert.equal(retry.voiceNote.available, true, 'a retried note can still be played');
         await assert.rejects(send('voice-bad', Buffer.alloc(100, 1)), /could not be read/);
         await assert.rejects(chat.sendMessage(customer, conv.id, { clientMessageId: 'voice-fake', messageType: 'voice_note', body: 'x' }));
 
@@ -446,6 +449,12 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
         await assert.rejects(chat.voiceNoteAudio(customer, conv.id, note.id), /no longer available/);
         assert.equal((await chat.listMessages(customer, conv.id)).messages.find(m => m.id === note.id).voiceNote.available, false);
         assert.equal((await c.query('SELECT duration_seconds FROM chat_voice_notes WHERE message_id = $1', [note.id])).rows[0].duration_seconds, 12);
+
+        // Redacted by staff: participants lose it, the reviewer does not.
+        const removed = await send('voice-redact');
+        await c.query("UPDATE chat_messages SET moderation_status = 'redacted' WHERE id = $1", [removed.id]);
+        await assert.rejects(chat.voiceNoteAudio(rider1, conv.id, removed.id), /no longer available/);
+        assert.equal((await chat.listMessages(rider1, conv.id)).messages.find(m => m.id === removed.id).voiceNote.available, false);
 
         // A report keeps audio past its normal time.
         const reported = await send('voice-002');

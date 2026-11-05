@@ -1666,6 +1666,7 @@ export function renderAdminPortalHtml() {
               <td><strong>\${escapeHtml(r.message_body || '(Conversation Report)')}</strong><br><small style="color:var(--text-muted);">\${escapeHtml(r.details)}</small></td>
               <td><span class="badge \${r.status === 'resolved' ? 'badge-active' : 'badge-warn'}">\${escapeHtml(r.status.toUpperCase())}</span></td>
               <td>
+                <button class="action-btn" onclick="inspectSupportConversation('\${escapeHtml(r.conversation_id)}')">View chat</button>
                 \${r.status === 'open' || r.status === 'investigating' ? \`
                   <button class="action-btn" onclick="moderateAbuseReport('\${escapeHtml(r.id)}', true)">Redact & Resolve</button>
                   <button class="action-btn" onclick="moderateAbuseReport('\${escapeHtml(r.id)}', false)">Dismiss</button>

@@ -1440,10 +1440,11 @@ export function chatEngine(db, options = {}) {
       check(uuid.safeParse(messageId).success, 400, 'Invalid message ID');
       const { conv } = await authorizeConversationAccess(db, actor, conversationId, { supportJustification });
       const note = (await db.query(
-        'SELECT audio_encrypted FROM chat_voice_notes WHERE message_id = $1 AND conversation_id = $2',
+        `SELECT n.audio_encrypted, m.moderation_status FROM chat_voice_notes n JOIN chat_messages m ON m.id = n.message_id
+         WHERE n.message_id = $1 AND n.conversation_id = $2`,
         [messageId, conv.id]
       )).rows[0];
-      check(note?.audio_encrypted, 404, 'This voice note is no longer available');
+      check(note?.audio_encrypted && (note.moderation_status !== 'redacted' || actor.kind === 'admin'), 404, 'This voice note is no longer available');
       return unseal(voiceKey(), voiceContext(conv.id), note.audio_encrypted);
     },
 
@@ -1484,8 +1485,9 @@ export function chatEngine(db, options = {}) {
 
         // Check idempotency BEFORE rate-limiting so retries of already-accepted messages always succeed
         const existingMsg = (await c.query(
-          `SELECT * FROM chat_messages
-           WHERE conversation_id = $1 AND sender_id = $2 AND client_message_id = $3`,
+          `SELECT m.*, n.duration_seconds AS voice_duration_seconds, n.audio_encrypted IS NOT NULL AS voice_available
+           FROM chat_messages m LEFT JOIN chat_voice_notes n ON n.message_id = m.id
+           WHERE m.conversation_id = $1 AND m.sender_id = $2 AND m.client_message_id = $3`,
           [conv.id, actor.id, v.clientMessageId]
         )).rows[0];
         if (existingMsg) {
@@ -1669,7 +1671,7 @@ export function chatEngine(db, options = {}) {
         senderRole: row.sender_role,
         clientMessageId: row.client_message_id,
         messageType: row.message_type,
-        ...(row.message_type === 'voice_note' ? { voiceNote: { durationSeconds: Number(row.voice_duration_seconds) || 0, available: Boolean(row.voice_available) } } : {}),
+        ...(row.message_type === 'voice_note' ? { voiceNote: { durationSeconds: Number(row.voice_duration_seconds) || 0, available: Boolean(row.voice_available) && row.moderation_status !== 'redacted' } } : {}),
         body: row.moderation_status === 'redacted'
           ? '[Message removed by ELESEND Safety Moderation]'
           : row.body,
