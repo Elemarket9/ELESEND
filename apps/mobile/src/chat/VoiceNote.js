@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Text, TouchableOpacity, View } from 'react-native';
-import { AudioModule, setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus, useAudioRecorder } from 'expo-audio';
+import { AudioModule, AudioQuality, IOSOutputFormat, setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus, useAudioRecorder } from 'expo-audio';
 import { EncodingType, readAsStringAsync } from 'expo-file-system/legacy';
 import * as Crypto from 'expo-crypto';
 import { BASE, call, loadToken } from '../api';
@@ -12,7 +12,7 @@ const SPEECH_QUALITY = {
   numberOfChannels: 1,
   bitRate: 32000,
   android: { outputFormat: 'mpeg4', audioEncoder: 'aac' },
-  ios: { outputFormat: 'aac ', audioQuality: 32 },
+  ios: { outputFormat: IOSOutputFormat.MPEG4AAC, audioQuality: AudioQuality.LOW },
   web: { mimeType: 'audio/mp4', bitsPerSecond: 32000 }
 };
 const row = { flexDirection: 'row', alignItems: 'center', gap: 8 };
