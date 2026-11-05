@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly ELESEND map refresh
+
+[Timer]
+OnCalendar=Sun 02:30
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1725,7 +1725,7 @@ export default function RiderApp() {
 
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   <TextInput
-                    style={[styles.input, { flex: 1 }]}
+                    style={[{ minWidth: 0 }, styles.input, { flex: 1 }]}
                     editable={isStationary(speed)}
                     placeholder={isStationary(speed) ? 'Type message (when stationary)...' : 'Stop moving to type custom text'}
                     placeholderTextColor={colors.textMuted}

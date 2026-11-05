@@ -1,18 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Text, TouchableOpacity, View } from 'react-native';
-import { AudioModule, setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus, useAudioRecorder } from 'expo-audio';
+import { AudioModule, AudioQuality, IOSOutputFormat, setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus, useAudioRecorder } from 'expo-audio';
 import { EncodingType, readAsStringAsync } from 'expo-file-system/legacy';
 import * as Crypto from 'expo-crypto';
 import { BASE, call, loadToken } from '../api';
 
 const MAX_SECONDS = 60;
+const UPLOAD_TIMEOUT_MS = 60000;
 const SPEECH_QUALITY = {
   extension: '.m4a',
   sampleRate: 22050,
   numberOfChannels: 1,
   bitRate: 32000,
   android: { outputFormat: 'mpeg4', audioEncoder: 'aac' },
-  ios: { outputFormat: 'aac ', audioQuality: 32 },
+  ios: { outputFormat: IOSOutputFormat.MPEG4AAC, audioQuality: AudioQuality.LOW },
   web: { mimeType: 'audio/mp4', bitsPerSecond: 32000 }
 };
 const row = { flexDirection: 'row', alignItems: 'center', gap: 8 };
@@ -25,8 +26,18 @@ export function VoiceNoteRecorder({ conversationId, disabled = false, disabledRe
   const [seconds, setSeconds] = useState(0);
   const timer = useRef(null);
   const clip = useRef(null);
+  const sending = useRef(false);
   const clear = () => { if (timer.current) clearInterval(timer.current); timer.current = null; };
-  useEffect(() => clear, []);
+  const recording = useRef(false);
+  const sendKey = useRef(null);
+  // Leaving the chat must never leave the microphone on.
+  useEffect(() => () => {
+    clear();
+    if (!recording.current) return;
+    recording.current = false;
+    Promise.resolve().then(() => recorder.stop()).catch(() => {});
+    setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => {});
+  }, []);
 
   async function start() {
     if (disabled) { onError?.(disabledReason); return; }
@@ -36,6 +47,7 @@ export function VoiceNoteRecorder({ conversationId, disabled = false, disabledRe
       await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
       await recorder.prepareToRecordAsync();
       recorder.record();
+      recording.current = true;
       setSeconds(0);
       setMode('recording');
       let elapsed = 0;
@@ -50,11 +62,14 @@ export function VoiceNoteRecorder({ conversationId, disabled = false, disabledRe
   }
 
   async function stop() {
+    if (!recording.current) return;
+    recording.current = false;
     clear();
     try {
       await recorder.stop();
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
       clip.current = recorder.uri;
+      sendKey.current = Crypto.randomUUID(); // Retrying this clip cannot send it twice.
       setMode(clip.current ? 'review' : 'idle');
     } catch (e) {
       setMode('idle');
@@ -63,19 +78,23 @@ export function VoiceNoteRecorder({ conversationId, disabled = false, disabledRe
   }
 
   async function send() {
+    if (sending.current) return;
+    sending.current = true;
     setMode('sending');
     try {
       const audioBase64 = await readAsStringAsync(clip.current, { encoding: EncodingType.Base64 });
       const message = await call('POST', `/api/v1/chat/conversations/${conversationId}/voice-notes`, {
-        clientMessageId: Crypto.randomUUID(),
+        clientMessageId: sendKey.current,
         durationSeconds: Math.min(MAX_SECONDS, Math.max(1, seconds)),
         audioBase64
-      });
+      }, { timeoutMs: UPLOAD_TIMEOUT_MS });
       setMode('idle');
       onSent?.(message);
     } catch (e) {
       setMode('review');
       onError?.(e.message || 'Voice note could not be sent.');
+    } finally {
+      sending.current = false;
     }
   }
 
@@ -109,9 +128,9 @@ function LoadedPlayer({ source, label, color }) {
     if (status.isLoaded && !started.current) { started.current = true; player.play(); }
   }, [status.isLoaded]);
   const finished = status.didJustFinish || (status.duration > 0 && status.currentTime >= status.duration);
-  const toggle = () => {
+  const toggle = async () => {
     if (status.playing) { player.pause(); return; }
-    if (finished) player.seekTo(0);
+    if (finished) await player.seekTo(0);
     player.play();
   };
   return (

@@ -2996,7 +2996,7 @@ export default function CustomerApp() {
 
             <View style={{ flexDirection: 'row', gap: 8, paddingBottom: 16, alignItems: 'center' }}>
               <TextInput
-                style={[styles.sheetNoteInput, { flex: 1, marginBottom: 0 }]}
+                style={[styles.sheetNoteInput, { flex: 1, minWidth: 0, marginBottom: 0 }]}
                 placeholder="Type an order message..."
                 placeholderTextColor={colors.textPlaceholder}
                 value={chatText}

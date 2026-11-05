@@ -626,20 +626,21 @@ export function upgradeToChatWebSocket(req, socket, head, { actor, sessionToken 
 
 const VOICE_MAX_SECONDS = 60;
 const VOICE_MAX_BYTES = 400 * 1024;
-const voiceRetentionHours = () => envInt(process.env.CHAT_VOICE_RETENTION_HOURS, 24, 1);
-const voiceHoldDays = () => envInt(process.env.CHAT_VOICE_REPORT_HOLD_DAYS, 30, 1);
+const chatRetentionHours = () => envInt(process.env.CHAT_RETENTION_HOURS, 24, 1);
+const chatReportHoldDays = () => envInt(process.env.CHAT_REPORT_HOLD_DAYS, 30, 1);
+const CHAT_PURGE_BATCH = 500;
 const voiceContext = conversationId => `elesend:chat-voice:v1:${conversationId}`;
 function voiceKey() {
   const root = (process.env.ADMIN_MFA_ENCRYPTION_KEY || process.env.OTP_KEY || '').trim();
   check(/^[a-fA-F0-9]{64}$/.test(root), 503, 'Voice notes are not available right now');
   return Buffer.from(hkdfSync('sha256', Buffer.from(root, 'hex'), Buffer.alloc(0), 'elesend:chat-voice:v1', 32));
 }
-/** A reported chat keeps its audio for review instead of being removed on the normal schedule. */
-const holdVoiceNotes = (c, conversationId) => c.query(
-  `UPDATE chat_voice_notes SET held_until = now() + make_interval(days => $2)
-   WHERE conversation_id = $1 AND audio_encrypted IS NOT NULL`,
-  [conversationId, voiceHoldDays()]
-);
+// A chat with an unresolved problem stays for review, up to the hold limit.
+const CHAT_UNDER_REVIEW = `(c.created_at > now() - make_interval(days => $2) AND (
+  EXISTS (SELECT 1 FROM chat_abuse_reports r WHERE r.conversation_id = c.id AND r.status IN ('open', 'investigating'))
+  OR EXISTS (SELECT 1 FROM chat_conversations e WHERE e.escalated_from_conversation_id = c.id AND e.state NOT IN ('CLOSED', 'ARCHIVED'))
+  OR (c.conversation_type = 'CUSTOMER_SUPPORT' AND c.state NOT IN ('CLOSED', 'ARCHIVED'))
+))`;
 
 export function chatEngine(db, options = {}) {
   check(db && typeof db.query === 'function', 500, 'Database instance required for chatEngine');
@@ -1440,20 +1441,60 @@ export function chatEngine(db, options = {}) {
       check(uuid.safeParse(messageId).success, 400, 'Invalid message ID');
       const { conv } = await authorizeConversationAccess(db, actor, conversationId, { supportJustification });
       const note = (await db.query(
-        'SELECT audio_encrypted FROM chat_voice_notes WHERE message_id = $1 AND conversation_id = $2',
+        `SELECT n.audio_encrypted, m.moderation_status FROM chat_voice_notes n JOIN chat_messages m ON m.id = n.message_id
+         WHERE n.message_id = $1 AND n.conversation_id = $2`,
         [messageId, conv.id]
       )).rows[0];
-      check(note?.audio_encrypted, 404, 'This voice note is no longer available');
+      check(note?.audio_encrypted && (note.moderation_status !== 'redacted' || actor.kind === 'admin'), 404, 'This voice note is no longer available');
       return unseal(voiceKey(), voiceContext(conv.id), note.audio_encrypted);
     },
 
-    /** Removes audio past its time, keeping the record that the note existed. */
-    async purgeVoiceNotes() {
-      const removed = await db.query(
-        `UPDATE chat_voice_notes SET audio_encrypted = NULL, audio_deleted_at = now()
-         WHERE audio_encrypted IS NOT NULL AND expires_at <= now() AND (held_until IS NULL OR held_until <= now())`
+    /** Permanently removes chats and voice notes past their time, leaving no record of them. */
+    async purgeExpiredChats() {
+      const hours = chatRetentionHours(), holdDays = chatReportHoldDays();
+      let conversations = 0, messages = 0, batch;
+      do {
+        batch = await db.tx(async c => {
+          const ids = (await c.query(
+            `SELECT c.id FROM chat_conversations c
+             LEFT JOIN shipments s ON s.id = c.shipment_id
+             LEFT JOIN food_orders f ON f.id = c.food_order_id
+             WHERE NOT ${CHAT_UNDER_REVIEW} AND (
+               c.created_at <= now() - make_interval(days => $2)
+               OR (GREATEST(COALESCE(c.last_message_at, c.created_at), s.completed_at, f.updated_at) <= now() - make_interval(hours => $1) AND (
+                 c.conversation_type = 'CUSTOMER_SUPPORT'
+                 OR s.state IN ('COMPLETED', 'CANCELLED', 'RETURNED')
+                 OR f.state IN ('DELIVERED', 'CANCELLED', 'REJECTED')
+               ))
+             )
+             LIMIT ${CHAT_PURGE_BATCH}`,
+            [hours, holdDays]
+          )).rows.map(row => row.id);
+          if (!ids.length) return 0;
+          await c.query('DELETE FROM chat_audit_logs WHERE conversation_id = ANY($1::uuid[])', [ids]);
+          await c.query("DELETE FROM notification_jobs WHERE kind = 'chat_message' AND payload->>'conversationId' = ANY($1::text[])", [ids]);
+          await c.query('DELETE FROM chat_conversations WHERE id = ANY($1::uuid[])', [ids]);
+          return ids.length;
+        });
+        conversations += batch;
+      } while (batch === CHAT_PURGE_BATCH);
+      // An order still running after a day keeps its chat open, but its older messages still go.
+      do {
+        batch = (await db.query(
+          `DELETE FROM chat_messages WHERE id IN (
+             SELECT m.id FROM chat_messages m JOIN chat_conversations c ON c.id = m.conversation_id
+             WHERE m.created_at <= now() - make_interval(hours => $1) AND NOT ${CHAT_UNDER_REVIEW}
+             LIMIT ${CHAT_PURGE_BATCH})`,
+          [hours, holdDays]
+        )).rowCount || 0;
+        messages += batch;
+      } while (batch === CHAT_PURGE_BATCH);
+      await db.query(
+        `UPDATE chat_conversations c SET last_message_preview = NULL
+         WHERE last_message_preview IS NOT NULL AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id)`
       );
-      return removed.rowCount || 0;
+      await db.query("DELETE FROM notification_jobs WHERE kind = 'chat_message' AND created_at <= now() - make_interval(hours => $1)", [hours]);
+      return { conversations, messages };
     },
 
     async sendMessage(actor, conversationId, input, { voiceNote = null } = {}) {
@@ -1484,8 +1525,9 @@ export function chatEngine(db, options = {}) {
 
         // Check idempotency BEFORE rate-limiting so retries of already-accepted messages always succeed
         const existingMsg = (await c.query(
-          `SELECT * FROM chat_messages
-           WHERE conversation_id = $1 AND sender_id = $2 AND client_message_id = $3`,
+          `SELECT m.*, n.duration_seconds AS voice_duration_seconds, n.audio_encrypted IS NOT NULL AS voice_available
+           FROM chat_messages m LEFT JOIN chat_voice_notes n ON n.message_id = m.id
+           WHERE m.conversation_id = $1 AND m.sender_id = $2 AND m.client_message_id = $3`,
           [conv.id, actor.id, v.clientMessageId]
         )).rows[0];
         if (existingMsg) {
@@ -1563,9 +1605,9 @@ export function chatEngine(db, options = {}) {
 
         if (voiceNote) {
           await c.query(
-            `INSERT INTO chat_voice_notes (message_id, conversation_id, audio_encrypted, byte_size, duration_seconds, expires_at)
-             VALUES ($1, $2, $3, $4, $5, now() + make_interval(hours => $6))`,
-            [msgId, conv.id, voiceNote.audioEncrypted, voiceNote.byteSize, voiceNote.durationSeconds, voiceRetentionHours()]
+            `INSERT INTO chat_voice_notes (message_id, conversation_id, audio_encrypted, byte_size, duration_seconds)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [msgId, conv.id, voiceNote.audioEncrypted, voiceNote.byteSize, voiceNote.durationSeconds]
           );
           msgRow.voice_duration_seconds = voiceNote.durationSeconds;
           msgRow.voice_available = true;
@@ -1669,7 +1711,7 @@ export function chatEngine(db, options = {}) {
         senderRole: row.sender_role,
         clientMessageId: row.client_message_id,
         messageType: row.message_type,
-        ...(row.message_type === 'voice_note' ? { voiceNote: { durationSeconds: Number(row.voice_duration_seconds) || 0, available: Boolean(row.voice_available) } } : {}),
+        ...(row.message_type === 'voice_note' ? { voiceNote: { durationSeconds: Number(row.voice_duration_seconds) || 0, available: Boolean(row.voice_available) && row.moderation_status !== 'redacted' } } : {}),
         body: row.moderation_status === 'redacted'
           ? '[Message removed by ELESEND Safety Moderation]'
           : row.body,
@@ -1748,7 +1790,12 @@ export function chatEngine(db, options = {}) {
 
         return {
           conversation: summary,
-          messages: ordered.map(r => this.formatMessage(r)),
+          messages: ordered.map(r => {
+            const message = this.formatMessage(r);
+            // The reviewer can still hear a note removed from the chat.
+            if (message.voiceNote && actor.kind === 'admin') message.voiceNote.available = Boolean(r.voice_available);
+            return message;
+          }),
           typing: typingUsers,
           hasMore: rows.length === lim
         };
@@ -2010,7 +2057,6 @@ export function chatEngine(db, options = {}) {
           requireSendable: false,
           supportJustification: 'Reporting abuse'
         });
-        await holdVoiceNotes(c, conv.id);
 
         if (v.messageId) {
           const msg = (await c.query(
@@ -2060,7 +2106,6 @@ export function chatEngine(db, options = {}) {
       const v = schema.parse(input);
 
       const { conv } = await authorizeConversationAccess(db, actor, conversationId);
-      await holdVoiceNotes(db, conv.id);
       const supportConv = await this.openOrCreateConversation(actor, {
         conversationType: 'CUSTOMER_SUPPORT',
         shipmentId: conv.shipment_id,
