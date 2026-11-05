@@ -547,6 +547,10 @@ export function dispatchEngine(db,{routing}={}){
   }
   return {refreshed:results.length,checked:rows.length};
  }
+ async function riderVehicles(riderIds){
+  const rows=(await db.query('SELECT id,vehicle FROM riders WHERE id=ANY($1::uuid[])',[riderIds])).rows;
+  return new Map(rows.map(row=>[row.id,row.vehicle]));
+ }
  /** Moving riders' GPS trips between two times, for measuring road speeds. Carries no rider id onward. */
  async function recentRiderTraces(since,until){
   const rows=(await db.query(`SELECT s.rider_id,r.vehicle,ST_Y(s.position::geometry) AS latitude,ST_X(s.position::geometry) AS longitude,s.accuracy_m,s.observed_at
@@ -680,5 +684,5 @@ export function dispatchEngine(db,{routing}={}){
     ORDER BY next_dispatch_at,created_at LIMIT $1`,[limit])).rows;
   const results=[];for(const row of due){try{results.push(await dispatchShipment(row.id));}catch(e){results.push({shipmentId:row.id,status:'error',code:e.code??e.status??'internal'});}}return results;
  }
- return {recentRiderTraces,getPolicy,configure,algorithmFeatures:features.list,setAlgorithmFeature:features.set,riskSignals,reviewRisk,previewFleetBatch,trackingSettings,vehiclePolicy,setVehiclePolicy,riderPosition,optIn,manifest,nearby,availability,evaluate,dispatchShipment,offers,accept,decline,release,pruneSamples,refreshCorridors,watchdog,tick};
+ return {riderVehicles,recentRiderTraces,getPolicy,configure,algorithmFeatures:features.list,setAlgorithmFeature:features.set,riskSignals,reviewRisk,previewFleetBatch,trackingSettings,vehiclePolicy,setVehiclePolicy,riderPosition,optIn,manifest,nearby,availability,evaluate,dispatchShipment,offers,accept,decline,release,pruneSamples,refreshCorridors,watchdog,tick};
 }

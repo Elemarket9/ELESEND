@@ -138,6 +138,7 @@ export function renderAdminPortalHtml() {
         <button class="tab-btn" onclick="switchTab('paymentsTab', this)">💳 Payment Methods</button>
         <button class="tab-btn" onclick="switchTab('promotionsTab', this)">🎁 Restaurant Commissions & Promos</button>
         <button class="tab-btn" onclick="switchTab('supportChatTab', this)">💬 Support Chat & Moderation</button>
+        <button class="tab-btn" onclick="switchTab('mapReviewTab', this)">🗺️ Map Review</button>
       </div>
 
       <!-- PANEL 1: Dispatch & Algorithms -->
@@ -687,6 +688,27 @@ export function renderAdminPortalHtml() {
         </div>
       </div>
 
+      <!-- PANEL 9: Rider-found roads and places -->
+      <div id="mapReviewTab" class="panel">
+        <div class="card">
+          <div class="card-title"><span>Roads found by riders</span><button class="action-btn" onclick="loadMapReview()">Refresh</button></div>
+          <p id="mapReviewRules" style="color:var(--text-muted); font-size:13px;"></p>
+          <div id="mapReviewRoads"></div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span>Places reported by riders</span></div>
+          <div id="mapReviewLandmarks"></div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span>Recently published</span></div>
+          <div id="mapReviewPublished"></div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span>Satellite change scans</span></div>
+          <div id="mapReviewScans"></div>
+        </div>
+      </div>
+
       <!-- PANEL 8: Support Chat & Safety Moderation -->
       <div id="supportChatTab" class="panel">
         <div class="grid-2">
@@ -860,6 +882,7 @@ export function renderAdminPortalHtml() {
       if (tabId === 'paymentsTab') loadPaymentMethods();
       if (tabId === 'promotionsTab') loadPromotionsTab();
       if (tabId === 'supportChatTab') loadSupportChatTab();
+      if (tabId === 'mapReviewTab') loadMapReview();
     }
 
     async function loadAlgorithms() {
@@ -1632,6 +1655,63 @@ export function renderAdminPortalHtml() {
           body: JSON.stringify({ status, rationale: reason })
         });
         loadPromotionsTab();
+      } catch (err) { alert(err.message); }
+    }
+
+    function roadSketch(geojson) {
+      const points = JSON.parse(geojson).coordinates;
+      const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
+      const minX = Math.min(...xs), minY = Math.min(...ys);
+      const span = Math.max(Math.max(...xs) - minX, Math.max(...ys) - minY, 0.00001);
+      const line = points.map(p => ((p[0] - minX) / span * 100 + 4).toFixed(1) + ',' + (104 - (p[1] - minY) / span * 100).toFixed(1)).join(' ');
+      return '<svg viewBox="0 0 108 108" width="96" height="96" role="img" aria-label="Shape of this road" style="background:rgba(255,255,255,0.05); border-radius:6px; flex:none;"><polyline points="' + line + '" fill="none" stroke="#18C6A5" stroke-width="3"/></svg>';
+    }
+
+    async function loadMapReview() {
+      try {
+        const data = await api('/api/v1/admin/geo-intelligence/review-queue');
+        const rules = data.autoPublish;
+        document.getElementById('mapReviewRules').textContent = rules.enabled
+          ? 'Roads publish themselves after ' + rules.minRiders + ' different riders (' + rules.minRidersWithImagery + ' where satellite images show change), seen at least ' + rules.minSpanHours + ' hours apart, with accurate GPS and joined to the road network. Publish, reject or undo here at any time.'
+          : 'Automatic publishing is off. Roads wait for your decision here.';
+        document.getElementById('mapReviewRoads').innerHTML = data.candidateRoads.map(r => {
+          const mid = JSON.parse(r.corridor_geojson).coordinates[Math.floor(JSON.parse(r.corridor_geojson).coordinates.length / 2)];
+          const id = escapeHtml(r.id);
+          return \`<div style="display:flex; flex-wrap:wrap; gap:12px; padding:12px 0; border-bottom:1px solid rgba(255,255,255,0.08);">
+            \${roadSketch(r.corridor_geojson)}
+            <div style="flex:1; min-width:220px;">
+              <strong>\${escapeHtml(r.name || 'Unnamed road')}</strong> <span class="badge \${r.status === 'CORROBORATED' ? 'badge-active' : 'badge-warn'}">\${r.status === 'CORROBORATED' ? 'Confirmed by riders' : 'Seen by one rider'}</span>
+              <div style="font-size:13px; color:var(--text-muted); margin-top:4px;">\${Math.round(r.length_m)} m. \${r.distinct_riders} rider(s), \${r.observation_count} sighting(s) over \${Math.round((r.temporal_span_seconds || 0) / 3600)} hours. GPS accuracy about \${Math.round(r.mean_accuracy_m || 0)} m. Vehicles: \${escapeHtml((r.allowed_vehicles || []).join(', '))}.\${r.imagery_supported ? ' Satellite images show change here.' : ''}</div>
+              <div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:6px;">
+                <a class="action-btn" target="_blank" rel="noopener noreferrer" href="https://www.openstreetmap.org/?mlat=\${Number(mid[1])}&mlon=\${Number(mid[0])}#map=17/\${Number(mid[1])}/\${Number(mid[0])}">View on map</a>
+                <button class="action-btn" onclick="mapReviewAct('publish-road', {roadId:'\${id}', notes:'Approved in map review'})">Publish</button>
+                <button class="action-btn" onclick="mapReviewAct('reject', {type:'road', id:'\${id}', notes:'Rejected in map review'})">Reject</button>
+                <button class="action-btn" onclick="mapReviewAct('road-details', {roadId:'\${id}', isPrivateAccess:\${!r.is_private_access}})">\${r.is_private_access ? 'Not private' : 'Mark private'}</button>
+                <button class="action-btn" onclick="mapReviewAct('road-details', {roadId:'\${id}', isPedestrianOnly:\${!r.is_pedestrian_only}})">\${r.is_pedestrian_only ? 'Allow vehicles' : 'Foot traffic only'}</button>
+                <button class="action-btn" onclick="mapReviewAct('road-details', {roadId:'\${id}', isOneWay:\${!r.is_one_way}})">\${r.is_one_way ? 'Two-way' : 'One-way'}</button>
+              </div>
+            </div>
+          </div>\`;
+        }).join('') || '<div style="color:var(--text-muted);">No roads waiting.</div>';
+        document.getElementById('mapReviewLandmarks').innerHTML = data.candidateLandmarks.map(l => {
+          const id = escapeHtml(l.id);
+          return \`<div style="padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.08);"><strong>\${escapeHtml(l.name)}</strong> <small style="color:var(--text-muted);">\${escapeHtml(l.locality || '')}, \${escapeHtml(l.region || '')}</small>
+            <button class="action-btn" onclick="mapReviewAct('publish-landmark', {landmarkId:'\${id}'})">Publish</button>
+            <button class="action-btn" onclick="mapReviewAct('reject', {type:'landmark', id:'\${id}', notes:'Rejected in map review'})">Reject</button></div>\`;
+        }).join('') || '<div style="color:var(--text-muted);">No places waiting.</div>';
+        document.getElementById('mapReviewPublished').innerHTML = data.recentlyPublished.map(v => {
+          const road = v.change_type === 'road_publish';
+          return \`<div style="padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.08);"><strong>\${escapeHtml(v.name || 'Unnamed')}</strong> <small style="color:var(--text-muted);">\${road ? 'Road' : 'Place'}, \${v.automatic ? 'published automatically' : 'published by staff'}, \${escapeHtml(new Date(v.created_at).toLocaleString())}</small>
+            <button class="action-btn" onclick="mapReviewAct('\${road ? 'rollback-road' : 'rollback-landmark'}', {versionTag:'\${escapeHtml(v.version_tag)}'})">Undo</button></div>\`;
+        }).join('') || '<div style="color:var(--text-muted);">Nothing published yet.</div>';
+        document.getElementById('mapReviewScans').innerHTML = (data.imageryScans || []).map(s => \`<div style="padding:6px 0; font-size:13px;"><strong>\${escapeHtml(s.area_name)}</strong>: \${s.changed_cells} changed area(s). \${escapeHtml(s.outcome)}. \${escapeHtml(new Date(s.scanned_at).toLocaleDateString())}</div>\`).join('') || '<div style="color:var(--text-muted);">No scan has run yet.</div>';
+      } catch (err) { alert(err.message); }
+    }
+
+    async function mapReviewAct(action, body) {
+      try {
+        await api('/api/v1/admin/geo-intelligence/' + action, { method: 'POST', body: JSON.stringify(body) });
+        loadMapReview();
       } catch (err) { alert(err.message); }
     }
 

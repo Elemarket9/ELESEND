@@ -12,9 +12,10 @@ import {webhookService} from './api-webhooks.mjs';
 import {reconcileAndEnforceWeeklyRestrictions} from './modules/payments/index.mjs';
 import {runScheduledRecovery} from './modules/payments/index.mjs';
 import {runGeographicLearningCycle} from './infrastructure/maps/egia/background-learner.mjs';
+import {scanMapChangesIfDue} from './infrastructure/maps/egia/imagery-change-scan.mjs';
 import {chatEngine} from './chat-engine.mjs';
 
-export const LOCKS={traffic:839291,dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209,etaRefresh:839210,businessPayouts:839211,parcelCustody:839213,riderSafety:839214};
+export const LOCKS={mapChangeScan:839292,traffic:839291,dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209,etaRefresh:839210,businessPayouts:839211,parcelCustody:839213,riderSafety:839214};
 
 const warn=(component,code,extra={})=>process.stderr.write(JSON.stringify({level:'warn',component,code,...extra})+'\n');
 
@@ -80,7 +81,8 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
   etaRefresh:guarded('eta_refresh',LOCKS.etaRefresh,async()=>{await eta?.refreshActive();}),
   traffic:guarded('road_traffic',LOCKS.traffic,async()=>{if(dispatch&&routing)await trafficService(db,{routing}).ingest(dispatch.recentRiderTraces);}),
   pruning:guarded('location_retention',LOCKS.dispatchPruning,async()=>{await dispatch?.pruneSamples();}),
-   geoLearning:guarded('geo_learning',LOCKS.geoLearning,async()=>{await runGeographicLearningCycle(db,{routing});}),
+   mapChangeScan:guarded('map_change_scan',LOCKS.mapChangeScan,async()=>{await scanMapChangesIfDue(db);}),
+   geoLearning:guarded('geo_learning',LOCKS.geoLearning,async()=>{await runGeographicLearningCycle(db,{routing,riderVehicles:dispatch?.riderVehicles});}),
   corridors:guarded('corridor_refresh',LOCKS.corridors,async()=>{await dispatch?.refreshCorridors();}),
   maintenance:guarded('maintenance',LOCKS.maintenance,async()=>{
    await db.query("DELETE FROM rate_limits WHERE expires_at<now()-interval '1 hour'");
@@ -125,7 +127,8 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
   every(jobs.corridors,60000,!!dispatch);
   every(jobs.maintenance,3600000);
   every(jobs.walletRecon,900000);
-   every(jobs.geoLearning,1800000);
+   every(jobs.geoLearning,600000);
+   every(jobs.mapChangeScan,21600000);
   return api;
  }
  function stop(){while(timers.length)clearInterval(timers.pop());}

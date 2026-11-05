@@ -1,0 +1,12 @@
+[Unit]
+Description=Rebuild the ELESEND map from fresh data and approved rider roads
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Set this to where the repository lives on the server, along with GHANA_MAP_DATA if it is not the default.
+EnvironmentFile=-/etc/elesend/map-refresh.env
+ExecStart=/usr/bin/env bash -c '"${ELESEND_ROOT:?Set ELESEND_ROOT in /etc/elesend/map-refresh.env}/deploy/runtime/refresh-map.sh"'
+Nice=10
+IOSchedulingClass=idle

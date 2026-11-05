@@ -9,7 +9,7 @@
   "food":{"paths":["restaurant.mjs","restaurant-orders.mjs","commission-engine.mjs","promotion-engine.mjs"],
    "tables":["commission_audit_logs","commission_rules","food_order_items","food_orders","mapped_restaurants","menu_categories","menu_item_modifiers","menu_items","menu_modifier_options","promotion_audit_logs","promotion_campaign_restaurants","promotion_campaigns","promotion_redemptions","restaurant_commission_settings","restaurants"]},
   "maps":{"paths":["traffic.mjs","map-config.mjs","infrastructure/maps/","providers/ghanapostgps.mjs"],
-   "tables":["candidate_landmarks","candidate_roads","map_update_versions","national_businesses","rider_map_reports","spatial_landmarks","temporary_delivery_references","traffic_cursor","traffic_observations","traffic_typical_speeds"]},
+   "tables":["candidate_landmarks","candidate_roads","map_update_versions","national_businesses","rider_map_reports","spatial_landmarks","temporary_delivery_references","geo_learning_state","map_change_areas","map_change_scans","traffic_cursor","traffic_observations","traffic_typical_speeds"]},
   "safety":{"paths":["safety.mjs","chat-engine.mjs"],
    "tables":["chat_abuse_reports","chat_audit_logs","chat_conversations","chat_messages","chat_voice_notes","chat_messaging_policy","chat_participants","chat_realtime_outbox","delivery_ratings","delivery_stop_watch","safety_alerts","trusted_contacts"]}
  },

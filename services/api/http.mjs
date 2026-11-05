@@ -429,6 +429,12 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    else if(method==='GET'&&path==='/api/v1/admin/geo-intelligence/dashboard'){
     result=await mapLifecycle.getAdminGeoDashboard(actor);
    }
+   else if(method==='GET'&&path==='/api/v1/admin/geo-intelligence/review-queue'){
+    result=await mapLifecycle.getReviewQueue(actor);
+   }
+   else if(method==='POST'&&path==='/api/v1/admin/geo-intelligence/road-details'){
+    result=await mapLifecycle.updateRoadDetails(actor,body);
+   }
    else if(method==='POST'&&path==='/api/v1/admin/geo-intelligence/publish-road'){
     result=await mapLifecycle.publishRoad(actor,body?.roadId,body?.notes);
    }
