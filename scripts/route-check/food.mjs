@@ -14,6 +14,7 @@ await db.query("UPDATE checkout_method_policies SET enabled=true WHERE method='M
 const tariff=(await db.query("SELECT base_minor,per_km_minor,per_minute_minor,minimum_minor,commission_bps,traffic_time_pricing FROM pricing_policies WHERE active AND vehicle='motorcycle'")).rows[0];console.log('TARIFF',JSON.stringify(tariff));
 const P={latitude:5.5446358,longitude:-0.3436852},D={latitude:5.5547244,longitude:-0.4341409};
 await db.query("INSERT INTO restaurants(id,owner_id,name,phone,address,latitude,longitude,status,merchant_tier,cuisine_category,commission_calculation_basis) VALUES($1,$2,'Lab Barcelos West Hills','+233241112222','West Hills Mall',$3,$4,'approved','standard','grill','gross_subtotal')",[ids.rest,ids.owner,P.latitude,P.longitude]);
+await db.query("UPDATE restaurants SET delivery_radius_m=15000 WHERE id=$1",[ids.rest]);
 await db.query("INSERT INTO menu_items(id,restaurant_id,name,price_minor) VALUES($1,$2,'Sample meal (lab price)',10000)",[ids.item,ids.rest]);
 const food=restaurantOrderService(db,{routing}),customer={id:ids.customer,kind:'customer'},kitchen={id:ids.owner,kind:'business'};
 const r=await routing.route(P,D,{vehicle:'motorcycle',billing:true});console.log('ROUTE km',(r.distanceMeters/1000).toFixed(2),'roadMin',(r.durationSeconds/60).toFixed(1));
@@ -23,7 +24,7 @@ const q=await food.quoteFoodOrder(customer,input);
 console.log('QUOTE',JSON.stringify({subtotal:q.subtotalMinor,delivery:q.deliveryFeeMinor,deliveryCommission:q.deliveryCommissionMinor,foodCommission:q.foodCommissionMinor,restaurantNet:q.netRestaurantSettlementMinor,total:q.totalMinor,fee:q.processingFeeMinor}));
 const order=await food.createFoodOrder(customer,input,{paymentMethod:'MOMO',idempotencyKey:'lab-'+randomInt(1e9)});console.log('ORDER',order.state,order.payment_status,'total',order.total_minor,Object.keys(order).join(','));
 let receipt;const checkout=checkoutService(db,{provider:{name:'fixture',methods:['MOMO'],allowedCheckoutHosts:['checkout.test'],createCheckout:async x=>({reference:x.reference,checkoutUrl:'https://checkout.test/'+x.reference}),verifyPayment:async()=>receipt,parseVerifiedWebhook:async()=>receipt}});
-const intent=await checkout.initiate(customer,order.shipment_id,{idempotencyKey:'lab-'+randomInt(1e9),method:'MOMO'});console.log('CHECKOUT',JSON.stringify({amount:intent.amountMinor??intent.amount_minor,fee:intent.processingFeeMinor??intent.feeMinor,keys:Object.keys(intent)}));
+const intent=await checkout.initiate(customer,order.shipment_id,{idempotencyKey:randomUUID()});console.log('CHECKOUT',JSON.stringify({amount:intent.amountMinor??intent.amount_minor,fee:intent.processingFeeMinor??intent.feeMinor,keys:Object.keys(intent)}));
 receipt={reference:intent.reference,status:'success',amountMinor:intent.amountMinor??intent.amount_minor??Number(order.total_minor),currency:'GHS',channel:'mobile_money',eventId:'evt_'+randomUUID()};
 await checkout.webhook(Buffer.from('{}'),{});
 await food.acceptOrder(kitchen,order.id,{estimatedPrepMinutes:15});
