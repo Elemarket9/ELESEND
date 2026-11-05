@@ -73,7 +73,11 @@ rm -rf "$previous"
 mv "$next" "$live"
 if ! { restart_map && live_map_healthy; }; then
   say 'New map did not come up. Going back to the previous map'
-  rm -rf "$live"; mv "$previous" "$live"; restart_map
+  if [ -e "$previous" ]; then
+    rm -rf "$live"; mv "$previous" "$live"; restart_map
+  else
+    say 'There is no previous map, so the new one stays in place'
+  fi
   exit 1
 fi
 say 'New map is live. The previous one is kept for one more refresh'

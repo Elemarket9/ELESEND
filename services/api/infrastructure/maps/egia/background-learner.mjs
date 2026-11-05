@@ -8,6 +8,9 @@ import { createMapLifecycleService } from './map-lifecycle-service.mjs';
 // Learning may advance a road under review, but never reverses an administrator's decision.
 const OVERLAP_MINUTES = 10; // A trip crossing two reads is still seen whole.
 const WINDOW_MINUTES = 30;
+const GIVE_UP_RETRY_MS = 7200000;
+const ROAD_CHECK_BATCH = 4;
+const MAX_ROAD_CHECKS_PER_CYCLE = 30000;
 const FIRST_READ_HOURS = 6;
 const SAME_ROAD_METERS = 35;
 const SAME_ROAD_SHARE = 0.7;
@@ -153,19 +156,23 @@ export async function runGeographicLearningCycle(db, { routing = null, riderVehi
     WHERE observed_at > $1 AND observed_at <= $2
     GROUP BY rider_id
     HAVING count(*) >= 4
+    ORDER BY random()
   `, [window.from, window.until]);
   const vehicles = riderVehicles ? await riderVehicles(riderSamples.rows.map(row => row.rider_id)) : new Map();
 
-  let roadChecksFailed = 0, ridersChecked = 0;
+  let roadChecksFailed = 0, roadChecks = 0;
   for (const row of riderSamples.rows) {
     const vehicle = vehicles.get(row.rider_id) || 'motorcycle';
     if (NOT_LEARNED_FROM.has(vehicle)) continue;
-    ridersChecked++;
+    if (roadChecks >= MAX_ROAD_CHECKS_PER_CYCLE) break; // The job must finish before the next one starts.
     const recent = sanitizeTrajectory(row.samples);
     let roadDistances;
     try {
       roadDistances = [];
-      for (const sample of recent) roadDistances.push(await routing.nearestRoadMeters(sample, { vehicle }));
+      for (let start = 0; start < recent.length; start += ROAD_CHECK_BATCH) {
+        roadDistances.push(...await Promise.all(recent.slice(start, start + ROAD_CHECK_BATCH).map(sample => routing.nearestRoadMeters(sample, { vehicle }))));
+      }
+      roadChecks += recent.length;
     } catch {
       roadChecksFailed++;
       continue; // Road data unavailable: learn nothing from this rider in this cycle.
@@ -199,7 +206,7 @@ export async function runGeographicLearningCycle(db, { routing = null, riderVehi
 
         // How long the road has been seen for, from its first sighting.
         const firstSeen = new Date(cur.created_at).getTime();
-        const cumulativeSpan = Math.max(cur.temporal_span_seconds || 0, Math.round((latestObsTime - firstSeen) / 1000));
+        const cumulativeSpan = Math.max(cur.temporal_span_seconds || 0, Math.round(Math.abs(latestObsTime - firstSeen) / 1000));
 
         // Check directional consistency and bidirectional flow
         let isBidirectional = cur.bidirectional;
@@ -258,13 +265,13 @@ export async function runGeographicLearningCycle(db, { routing = null, riderVehi
         await db.query(`
           INSERT INTO candidate_roads (
             id, name, corridor, status, confidence, observation_count, distinct_riders,
-            mean_accuracy_m, source, contributor_rider_ids, allowed_vehicles
+            mean_accuracy_m, source, contributor_rider_ids, allowed_vehicles, created_at
           ) VALUES (
             $1, 'Discovered Road Segment', ST_SetSRID(ST_GeomFromGeoJSON($2), 4326)::geography,
-            'OBSERVED', 35, $3, 1, $4, 'rider_gps_cluster', ARRAY[$5::uuid], ARRAY[$6]
+            'OBSERVED', 35, $3, 1, $4, 'rider_gps_cluster', ARRAY[$5::uuid], ARRAY[$6], $7
           )
           ON CONFLICT DO NOTHING
-        `, [roadId, lineGeoJson, corridor.pointCount, meanAcc, row.rider_id, vehicle]);
+        `, [roadId, lineGeoJson, corridor.pointCount, meanAcc, row.rider_id, vehicle, new Date(earliestObsTime)]);
 
         result.roadsDiscovered++;
       }
@@ -272,8 +279,8 @@ export async function runGeographicLearningCycle(db, { routing = null, riderVehi
     }
   }
 
-  // If road data was down for everyone, read these trips again next time.
-  if (!(ridersChecked > 0 && roadChecksFailed === ridersChecked)) {
+  // If road data failed for anyone, read these trips again, until they are too old to keep trying.
+  if (roadChecksFailed === 0 || now - window.until.getTime() > GIVE_UP_RETRY_MS) {
     await db.query(
       `INSERT INTO geo_learning_state (id, processed_until) VALUES (1, $1)
        ON CONFLICT (id) DO UPDATE SET processed_until = EXCLUDED.processed_until`,

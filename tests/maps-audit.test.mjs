@@ -181,10 +181,11 @@ test('landmark publish and rollback work against PostgreSQL',{skip:!process.env.
    VALUES($1,'Audit Road',ST_SetSRID(ST_GeomFromText('LINESTRING(-0.18 5.56,-0.18 5.562)'),4326)::geography,'REJECTED','{}')`,[roadId]);
   await assert.rejects(maps.publishRoad(admin,roadId,'verified on site'),e=>e.status===409);
   await assert.rejects(maps.publishRoad(admin,'not-a-uuid'),e=>e.status===400);
-  // Road matching needs both ends on the corridor, and a second rider corroborates.
+  // A second rider, at a different time, corroborates.
   const riders=[randomUUID(),randomUUID()],latitude=10.5+Math.random()/2;
   const learnerDbFor=rider=>({...db,query:(sql,params)=>sql.includes('FROM rider_location_samples')?Promise.resolve({rows:[{rider_id:rider,samples:trail(12,latitude)}]}):db.query(sql,params)});
   assert.equal((await runGeographicLearningCycle(learnerDbFor(riders[0]),{routing:OFF_ROAD})).roadsDiscovered,1);
+  await db.query("UPDATE candidate_roads SET created_at=now()-interval '2 hours' WHERE ST_DWithin(corridor,ST_SetSRID(ST_MakePoint(-0.2,$1),4326)::geography,300)",[latitude]);
   assert.equal((await runGeographicLearningCycle(learnerDbFor(riders[1]),{routing:OFF_ROAD})).roadsCorroborated,1);
   const road=(await db.query(`SELECT status,distinct_riders,contributor_rider_ids FROM candidate_roads WHERE ST_DWithin(corridor,ST_SetSRID(ST_MakePoint(-0.2,$1),4326)::geography,300) ORDER BY created_at DESC LIMIT 1`,[latitude+0.004])).rows[0];
   assert.equal(road.status,'CORROBORATED');
@@ -246,20 +247,19 @@ test('EGIA on a real database: pieces join, verified roads publish with no rider
   const seenVehicles=new Set();
   const routing={nearestRoadMeters:nearest};
   const vehicles=ids=>db.query('SELECT id,vehicle FROM riders WHERE id=ANY($1::uuid[])',[ids]).then(r=>new Map(r.rows.map(x=>[x.id,x.vehicle])));
-  const cycle=at=>runGeographicLearningCycle(db,{routing,riderVehicles:vehicles,now:at});
+  // Read from just before a ride started.
+  const cycle=async minutesAgo=>{await db.query('INSERT INTO geo_learning_state(id,processed_until) VALUES(1,$1) ON CONFLICT(id) DO UPDATE SET processed_until=EXCLUDED.processed_until',[new Date(Date.now()-(minutesAgo-9)*60000)]);return runGeographicLearningCycle(db,{routing,riderVehicles:vehicles});};
   const road=()=>db.query("SELECT *,ST_Length(corridor) AS length_m FROM candidate_roads WHERE ST_DWithin(corridor,ST_SetSRID(ST_MakePoint(-1.2,$1),4326)::geography,800) ORDER BY created_at",[baseLat+0.005]).then(r=>r.rows);
   const first=await mkRider('motorcycle'),second=await mkRider('motorcycle'),third=await mkRider('car'),cyclist=await mkRider('bicycle');
   await ride(first,300,0,12);
-  await cycle(Date.now()-200*60000+100*60000);
-  await db.query('DELETE FROM geo_learning_state');
+  await cycle(300);
   assert.equal((await road()).length,1,'first trip');
   assert.ok(seenVehicles.has('motorcycle'));
   // A longer trip over the same road adds to it, instead of starting a new road.
   await db.query('DELETE FROM rider_location_samples WHERE rider_id=$1',[first]);
   await ride(second,200,0,24);
   await ride(cyclist,200,0,24);
-  await cycle(Date.now());
-  await db.query('DELETE FROM geo_learning_state');
+  await cycle(200);
   let roads=await road();
   assert.equal(roads.length,1,'still one road');
   assert.equal(roads[0].distinct_riders,2);
@@ -268,16 +268,13 @@ test('EGIA on a real database: pieces join, verified roads publish with no rider
   await db.query('DELETE FROM rider_location_samples WHERE rider_id=ANY($1::uuid[])',[[second,cyclist]]);
   // Not yet spread over a full day: confirmed, but waits.
   await ride(third,100,0,24);
-  await db.query("UPDATE candidate_roads SET temporal_span_seconds=temporal_span_seconds WHERE id=$1",[roads[0].id]);
-  await cycle(Date.now());
-  await db.query('DELETE FROM geo_learning_state');
+  await cycle(100);
   roads=await road();
   assert.equal(roads[0].distinct_riders,3);
   assert.equal(roads[0].status,'CORROBORATED');
   assert.ok(roads[0].allowed_vehicles.includes('car'));
   // Spread over a day: it publishes itself, and rider ids are gone everywhere.
   await db.query('UPDATE candidate_roads SET temporal_span_seconds=90000 WHERE id=$1',[roads[0].id]);
-  await db.query('DELETE FROM rider_location_samples WHERE rider_id=$1',[third]);
   const published=await createMapLifecycleService(db).autoPublishVerified({routing:{nearestRoadMeters:async p=>Math.abs(p.latitude-baseLat)<0.0015?10:200}});
   assert.equal(published.roadsPublished,1);
   roads=await road();

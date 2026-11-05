@@ -103,7 +103,7 @@ async function readBands(item, bbox, { GeoTIFF, proj4 }) {
   };
   // 10 m bands use their first overview, which is 20 m like the others.
   const [nir, red, swir, scl] = await Promise.all([read('nir', 1), read('red', 1), read('swir16', 0), read('scl', 0)]);
-  if (nir.width !== swir.width || nir.height !== swir.height) throw Error('Image bands do not line up');
+  if ([red, swir, scl].some(band => band.width !== nir.width || band.height !== nir.height)) throw Error('Image bands do not line up');
   const baselineNumber = Number(item.properties['s2:processing_baseline']);
   const offset = item.properties['earthsearch:boa_offset_applied'] === true || !(baselineNumber >= 4) ? 0 : 1000;
   return { bands: { nir: nir.data, red: red.data, swir: swir.data, scl: scl.data }, width: nir.width, height: nir.height, originX: nir.originX, originY: nir.originY, offset, zone };

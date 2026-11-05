@@ -428,8 +428,12 @@ export function createMapLifecycleService(db) {
         }
         const failures = verificationFailures({ ...road, join_meters: Math.min(distances[0], distances[2]) }, rules);
         if (failures.length) continue;
-        await applyRoadPublish(road.id, { actorId: null, automatic: true, notes: 'Published automatically after passing verification' });
-        outcome.roadsPublished += 1;
+        try {
+          await applyRoadPublish(road.id, { actorId: null, automatic: true, notes: 'Published automatically after passing verification' });
+          outcome.roadsPublished += 1;
+        } catch {
+          // One road that cannot publish must not hold up the others. It stays in map review.
+        }
       }
     }
     // A name stays private until three different riders independently give the same one at the same place.
@@ -441,8 +445,12 @@ export function createMapLifecycleService(db) {
       LIMIT 50
     `, [rules.minRiders])).rows;
     for (const { id } of landmarks) {
-      await applyLandmarkPublish(id, { actorId: null, automatic: true });
-      outcome.landmarksPublished += 1;
+      try {
+        await applyLandmarkPublish(id, { actorId: null, automatic: true });
+        outcome.landmarksPublished += 1;
+      } catch {
+        // It stays in map review.
+      }
     }
     return outcome;
   }
