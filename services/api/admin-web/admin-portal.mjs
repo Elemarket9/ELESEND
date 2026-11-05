@@ -1673,7 +1673,7 @@ export function renderAdminPortalHtml() {
         const rules = data.autoPublish;
         document.getElementById('mapReviewRules').textContent = rules.enabled
           ? 'Roads publish themselves after ' + rules.minRiders + ' different riders (' + rules.minRidersWithImagery + ' where satellite images show change), seen at least ' + rules.minSpanHours + ' hours apart, with accurate GPS and joined to the road network. Publish, reject or undo here at any time.'
-          : 'Automatic publishing is off. Roads wait for your decision here.';
+          : 'EGIA learning and automatic publishing are off. Anything already here waits for your decision.';
         document.getElementById('mapReviewRoads').innerHTML = data.candidateRoads.map(r => {
           const mid = JSON.parse(r.corridor_geojson).coordinates[Math.floor(JSON.parse(r.corridor_geojson).coordinates.length / 2)];
           const id = escapeHtml(r.id);

@@ -8,6 +8,8 @@ import {offRoadSegments} from '../services/api/infrastructure/maps/egia/gps-qual
 import {createMapLifecycleService} from '../services/api/infrastructure/maps/egia/map-lifecycle-service.mjs';
 import {osrmRouting} from '../services/api/dispatch-routing.mjs';
 
+import {verificationRules} from '../services/api/infrastructure/maps/egia/road-verification.mjs';
+const verificationRulesOn=()=>verificationRules({EGIA_ENABLED:'true'});
 const ACCRA={latitude:5.6,longitude:-0.2};
 
 test('bearings point the right way from Ghana',()=>{
@@ -197,14 +199,16 @@ test('landmark publish and rollback work against PostgreSQL',{skip:!process.env.
 
 test('auto-publish needs every check to pass',async()=>{
  const {verificationFailures,verificationRules}=await import('../services/api/infrastructure/maps/egia/road-verification.mjs');
- const rules=verificationRules({});
+ const rules=verificationRules({EGIA_ENABLED:'true'});
  const good={status:'CORROBORATED',distinct_riders:3,temporal_span_seconds:90000,confidence:75,mean_accuracy_m:10,length_m:200,is_valid:true,join_meters:8};
  assert.deepEqual(verificationFailures(good,rules),[]);
  for(const change of [{status:'OBSERVED'},{distinct_riders:2},{temporal_span_seconds:3600},{confidence:40},{mean_accuracy_m:40},{length_m:30},{is_private_access:true},{is_pedestrian_only:true},{is_valid:false},{join_meters:200}]){
   assert.notDeepEqual(verificationFailures({...good,...change},rules),[],JSON.stringify(change));
  }
  assert.deepEqual(verificationFailures({...good,distinct_riders:2,imagery_supported:true},rules),[]);
- assert.equal(verificationRules({MAP_AUTO_PUBLISH:'false'}).enabled,false);
+ assert.equal(verificationRules({}).enabled,false,'off until turned on');
+ assert.equal(verificationRules({EGIA_ENABLED:'true'}).enabled,true);
+ assert.equal(verificationRules({EGIA_ENABLED:'true',MAP_AUTO_PUBLISH:'false'}).enabled,false);
 });
 
 test('satellite change needs more built-up surface and less vegetation, in clear cells',async()=>{
@@ -275,7 +279,7 @@ test('EGIA on a real database: pieces join, verified roads publish with no rider
   assert.ok(roads[0].allowed_vehicles.includes('car'));
   // Spread over a day: it publishes itself, and rider ids are gone everywhere.
   await db.query('UPDATE candidate_roads SET temporal_span_seconds=90000 WHERE id=$1',[roads[0].id]);
-  const published=await createMapLifecycleService(db).autoPublishVerified({routing:{nearestRoadMeters:async p=>Math.abs(p.latitude-baseLat)<0.0015?10:200}});
+  const published=await createMapLifecycleService(db).autoPublishVerified({rules:verificationRulesOn(),routing:{nearestRoadMeters:async p=>Math.abs(p.latitude-baseLat)<0.0015?10:200}});
   assert.equal(published.roadsPublished,1);
   roads=await road();
   assert.equal(roads[0].status,'PUBLISHED');
@@ -290,4 +294,18 @@ test('EGIA on a real database: pieces join, verified roads publish with no rider
   await runGeographicLearningCycle(db,{});
   assert.equal((await db.query('SELECT 1 FROM candidate_roads WHERE id=$1',[stale])).rowCount,0);
  }finally{await db.close();}
+});
+
+test('EGIA jobs do not start unless turned on',async()=>{
+ const {backgroundJobs}=await import('../services/api/background-jobs.mjs');
+ const realInterval=globalThis.setInterval;
+ const count=async value=>{
+  if(value)process.env.EGIA_ENABLED=value;else delete process.env.EGIA_ENABLED;
+  const delays=[];
+  globalThis.setInterval=(fn,ms)=>{delays.push(ms);return {unref(){}};};
+  try{backgroundJobs({db:{query:async()=>({rows:[]})},chat:{}}).start();}finally{globalThis.setInterval=realInterval;delete process.env.EGIA_ENABLED;}
+  return delays.filter(ms=>ms===21600000).length;
+ };
+ assert.equal(await count(),0);
+ assert.equal(await count('true'),1);
 });
