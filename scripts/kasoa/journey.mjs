@@ -7,6 +7,7 @@ const logic=await import('../../apps/mobile/src/rider/navigation-logic.mjs');
 const log=(...a)=>console.log(...a);const O='/tmp/out/screens/';
 const db=database(url);await migrate(db);
 log('spatial_landmarks rows in a fresh database:',(await db.query('SELECT count(*) FROM spatial_landmarks')).rows[0].count);
+await db.query('UPDATE checkout_method_policies SET enabled=true');log('Payment methods',JSON.stringify((await db.query('SELECT method,enabled FROM checkout_method_policies')).rows));log('Prices',JSON.stringify((await db.query('SELECT vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,commission_bps FROM pricing_policies WHERE active')).rows));
 const texts=[];const sms={async send(m){texts.push(m);return {accepted:true};},async sendNotification(m){texts.push(m);return {accepted:true};}};
 const routing=osrmRouting({vehicleRoutes:{motorcycle:{endpoint:'http://127.0.0.1:5001',profile:'driving'},car:{endpoint:'http://127.0.0.1:5000',profile:'driving'}},timeoutMs:8000});
 const dispatch=dispatchEngine(db,{routing});
@@ -38,7 +39,8 @@ log('\n== 3. Routes');
 for(const v of ['motorcycle','car']){const r=await routing.route(KASOA,AIR,{vehicle:v,steps:true});log(v,(r.distanceMeters/1000).toFixed(1)+'km',Math.round(r.durationSeconds/60)+'min','steps',r.steps.length);}
 const P={address:'Kasoa (GPS)',latitude:KASOA.latitude,longitude:KASOA.longitude};
 log('\n== 4. Quote and order');
-const q=await api(c.token,'POST','/api/v1/quotes',{pickup:P,destination:AIR,vehicle:'motorcycle',recipientPhone:phone(),weightG:1000,description:'Documents',paymentMethod:'MOMO'});log('Quote',q.status,q.ms+'ms',JSON.stringify(q.data).slice(0,260));
+const q=await api(c.token,'POST','/api/v1/quotes',{pickup:P,destination:AIR,vehicle:'motorcycle',recipientPhone:phone(),weightG:1000,description:'Documents',paymentMethod:'MOMO'});log('Quote',q.status,q.ms+'ms',JSON.stringify(q.data).slice(0,1100));
+for(const v of ['car','van']){const x=await api(c.token,'POST','/api/v1/quotes',{pickup:P,destination:AIR,vehicle:v,recipientPhone:phone(),weightG:1000,description:'Documents',paymentMethod:'MOMO'});log('Quote',v,x.status,x.data?.amount_minor,x.data?.error||'');}
 const key='k'+randomInt(1e9);const s=await api(c.token,'POST','/api/v1/shipments',{quoteId:q.data.id},{'Idempotency-Key':key});log('Shipment',s.status,s.data?.state);
 const pay=await api(c.token,'POST','/api/v1/shipments/'+s.data.id+'/checkout',{idempotencyKey:key,email:'owner@example.com'});log('Checkout',pay.status,JSON.stringify(pay.data).slice(0,120));
 const row=(await db.query('SELECT amount_minor FROM shipment_checkout_intents WHERE reference=$1',[pay.data.reference])).rows[0];log('Charged GHS',Number(row.amount_minor)/100);
