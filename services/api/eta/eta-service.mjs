@@ -74,7 +74,7 @@ export function etaService(db,{routing=null,baselineFactors={},routingLabel='osr
   const gps=ACTIVE_STATES.has(stage)?classifyGps({latitude:row.rider_latitude,longitude:row.rider_longitude,updatedAt:row.rider_updated_at,accuracyMeters:row.position_accuracy_m==null?NaN:Number(row.position_accuracy_m),previous:await previousSample(row.rider_id,row.rider_updated_at)},{now:at}):{quality:'not_applicable',usable:false};
   const deliveryType=isFood?'food':'parcel',city=cityBucket(dropoff),bucket=timeBucket(at);
   const evidence=await evidenceFor({vehicle,deliveryType,city,bucket});
-  const adjustment=travelAdjustment({evidence,baselineFactor:baselineFactorFor(baselineFactors,vehicle,bucket,city)});
+  const adjustment=travelAdjustment({evidence,baselineFactor:baselineFactorFor(baselineFactors,vehicle,bucket,cityBucket(pickup))});
 
   const toPickup=stage==='RIDER_ASSIGNED',target=toPickup?pickup:dropoff;
   const cached=row.cached_stage&&row.route_rider_id===row.rider_id&&row.route_computed_at

@@ -150,7 +150,7 @@ export function summarizeTripEvidence(samples,{minSamples=30}={}){
 
 /** Travel-time adjustment for the customer ETA only. Measured trips replace the assumption
  * once there are enough of them; otherwise the configured baseline applies. */
-export function travelAdjustment({evidence,baselineFactor=1,minFactor=0.5,maxFactor=1.7}){
+export function travelAdjustment({evidence,baselineFactor=1,minFactor=0.5,maxFactor=3}){
  if(evidence?.sufficient)return {factor:Math.max(minFactor,Math.min(maxFactor,evidence.medianRatio)),source:'measured',sampleCount:evidence.sampleCount,measuredSpread:{low:evidence.p10Ratio/evidence.medianRatio,high:evidence.p90Ratio/evidence.medianRatio}};
  return {factor:baselineFactor,source:baselineFactor===1?'none':'assumed_baseline',sampleCount:evidence?.sampleCount??0,measuredSpread:null};
 }

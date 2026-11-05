@@ -113,7 +113,7 @@ test('calibration needs enough valid trips, and rejects implausible ones',()=>{
  assert.equal(measured.source,'measured');assert.equal(measured.factor,0.8);
  const noisy=summarizeTripEvidence([...trips(5,1),{predictedSeconds:1000,actualSeconds:9000},{predictedSeconds:1000,actualSeconds:10},{predictedSeconds:30,actualSeconds:30},{predictedSeconds:null,actualSeconds:30}]);
  assert.equal(noisy.sampleCount,5);assert.equal(noisy.rejectedCount,4);
- assert.equal(travelAdjustment({evidence:summarizeTripEvidence(trips(30,3))}).factor,1.7);
+ assert.equal(travelAdjustment({evidence:summarizeTripEvidence(trips(30,4))}).factor,3);
 });
 
 test('time buckets use Ghana time, and city buckets cover Accra and Kumasi',()=>{

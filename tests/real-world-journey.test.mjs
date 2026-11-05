@@ -245,7 +245,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    await db.query(`INSERT INTO pricing_policies SELECT (jsonb_populate_record(NULL::pricing_policies,to_jsonb(p)||jsonb_build_object('id',$1::text,'wait_per_minute_minor',50,'active',true))).* FROM pricing_policies p WHERE p.id=$2`,[version,before.rows[0].id]);
    try{
    const q=await api(c.token,'POST','/api/v1/quotes',trip({paymentMethod:'CASH',cashPayer:'recipient'}));assert.equal(q.status,200,JSON.stringify(q.data));
-   assert.equal(q.data.fareBreakdown.perKmMinor,320);
+   assert.equal(q.data.fareBreakdown.perKmMinor,Number(before.rows[0].per_km_minor));
    assert.equal(q.data.fareBreakdown.tariffId,version);
    assert.equal(q.data.fareBreakdown.tollMinor,0);
    assert.equal(q.data.fareBreakdown.bookingFeeMinor,0);
