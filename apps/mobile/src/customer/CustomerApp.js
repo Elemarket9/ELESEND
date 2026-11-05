@@ -46,6 +46,7 @@ import {
 import { normalizeGhanaPhone, isValidGhanaPhone, formatGhanaDisplayPhone } from '../phone';
 import { colors, typography, spacing, radii, shadows } from '../theme';
 import { customerStatus, paymentLabel } from '../status-labels';
+import FareSummary from './FareSummary';
 import { VoiceNoteBubble, VoiceNoteRecorder } from '../chat/VoiceNote';
 import {
   GHANA_REGIONS,
@@ -1625,6 +1626,8 @@ export default function CustomerApp() {
                   onChangeText={setDeliveryInstructions}
                 />
               </View>
+
+              {quoted?.fareBreakdown && <FareSummary quote={quoted} />}
 
               {/* Bottom Action Bar: Payment & CTA */}
               <View style={styles.sheetBottomBar}>

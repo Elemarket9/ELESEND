@@ -237,3 +237,18 @@ test('timeline records and measured accuracy work against PostgreSQL',{skip:!pro
   assert.ok(report.groups.every(g=>Number.isInteger(g.estimate.sampleCount)));
  }finally{await db.close();}
 });
+
+test('rush-hour trip times follow measured traffic, not a shortcut',async()=>{
+ const {baselineFactorFor,etaBaselineFactors,quotedEtaMinutes}=await import('../services/api/eta/baseline-factors.mjs');
+ const factors=etaBaselineFactors({});
+ assert.equal(baselineFactorFor(factors,'motorcycle','evening_peak'),1.4);
+ assert.equal(baselineFactorFor(factors,'car','evening_peak'),2.2);
+ assert.equal(baselineFactorFor(factors,'motorcycle','midday'),1);
+ assert.equal(baselineFactorFor(factors,'van','evening_peak'),1);
+ assert.equal(baselineFactorFor(etaBaselineFactors({ETA_BASELINE_FACTORS:'{"motorcycle":{"evening_peak":1.2}}'}),'motorcycle','evening_peak'),1.2);
+ assert.throws(()=>etaBaselineFactors({ETA_BASELINE_FACTORS:'{"motorcycle":{"midday":0.1}}'}),/must be from/);
+ // Kasoa to Terminal 3 at 4 pm: 39 minutes of road time. Google showed 55.
+ const eta=quotedEtaMinutes(2361,1.4);
+ assert.ok(eta.low<=55&&eta.high>=55,JSON.stringify(eta));
+});
+

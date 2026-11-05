@@ -30,5 +30,20 @@ export function calculateQuote(policy,distanceMeters,extras={}){
   const cap=positive(policy.commission_cap_minor,'commission cap');if(commission>cap)commission=cap;
  }
  if(commission>charge)commission=charge;
- return {amountMinor:Number(charge),commissionMinor:Number(commission),riderEarningsMinor:Number(charge-commission)};
+ // The booking fee is ELESEND's. Tolls pass through to the rider who pays them, free of commission and multipliers.
+ const bookingBps=positive(policy.booking_fee_bps??0,'booking fee');if(bookingBps>3000n)throw Error('Booking fee exceeds limit');
+ const booking=(charge*bookingBps+5000n)/10000n;
+ const tolls=positive(extras.tollMinor??0,'toll');
+ const total=charge+booking+tolls;
+ if(total>2147483647n)throw Error('Charge exceeds invoice bounds');
+ const platform=commission+booking;
+ return {amountMinor:Number(total),commissionMinor:Number(platform),riderEarningsMinor:Number(total-platform),
+  breakdown:{fareMinor:Number(charge),salesCommissionMinor:Number(commission),bookingFeeMinor:Number(booking),tollMinor:Number(tolls),minimumApplied:surged<minimum}};
+}
+
+/** Fee after the free minutes, per started minute, up to the limit. */
+export function waitingFeeMinor(waitedSeconds,perMinuteMinor,{freeMinutes=5,maxMinor=1500}={}){
+ const over=waitedSeconds-freeMinutes*60;
+ if(!(over>0)||!(perMinuteMinor>0))return 0;
+ return Math.min(maxMinor,Math.ceil(over/60)*perMinuteMinor);
 }

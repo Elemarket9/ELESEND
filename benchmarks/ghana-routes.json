@@ -1,0 +1,13 @@
+{
+ "note":"Route points are benchmark inputs. reference holds only values someone actually observed, with their source. Empty means not yet measured.",
+ "routes":[
+  {"name":"Kasoa to Accra Airport","from":[5.5346,-0.4280],"to":[5.6052,-0.1698],"reference":[{"source":"Google Maps screenshot, 2026-11-05 16:22","vehicle":"motorcycle","distanceKm":35,"minutes":55},{"source":"Google Maps screenshot, 2026-11-05 16:22","vehicle":"car","minutes":89}]},
+  {"name":"Kasoa to Budumburam","from":[5.5346,-0.4280],"to":[5.5333,-0.4722],"reference":[]},
+  {"name":"Circle to East Legon","from":[5.5699,-0.2130],"to":[5.6350,-0.1610],"reference":[]},
+  {"name":"Madina to Achimota","from":[5.6760,-0.1650],"to":[5.6230,-0.2240],"reference":[]},
+  {"name":"Tema to Accra","from":[5.6700,0.0060],"to":[5.5560,-0.1969],"reference":[]},
+  {"name":"Kumasi urban","from":[6.6960,-1.6240],"to":[6.6730,-1.5730],"reference":[]},
+  {"name":"Cape Coast urban","from":[5.1053,-1.2466],"to":[5.1160,-1.2900],"reference":[]},
+  {"name":"Sunyani urban","from":[7.3349,-2.3123],"to":[7.3600,-2.3300],"reference":[]}
+ ]
+}

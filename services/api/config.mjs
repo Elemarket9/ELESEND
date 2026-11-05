@@ -1,3 +1,4 @@
+import {etaBaselineFactors} from './eta/baseline-factors.mjs';
 import {parseFirebaseAccount} from './firebase-account.mjs';
 import {parseIpLimitMultiplier} from './rate-limits.mjs';
 /**
@@ -284,19 +285,15 @@ export function validateConfig(env = process.env) {
   }
 
   // Customer ETA only. Fares, dispatch ranking and delivery deadlines use raw road times.
-  const motorcycleEtaFactor = env.ETA_MOTORCYCLE_BASELINE_FACTOR === undefined || String(env.ETA_MOTORCYCLE_BASELINE_FACTOR).trim() === ''
-    ? 0.75
-    : Number(env.ETA_MOTORCYCLE_BASELINE_FACTOR);
-  if (!Number.isFinite(motorcycleEtaFactor) || motorcycleEtaFactor < 0.3 || motorcycleEtaFactor > 1) {
-    errors.push('ETA_MOTORCYCLE_BASELINE_FACTOR must be a number from 0.3 to 1.');
-  }
+  let etaFactors = {};
+  try { etaFactors = etaBaselineFactors(env); } catch (error) { errors.push(error.message); }
 
   if (parseBoolean(env.GHANAPOSTGPS_LOOKUP_ENABLED, false) && !(env.GHANAPOSTGPS_LOOKUP_URL || '').trim()) {
     errors.push('GHANAPOSTGPS_LOOKUP_URL is required when GHANAPOSTGPS_LOOKUP_ENABLED is true.');
   }
 
   const routingConfig = {
-    etaBaselineFactors: {motorcycle: motorcycleEtaFactor},
+    etaBaselineFactors: etaFactors,
     osrmUrl,
     vehicleRoutes: assembledVehicleRoutes,
     profiles,

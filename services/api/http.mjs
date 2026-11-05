@@ -1,3 +1,5 @@
+import {tollRuleService} from './toll-rules.mjs';
+import {requirePermission} from './permissions.mjs';
 import {trafficRouting,trafficService} from './traffic.mjs';
 import {privateMapStyle} from '../../apps/mobile/src/maps/private-map-style.mjs';
 import {settlementIntentForRider} from './modules/payments/index.mjs';
@@ -69,6 +71,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const commissions=commissionEngine(db);
   const promos=promotionEngine(db);
   const chat=chatEngine(db);
+  const tollRules=tollRuleService(db,{requirePermission});
   const mapLifecycle=createMapLifecycleService(db);
   const trafficRoutes=trafficRouting(app?.routing,trafficService(db));
   const eta=etaService(db,{routing:trafficRoutes,baselineFactors:etaBaselineFactors});
@@ -454,6 +457,9 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/calculate-fare'){await limit(db,'quote:'+actor.id,30,60);result=forCustomer(actor,{...await app.quote(actor,body),customer_id:actor.id});}
   else if(method==='GET'&&path==='/api/v1/pricing/vehicles')result=await app.vehicleTariffs(actor);
   else if(method==='POST'&&path==='/api/v1/admin/pricing/vehicles')result=await app.configureVehicleTariff(actor,body);
+  else if(method==='GET'&&path==='/api/v1/admin/pricing/tolls')result=await tollRules.list(actor);
+  else if(method==='POST'&&path==='/api/v1/admin/pricing/tolls')result=await tollRules.add(actor,body);
+  else if(method==='POST'&&/^\/api\/v1\/admin\/pricing\/tolls\/[0-9a-f-]{36}\/retire$/.test(path))result=await tollRules.retire(actor,path.split('/')[6]);
   else if(method==='POST'&&path==='/api/v1/admin/pricing/surge-zones')result=await app.configureSurgeZone(actor,body);
   else if(method==='POST'&&path==='/api/v1/shipments')result=forCustomer(actor,await app.book(actor,body,req.headers['idempotency-key']));
   else if(method==='GET'&&path==='/api/v1/shipments')result=forCustomer(actor,await app.list(actor));

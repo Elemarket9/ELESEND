@@ -570,10 +570,13 @@ export default function RiderApp() {
     if (otp.trim().length !== 6) throw Error('Enter the 6-digit code');
     const verifiedKind = activeParcel.kind;
 
-    await call('POST', `/api/v1/shipments/${activeParcel.id}/verify`, {
+    const verified = await call('POST', `/api/v1/shipments/${activeParcel.id}/verify`, {
       challengeId: challenge.challengeId,
       code: otp.trim()
     });
+    if (verified?.waitingFee?.collection === 'collect_cash') {
+      Alert.alert('Waiting fee', `You waited ${Math.round(verified.waitingFee.waitedSeconds / 60)} min here. Collect ${ghc(verified.waitingFee.feeMinor)} waiting fee in cash. You keep all of it.`);
+    }
 
     setChallenge(null);
     setActiveParcel(null);
