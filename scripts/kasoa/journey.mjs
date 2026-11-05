@@ -8,11 +8,11 @@ const log=(...a)=>console.log(...a);const O='/tmp/out/screens/';
 const db=database(url);await migrate(db);
 log('spatial_landmarks rows in a fresh database:',(await db.query('SELECT count(*) FROM spatial_landmarks')).rows[0].count);
 const texts=[];const sms={async send(m){texts.push(m);return {accepted:true};},async sendNotification(m){texts.push(m);return {accepted:true};}};
-const routing=osrmRouting({vehicleRoutes:{motorcycle:{endpoint:'http://127.0.0.1:5001',profile:'driving'},car:{endpoint:'http://127.0.0.1:5000',profile:'driving'},van:{endpoint:'http://127.0.0.1:5000',profile:'driving'}},timeoutMs:8000});
+const routing=osrmRouting({vehicleRoutes:{motorcycle:{endpoint:'http://127.0.0.1:5001',profile:'driving'},car:{endpoint:'http://127.0.0.1:5000',profile:'driving'}},timeoutMs:8000});
 const dispatch=dispatchEngine(db,{routing});
 const provider={name:'lab',methods:['MOMO','CARD'],allowedCheckoutHosts:['checkout.test'],async createCheckout(x){return {reference:x.reference,checkoutUrl:'https://checkout.test/'+x.reference,providerReference:x.reference};},async verify(){return {status:'pending'};}};
 const app=platform(db,{otpKey:process.env.OTP_KEY,routing,dispatch,sms});const checkout=checkoutService(db,{provider,sms,dispatch,routing});
-const server=httpServer(db,app,dispatch,financeService(db,{provider}),checkout,{restaurantOrders:restaurantOrderService(db,{platform:app,dispatcher:dispatch,routing,sms})});
+const server=httpServer(db,app,dispatch,financeService(db,{provider}),checkout,{restaurantOrders:restaurantOrderService(db,{platform:app,dispatcher:dispatch,routing,sms}),etaBaselineFactors:{motorcycle:0.75}});
 await new Promise(r=>server.listen(4000,'127.0.0.1',r));const base='http://127.0.0.1:4000';
 const api=async(token,method,path,body,headers={})=>{const t=Date.now();const res=await fetch(base+path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{}),...headers},body:body?JSON.stringify(body):undefined});const data=await res.json().catch(()=>null);return {status:res.status,data,ms:Date.now()-t};};
 const phone=()=>'+23324'+String(randomInt(0,10000000)).padStart(7,'0');const code=()=>texts.at(-1).code;
@@ -67,6 +67,7 @@ const m=pts[Math.floor(pts.length/2)];const off={latitude:m.latitude+0.002,longi
 let rs={};for(let t=0;t<3;t++){rs=logic.rerouteCheck(rs,{offRouteMeters:pOff.offRouteMeters,accuracy:8,now:1e6+t*2000});log('  fix',t+1,'reroute?',rs.reroute);}
 const n3=await api(r.token,'POST','/api/v1/rider/navigation',{shipmentId:s.data.id,...off});log('New route from there',n3.status,n3.ms+'ms',(n3.data?.distanceMeters/1000).toFixed(1)+'km','first:',n3.data?.steps?.[0]?.instruction);
 await gps(m);const tr=await api(c.token,'GET','/api/v1/shipments/'+s.data.id+'/tracking');log('Customer tracking',tr.status,JSON.stringify(tr.data).slice(0,300));
+for(const path of ['/api/v1/shipments/'+s.data.id+'/eta','/api/v1/shipments/'+s.data.id]){const x=await api(c.token,'GET',path);log('Customer',path.split('/').pop().slice(0,8),x.status,JSON.stringify(x.data).slice(0,500));}
 // Screens
 const require=createRequire('/tmp/ui/x.js');const {chromium}=require('playwright');
 const js={c:fs.readFileSync('/tmp/ui/customer.js'),r:fs.readFileSync('/tmp/ui/rider.js')},ml=fs.readFileSync('/tmp/ui/node_modules/maplibre-gl/dist/maplibre-gl.js'),mlc=fs.readFileSync('/tmp/ui/node_modules/maplibre-gl/dist/maplibre-gl.css');

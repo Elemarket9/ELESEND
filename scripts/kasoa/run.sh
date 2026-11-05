@@ -14,3 +14,5 @@ npx playwright install --with-deps chromium >/dev/null 2>&1
 ln -sfn /tmp/ui/node_modules "$R/apps/node_modules"
 EXPO_PUBLIC_ELESEND_API_BASE_URL=https://ui.test NODE_PATH=/tmp/ui/node_modules ROOT="$R" node "$R/scripts/kasoa/build.cjs" 2>&1 | tail -6; ls -la /tmp/ui/*.js | cut -c24-
 cd $R; TEST_DATABASE_URL=postgres://elesend:t@127.0.0.1:5432/elesend_test_lab NODE_PATH=/tmp/ui/node_modules node scripts/kasoa/journey.mjs 2>&1 | tee $O/journey.txt
+pkill -f tile-server || true
+docker rm -f car moto pg >/dev/null 2>&1 || true
