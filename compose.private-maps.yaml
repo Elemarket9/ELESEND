@@ -5,6 +5,7 @@ services:
   api:
     environment:
       ROUTING_PROVIDER_PRIORITY: osrm
+      EGIA_ENABLED: ${EGIA_ENABLED:-false}
       ROUTING_OSRM_URL: http://osrm:5000
       ROUTING_OSRM_VEHICLES_JSON: '{"car":{"endpoint":"http://osrm:5000","profile":"driving"},"motorcycle":{"endpoint":"http://osrm-motorcycle:5000","profile":"driving"}}'
       GHANAPOSTGPS_LOOKUP_ENABLED: ${GHANAPOSTGPS_LOOKUP_ENABLED:-false}

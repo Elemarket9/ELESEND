@@ -13,6 +13,7 @@ import {reconcileAndEnforceWeeklyRestrictions} from './modules/payments/index.mj
 import {runScheduledRecovery} from './modules/payments/index.mjs';
 import {runGeographicLearningCycle} from './infrastructure/maps/egia/background-learner.mjs';
 import {scanMapChangesIfDue} from './infrastructure/maps/egia/imagery-change-scan.mjs';
+import {egiaEnabled} from './infrastructure/maps/egia/road-verification.mjs';
 import {chatEngine} from './chat-engine.mjs';
 
 export const LOCKS={mapChangeScan:839292,traffic:839291,dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209,etaRefresh:839210,businessPayouts:839211,parcelCustody:839213,riderSafety:839214};
@@ -127,8 +128,8 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
   every(jobs.corridors,60000,!!dispatch);
   every(jobs.maintenance,3600000);
   every(jobs.walletRecon,900000);
-   every(jobs.geoLearning,600000);
-   every(jobs.mapChangeScan,21600000);
+   every(jobs.geoLearning,600000,egiaEnabled());
+   every(jobs.mapChangeScan,21600000,egiaEnabled());
   return api;
  }
  function stop(){while(timers.length)clearInterval(timers.pop());}

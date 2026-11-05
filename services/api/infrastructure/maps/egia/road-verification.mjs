@@ -4,9 +4,12 @@ const number = (value, fallback) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+/** EGIA's learning, automatic publishing and satellite scans stay off until EGIA_ENABLED=true. */
+export const egiaEnabled = (env = process.env) => env.EGIA_ENABLED === 'true';
+
 export function verificationRules(env = process.env) {
   return {
-    enabled: env.MAP_AUTO_PUBLISH !== 'false',
+    enabled: egiaEnabled(env) && env.MAP_AUTO_PUBLISH !== 'false',
     minRiders: number(env.MAP_AUTO_PUBLISH_MIN_RIDERS, 3),
     minRidersWithImagery: number(env.MAP_AUTO_PUBLISH_MIN_RIDERS_WITH_IMAGERY, 2),
     minSpanHours: number(env.MAP_AUTO_PUBLISH_MIN_HOURS, 24),
