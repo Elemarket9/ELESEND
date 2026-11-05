@@ -1,3 +1,4 @@
+import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomInt} from 'node:crypto';
@@ -76,4 +77,10 @@ test('waiting needs a rate, passes the free minutes, and has a limit',()=>{
  assert.equal(waitingFeeMinor(300,50,rules),0);
  assert.equal(waitingFeeMinor(301,50,rules),50);
  assert.equal(waitingFeeMinor(36000,50,rules),1500);
+});
+
+test('new riders get the approved GH₵150 cash debt limit, existing limits stay',()=>{
+ const sql=readFileSync(new URL('../database/migrations/068_cash_debt_default.sql',import.meta.url),'utf8');
+ assert.match(sql,/SET DEFAULT 15000/);
+ assert.doesNotMatch(sql.replace(/--.*$/gm,''),/UPDATE/i);
 });
