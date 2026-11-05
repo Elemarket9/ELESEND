@@ -483,7 +483,8 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
         await chat.sendMessage(customer, conv.id, { clientMessageId: 'purge-held', body: 'Threat' });
         const report = await chat.reportAbuse(customer, conv.id, { category: 'threats', details: 'Threatening message' });
         await age("now() - interval '25 hours'");
-        await c.query("UPDATE shipments SET state = 'COMPLETED', completed_at = now() - interval '25 hours' WHERE id = $1", [order.shipment_id]);
+        await c.query("UPDATE shipments SET state = 'CANCELLED' WHERE id = $1", [order.shipment_id]);
+        await c.query("UPDATE food_orders SET state = 'CANCELLED', updated_at = now() - interval '25 hours' WHERE id = $1", [order.id]);
         await c.query("UPDATE chat_conversations SET last_message_at = now() - interval '25 hours' WHERE id = $1", [conv.id]);
         assert.deepEqual(await chat.purgeExpiredChats(), { conversations: 0, messages: 0 });
         assert.equal(await count('chat_messages'), 1);
