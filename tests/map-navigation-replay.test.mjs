@@ -24,6 +24,12 @@ test('progress stays on the current stretch when a route uses a road twice',()=>
  assert.ok(Math.abs(locateOnRoute(here,route,{after:550}).traveledMeters-597)<10,'on the way out');
  assert.ok(locateOnRoute(here,route).traveledMeters<700,'without history it is the closest point');
 });
+test('a noisy fix on a road that doubles back does not skip ahead',()=>{
+ const side=20*METER,route=[east(0),east(300),{...east(300),latitude:5.6+side},{...east(0),latitude:5.6+side}];
+ const here={...east(100),latitude:5.6+16*METER};
+ const place=locateOnRoute(here,route,{after:90});
+ assert.ok(place.traveledMeters<150,String(place.traveledMeters));
+});
 test('a jump far from the expected stretch falls back to the closest point',()=>{
  const route=line(0,1000,2000,3000);
  assert.ok(Math.abs(locateOnRoute(east(2500),route,{after:100}).traveledMeters-2488)<10);

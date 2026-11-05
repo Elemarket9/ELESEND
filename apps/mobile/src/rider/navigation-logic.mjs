@@ -8,7 +8,7 @@ export function metersBetween(a, b) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
-const PROGRESS_BACK_METERS = 40, PROGRESS_AHEAD_METERS = 400;
+const PROGRESS_BACK_METERS = 40, PROGRESS_AHEAD_METERS = 400, DOUBLE_BACK_METERS = 30;
 /**
  * Closest point on the route: how far off it the rider is and how far along it they have come.
  * Given the last progress, it prefers the stretch the rider is on, so a road the route uses twice,
@@ -17,7 +17,8 @@ const PROGRESS_BACK_METERS = 40, PROGRESS_AHEAD_METERS = 400;
 export function locateOnRoute(position, points, { after = null } = {}) {
   if (!position || !Array.isArray(points) || points.length < 2) return null;
   const scale = Math.cos(position.latitude * RAD);
-  let best = null, ahead = null, along = 0;
+  let best = null, along = 0;
+  const nearby = [];
   for (let i = 0; i < points.length - 1; i += 1) {
     const a = points[i], b = points[i + 1], length = metersBetween(a, b);
     const ax = (b.longitude - a.longitude) * scale, ay = b.latitude - a.latitude;
@@ -27,9 +28,12 @@ export function locateOnRoute(position, points, { after = null } = {}) {
     const off = metersBetween(position, { latitude: a.latitude + t * (b.latitude - a.latitude), longitude: a.longitude + t * (b.longitude - a.longitude) });
     const found = { offRouteMeters: off, traveledMeters: along + t * length, segment: i };
     if (!best || off < best.offRouteMeters) best = found;
-    if (Number.isFinite(after) && found.traveledMeters >= after - PROGRESS_BACK_METERS && found.traveledMeters <= after + PROGRESS_AHEAD_METERS && (!ahead || off < ahead.offRouteMeters)) ahead = found;
+    if (Number.isFinite(after) && found.traveledMeters >= after - PROGRESS_BACK_METERS && found.traveledMeters <= after + PROGRESS_AHEAD_METERS) nearby.push(found);
     along += length;
   }
+  // Where the road doubles back, both sides can fit a noisy fix. The earlier one is where the rider is.
+  const closest = nearby.length ? Math.min(...nearby.map(n => n.offRouteMeters)) : Infinity;
+  const ahead = nearby.find(n => n.offRouteMeters <= closest + DOUBLE_BACK_METERS);
   const chosen = ahead && ahead.offRouteMeters <= Math.max(OFF_ROUTE_METERS, best.offRouteMeters + 20) ? ahead : best;
   return { ...chosen, routeMeters: along, remainingMeters: Math.max(0, along - chosen.traveledMeters) };
 }
