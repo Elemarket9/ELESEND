@@ -12,14 +12,15 @@ const ids=Object.fromEntries(['customer','owner','rest','item'].map(k=>[k,random
 for(const [id,kind] of [[ids.customer,'customer'],[ids.owner,'business']])await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'h',$3,now())",[id,'+2332'+randomInt(10000000,99999999),kind]);
 await db.query("UPDATE checkout_method_policies SET enabled=true WHERE method='MOMO'");await db.query("UPDATE service_markets SET service_enabled=true WHERE country_code='GH'");
 const tariff=(await db.query("SELECT base_minor,per_km_minor,per_minute_minor,minimum_minor,commission_bps,traffic_time_pricing FROM pricing_policies WHERE active AND vehicle='motorcycle'")).rows[0];console.log('TARIFF',JSON.stringify(tariff));
-const P={latitude:5.5446358,longitude:-0.3436852},D={latitude:5.5547244,longitude:-0.4341409};
-await db.query("INSERT INTO restaurants(id,owner_id,name,phone,address,latitude,longitude,status,merchant_tier,cuisine_category,commission_calculation_basis) VALUES($1,$2,'Lab Barcelos West Hills','+233241112222','West Hills Mall',$3,$4,'approved','standard','grill','gross_subtotal')",[ids.rest,ids.owner,P.latitude,P.longitude]);
-await db.query("UPDATE restaurants SET delivery_radius_m=15000 WHERE id=$1",[ids.rest]);
-await db.query("INSERT INTO menu_items(id,restaurant_id,name,price_minor) VALUES($1,$2,'Sample meal (lab price)',10000)",[ids.item,ids.rest]);
+const D={latitude:5.5124671,longitude:-0.4931931};
+const BR=process.env.BR==='second'?{latitude:5.5356489,longitude:-0.4185735,n:'Cheezzy Kasoa Second bus stop'}:{latitude:5.5050289,longitude:-0.4181084,n:'Cheezzy Kakraba Kasoa'};const P=BR;console.log('BRANCH',BR.n);
+await db.query("INSERT INTO restaurants(id,owner_id,name,phone,address,latitude,longitude,status,merchant_tier,cuisine_category,commission_calculation_basis) VALUES($1,$2,'Lab Cheezzy','+233241112222','Kasoa',$3,$4,'approved','standard','grill','gross_subtotal')",[ids.rest,ids.owner,P.latitude,P.longitude]);
+await db.query("UPDATE restaurants SET delivery_radius_m=10000 WHERE id=$1",[ids.rest]);
+await db.query("INSERT INTO menu_items(id,restaurant_id,name,price_minor) VALUES($1,$2,'Sample meal (lab price)',14000)",[ids.item,ids.rest]);
 const food=restaurantOrderService(db,{routing}),customer={id:ids.customer,kind:'customer'},kitchen={id:ids.owner,kind:'business'};
 const r=await routing.route(P,D,{vehicle:'motorcycle',billing:true});console.log('ROUTE km',(r.distanceMeters/1000).toFixed(2),'roadMin',(r.durationSeconds/60).toFixed(1));
 for(const [p,h] of [['midday',12],['evening_peak',17]]){const f=baselineFactorFor(etaBaselineFactors({}),'motorcycle',p,cityBucket(P));console.log('ETA',p,'factor',f,JSON.stringify(quotedEtaMinutes(r.durationSeconds,f)));}
-const input={restaurantId:ids.rest,items:[{itemId:ids.item,quantity:1,options:[]}],deliveryAddress:'Kasoa New Market',deliveryLatitude:D.latitude,deliveryLongitude:D.longitude,customerPhone:'0241234567'};
+const input={restaurantId:ids.rest,items:[{itemId:ids.item,quantity:1,options:[]}],deliveryAddress:'KAAF University, Fetteh Kakraba',deliveryLatitude:D.latitude,deliveryLongitude:D.longitude,customerPhone:'0241234567'};
 const q=await food.quoteFoodOrder(customer,input);
 console.log('QUOTE',JSON.stringify({subtotal:q.subtotalMinor,delivery:q.deliveryFeeMinor,deliveryCommission:q.deliveryCommissionMinor,foodCommission:q.foodCommissionMinor,restaurantNet:q.netRestaurantSettlementMinor,total:q.totalMinor,fee:q.processingFeeMinor}));
 const order=await food.createFoodOrder(customer,input,{paymentMethod:'MOMO',idempotencyKey:'lab-'+randomInt(1e9)});console.log('ORDER',order.state,order.payment_status,'total',order.total_minor,Object.keys(order).join(','));
