@@ -938,7 +938,7 @@ export function renderAdminPortalHtml() {
             <td>\${ghc(t.base_minor)}</td>
             <td>\${ghc(t.per_km_minor)}</td>
             <td>\${ghc(t.per_minute_minor || 0)}</td>
-            <td><span class="badge badge-active">\${(t.commission_bps / 100).toFixed(1)}% (\${escapeHtml(t.commission_mode || 'pct')})</span></td>
+            <td><span class="badge badge-active">\${(t.commission_bps / 100).toFixed(2)}% (\${escapeHtml(t.commission_mode || 'pct')})</span></td>
             <td>\${t.rush_hour_enabled ? 'Active ⚡' : 'Off'}</td>
           </tr>
         \`).join('');
@@ -1520,7 +1520,7 @@ export function renderAdminPortalHtml() {
       try {
         const settings = await api('/api/v1/admin/commission/restaurant-settings');
         if (settings) {
-          document.getElementById('restDefaultCommPct').value = ((settings.default_commission_bps || 1000) / 100).toFixed(1);
+          document.getElementById('restDefaultCommPct').value = ((settings.default_commission_bps || 1000) / 100).toFixed(2);
           document.getElementById('restDefaultCommBasis').value = settings.default_commission_basis || 'gross_subtotal';
         }
       } catch (e) { console.error(e); }
@@ -1536,7 +1536,7 @@ export function renderAdminPortalHtml() {
           <tr>
             <td><strong>\${escapeHtml(p.name)}</strong>\${p.code ? '<br><code>' + escapeHtml(p.code) + '</code>' : ''}</td>
             <td><span class="badge badge-active">\${escapeHtml(p.owner_type.toUpperCase())}</span><br><small>ELESEND \${(Number(p.elesend_funding_bps)/100).toFixed(0)}% / Rest \${(Number(p.restaurant_funding_bps)/100).toFixed(0)}%</small></td>
-            <td>\${p.discount_type === 'percentage' ? (Number(p.discount_bps)/100).toFixed(1) + '% OFF' : p.discount_type === 'free_delivery' ? 'FREE DELIVERY' : ghc(p.discount_minor) + ' OFF'}</td>
+            <td>\${p.discount_type === 'percentage' ? (Number(p.discount_bps)/100).toFixed(2) + '% OFF' : p.discount_type === 'free_delivery' ? 'FREE DELIVERY' : ghc(p.discount_minor) + ' OFF'}</td>
             <td>\${ghc(p.spent_budget_minor || 0)}\${p.total_budget_minor ? ' / ' + ghc(p.total_budget_minor) : ' (Unlimited)'}</td>
             <td>\${Number(p.redeemed_count || 0)}\${p.total_redemption_limit ? ' / ' + Number(p.total_redemption_limit) : ''}</td>
             <td><span class="badge \${p.status === 'active' ? 'badge-active' : 'badge-warn'}">\${escapeHtml(p.status.toUpperCase())}</span></td>
