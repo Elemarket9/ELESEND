@@ -43,5 +43,5 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
  const rows=(await client.query(`SELECT name,is_one_way,max_speed_kmh,allowed_vehicles,ST_AsGeoJSON(corridor::geometry) AS geojson FROM candidate_roads WHERE status='PUBLISHED' AND is_private_access=false AND is_pedestrian_only=false`)).rows;
  await client.end();
  const {osm,count}=await riderRoadsOsm(rows.map(r=>({name:r.name,isOneWay:r.is_one_way,maxSpeedKmh:r.max_speed_kmh,allowedVehicles:r.allowed_vehicles,coordinates:JSON.parse(r.geojson).coordinates})),osrmNearest(process.env.OSRM_URL));
- writeFileSync(out,osm);console.log(`Wrote ${count} rider roads to ${out}`);
+ if(out==='-')process.stdout.write(osm);else writeFileSync(out,osm);console.error(`Wrote ${count} rider roads`);
 }

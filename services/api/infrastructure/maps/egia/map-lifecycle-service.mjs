@@ -1,3 +1,4 @@
+import { verificationFailures, verificationRules } from './road-verification.mjs';
 import { randomUUID } from 'node:crypto';
 import { check } from '../../../security.mjs';
 
@@ -33,6 +34,9 @@ async function finishRollback(c, actor, updateVer, versionTag, label) {
 /**
  * Manages the publication lifecycle, approval, rollback and coverage audit for EGIA (Phases 7, 13 & Priority 2).
  */
+const ROAD_VEHICLES = ['motorcycle', 'bicycle', 'tricycle', 'car', 'van', 'pickup', 'truck'];
+const ALREADY_MAPPED_METERS = 15;
+
 export function createMapLifecycleService(db) {
 
   async function requireAdmin(actor) {
@@ -52,7 +56,11 @@ export function createMapLifecycleService(db) {
   async function publishRoad(actor, roadId, notes = '') {
     await requireAdmin(actor);
     requireId(roadId);
+    return applyRoadPublish(roadId, { actorId: actor.id, notes });
+  }
 
+  /** actorId is null when the road passed automatic verification. */
+  async function applyRoadPublish(roadId, { actorId, notes = '', automatic = false }) {
     return db.tx(async c => {
       const road = (await c.query(`SELECT * FROM candidate_roads WHERE id = $1 FOR UPDATE`, [roadId])).rows[0];
       check(road, 404, 'Candidate road not found');
@@ -73,7 +81,7 @@ export function createMapLifecycleService(db) {
 
       // Vehicle accessibility validation
       const allowed = Array.isArray(road.allowed_vehicles) ? road.allowed_vehicles : ['motorcycle'];
-      const validVehicles = ['motorcycle', 'bicycle', 'tricycle', 'car', 'van', 'pickup', 'truck'];
+      const validVehicles = ROAD_VEHICLES;
       check(allowed.length > 0 && allowed.every(v => validVehicles.includes(v)), 422, 'Candidate road must define valid vehicle accessibility');
 
       // Multi-rider corroboration or explicit administrator verification note requirement
@@ -81,15 +89,18 @@ export function createMapLifecycleService(db) {
         check(notes && notes.trim().length >= 5, 422, 'Road with only single-rider observation requires corroboration or explicit verification notes');
       }
 
-      const previousState = { ...road };
+      // Keep nothing here that identifies the riders who found the road.
+      const { contributor_rider_ids: _riders, ...publicRoad } = road;
+      const previousState = { ...publicRoad };
       const newVersion = road.version + 1;
       const versionTag = `road-pub-${road.id.slice(0, 8)}-v${newVersion}`;
 
       await c.query(`
         UPDATE candidate_roads 
-        SET status = 'PUBLISHED', version = $2, review_notes = $3, reviewer_id = $4, updated_at = now()
+        SET status = 'PUBLISHED', version = $2, review_notes = $3, reviewer_id = $4, published_automatically = $5,
+            contributor_rider_ids = '{}', updated_at = now()
         WHERE id = $1
-      `, [roadId, newVersion, notes, actor.id]);
+      `, [roadId, newVersion, notes, actorId, automatic]);
 
       await c.query(`
         INSERT INTO map_update_versions (
@@ -99,8 +110,8 @@ export function createMapLifecycleService(db) {
         versionTag,
         roadId,
         JSON.stringify(previousState),
-        JSON.stringify({ ...road, status: 'PUBLISHED', version: newVersion }),
-        actor.id
+        JSON.stringify({ ...publicRoad, status: 'PUBLISHED', version: newVersion, published_automatically: automatic }),
+        actorId
       ]);
 
       return {
@@ -140,7 +151,10 @@ export function createMapLifecycleService(db) {
   async function publishLandmark(actor, landmarkId, notes = '') {
     await requireAdmin(actor);
     requireId(landmarkId);
+    return applyLandmarkPublish(landmarkId, { actorId: actor.id });
+  }
 
+  async function applyLandmarkPublish(landmarkId, { actorId, automatic = false }) {
     return db.tx(async c => {
       const cand = (await c.query(`SELECT * FROM candidate_landmarks WHERE id = $1 FOR UPDATE`, [landmarkId])).rows[0];
       check(cand, 404, 'Candidate landmark not found');
@@ -152,9 +166,9 @@ export function createMapLifecycleService(db) {
 
       await c.query(`
         UPDATE candidate_landmarks
-        SET verification_status = 'PUBLISHED', reviewer_id = $2, updated_at = now()
+        SET verification_status = 'PUBLISHED', reviewer_id = $2, published_automatically = $3, updated_at = now()
         WHERE id = $1
-      `, [landmarkId, actor.id]);
+      `, [landmarkId, actorId, automatic]);
 
       // Copy verified candidate to public spatial_landmarks table
       await c.query(`
@@ -181,8 +195,8 @@ export function createMapLifecycleService(db) {
         versionTag,
         landmarkId,
         JSON.stringify(cand),
-        JSON.stringify({ ...cand, verification_status: 'PUBLISHED' }),
-        actor.id
+        JSON.stringify({ ...cand, verification_status: 'PUBLISHED', published_automatically: automatic }),
+        actorId
       ]);
 
       return {
@@ -228,12 +242,25 @@ export function createMapLifecycleService(db) {
       SELECT id, name, status, confidence, observation_count, distinct_riders,
              allowed_vehicles, surface_type, created_at,
              temporal_span_seconds, bidirectional, mean_accuracy_m,
-             is_one_way, max_speed_kmh, is_private_access,
+             is_one_way, max_speed_kmh, is_private_access, is_pedestrian_only, imagery_supported,
+             ST_Length(corridor) AS length_m,
              ST_AsGeoJSON(corridor::geometry) AS corridor_geojson
       FROM candidate_roads
       WHERE status IN ('OBSERVED', 'CORROBORATED', 'REVIEW_REQUIRED')
-      ORDER BY confidence DESC, observation_count DESC
-      LIMIT 20;
+      ORDER BY status = 'CORROBORATED' DESC, imagery_supported DESC, confidence DESC, observation_count DESC
+      LIMIT 50;
+    `);
+    const recentlyPublished = await db.query(`
+      SELECT v.version_tag, v.change_type, v.feature_id, v.created_at,
+             v.new_state->>'name' AS name,
+             COALESCE((v.new_state->>'published_automatically')::boolean, false) AS automatic
+      FROM map_update_versions v
+      WHERE v.change_type IN ('road_publish', 'landmark_publish') AND v.rolled_back = false
+      ORDER BY v.created_at DESC
+      LIMIT 30;
+    `);
+    const changeAreas = await db.query(`
+      SELECT s.area_name, s.scanned_at, s.outcome, s.changed_cells FROM map_change_scans s ORDER BY s.area_name
     `);
 
     const pendingLandmarks = await db.query(`
@@ -257,7 +284,11 @@ export function createMapLifecycleService(db) {
       LIMIT 20;
     `);
 
+    const rules = verificationRules();
     return {
+      autoPublish: rules,
+      recentlyPublished: recentlyPublished.rows,
+      imageryScans: changeAreas.rows,
       candidateRoads: pendingRoads.rows,
       candidateLandmarks: pendingLandmarks.rows,
       pendingReports: recentReports.rows
@@ -343,6 +374,87 @@ export function createMapLifecycleService(db) {
    * Rejects a candidate road or landmark so it cannot be published without re-review.
    * Body: { type: 'road'|'landmark', id: uuid, notes?: string }
    */
+  /** Details only people can judge. A private or pedestrian road never publishes itself. */
+  async function updateRoadDetails(actor, body = {}) {
+    await requireAdmin(actor);
+    const id = body?.roadId;
+    requireId(id);
+    const name = typeof body.name === 'string' ? body.name.trim().slice(0, 120) : null;
+    const vehicles = Array.isArray(body.allowedVehicles) ? body.allowedVehicles : null;
+    if (vehicles) check(vehicles.length > 0 && vehicles.every(v => ROAD_VEHICLES.includes(v)), 422, 'Choose valid vehicles');
+    const updated = await db.query(`
+      UPDATE candidate_roads SET
+        name = COALESCE(NULLIF($2, ''), name),
+        is_private_access = COALESCE($3, is_private_access),
+        is_pedestrian_only = COALESCE($4, is_pedestrian_only),
+        is_one_way = COALESCE($5, is_one_way),
+        allowed_vehicles = COALESCE($6, allowed_vehicles),
+        updated_at = now()
+      WHERE id = $1 AND status NOT IN ('PUBLISHED', 'REJECTED', 'RETIRED')
+    `, [id, name, typeof body.isPrivateAccess === 'boolean' ? body.isPrivateAccess : null, typeof body.isPedestrianOnly === 'boolean' ? body.isPedestrianOnly : null, typeof body.isOneWay === 'boolean' ? body.isOneWay : null, vehicles]);
+    check(updated.rowCount > 0, 409, 'This road can no longer be changed');
+    return { success: true, roadId: id };
+  }
+
+  /** Publishes confirmed roads that pass every check, and retires ones the base map now has. */
+  async function autoPublishVerified({ routing = null, rules = verificationRules() } = {}) {
+    const outcome = { roadsPublished: 0, roadsAlreadyMapped: 0, landmarksPublished: 0 };
+    if (!rules.enabled) return outcome;
+    if (typeof routing?.nearestRoadMeters === 'function') {
+      const roads = (await db.query(`
+        SELECT id, name, status, confidence, distinct_riders, temporal_span_seconds, mean_accuracy_m, is_private_access,
+               is_pedestrian_only, imagery_supported, allowed_vehicles,
+               ST_IsValid(corridor::geometry) AS is_valid, ST_Length(corridor) AS length_m,
+               ST_Y(ST_StartPoint(corridor::geometry)) AS start_lat, ST_X(ST_StartPoint(corridor::geometry)) AS start_lon,
+               ST_Y(ST_EndPoint(corridor::geometry)) AS end_lat, ST_X(ST_EndPoint(corridor::geometry)) AS end_lon,
+               ST_Y(ST_LineInterpolatePoint(corridor::geometry, 0.5)) AS mid_lat, ST_X(ST_LineInterpolatePoint(corridor::geometry, 0.5)) AS mid_lon
+        FROM candidate_roads WHERE status = 'CORROBORATED' ORDER BY confidence DESC LIMIT 100
+      `)).rows.filter(road => road.status === 'CORROBORATED');
+      for (const road of roads) {
+        const vehicle = (road.allowed_vehicles || []).includes('motorcycle') ? 'motorcycle' : road.allowed_vehicles?.[0];
+        let distances;
+        try {
+          distances = [];
+          for (const [latitude, longitude] of [[road.start_lat, road.start_lon], [road.mid_lat, road.mid_lon], [road.end_lat, road.end_lon]]) {
+            distances.push(await routing.nearestRoadMeters({ latitude: Number(latitude), longitude: Number(longitude) }, { vehicle }));
+          }
+        } catch {
+          continue; // Road data unavailable: decide next time.
+        }
+        if (Math.max(...distances) <= ALREADY_MAPPED_METERS) {
+          await db.query(`UPDATE candidate_roads SET status = 'RETIRED', review_notes = 'Now on the base map', contributor_rider_ids = '{}', updated_at = now() WHERE id = $1 AND status = 'CORROBORATED'`, [road.id]);
+          outcome.roadsAlreadyMapped += 1;
+          continue;
+        }
+        const failures = verificationFailures({ ...road, join_meters: Math.min(distances[0], distances[2]) }, rules);
+        if (failures.length) continue;
+        try {
+          await applyRoadPublish(road.id, { actorId: null, automatic: true, notes: 'Published automatically after passing verification' });
+          outcome.roadsPublished += 1;
+        } catch {
+          // One road that cannot publish must not hold up the others. It stays in map review.
+        }
+      }
+    }
+    // A name stays private until three different riders independently give the same one at the same place.
+    const landmarks = (await db.query(`
+      SELECT c.id FROM candidate_landmarks c
+      WHERE c.verification_status = 'CORROBORATED' AND c.source = 'rider_corroboration' AND COALESCE(c.is_private, false) = false
+        AND (SELECT count(DISTINCT r.rider_id) FROM rider_map_reports r
+             WHERE r.report_type = 'missing_landmark' AND lower(trim(r.notes)) = lower(trim(c.name)) AND ST_DWithin(r.location, c.location, 50)) >= $1
+      LIMIT 50
+    `, [rules.minRiders])).rows;
+    for (const { id } of landmarks) {
+      try {
+        await applyLandmarkPublish(id, { actorId: null, automatic: true });
+        outcome.landmarksPublished += 1;
+      } catch {
+        // It stays in map review.
+      }
+    }
+    return outcome;
+  }
+
   async function rejectCandidate(actor, body = {}) {
     await requireAdmin(actor);
     const type = String(body?.type || '').toLowerCase();
@@ -384,6 +496,8 @@ export function createMapLifecycleService(db) {
     publishLandmark,
     rollbackLandmark,
     rejectCandidate,
+    updateRoadDetails,
+    autoPublishVerified,
     getReviewQueue,
     getCoverageScorecard,
     getAdminGeoDashboard
