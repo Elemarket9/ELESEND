@@ -978,7 +978,7 @@ export function renderAdminPortalHtml() {
             <td>\${ghc(t.per_minute_minor || 0)}</td>
             <td><span class="badge badge-active">\${(t.commission_bps / 100).toFixed(2)}% (\${escapeHtml(t.commission_mode || 'pct')})</span></td>
             <td>\${ghc(t.minimum_minor || 0)}</td>
-            <td>\${t.rush_hour_enabled ? (Number(t.rush_hour_bps || 14000) / 10000).toFixed(2) + 'x' : 'Off'}</td>
+            <td>\${t.traffic_time_pricing ? 'By trip time' : t.rush_hour_enabled ? (Number(t.rush_hour_bps || 14000) / 10000).toFixed(2) + 'x' : 'Off'}</td>
             <td>\${(Number(t.booking_fee_bps || 0) / 100).toFixed(2)}%</td>
             <td>\${ghc(t.wait_per_minute_minor || 0)}</td>
           </tr>
