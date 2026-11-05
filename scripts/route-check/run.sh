@@ -6,4 +6,5 @@ sh scripts/prepare-ghana-osrm.sh $D 2>&1 | tail -2
 docker run -d --name car -p 5000:5000 -v $D:/data $IMG osrm-routed --algorithm mld /data/ghana-latest.osrm >/dev/null
 docker run -d --name moto -p 5001:5000 -v $D:/data $IMG osrm-routed --algorithm mld /data/ghana-motorcycle.osrm >/dev/null
 sleep 15
-NODE_ENV=test node scripts/route-check/check.mjs
+docker run -d --name pg -p 5432:5432 -e POSTGRES_PASSWORD=t -e POSTGRES_USER=elesend -e POSTGRES_DB=elesend_test_lab postgis/postgis:18-3.6 >/dev/null; sleep 20
+NODE_ENV=test TEST_DATABASE_URL=postgres://elesend:t@127.0.0.1:5432/elesend_test_lab DATABASE_SSL=false node scripts/route-check/food.mjs 2>&1 | tail -30
