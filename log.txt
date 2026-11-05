@@ -1,0 +1,5 @@
+Node.js v24.22.2
+[map refresh] Stopped: test route failed on ghana-latest. Live map unchanged
+exit=1
+keep
+actions-runner live live.lock work 
