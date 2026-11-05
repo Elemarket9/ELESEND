@@ -2,10 +2,11 @@ import {check} from '../../security.mjs';
 import {hubtelCheckout} from './providers/hubtel-payment.mjs';
 import {paystackCheckout} from './paystack-checkout-adapter.mjs';
 import {paymentGateway} from './providers/payment-gateway.mjs';
+import {moolreCheckout} from './providers/moolre-payment.mjs';
 
 // Only this composition boundary knows concrete adapter names. A deployment
 // can use its own contracted PSP through the documented gateway contract.
-export function createPaymentProvider(config,{adapters={hubtel:hubtelCheckout,paystack:paystackCheckout,gateway:paymentGateway}}={}){
+export function createPaymentProvider(config,{adapters={hubtel:hubtelCheckout,paystack:paystackCheckout,moolre:moolreCheckout,gateway:paymentGateway}}={}){
  if(!config.provider)return null;
  const factory=adapters[config.provider];
  check(typeof factory==='function',500,'Payment adapter is not installed');

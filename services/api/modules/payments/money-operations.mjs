@@ -141,7 +141,8 @@ export function moneyOperations(db,{provider,notify=null,verifyTimeoutMs=10000,c
    });
    if(r.existing)return {id:r.id,status:r.status};
    let receipt;
-   try{receipt=await provider.createRefund({requestId:r.id,idempotencyKey:r.id,reference:r.reference,amountMinor:Number(r.amount_minor),currency:r.currency});}
+   try{const payer=provider.requiresRefundPhone?(await db.query('SELECT u.phone FROM shipment_checkout_intents i JOIN users u ON u.id=i.customer_id WHERE i.reference=$1 AND i.provider=$2',[r.reference,r.provider])).rows[0]:null;
+    receipt=await provider.createRefund({requestId:r.id,idempotencyKey:r.id,reference:r.reference,amountMinor:Number(r.amount_minor),currency:r.currency,...(payer?{customerPhone:payer.phone}:{})});}
    catch(e){
     // Outcome unknown: never resubmit automatically; verification only.
     await db.query("UPDATE refund_operations SET status='needs_review',failure_reason=$2,updated_at=now() WHERE id=$1 AND status='initiating'",[id,'Submission outcome uncertain: '+reasonText(e)]);

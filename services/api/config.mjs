@@ -327,6 +327,14 @@ export function validateConfig(env = process.env) {
    } else if(rawPaymentProvider==='gateway'){
     paymentProviderName='gateway';
     for(const key of ['PAYMENT_GATEWAY_NAME','PAYMENT_GATEWAY_ENDPOINT','PAYMENT_GATEWAY_ALLOWED_HOST','PAYMENT_GATEWAY_TOKEN','PAYMENT_GATEWAY_CHECKOUT_HOSTS'])if(!env[key]?.trim())errors.push(key+' is required for the configured payment bridge.');
+  } else if (rawPaymentProvider === 'moolre') {
+    paymentProviderName = 'moolre';
+    const sandbox = parseBoolean(env.MOOLRE_SANDBOX, false);
+    if (isProduction && sandbox) errors.push('MOOLRE_SANDBOX cannot be on in production.');
+    const needed = ['MOOLRE_API_USER', 'MOOLRE_ACCOUNT_NUMBER', 'MOOLRE_CALLBACK_SECRET', 'MOOLRE_MERCHANT_EMAIL', ...(sandbox ? [] : ['MOOLRE_PUBLIC_KEY', 'MOOLRE_PRIVATE_KEY', 'MOOLRE_CUSTOMER_FEE_BPS'])];
+    for (const key of needed) if (!(env[key] || '').trim()) errors.push(`PAYMENT_PROVIDER is set to "moolre", but ${key} is missing.`);
+    const bps = (env.MOOLRE_CUSTOMER_FEE_BPS ?? '').trim();
+    if (bps && !(Number.isInteger(Number(bps)) && Number(bps) >= 0 && Number(bps) <= 1000)) errors.push('MOOLRE_CUSTOMER_FEE_BPS must be a whole number from 0 to 1000.');
   } else if (rawPaymentProvider === 'none') {
     paymentProviderName = null;
   } else if (rawPaymentProvider === 'auto') {
@@ -339,7 +347,7 @@ export function validateConfig(env = process.env) {
       paymentProviderName = null;
     }
   } else {
-    errors.push(`Unknown PAYMENT_PROVIDER "${env.PAYMENT_PROVIDER}". Valid values: 'gateway', 'hubtel', 'paystack', 'none' (auto is development-only).`);
+    errors.push(`Unknown PAYMENT_PROVIDER "${env.PAYMENT_PROVIDER}". Valid values: 'gateway', 'hubtel', 'paystack', 'moolre', 'none' (auto is development-only).`);
   }
 
   // Payment URLs & Options
@@ -482,6 +490,22 @@ export function validateConfig(env = process.env) {
       provider: paymentProviderName,
       hubtel: hubtelPaymentConfig,
       paystack: paystackPaymentConfig,
+      moolre: paymentProviderName === 'moolre' ? {
+        apiUser: (env.MOOLRE_API_USER || '').trim(),
+        publicKey: (env.MOOLRE_PUBLIC_KEY || '').trim(),
+        privateKey: (env.MOOLRE_PRIVATE_KEY || '').trim(),
+        accountNumber: (env.MOOLRE_ACCOUNT_NUMBER || '').trim(),
+        callbackSecret: (env.MOOLRE_CALLBACK_SECRET || '').trim(),
+        merchantEmail: (env.MOOLRE_MERCHANT_EMAIL || '').trim(),
+        callbackBaseUrl: effectiveApiOrigin,
+        returnBaseUrl: effectiveWebOrigin,
+        allowedMethods: (env.MOOLRE_ENABLED_METHODS || 'MOMO').split(',').map(s => s.trim()).filter(Boolean),
+        processingFeeBps: Number((env.MOOLRE_CUSTOMER_FEE_BPS ?? '').trim() || 0),
+        sandbox: parseBoolean(env.MOOLRE_SANDBOX, false),
+        failedStatusConfirmed: parseBoolean(env.MOOLRE_FAILED_STATUS_CONFIRMED, false),
+        ...((env.MOOLRE_CHECKOUT_HOSTS || '').trim() ? {checkoutHosts: env.MOOLRE_CHECKOUT_HOSTS.split(',').map(s => s.trim()).filter(Boolean)} : {}),
+        ...((env.MOOLRE_CHECKOUT_PATH || '').trim() ? {checkoutPath: env.MOOLRE_CHECKOUT_PATH.trim()} : {})
+      } : null,
       gateway: {name:env.PAYMENT_GATEWAY_NAME,endpoint:env.PAYMENT_GATEWAY_ENDPOINT,allowedHost:env.PAYMENT_GATEWAY_ALLOWED_HOST,token:env.PAYMENT_GATEWAY_TOKEN,methods:(env.PAYMENT_GATEWAY_METHODS||'MOMO,CARD').split(',').map(x=>x.trim()),checkoutHosts:(env.PAYMENT_GATEWAY_CHECKOUT_HOSTS||'').split(',').map(x=>x.trim()).filter(Boolean),payerFields:(env.PAYMENT_PAYER_FIELDS||'').split(',').map(x=>x.trim()).filter(Boolean)}
     },
     sms: {
