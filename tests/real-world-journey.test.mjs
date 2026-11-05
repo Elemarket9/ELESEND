@@ -270,6 +270,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    await sample(D.latitude+0.01,D.longitude,20);   // ...and left, so this earlier visit does not count.
    await sample(D.latitude,D.longitude,10);
    await sample(D.latitude,D.longitude,1);
+   const cash=await api(r.token,'POST','/api/v1/rider/cash-report',{shipmentId:sid,reportedMinor:Number(q.data.amount_minor),cashPayer:'recipient',idempotencyKey:'cash-'+randomInt(1e9)});assert.equal(cash.status,200,JSON.stringify(cash.data));
    const done=await api(r.token,'POST','/api/v1/shipments/'+sid+'/verify',{challengeId:dc.data.challengeId,code:code()});assert.equal(done.status,200,JSON.stringify(done.data));
    assert.equal(done.data.waitingFee.collection,'collect_cash');
    assert.equal(done.data.waitingFee.waitedSeconds,600,'only the stay that ended at the first code request');
