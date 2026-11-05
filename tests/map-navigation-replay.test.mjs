@@ -24,6 +24,12 @@ test('progress stays on the current stretch when a route uses a road twice',()=>
  assert.ok(Math.abs(locateOnRoute(here,route,{after:550}).traveledMeters-597)<10,'on the way out');
  assert.ok(locateOnRoute(here,route).traveledMeters<700,'without history it is the closest point');
 });
+test('a noisy fix on a road that doubles back does not skip ahead',()=>{
+ const side=20*METER,route=[east(0),east(300),{...east(300),latitude:5.6+side},{...east(0),latitude:5.6+side}];
+ const here={...east(100),latitude:5.6+16*METER};
+ const place=locateOnRoute(here,route,{after:90});
+ assert.ok(place.traveledMeters<150,String(place.traveledMeters));
+});
 test('a jump far from the expected stretch falls back to the closest point',()=>{
  const route=line(0,1000,2000,3000);
  assert.ok(Math.abs(locateOnRoute(east(2500),route,{after:100}).traveledMeters-2488)<10);
@@ -60,14 +66,14 @@ test('GPS replay: full trip, every turn once far and once near, no false reroute
    const p=along(pts,m),here={latitude:p.latitude+gauss(rand)*noise*METER,longitude:p.longitude+gauss(rand)*noise*METER};
    const place=locateOnRoute(here,pts,{after:progress});
    if(place.offRouteMeters<=60)progress=place.traveledMeters;
-   if(last-place.traveledMeters>80)back+=1;last=Math.max(last,place.traveledMeters);
+   if(last-place.traveledMeters>noise*4+20)back+=1;last=Math.max(last,place.traveledMeters);
    const r=rerouteCheck(reroute,{offRouteMeters:place.offRouteMeters,accuracy,now});reroute=r;if(r.reroute)reroutes+=1;
    const next=upcomingStep(steps,place.traveledMeters);
    const v=voicePrompt(voice,{index:next.index,metersToStep:next.metersToStep,step:next.step,speed:12});voice=v.state;if(v.say)spoken.push(v.say);
    if(hasArrived(place))arrived=true;
   }
   assert.equal(reroutes,0,`no reroute at ${noise} m noise`);
-  assert.equal(back,0,'progress never jumps back');
+  assert.equal(back,0,'progress only moves back by GPS noise');
   assert.equal(arrived,true);
   for(const words of ['turn left onto ring road','turn right onto oxford street'])assert.equal(spoken.filter(s=>s.toLowerCase().includes(words)).length,2,spoken.join(' | '));
   assert.equal(new Set(spoken).size>=4,true);
