@@ -41,7 +41,7 @@ export const activeTollRules=async c=>(await c.query(`SELECT id,name,radius_m,ve
 
 const ruleSchema=z.object({
  name:z.string().trim().min(2).max(120),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180),
- radiusMeters:z.number().int().min(10).max(500),vehicles:z.array(z.enum(VEHICLES)).min(1),amountMinor:z.number().int().min(1).max(100000),
+ radiusMeters:z.number().int().min(10).max(100),vehicles:z.array(z.enum(VEHICLES)).min(1),amountMinor:z.number().int().min(1).max(100000),
  source:z.string().trim().min(5).max(500),effectiveFrom:z.string().datetime().optional(),effectiveTo:z.string().datetime().optional()
 }).strict();
 
@@ -54,6 +54,7 @@ export function tollRuleService(db,{requirePermission}){
   },
   async add(actor,input){
    const v=ruleSchema.parse(input);
+   if(v.effectiveTo)check(new Date(v.effectiveTo)>new Date(v.effectiveFrom??Date.now()),400,'The end date must be after the start date');
    return db.tx(async c=>{await requirePermission(c,actor,'pricing:write');const id=randomUUID();
     await c.query(`INSERT INTO toll_rules(id,name,location,radius_m,vehicles,amount_minor,source,effective_from,effective_to,created_by)
       VALUES($1,$2,ST_SetSRID(ST_MakePoint($3,$4),4326)::geography,$5,$6,$7,$8,COALESCE($9::timestamptz,now()),$10::timestamptz,$11)`,
@@ -63,7 +64,7 @@ export function tollRuleService(db,{requirePermission}){
   async retire(actor,id){
    z.string().uuid().parse(id);
    return db.tx(async c=>{await requirePermission(c,actor,'pricing:write');
-    const done=await c.query('UPDATE toll_rules SET effective_to=now(),retired_by=$2 WHERE id=$1 AND (effective_to IS NULL OR effective_to>now())',[id,actor.id]);
+    const done=await c.query("UPDATE toll_rules SET effective_to=GREATEST(now(),effective_from+interval '1 second'),retired_by=$2 WHERE id=$1 AND (effective_to IS NULL OR effective_to>now())",[id,actor.id]);
     check(done.rowCount>0,404,'Active toll rule not found');await audit(c,actor,'pricing.toll_rule_retired',id);return {retired:true};});
   }
  };

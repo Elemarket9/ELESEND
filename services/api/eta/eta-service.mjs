@@ -50,11 +50,12 @@ export function etaService(db,{routing=null,baselineFactors={},routingLabel='osr
    FROM rider_location_samples WHERE rider_id=$1 AND observed_at<$2 ORDER BY observed_at DESC LIMIT 1`,[riderId,before])).rows[0]??null;
  }
 
+ // Traffic data is used only when no time factor applies, so congestion is never counted twice.
  /** One road route through any earlier stops, including time spent handing over at each. */
- async function routeThroughStops(start,earlierStops,target,vehicle){
+ async function routeThroughStops(start,earlierStops,target,vehicle,traffic){
   let previous=start,durationSeconds=0,distanceMeters=0;const coordinates=[];
   for(const point of [...earlierStops,target]){
-   const leg=await routing.route(previous,point,{vehicle,traffic:true});
+   const leg=await routing.route(previous,point,{vehicle,traffic});
    if(leg?.source!=='routing-provider'&&leg?.source!=='fixture')return null;
    durationSeconds+=leg.durationSeconds;distanceMeters+=leg.distanceMeters;
    coordinates.push(...(leg.geometry?.coordinates??[]));
@@ -73,7 +74,7 @@ export function etaService(db,{routing=null,baselineFactors={},routingLabel='osr
   const gps=ACTIVE_STATES.has(stage)?classifyGps({latitude:row.rider_latitude,longitude:row.rider_longitude,updatedAt:row.rider_updated_at,accuracyMeters:row.position_accuracy_m==null?NaN:Number(row.position_accuracy_m),previous:await previousSample(row.rider_id,row.rider_updated_at)},{now:at}):{quality:'not_applicable',usable:false};
   const deliveryType=isFood?'food':'parcel',city=cityBucket(dropoff),bucket=timeBucket(at);
   const evidence=await evidenceFor({vehicle,deliveryType,city,bucket});
-  const adjustment=travelAdjustment({evidence,baselineFactor:baselineFactorFor(baselineFactors,vehicle,bucket)});
+  const adjustment=travelAdjustment({evidence,baselineFactor:baselineFactorFor(baselineFactors,vehicle,bucket,city)});
 
   const toPickup=stage==='RIDER_ASSIGNED',target=toPickup?pickup:dropoff;
   const cached=row.cached_stage&&row.route_rider_id===row.rider_id&&row.route_computed_at
@@ -92,7 +93,7 @@ export function etaService(db,{routing=null,baselineFactors={},routingLabel='osr
     changeReason=decision.reason;
     if(routing){
      try{
-      const leg=await routeThroughStops(riderPoint,earlierStops,target,vehicle);
+      const leg=await routeThroughStops(riderPoint,earlierStops,target,vehicle,adjustment.factor===1);
       if(leg){
        roadSeconds=leg.durationSeconds;
        await db.query(`INSERT INTO shipment_eta_state(shipment_id,stage,route_rider_id,route_duration_seconds,route_distance_meters,route_geometry,route_computed_at,last_change_reason,updated_at)
@@ -106,7 +107,7 @@ export function etaService(db,{routing=null,baselineFactors={},routingLabel='osr
    }else roadSeconds=decision.remainingSeconds;
    if(toPickup&&!routeFailed&&pickupToDropoff===null&&pickup&&dropoff&&routing){
     try{
-     const leg=await routing.route(pickup,dropoff,{vehicle,traffic:true});
+     const leg=await routing.route(pickup,dropoff,{vehicle,traffic:adjustment.factor===1});
      if(leg?.source==='routing-provider'||leg?.source==='fixture'){
       pickupToDropoff=leg.durationSeconds;
       await db.query('UPDATE shipment_eta_state SET pickup_to_dropoff_seconds=$2 WHERE shipment_id=$1',[shipmentId,pickupToDropoff]);

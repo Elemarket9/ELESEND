@@ -1,5 +1,6 @@
 -- Pricing engine controls. Nothing here changes what a customer pays until staff turn it on:
--- no tariff values change, no toll exists, and the booking fee and waiting rates stay at zero.
+-- no tariff values change, no toll exists, the booking fee and waiting rates stay at zero, and
+-- waiting charges also need WAITING_CHARGES_ENABLED=true.
 ALTER TABLE pricing_policies
   ADD COLUMN rush_hour_bps integer NOT NULL DEFAULT 14000 CHECK (rush_hour_bps BETWEEN 10000 AND 20000),
   ADD COLUMN traffic_time_pricing boolean NOT NULL DEFAULT false,
@@ -10,7 +11,7 @@ CREATE TABLE toll_rules (
   id uuid PRIMARY KEY,
   name text NOT NULL CHECK (length(trim(name)) BETWEEN 2 AND 120),
   location geography(Point, 4326) NOT NULL,
-  radius_m integer NOT NULL CHECK (radius_m BETWEEN 10 AND 500),
+  radius_m integer NOT NULL CHECK (radius_m BETWEEN 10 AND 100),
   vehicles text[] NOT NULL CHECK (cardinality(vehicles) > 0),
   amount_minor integer NOT NULL CHECK (amount_minor > 0),
   source text NOT NULL CHECK (length(trim(source)) >= 5),

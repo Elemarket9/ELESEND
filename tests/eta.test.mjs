@@ -238,17 +238,19 @@ test('timeline records and measured accuracy work against PostgreSQL',{skip:!pro
  }finally{await db.close();}
 });
 
-test('rush-hour trip times follow measured traffic, not a shortcut',async()=>{
+test('trip time factors apply only where there is a real reading',async()=>{
  const {baselineFactorFor,etaBaselineFactors,quotedEtaMinutes}=await import('../services/api/eta/baseline-factors.mjs');
  const factors=etaBaselineFactors({});
- assert.equal(baselineFactorFor(factors,'motorcycle','evening_peak'),1.4);
- assert.equal(baselineFactorFor(factors,'car','evening_peak'),2.2);
- assert.equal(baselineFactorFor(factors,'motorcycle','midday'),1);
- assert.equal(baselineFactorFor(factors,'van','evening_peak'),1);
- assert.equal(baselineFactorFor(etaBaselineFactors({ETA_BASELINE_FACTORS:'{"motorcycle":{"evening_peak":1.2}}'}),'motorcycle','evening_peak'),1.2);
- assert.throws(()=>etaBaselineFactors({ETA_BASELINE_FACTORS:'{"motorcycle":{"midday":0.1}}'}),/must be from/);
- // Kasoa to Terminal 3 at 4 pm: 39 minutes of road time. Google showed 55.
+ assert.equal(baselineFactorFor(factors,'motorcycle','evening_peak','accra'),1.4);
+ assert.equal(baselineFactorFor(factors,'car','evening_peak','accra'),2.2);
+ for(const [vehicle,period,city] of [['motorcycle','morning_peak','accra'],['motorcycle','midday','accra'],['motorcycle','evening_peak','kumasi'],['van','evening_peak','accra']])assert.equal(baselineFactorFor(factors,vehicle,period,city),1);
+ assert.equal(baselineFactorFor(etaBaselineFactors({ETA_BASELINE_FACTORS:'{"kumasi":{"motorcycle":{"midday":1.2}}}'}),'motorcycle','midday','kumasi'),1.2);
+ for(const bad of ['[]','{"accra":{"motorcycle":1.2}}','{"accra":{"motorcycle":{"evening_peek":1.2}}}','{"__proto__":{"midday":1.2}}','{"accra":{"motorcycle":{"midday":0.1}}}','{"lagos":{"car":{"midday":1.2}}}']){
+  assert.throws(()=>etaBaselineFactors({ETA_BASELINE_FACTORS:bad}),undefined,bad);
+  assert.equal(({}).midday,undefined,'nothing leaks into shared objects');
+ }
  const eta=quotedEtaMinutes(2361,1.4);
  assert.ok(eta.low<=55&&eta.high>=55,JSON.stringify(eta));
+ assert.equal(eta.evidence,'assumed_baseline');
+ assert.equal(quotedEtaMinutes(2361,1).evidence,'road_graph');
 });
-

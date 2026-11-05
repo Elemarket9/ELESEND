@@ -210,7 +210,7 @@ docker compose exec api node scripts/migrate.mjs
 | `SMS_PROVIDER` | Active SMS provider (`hubtel`, `https_gateway`, `none`) | `auto` |
 | `TRUSTED_PROXY_CIDRS` | Address of the reverse proxy. Without it, all users behind the proxy share one rate limit | *Set behind a proxy* |
 | `IP_LIMIT_MULTIPLIER` | Scales all per-IP rate limits for shared mobile networks (0.1 to 100) | `1` |
-| `ETA_MOTORCYCLE_BASELINE_FACTOR` | Customer ETA only: share of road time for motorcycles until 30 measured trips replace it (0.3 to 1). An assumption, not a measurement. Fares and dispatch are unaffected | `0.75` |
+| `ETA_BASELINE_FACTORS` | Trip time factors from real readings, by city, vehicle and period. Unmeasured periods stay at 1. Measured rider trips replace them. |
 | `MAPS_HOST` | Public hostname for the tile server in `deploy/runtime` | `maps.localhost` |
 | `ROUTING_OSRM_URL` | OSRM routing server base URL | `http://127.0.0.1:5000` |
 

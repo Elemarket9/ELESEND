@@ -32,7 +32,7 @@ export default function FareSummary({ quote }) {
           <Text style={{ fontSize: 15, fontWeight: '800', color: '#0F172A' }}>{ghc(quote.amount_minor)}</Text>
           {quote.etaMinutes && <Text style={label}>About {quote.etaMinutes.low} to {quote.etaMinutes.high} min trip, {km.toFixed(1)} km</Text>}
         </View>
-        <Text style={{ fontSize: 13, fontWeight: '700', color: '#0F172A' }}>{open ? 'Hide' : 'How it adds up'}</Text>
+        <Text style={{ fontSize: 13, fontWeight: '700', color: '#0F172A' }}>{open ? 'Hide' : 'See rates'}</Text>
       </View>
       {open && (
         <View style={{ marginTop: 6 }}>
@@ -40,7 +40,7 @@ export default function FareSummary({ quote }) {
           <Line name="Per km" amount={ghc(fare.perKmMinor)} />
           <Line name={`Per minute (${fare.pricedMinutes} min)`} amount={ghc(fare.perMinuteMinor)} />
           <Line name="Minimum price" amount={ghc(fare.minimumMinor)} />
-          {fare.rushHourMultiplier > 1 && <Line name="Busy time" amount={`${fare.rushHourMultiplier}×`} />}
+          {fare.rushHourMultiplier > 1 && <Line name="Busy-time multiplier" amount={`${fare.rushHourMultiplier}×`} />}
           {fare.bookingFeeMinor > 0 && <Line name="Booking fee" amount={ghc(fare.bookingFeeMinor)} />}
           {(fare.tolls || []).map(toll => <Line key={toll.name} name={`Toll: ${toll.name}`} amount={ghc(toll.amountMinor)} />)}
           {fare.waitPerMinuteMinor > 0 && (

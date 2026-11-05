@@ -198,7 +198,8 @@ export function restaurantOrderService(db, options = {}) {
     const roadDistanceMeters = routeResult.distanceMeters;
     const roadDurationSeconds = routeResult.durationSeconds;
 
-    const deliveryQuote = calculateQuote(policy, roadDistanceMeters, {durationSeconds: roadDurationSeconds});
+    // Food delivery fees carry no booking fee until a food policy is decided.
+    const deliveryQuote = calculateQuote({...policy, booking_fee_bps: 0}, roadDistanceMeters, {durationSeconds: roadDurationSeconds});
     const deliveryFeeMinor = deliveryQuote.amountMinor;
 
     const mergedPromoCodes = [

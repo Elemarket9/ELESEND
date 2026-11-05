@@ -1,6 +1,6 @@
 import {baselineFactorFor,etaBaselineFactors,quotedEtaMinutes} from './eta/baseline-factors.mjs';
 import {activeTollRules,applicableTolls} from './toll-rules.mjs';
-import {timeBucket} from './eta/stage-eta.mjs';
+import {cityBucket,timeBucket} from './eta/stage-eta.mjs';
 import {ACTIVE_PUSH_TOKEN_FILTER,queueNotification} from './notifications.mjs';
 import {envInt} from './env-values.mjs';
 import {cashAlreadyReported,confirmedPaymentMinor,unpaidEarningsMinor,withdrawalFeeMinor} from './modules/payments/index.mjs';
@@ -56,18 +56,27 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async function event(c,s,kind){await c.query('INSERT INTO outbox(shipment_id,kind,payload) VALUES($1,$2,$3)',[s,kind,JSON.stringify({shipmentId:s,kind})]);}
  async function permission(c,actor,p){check((await c.query('SELECT 1 FROM permissions WHERE user_id=$1 AND permission=$2',[actor.id,p])).rowCount,403,'Permission required');}
  /** Free until a set time after a rider accepts. After that a set fee goes to that rider, taken from the refund. */
- /** Rider's waiting at this stop, measured from GPS arrival. No arrival record means no fee. */
+ /**
+  * Rider's waiting at this stop, measured from this rider's GPS arrival to their first code request.
+  * Off until WAITING_CHARGES_ENABLED=true, because drive-pasts, several parcels on one wait and
+  * telling the payer are not yet handled.
+  */
  async function chargeWaiting(c,s,stop){
-  if(!['pickup','delivery'].includes(stop))return null;
+  if(process.env.WAITING_CHARGES_ENABLED!=='true'||!['pickup','delivery'].includes(stop))return null;
   if((await c.query('SELECT 1 FROM food_orders WHERE shipment_id=$1',[s.id])).rowCount)return null;
-  const arrived=(await c.query('SELECT occurred_at,extract(epoch FROM now()-occurred_at)::int AS seconds FROM delivery_milestones WHERE shipment_id=$1 AND milestone=$2 ORDER BY occurred_at LIMIT 1',[s.id,stop==='pickup'?'arrived_pickup':'arrived_customer'])).rows[0];
-  if(!arrived)return null;
-  const rate=(await c.query('SELECT p.wait_per_minute_minor FROM quotes q JOIN pricing_policies p ON p.id=q.policy_id WHERE q.id=$1',[s.quote_id])).rows[0]?.wait_per_minute_minor;
-  const feeMinor=waitingFeeMinor(Number(arrived.seconds),Number(rate??0),{freeMinutes:envInt(process.env.WAIT_FREE_MINUTES,5,0),maxMinor:envInt(process.env.WAIT_FEE_MAX_MINOR,1500,0)});
+  const span=(await c.query(`SELECT m.occurred_at AS arrived_at,ch.first_at AS ended_at,extract(epoch FROM ch.first_at-m.occurred_at)::int AS seconds
+    FROM delivery_milestones m,LATERAL (SELECT min(created_at) AS first_at FROM challenges WHERE shipment_id=$1 AND rider_id=$2 AND purpose=$4) ch
+    WHERE m.shipment_id=$1 AND m.rider_id=$2 AND m.milestone=$3 ORDER BY m.occurred_at LIMIT 1`,[s.id,s.rider_id,stop==='pickup'?'arrived_pickup':'arrived_customer',stop])).rows[0];
+  if(!span?.ended_at)return null;
+  // The terms the customer saw at quote time.
+  const quote=(await c.query('SELECT p.wait_per_minute_minor,q.pricing_evidence FROM quotes q JOIN pricing_policies p ON p.id=q.policy_id WHERE q.id=$1',[s.quote_id])).rows[0];
+  const terms=quote?.pricing_evidence?.waitingTerms;
+  if(!terms)return null;
+  const feeMinor=waitingFeeMinor(Number(span.seconds),Number(quote.wait_per_minute_minor??0),terms);
   if(!feeMinor)return null;
   const collection=s.payment_method==='CASH'?'collect_cash':'not_collected';
-  await c.query('INSERT INTO shipment_waiting_charges(shipment_id,stop,arrived_at,ended_at,waited_seconds,fee_minor,collection) VALUES($1,$2,$3,now(),$4,$5,$6) ON CONFLICT DO NOTHING',[s.id,stop,arrived.occurred_at,Number(arrived.seconds),feeMinor,collection]);
-  return {feeMinor,waitedSeconds:Number(arrived.seconds),collection};
+  await c.query('INSERT INTO shipment_waiting_charges(shipment_id,stop,arrived_at,ended_at,waited_seconds,fee_minor,collection) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING',[s.id,stop,span.arrived_at,span.ended_at,Number(span.seconds),feeMinor,collection]);
+  return {feeMinor,waitedSeconds:Number(span.seconds),collection};
  }
  async function cancellationTerms(c,s){
   const paidMinor=s.paid?await confirmedPaymentMinor(c,s.id):0;
@@ -530,15 +539,17 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const surgeMultiplier=surgeBps/10000;
   // A tariff charges for traffic one way only: its rush multiplier, or the time the trip will really take.
   const bucket=timeBucket(new Date());
-  const trafficFactor=baselineFactorFor(etaBaselineFactors(),v.vehicle??'car',bucket);
+  const trafficFactor=baselineFactorFor(etaBaselineFactors(),v.vehicle??'car',bucket,cityBucket(v.pickup));
+  const waitingEnabled=process.env.WAITING_CHARGES_ENABLED==='true'&&Number(p.wait_per_minute_minor??0)>0;
+  const waitingTerms=waitingEnabled?{freeMinutes:envInt(process.env.WAIT_FREE_MINUTES,5,0),maxMinor:envInt(process.env.WAIT_FEE_MAX_MINOR,1500,0)}:null;
   const pricedSeconds=p.traffic_time_pricing?Math.round(route.durationSeconds*trafficFactor):route.durationSeconds;
   const tolls=applicableTolls(await activeTollRules(db),{geometry:route.geometry,vehicle:v.vehicle??'car'});
   const tollMinor=tolls.reduce((sum,toll)=>sum+toll.amountMinor,0);
   const {amountMinor,commissionMinor,riderEarningsMinor,breakdown}=calculateQuote(p,meters,{durationSeconds:pricedSeconds,surgeBps,tollMinor});const qid=id();
-  const evidence={policyId:p.id,vehicle:v.vehicle??'legacy_unspecified',routeVehicle:v.vehicle??'car',distanceMeters:meters,durationSeconds:route.durationSeconds,pricedSeconds,tolls,breakdown,routeProfile:routing.capabilities?.profileVersion??null,source:route.source,surgeBps,scheduledMultiplier,surgeObservation,quotedAt:new Date().toISOString(),commissionBps:p.commission_bps,minimumMinor:p.minimum_minor};
+  const evidence={policyId:p.id,vehicle:v.vehicle??'legacy_unspecified',routeVehicle:v.vehicle??'car',distanceMeters:meters,durationSeconds:route.durationSeconds,pricedSeconds,tolls,breakdown,waitingTerms,routeProfile:routing.capabilities?.profileVersion??null,source:route.source,surgeBps,scheduledMultiplier,surgeObservation,quotedAt:new Date().toISOString(),commissionBps:p.commission_bps,minimumMinor:p.minimum_minor};
   const r=await db.query("INSERT INTO quotes(id,customer_id,policy_id,request,amount_minor,commission_minor,expires_at,payment_method,pricing_evidence) VALUES($1,$2,$3,$4,$5,$6,now()+interval '15 minutes',$7,$8) RETURNING id,amount_minor,commission_minor,expires_at,payment_method",[qid,actor.id,p.id,JSON.stringify(v),amountMinor,commissionMinor,v.paymentMethod,JSON.stringify(evidence)]);
   const capacity=dispatch?await dispatch.availability({pickup:v.pickup,weightG:v.weightG,vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize}):{status:'unknown',guaranteed:false};
-  const fareBreakdown={...breakdown,tolls:tolls.map(({name,amountMinor})=>({name,amountMinor})),tariffId:p.id,startMinor:Number(p.base_minor),perKmMinor:Number(p.per_km_minor),perMinuteMinor:Number(p.per_minute_minor??0),pricedMinutes:Math.ceil(pricedSeconds/60),minimumMinor:Number(p.minimum_minor??0),rushHourMultiplier:surgeMultiplier,waitPerMinuteMinor:Number(p.wait_per_minute_minor??0),waitFreeMinutes:envInt(process.env.WAIT_FREE_MINUTES,5,0),waitMaxMinor:envInt(process.env.WAIT_FEE_MAX_MINOR,1500,0)};
+  const fareBreakdown={...breakdown,tolls:tolls.map(({name,amountMinor})=>({name,amountMinor})),tariffId:p.id,startMinor:Number(p.base_minor),perKmMinor:Number(p.per_km_minor),perMinuteMinor:Number(p.per_minute_minor??0),pricedMinutes:Math.ceil(pricedSeconds/60),minimumMinor:Number(p.minimum_minor??0),rushHourMultiplier:surgeMultiplier,waitPerMinuteMinor:waitingEnabled?Number(p.wait_per_minute_minor):0,waitFreeMinutes:waitingTerms?.freeMinutes??0,waitMaxMinor:waitingTerms?.maxMinor??0};
   return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEvidence:evidence,fareBreakdown,etaMinutes:quotedEtaMinutes(route.durationSeconds,trafficFactor),surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
  },
  async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business','company'].includes(actor.kind),403);await assertCompanyDelivery(db,actor);
