@@ -1,3 +1,5 @@
+import {baselineFactorFor,etaBaselineFactors,quotedEtaMinutes} from './eta/baseline-factors.mjs';
+import {timeBucket} from './eta/stage-eta.mjs';
 import {ACTIVE_PUSH_TOKEN_FILTER,queueNotification} from './notifications.mjs';
 import {envInt} from './env-values.mjs';
 import {cashAlreadyReported,confirmedPaymentMinor,unpaidEarningsMinor,withdrawalFeeMinor} from './modules/payments/index.mjs';
@@ -16,7 +18,7 @@ import {removeStop,removeShipment} from './multi-parcel.mjs';
 import {settleCompletedDelivery,debtState} from './modules/payments/index.mjs';
 import {requestCheckoutRefund} from './modules/payments/index.mjs';
 import {requireFoodPayment} from './modules/payments/index.mjs';
-import {calculateQuote} from './pricing.mjs';
+import {calculateQuote,waitingFeeMinor} from './pricing.mjs';
 import {getSurgeMultiplier,validateGhanaBoundary} from './pricing-surge.mjs';
 import {measuredSurge} from './pricing-surge.mjs';
 import {haversine} from './dispatch-geometry.mjs';
@@ -53,6 +55,19 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async function event(c,s,kind){await c.query('INSERT INTO outbox(shipment_id,kind,payload) VALUES($1,$2,$3)',[s,kind,JSON.stringify({shipmentId:s,kind})]);}
  async function permission(c,actor,p){check((await c.query('SELECT 1 FROM permissions WHERE user_id=$1 AND permission=$2',[actor.id,p])).rowCount,403,'Permission required');}
  /** Free until a set time after a rider accepts. After that a set fee goes to that rider, taken from the refund. */
+ /** Rider's waiting at this stop, measured from GPS arrival. No arrival record means no fee. */
+ async function chargeWaiting(c,s,stop){
+  if(!['pickup','delivery'].includes(stop))return null;
+  if((await c.query('SELECT 1 FROM food_orders WHERE shipment_id=$1',[s.id])).rowCount)return null;
+  const arrived=(await c.query('SELECT extract(epoch FROM now()-occurred_at)::int AS seconds FROM delivery_milestones WHERE shipment_id=$1 AND milestone=$2 ORDER BY occurred_at LIMIT 1',[s.id,stop==='pickup'?'arrived_pickup':'arrived_customer'])).rows[0];
+  if(!arrived)return null;
+  const rate=(await c.query('SELECT p.wait_per_minute_minor FROM quotes q JOIN pricing_policies p ON p.id=q.policy_id WHERE q.id=$1',[s.quote_id])).rows[0]?.wait_per_minute_minor;
+  const feeMinor=waitingFeeMinor(Number(arrived.seconds),Number(rate??0),{freeMinutes:envInt(process.env.WAIT_FREE_MINUTES,5,0),maxMinor:envInt(process.env.WAIT_FEE_MAX_MINOR,1500,0)});
+  if(!feeMinor)return null;
+  const collection=s.payment_method==='CASH'?'collect_cash':'not_collected';
+  await c.query('INSERT INTO shipment_waiting_charges(shipment_id,stop,waited_seconds,fee_minor,collection) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING',[s.id,stop,Number(arrived.seconds),feeMinor,collection]);
+  return {feeMinor,waitedSeconds:Number(arrived.seconds),collection};
+ }
  async function cancellationTerms(c,s){
   const paidMinor=s.paid?await confirmedPaymentMinor(c,s.id):0;
   let feeMinor=0,freeSecondsLeft=null;
@@ -414,8 +429,9 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async configureVehicleTariff(actor,input){
   const v=z.object({vehicle:z.enum(['motorcycle','car','van']),baseMinor:z.number().int().min(1).max(1000000),perKmMinor:z.number().int().min(0).max(100000),perMinuteMinor:z.number().int().min(0).max(100000).default(0),minimumMinor:z.number().int().min(0).max(100000000).default(0),rushHourEnabled:z.boolean().default(false),supplyDemandEnabled:z.boolean().default(false),commissionBps:z.number().int().min(0).max(10000).default(1300)}).strict().parse(input);
   return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');
+   const kept=(await c.query('SELECT rush_hour_bps,wait_per_minute_minor FROM pricing_policies WHERE active AND vehicle=$1',[v.vehicle])).rows[0];
    await c.query('UPDATE pricing_policies SET active=false WHERE active AND vehicle=$1',[v.vehicle]);const pid=id();
-   await c.query('INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled,supply_demand_enabled,commission_bps) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[pid,v.vehicle,v.baseMinor,v.perKmMinor,v.perMinuteMinor,v.minimumMinor,v.rushHourEnabled,v.supplyDemandEnabled,v.commissionBps]);
+   await c.query('INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled,supply_demand_enabled,commission_bps,rush_hour_bps,wait_per_minute_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',[pid,v.vehicle,v.baseMinor,v.perKmMinor,v.perMinuteMinor,v.minimumMinor,v.rushHourEnabled,v.supplyDemandEnabled,v.commissionBps,kept?.rush_hour_bps??14000,kept?.wait_per_minute_minor??0]);
    await audit(c,actor.id,'pricing.vehicle_version_created',pid);return {id:pid,...v};
   });
  },
@@ -433,7 +449,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    for(const cur of targets){
     await c.query('UPDATE pricing_policies SET active=false WHERE id=$1',[cur.id]);
     const pid=id();
-    await c.query('INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled,supply_demand_enabled,commission_bps,commission_mode,commission_fixed_minor,commission_cap_minor,wait_per_minute_minor,per_extra_stop_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',[pid,cur.vehicle,cur.base_minor,cur.per_km_minor,cur.per_minute_minor??0,cur.minimum_minor??0,cur.rush_hour_enabled??false,cur.supply_demand_enabled??false,v.commissionBps,v.commissionMode,v.commissionFixedMinor,v.commissionCapMinor,cur.wait_per_minute_minor??0,cur.per_extra_stop_minor??0]);
+    await c.query('INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled,supply_demand_enabled,commission_bps,commission_mode,commission_fixed_minor,commission_cap_minor,wait_per_minute_minor,per_extra_stop_minor,rush_hour_bps) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)',[pid,cur.vehicle,cur.base_minor,cur.per_km_minor,cur.per_minute_minor??0,cur.minimum_minor??0,cur.rush_hour_enabled??false,cur.supply_demand_enabled??false,v.commissionBps,v.commissionMode,v.commissionFixedMinor,v.commissionCapMinor,cur.wait_per_minute_minor??0,cur.per_extra_stop_minor??0]);
     await audit(c,actor.id,'pricing.commission_configured',pid);
     created.push({id:pid,vehicle:cur.vehicle,commissionBps:v.commissionBps,commissionMode:v.commissionMode,commissionFixedMinor:v.commissionFixedMinor,commissionCapMinor:v.commissionCapMinor});
    }
@@ -509,13 +525,15 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const hour=Number(new Intl.DateTimeFormat('en-GB',{timeZone:MARKET_TIME_ZONE,hour:'2-digit',hourCycle:'h23'}).format(new Date()));
   const scheduledMultiplier=p.rush_hour_enabled?getSurgeMultiplier(v.pickup.latitude,v.pickup.longitude,hour):1;
   const surgeObservation=p.supply_demand_enabled&&v.vehicle?await measuredSurge(db,v.pickup,v.vehicle):{multiplierBps:10000,reason:'disabled'};
-  const surgeBps=Math.max(scheduledMultiplier===1.4?14000:10000,surgeObservation.multiplierBps);
+  const surgeBps=Math.max(scheduledMultiplier>1?Number(p.rush_hour_bps??14000):10000,surgeObservation.multiplierBps);
   const surgeMultiplier=surgeBps/10000;
   const {amountMinor,commissionMinor,riderEarningsMinor}=calculateQuote(p,meters,{durationSeconds:route.durationSeconds,surgeBps});const qid=id();
   const evidence={policyId:p.id,vehicle:v.vehicle??'legacy_unspecified',routeVehicle:v.vehicle??'car',distanceMeters:meters,durationSeconds:route.durationSeconds,source:route.source,surgeBps,scheduledMultiplier,surgeObservation,quotedAt:new Date().toISOString(),commissionBps:p.commission_bps,minimumMinor:p.minimum_minor};
   const r=await db.query("INSERT INTO quotes(id,customer_id,policy_id,request,amount_minor,commission_minor,expires_at,payment_method,pricing_evidence) VALUES($1,$2,$3,$4,$5,$6,now()+interval '15 minutes',$7,$8) RETURNING id,amount_minor,commission_minor,expires_at,payment_method",[qid,actor.id,p.id,JSON.stringify(v),amountMinor,commissionMinor,v.paymentMethod,JSON.stringify(evidence)]);
   const capacity=dispatch?await dispatch.availability({pickup:v.pickup,weightG:v.weightG,vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize}):{status:'unknown',guaranteed:false};
-  return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEvidence:evidence,surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
+  const factor=baselineFactorFor(etaBaselineFactors(),v.vehicle??'car',timeBucket(new Date()));
+  const fareBreakdown={startMinor:Number(p.base_minor),perKmMinor:Number(p.per_km_minor),perMinuteMinor:Number(p.per_minute_minor??0),minimumMinor:Number(p.minimum_minor??0),rushHourMultiplier:surgeMultiplier,waitPerMinuteMinor:Number(p.wait_per_minute_minor??0),waitFreeMinutes:envInt(process.env.WAIT_FREE_MINUTES,5,0),waitMaxMinor:envInt(process.env.WAIT_FEE_MAX_MINOR,1500,0)};
+  return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEvidence:evidence,fareBreakdown,etaMinutes:quotedEtaMinutes(route.durationSeconds,factor),surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
  },
  async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business','company'].includes(actor.kind),403);await assertCompanyDelivery(db,actor);
   if(process.env.NODE_ENV==='production')check(sms&&typeof sms.send==='function'&&dispatch,503,'Delivery booking paused: dispatch or SMS verification unavailable');
@@ -663,7 +681,8 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     // inside this same OTP-verified completion transaction.
     await settleCompletedDelivery(c,s);
    }
-   await audit(c,actor.id,ch.purpose+'.verified',sid);await event(c,sid,ch.purpose==='delivery'?'completed':'pickup_verified');return {ok:true};
+   const waitingFee=await chargeWaiting(c,s,ch.purpose);
+   await audit(c,actor.id,ch.purpose+'.verified',sid);await event(c,sid,ch.purpose==='delivery'?'completed':'pickup_verified');return {ok:true,...(waitingFee?{waitingFee}:{})};
   });check(!result.invalid,400,'Incorrect code');return result;
  },
  /** What cancelling costs right now, so the customer sees it before deciding. */

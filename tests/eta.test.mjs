@@ -237,3 +237,26 @@ test('timeline records and measured accuracy work against PostgreSQL',{skip:!pro
   assert.ok(report.groups.every(g=>Number.isInteger(g.estimate.sampleCount)));
  }finally{await db.close();}
 });
+
+test('rush-hour trip times follow measured traffic, not a shortcut',async()=>{
+ const {baselineFactorFor,etaBaselineFactors,quotedEtaMinutes}=await import('../services/api/eta/baseline-factors.mjs');
+ const factors=etaBaselineFactors({});
+ assert.equal(baselineFactorFor(factors,'motorcycle','evening_peak'),1.4);
+ assert.equal(baselineFactorFor(factors,'car','evening_peak'),2.2);
+ assert.equal(baselineFactorFor(factors,'motorcycle','midday'),1);
+ assert.equal(baselineFactorFor(factors,'van','evening_peak'),1);
+ assert.equal(baselineFactorFor(etaBaselineFactors({ETA_MOTORCYCLE_BASELINE_FACTOR:'0.9'}),'motorcycle','evening_peak'),0.9);
+ // Kasoa to Terminal 3 at 4 pm: 39 minutes of road time. Google showed 55.
+ const eta=quotedEtaMinutes(2361,1.4);
+ assert.ok(eta.low<=55&&eta.high>=55,JSON.stringify(eta));
+});
+
+test('waiting fee starts after the free minutes and has a limit',async()=>{
+ const {waitingFeeMinor}=await import('../services/api/pricing.mjs');
+ const rules={freeMinutes:5,maxMinor:1500};
+ assert.equal(waitingFeeMinor(300,56,rules),0);
+ assert.equal(waitingFeeMinor(301,56,rules),56);
+ assert.equal(waitingFeeMinor(600,56,rules),280);
+ assert.equal(waitingFeeMinor(36000,56,rules),1500);
+ assert.equal(waitingFeeMinor(600,0,rules),0);
+});

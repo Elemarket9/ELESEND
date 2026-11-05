@@ -32,3 +32,10 @@ export function calculateQuote(policy,distanceMeters,extras={}){
  if(commission>charge)commission=charge;
  return {amountMinor:Number(charge),commissionMinor:Number(commission),riderEarningsMinor:Number(charge-commission)};
 }
+
+/** Fee after the free minutes, per started minute, up to the limit. */
+export function waitingFeeMinor(waitedSeconds,perMinuteMinor,{freeMinutes=5,maxMinor=1500}={}){
+ const over=waitedSeconds-freeMinutes*60;
+ if(!(over>0)||!(perMinuteMinor>0))return 0;
+ return Math.min(maxMinor,Math.ceil(over/60)*perMinuteMinor);
+}

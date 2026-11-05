@@ -233,6 +233,28 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    await db.query("UPDATE shipments SET state='CANCELLED' WHERE id=$1",[waiting[0].id]);
    await offline();
   });
+  await t.test('a quote explains itself, and long waits on a cash order earn the rider a fee',async()=>{
+   await offline();
+   const c=await customer();const r=await readyRider();
+   const q=await api(c.token,'POST','/api/v1/quotes',trip({paymentMethod:'CASH',cashPayer:'recipient'}));assert.equal(q.status,200,JSON.stringify(q.data));
+   assert.equal(q.data.fareBreakdown.perKmMinor,220);
+   assert.equal(q.data.fareBreakdown.waitPerMinuteMinor,56);
+   assert.ok(q.data.etaMinutes.low<q.data.etaMinutes.high);
+   if(q.data.surgeMultiplier>1)assert.equal(q.data.surgeMultiplier,1.3);
+   const s=await api(c.token,'POST','/api/v1/shipments',{quoteId:q.data.id},{'Idempotency-Key':'wait-'+randomInt(1e9)});assert.equal(s.status,200,JSON.stringify(s.data));
+   await dispatch.tick();const offer=await offerFor(r,s.data.id);
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+s.data.id+'/accept',{offerId:offer.offerId})).status,200);
+   await db.query("INSERT INTO delivery_milestones(shipment_id,milestone,rider_id,occurred_at) VALUES($1,'arrived_pickup',$2,now()-interval '10 minutes') ON CONFLICT DO NOTHING",[s.data.id,r.id]);
+   await db.query("UPDATE delivery_milestones SET occurred_at=now()-interval '10 minutes' WHERE shipment_id=$1 AND milestone='arrived_pickup'",[s.data.id]);
+   const pc=await api(r.token,'POST','/api/v1/shipments/'+s.data.id+'/pickup-challenge',{});assert.equal(pc.status,200,JSON.stringify(pc.data));
+   const done=await api(r.token,'POST','/api/v1/shipments/'+s.data.id+'/verify',{challengeId:pc.data.challengeId,code:code()});assert.equal(done.status,200,JSON.stringify(done.data));
+   assert.equal(done.data.waitingFee.collection,'collect_cash');
+   assert.equal(done.data.waitingFee.feeMinor,280);
+   const stored=(await db.query('SELECT fee_minor FROM shipment_waiting_charges WHERE shipment_id=$1',[s.data.id])).rows[0];
+   assert.equal(Number(stored.fee_minor),280);
+   assert.equal(Number((await db.query('SELECT amount_minor FROM shipments WHERE id=$1',[s.data.id])).rows[0].amount_minor),Number(q.data.amount_minor),'the booked fare does not change');
+  });
+
   await t.test('money owed blocks account deletion until it is paid',async()=>{
    await offline();
    const c=await customer();const r=await readyRider();const id=await paidOrder(c);await dispatch.tick();
