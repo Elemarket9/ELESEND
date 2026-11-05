@@ -40,8 +40,12 @@ export function locateOnRoute(position, points, { after = null } = {}) {
 }
 
 /** The manoeuvre coming up, and how far away it is. */
-export function upcomingStep(steps, traveledMeters) {
+export function upcomingStep(steps, traveledMeters, routeMeters = null) {
   if (!Array.isArray(steps) || !steps.length) return null;
+  // Steps and the drawn line measure the route slightly differently. Left alone, the gap grows
+  // along a long trip until a turn is treated as passed before the rider reaches it.
+  const stepsMeters = steps.reduce((sum, s) => sum + s.distanceMeters, 0);
+  if (routeMeters > 0 && stepsMeters > 0) traveledMeters *= stepsMeters / routeMeters;
   let start = 0;
   for (let i = 0; i < steps.length; i += 1) {
     const end = start + steps[i].distanceMeters;
@@ -80,12 +84,14 @@ const STALE_FIX_MS = 30000, IMPOSSIBLE_SPEED_MPS = 70, MOVING_MPS = 1.5;
  * Turns a raw GPS fix into the position navigation uses, or null if it cannot be trusted:
  * unreadable, old, or further than a motorbike could travel. A compass heading is only kept
  * while moving, because a parked phone reports a meaningless one that would spin the map.
+ * After repeated refusals the screen retries without the clock or the last point, because a wrong
+ * phone clock or one bad accepted fix must not stop navigation for good.
  */
-export function usableFix(previous, fix, now = Date.now()) {
+export function usableFix(previous, fix, now = Date.now(), { trustClock = true } = {}) {
   const c = fix?.coords;
   if (!c || !Number.isFinite(c.latitude) || !Number.isFinite(c.longitude)) return null;
   const at = Number.isFinite(fix.timestamp) ? fix.timestamp : now;
-  if (now - at > STALE_FIX_MS) return null;
+  if (trustClock && now - at > STALE_FIX_MS) return null;
   const here = { latitude: c.latitude, longitude: c.longitude, accuracy: c.accuracy, speed: c.speed, at };
   if (previous) {
     const elapsed = (at - previous.at) / 1000;

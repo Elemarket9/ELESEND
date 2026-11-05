@@ -10,6 +10,8 @@ import { OFF_ROUTE_METERS, formatDistance, formatDuration, hasArrived, locateOnR
 
 const FOLLOW_ZOOM = 16.5;
 const ROUTE_RETRY_MS = 15000;
+const REFUSALS_BEFORE_RESET = 3;
+const MOVING_MPS = 1.5;
 // Keeps a route if this screen is closed and reopened without a connection. Lost if the app is killed.
 const savedRoutes = new Map();
 const SAVED_ROUTE_MS = 2 * 3600000;
@@ -30,6 +32,7 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
   const [following, setFollowing] = useState(true);
   const reroute = useRef({});
   const lastFix = useRef(null);
+  const refused = useRef(0);
   const busy = useRef(false);
   const haveRoute = useRef(Boolean(route));
 
@@ -37,7 +40,7 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
     if (busy.current) return;
     busy.current = true;
     try {
-      const next = await call('POST', '/api/v1/rider/navigation', { shipmentId, latitude: from.latitude, longitude: from.longitude, ...(Number.isFinite(from.heading) ? { heading: from.heading } : {}) });
+      const next = await call('POST', '/api/v1/rider/navigation', { shipmentId, latitude: from.latitude, longitude: from.longitude, ...(Number.isFinite(from.heading) && from.speed >= MOVING_MPS ? { heading: from.heading } : {}) });
       haveRoute.current = true;
       voice.current = {};
       progress.current = null;
@@ -63,8 +66,10 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
           { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 2000, distanceInterval: 5 },
           fix => {
             if (!active) return;
-            const here = usableFix(lastFix.current, fix);
+            let here = usableFix(lastFix.current, fix);
+            if (!here && ++refused.current >= REFUSALS_BEFORE_RESET) here = usableFix(null, fix, Date.now(), { trustClock: false });
             if (!here) return;
+            refused.current = 0;
             lastFix.current = here;
             setPosition(here);
             // Keep trying until the first route arrives, in case the first request failed.
@@ -85,7 +90,7 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
     if (found && found.offRouteMeters <= OFF_ROUTE_METERS) progress.current = found.traveledMeters;
     return found;
   }, [position, points]);
-  const next = place ? upcomingStep(route.steps, place.traveledMeters) : null;
+  const next = place ? upcomingStep(route.steps, place.traveledMeters, place.routeMeters) : null;
   const arrived = hasArrived(place);
   const secondsLeft = place && route?.distanceMeters ? route.durationSeconds * (place.remainingMeters / route.distanceMeters) : route?.durationSeconds;
 
