@@ -1,3 +1,5 @@
+import {ETA_ASSUMPTIONS,etaRange} from './stage-eta.mjs';
+
 /**
  * Evidence classes for trip time, weakest first:
  * road_graph (empty-road model), assumed_baseline (these factors), measured (rider trips, used by the ETA service).
@@ -41,8 +43,17 @@ export function baselineFactorFor(factors, vehicle, bucket, city) {
   return factors?.[vehicle] ?? 1; // A flat factor per vehicle, as tests and older callers pass.
 }
 
-/** A range, because this is an estimate. Journey only: reaching the pickup is separate. */
-export function quotedEtaMinutes(travelSeconds, factor) {
-  const minutes = travelSeconds * factor / 60;
-  return { low: Math.max(1, Math.round(minutes * 0.9)), high: Math.max(2, Math.round(minutes * 1.2)), evidence: factor === 1 ? 'road_graph' : 'assumed_baseline' };
+/**
+ * What the customer sees at quote time. With a nearby rider's road time this covers the whole delivery,
+ * using the same range as live tracking. Without one it covers only the journey, and says so.
+ */
+export function quotedEtaMinutes(travelSeconds, factor, { riderSeconds = null, source = null } = {}) {
+ const evidence = source === 'measured' ? 'measured' : factor === 1 ? 'road_graph' : 'assumed_baseline';
+ if (Number.isFinite(riderSeconds)) {
+  const total = (riderSeconds + travelSeconds) * factor + ETA_ASSUMPTIONS.pickupHandoverSeconds + ETA_ASSUMPTIONS.dropoffHandoverSeconds;
+  const range = etaRange(total, { confidence: 'medium' });
+  return { low: range.minMinutes, high: range.maxMinutes, evidence, includesPickup: true };
+ }
+ const minutes = travelSeconds * factor / 60;
+ return { low: Math.max(1, Math.round(minutes * 0.9)), high: Math.max(2, Math.round(minutes * 1.2)), evidence, includesPickup: false };
 }

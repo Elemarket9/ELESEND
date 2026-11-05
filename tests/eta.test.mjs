@@ -254,3 +254,11 @@ test('trip time factors apply only where there is a real reading',async()=>{
  assert.equal(eta.evidence,'assumed_baseline');
  assert.equal(quotedEtaMinutes(2361,1).evidence,'road_graph');
 });
+
+test('the quote covers the whole delivery when a nearby rider is known',async()=>{
+ const {quotedEtaMinutes}=await import('../services/api/eta/baseline-factors.mjs');
+ const whole=quotedEtaMinutes(2361,1.4,{riderSeconds:600});
+ assert.deepEqual(whole,{low:56,high:93,evidence:'assumed_baseline',includesPickup:true});
+ assert.equal(quotedEtaMinutes(2361,1).includesPickup,false);
+ assert.equal(quotedEtaMinutes(2361,1.2,{source:'measured'}).evidence,'measured');
+});

@@ -84,3 +84,13 @@ test('new riders get the approved GH₵150 cash debt limit, existing limits stay
  assert.match(sql,/SET DEFAULT 15000/);
  assert.doesNotMatch(sql.replace(/--.*$/gm,''),/UPDATE/i);
 });
+
+test('a fare refuses pins far from the road and routes shorter than the pins allow; dispatch keeps its wider limit',async()=>{
+ const {osrmRouting}=await import('../services/api/dispatch-routing.mjs');
+ const from={latitude:5.60,longitude:-0.20},to={latitude:5.60,longitude:-0.145};
+ const stub=(distance,snap)=>osrmRouting({endpoint:'http://o:5000',profiles:{car:'car'},fetchImpl:async()=>({ok:true,status:200,json:async()=>({code:'Ok',routes:[{distance,duration:300,geometry:{type:'LineString',coordinates:[]}}],waypoints:[{distance:snap},{distance:snap}]})})});
+ await assert.rejects(stub(7000,600).route(from,to,{vehicle:'car',billing:true}),/too far from a mapped road/);
+ await assert.rejects(stub(1600,100).route(from,to,{vehicle:'car',billing:true}),/too short/);
+ assert.equal((await stub(7000,100).route(from,to,{vehicle:'car',billing:true})).distanceMeters,7000);
+ assert.equal((await stub(7000,600).route(from,to,{vehicle:'car'})).distanceMeters,7000);
+});

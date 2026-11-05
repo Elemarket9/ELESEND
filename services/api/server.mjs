@@ -37,7 +37,8 @@ const routing = (config.routing.vehicleRoutes || config.routing.osrmUrl)
   ? osrmRouting({
       endpoint: config.routing.osrmUrl,
       profiles: config.routing.profiles,
-      vehicleRoutes: config.routing.vehicleRoutes
+      vehicleRoutes: config.routing.vehicleRoutes,
+      billingSnapMeters: process.env.ROUTING_BILLING_SNAP_METERS ? Number(process.env.ROUTING_BILLING_SNAP_METERS) : undefined
     })
   : null;
 

@@ -1,6 +1,7 @@
 import {baselineFactorFor,etaBaselineFactors,quotedEtaMinutes} from './eta/baseline-factors.mjs';
 import {activeTollRules,applicableTolls} from './toll-rules.mjs';
-import {cityBucket,timeBucket} from './eta/stage-eta.mjs';
+import {cityBucket,timeBucket,travelAdjustment} from './eta/stage-eta.mjs';
+import {tripEvidence} from './eta/eta-service.mjs';
 import {ACTIVE_PUSH_TOKEN_FILTER,queueNotification} from './notifications.mjs';
 import {envInt} from './env-values.mjs';
 import {cashAlreadyReported,confirmedPaymentMinor,unpaidEarningsMinor,withdrawalFeeMinor} from './modules/payments/index.mjs';
@@ -56,27 +57,49 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async function event(c,s,kind){await c.query('INSERT INTO outbox(shipment_id,kind,payload) VALUES($1,$2,$3)',[s,kind,JSON.stringify({shipmentId:s,kind})]);}
  async function permission(c,actor,p){check((await c.query('SELECT 1 FROM permissions WHERE user_id=$1 AND permission=$2',[actor.id,p])).rowCount,403,'Permission required');}
  /** Free until a set time after a rider accepts. After that a set fee goes to that rider, taken from the refund. */
+ const quoteEvidenceCache=new Map();
+ async function quoteEvidence(key){
+  const cacheKey=Object.values(key).join(':'),cached=quoteEvidenceCache.get(cacheKey);
+  if(cached&&cached.expires>Date.now())return cached.value;
+  const value=await tripEvidence(db,key);
+  quoteEvidenceCache.set(cacheKey,{value,expires:Date.now()+600000});
+  return value;
+ }
  /**
-  * Rider's waiting at this stop, measured from this rider's GPS arrival to their first code request.
-  * Off until WAITING_CHARGES_ENABLED=true, because drive-pasts, several parcels on one wait and
-  * telling the payer are not yet handled.
+  * Rider's waiting at a stop. The clock starts once the rider stays inside the stop's geofence, so a
+  * drive-past costs nothing, and stops at their first code request. Several parcels on one wait pay once.
+  * In cash, only the person being waited for pays: the sender at pickup, the recipient at the door.
+  * Off until WAITING_CHARGES_ENABLED=true.
   */
  async function chargeWaiting(c,s,stop){
   if(process.env.WAITING_CHARGES_ENABLED!=='true'||!['pickup','delivery'].includes(stop))return null;
+  if(s.payment_method==='CASH'&&(stop==='pickup')!==(s.cash_payer==='sender'))return null;
   if((await c.query('SELECT 1 FROM food_orders WHERE shipment_id=$1',[s.id])).rowCount)return null;
-  const span=(await c.query(`SELECT m.occurred_at AS arrived_at,ch.first_at AS ended_at,extract(epoch FROM ch.first_at-m.occurred_at)::int AS seconds
+  const span=(await c.query(`SELECT m.occurred_at AS arrived_at,ch.first_at AS ended_at
     FROM delivery_milestones m,LATERAL (SELECT min(created_at) AS first_at FROM challenges WHERE shipment_id=$1 AND rider_id=$2 AND purpose=$4) ch
     WHERE m.shipment_id=$1 AND m.rider_id=$2 AND m.milestone=$3 ORDER BY m.occurred_at LIMIT 1`,[s.id,s.rider_id,stop==='pickup'?'arrived_pickup':'arrived_customer',stop])).rows[0];
   if(!span?.ended_at)return null;
   // The terms the customer saw at quote time.
-  const quote=(await c.query('SELECT p.wait_per_minute_minor,q.pricing_evidence FROM quotes q JOIN pricing_policies p ON p.id=q.policy_id WHERE q.id=$1',[s.quote_id])).rows[0];
+  const quote=(await c.query('SELECT p.wait_per_minute_minor,q.pricing_evidence,q.request FROM quotes q JOIN pricing_policies p ON p.id=q.policy_id WHERE q.id=$1',[s.quote_id])).rows[0];
   const terms=quote?.pricing_evidence?.waitingTerms;
   if(!terms)return null;
-  const feeMinor=waitingFeeMinor(Number(span.seconds),Number(quote.wait_per_minute_minor??0),terms);
+  const place=quote.request[stop==='pickup'?'pickup':'destination'];
+  const stay=(await c.query(`SELECT min(observed_at) AS started_at,count(*)::int AS samples,extract(epoch FROM $3::timestamptz-min(observed_at))::int AS seconds
+    FROM (SELECT observed_at,inside,max(observed_at) FILTER (WHERE NOT inside) OVER () AS left_at
+      FROM (SELECT observed_at,ST_DWithin(position,ST_SetSRID(ST_MakePoint($4,$5),4326)::geography,75) AS inside
+        FROM rider_location_samples WHERE rider_id=$1 AND observed_at>=$2 AND observed_at<=$3 AND accuracy_m<=50) fixes) marked
+    WHERE inside AND (left_at IS NULL OR observed_at>left_at)`,[s.rider_id,span.arrived_at,span.ended_at,place.longitude,place.latitude])).rows[0];
+  if(!stay?.started_at||stay.samples<2)return null;
+  const shared=await c.query(`SELECT 1 FROM shipment_waiting_charges w JOIN shipments o ON o.id=w.shipment_id
+    WHERE o.rider_id=$1 AND o.id<>$2 AND w.stop=$3 AND w.arrived_at<$4 AND w.ended_at>$5 LIMIT 1`,[s.rider_id,s.id,stop,span.ended_at,stay.started_at]);
+  if(shared.rowCount)return null;
+  const seconds=Number(stay.seconds);
+  const feeMinor=waitingFeeMinor(seconds,Number(quote.wait_per_minute_minor??0),terms);
   if(!feeMinor)return null;
   const collection=s.payment_method==='CASH'?'collect_cash':'not_collected';
-  await c.query('INSERT INTO shipment_waiting_charges(shipment_id,stop,arrived_at,ended_at,waited_seconds,fee_minor,collection) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING',[s.id,stop,span.arrived_at,span.ended_at,Number(span.seconds),feeMinor,collection]);
-  return {feeMinor,waitedSeconds:Number(span.seconds),collection};
+  await c.query('INSERT INTO shipment_waiting_charges(shipment_id,stop,arrived_at,ended_at,waited_seconds,fee_minor,collection) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING',[s.id,stop,stay.started_at,span.ended_at,seconds,feeMinor,collection]);
+  if(collection==='collect_cash')await c.query("INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,'waiting_fee',$3) ON CONFLICT(id) DO NOTHING",[`waiting:${s.id}:${stop}`,s.customer_id,JSON.stringify({shipmentId:s.id,title:'Waiting fee',body:`GH₵${(feeMinor/100).toFixed(2)} for ${Math.ceil(seconds/60)} min waiting at ${stop==='pickup'?'pickup':'delivery'}. Report a problem on this delivery if it looks wrong.`})]);
+  return {feeMinor,waitedSeconds:seconds,collection};
  }
  async function cancellationTerms(c,s){
   const paidMinor=s.paid?await confirmedPaymentMinor(c,s.id):0;
@@ -527,7 +550,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   for(const location of [v.pickup,v.destination])validateGhanaBoundary(location.latitude,location.longitude);
   const p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NOT DISTINCT FROM $1',[v.vehicle??null])).rows[0];check(p,503,'Pricing not configured for selected vehicle');
   check(routing,503,'Road routing not configured; prices cannot be estimated safely');
-  const route=await routing.route(v.pickup,v.destination,{vehicle:v.vehicle??'car'});
+  const route=await routing.route(v.pickup,v.destination,{vehicle:v.vehicle??'car',billing:true});
   check(route.source==='routing-provider'||(process.env.NODE_ENV!=='production'&&route.source==='fixture'),503,'Unsupported road estimate');
   const meters=route.distanceMeters;
   check(Number.isSafeInteger(meters)&&meters>=0,503,'Invalid road distance');
@@ -539,7 +562,8 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const surgeMultiplier=surgeBps/10000;
   // A tariff charges for traffic one way only: its rush multiplier, or the time the trip will really take.
   const bucket=timeBucket(new Date());
-  const trafficFactor=baselineFactorFor(etaBaselineFactors(),v.vehicle??'car',bucket,cityBucket(v.pickup));
+  const adjustment=travelAdjustment({evidence:await quoteEvidence({vehicle:v.vehicle??'car',deliveryType:'parcel',city:cityBucket(v.destination),bucket}),baselineFactor:baselineFactorFor(etaBaselineFactors(),v.vehicle??'car',bucket,cityBucket(v.pickup))});
+  const trafficFactor=adjustment.factor;
   const waitingEnabled=process.env.WAITING_CHARGES_ENABLED==='true'&&Number(p.wait_per_minute_minor??0)>0;
   const waitingTerms=waitingEnabled?{freeMinutes:envInt(process.env.WAIT_FREE_MINUTES,5,0),maxMinor:envInt(process.env.WAIT_FEE_MAX_MINOR,1500,0)}:null;
   const pricedSeconds=p.traffic_time_pricing?Math.round(route.durationSeconds*trafficFactor):route.durationSeconds;
@@ -550,7 +574,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const r=await db.query("INSERT INTO quotes(id,customer_id,policy_id,request,amount_minor,commission_minor,expires_at,payment_method,pricing_evidence) VALUES($1,$2,$3,$4,$5,$6,now()+interval '15 minutes',$7,$8) RETURNING id,amount_minor,commission_minor,expires_at,payment_method",[qid,actor.id,p.id,JSON.stringify(v),amountMinor,commissionMinor,v.paymentMethod,JSON.stringify(evidence)]);
   const capacity=dispatch?await dispatch.availability({pickup:v.pickup,weightG:v.weightG,vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize}):{status:'unknown',guaranteed:false};
   const fareBreakdown={...breakdown,tolls:tolls.map(({name,amountMinor})=>({name,amountMinor})),tariffId:p.id,startMinor:Number(p.base_minor),perKmMinor:Number(p.per_km_minor),perMinuteMinor:Number(p.per_minute_minor??0),pricedMinutes:Math.ceil(pricedSeconds/60),minimumMinor:Number(p.minimum_minor??0),rushHourMultiplier:surgeMultiplier,waitPerMinuteMinor:waitingEnabled?Number(p.wait_per_minute_minor):0,waitFreeMinutes:waitingTerms?.freeMinutes??0,waitMaxMinor:waitingTerms?.maxMinor??0};
-  return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEvidence:evidence,fareBreakdown,etaMinutes:quotedEtaMinutes(route.durationSeconds,trafficFactor),surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
+  return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEvidence:evidence,fareBreakdown,etaMinutes:quotedEtaMinutes(route.durationSeconds,trafficFactor,{riderSeconds:capacity.nearestRiderSeconds,source:adjustment.source}),surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
  },
  async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business','company'].includes(actor.kind),403);await assertCompanyDelivery(db,actor);
   if(process.env.NODE_ENV==='production')check(sms&&typeof sms.send==='function'&&dispatch,503,'Delivery booking paused: dispatch or SMS verification unavailable');
@@ -573,7 +597,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  },
  async offers(actor){check(dispatch,503,'Dispatch engine unavailable');return dispatch.offers(actor);},
  async accept(actor,sid,offerId){check(dispatch,503,'Dispatch engine unavailable');return dispatch.accept(actor,sid,offerId);},
- async get(actor,sid){uuid.parse(sid);const s=(await db.query('SELECT * FROM shipments WHERE id=$1',[sid])).rows[0];check(s,404);await access(db,actor,s);const q=(await db.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];return {...s,details:q.request};},
+ async get(actor,sid){uuid.parse(sid);const s=(await db.query('SELECT * FROM shipments WHERE id=$1',[sid])).rows[0];check(s,404);await access(db,actor,s);const q=(await db.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];const waiting=(await db.query('SELECT stop,waited_seconds,fee_minor,collection FROM shipment_waiting_charges WHERE shipment_id=$1',[sid])).rows;return {...s,details:q.request,waitingCharges:waiting};},
  async list(actor,{asClient=Boolean(actor.api_client_id)}={}){
   const baseQuery=`SELECT s.*, (SELECT id FROM food_orders WHERE shipment_id=s.id) AS food_order_id, (SELECT phone FROM users WHERE id=s.rider_id) AS rider_phone, q.request AS details, q.request->'pickup' AS pickup, q.request->'destination' AS destination FROM shipments s JOIN quotes q ON q.id=s.quote_id`;
   if(['customer','business'].includes(actor.kind)||(actor.kind==='company'&&asClient))return (await db.query(`${baseQuery} WHERE s.customer_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
@@ -805,7 +829,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  },
  async dispute(actor,sid,input){
   const v=z.object({
-   category:z.enum(['lost','damaged','missing_items','quality','payment','misconduct','address','other']),
+   category:z.enum(['lost','damaged','missing_items','quality','payment','waiting_fee','misconduct','address','other']),
    detail:z.string().min(5).max(2000),
    items:z.array(z.object({
     foodOrderItemId:uuid.optional(),

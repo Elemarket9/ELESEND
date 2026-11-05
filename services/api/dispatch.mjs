@@ -293,7 +293,14 @@ export function dispatchEngine(db,{routing}={}){
   return vehicle?candidates.filter(r=>r.vehicle===vehicle):candidates;
  }
  async function availability(input){const v=z.object({pickup:z.object({latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).passthrough(),vehicle:z.enum(['motorcycle','car','van']).optional(),weightG:z.number().int().positive(),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small')}).parse(input);
-  const riders=await nearby(v.pickup,v.weightG,{vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize});return {status:riders.length?'potential':'none_identified',eligibleNearbyCount:riders.length,guaranteed:false,note:'A nearby rider has not necessarily accepted. Road feasibility and rider acceptance remain unconfirmed.'};
+  const riders=await nearby(v.pickup,v.weightG,{vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize});let nearestRiderSeconds=null;
+  if(riders.length&&routing?.matrix&&v.vehicle)try{
+   const closest=[...riders].filter(r=>Number.isFinite(r.latitude)&&Number.isFinite(r.longitude)).sort((a,b)=>Number(a.crow_meters)-Number(b.crow_meters)).slice(0,5);
+   const legs=closest.length?await routing.matrix(closest.map(r=>({latitude:r.latitude,longitude:r.longitude})),v.pickup,{vehicle:v.vehicle}):[];
+   const seconds=legs.filter(Boolean).map(leg=>leg.durationSeconds);
+   if(seconds.length)nearestRiderSeconds=Math.min(...seconds);
+  }catch{/* The quote then shows the journey only. */}
+  return {status:riders.length?'potential':'none_identified',eligibleNearbyCount:riders.length,nearestRiderSeconds,guaranteed:false,note:'A nearby rider has not necessarily accepted. Road feasibility and rider acceptance remain unconfirmed.'};
  }
  async function evaluate(candidates,pickup,{request=null,shipmentId=null,dispatchPolicy=null}={}){
   const byVehicle=new Map();for(const c of candidates){if(!byVehicle.has(c.vehicle))byVehicle.set(c.vehicle,[]);byVehicle.get(c.vehicle).push(c);}

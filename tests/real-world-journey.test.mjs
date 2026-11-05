@@ -255,11 +255,28 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    await dispatch.tick();const offer=await offerFor(r,s.data.id);
    assert.equal((await api(r.token,'POST','/api/v1/shipments/'+s.data.id+'/accept',{offerId:offer.offerId})).status,200);
    await db.query("INSERT INTO delivery_milestones(shipment_id,milestone,rider_id,occurred_at) VALUES($1,'arrived_pickup',$2,now()-interval '10 minutes') ON CONFLICT DO NOTHING",[s.data.id,r.id]);
-   const pc=await api(r.token,'POST','/api/v1/shipments/'+s.data.id+'/pickup-challenge',{});assert.equal(pc.status,200,JSON.stringify(pc.data));
-   await db.query("UPDATE delivery_milestones SET occurred_at=(SELECT min(created_at) FROM challenges WHERE shipment_id=$1)-interval '10 minutes' WHERE shipment_id=$1 AND milestone='arrived_pickup'",[s.data.id]);
-   const done=await api(r.token,'POST','/api/v1/shipments/'+s.data.id+'/verify',{challengeId:pc.data.challengeId,code:code()});assert.equal(done.status,200,JSON.stringify(done.data));
+   const sid=s.data.id;
+   const pc=await api(r.token,'POST','/api/v1/shipments/'+sid+'/pickup-challenge',{});assert.equal(pc.status,200,JSON.stringify(pc.data));
+   const atPickup=await api(r.token,'POST','/api/v1/shipments/'+sid+'/verify',{challengeId:pc.data.challengeId,code:code()});assert.equal(atPickup.status,200,JSON.stringify(atPickup.data));
+   assert.equal(atPickup.data.waitingFee,undefined,'the recipient pays this fare, so the sender owes no pickup wait');
+   await api(r.token,'POST','/api/v1/shipments/'+sid+'/transition',{action:'start'});await gps(r,D);
+   const dc=await api(r.token,'POST','/api/v1/shipments/'+sid+'/delivery-challenge',{});assert.equal(dc.status,200,JSON.stringify(dc.data));
+   const first=(await db.query("SELECT min(created_at) AS at FROM challenges WHERE shipment_id=$1 AND purpose='delivery'",[sid])).rows[0].at;
+   await db.query("INSERT INTO delivery_milestones(shipment_id,milestone,rider_id,occurred_at) VALUES($1,'arrived_customer',$2,$3::timestamptz-interval '30 minutes') ON CONFLICT DO NOTHING",[sid,r.id,first]);
+   await db.query("UPDATE delivery_milestones SET occurred_at=$2::timestamptz-interval '30 minutes' WHERE shipment_id=$1 AND milestone='arrived_customer'",[sid,first]);
+   await db.query('DELETE FROM rider_location_samples WHERE rider_id=$1',[r.id]);
+   const sample=(lat,lng,ago)=>db.query("INSERT INTO rider_location_samples(rider_id,position,observed_at,accuracy_m) VALUES($1,ST_SetSRID(ST_MakePoint($2,$3),4326)::geography,$4::timestamptz-($5::int*interval '1 minute'),10)",[r.id,lng,lat,first,ago]);
+   await sample(D.latitude,D.longitude,25);        // Drove past...
+   await sample(D.latitude+0.01,D.longitude,20);   // ...and left, so this earlier visit does not count.
+   await sample(D.latitude,D.longitude,10);
+   await sample(D.latitude,D.longitude,1);
+   const done=await api(r.token,'POST','/api/v1/shipments/'+sid+'/verify',{challengeId:dc.data.challengeId,code:code()});assert.equal(done.status,200,JSON.stringify(done.data));
    assert.equal(done.data.waitingFee.collection,'collect_cash');
-   assert.equal(done.data.waitingFee.feeMinor,250,'ten minutes to the first code request, five of them free');
+   assert.equal(done.data.waitingFee.waitedSeconds,600,'only the stay that ended at the first code request');
+   assert.equal(done.data.waitingFee.feeMinor,250,'ten minutes, five of them free');
+   const receipt=await api(c.token,'GET','/api/v1/shipments/'+sid);
+   assert.equal(Number(receipt.data.waitingCharges[0].fee_minor),250,'the customer can see the charge');
+   assert.equal((await db.query("SELECT 1 FROM notification_jobs WHERE recipient_id=$1 AND kind='waiting_fee'",[c.id])).rowCount,1,'the customer is told');
    const stored=(await db.query('SELECT fee_minor FROM shipment_waiting_charges WHERE shipment_id=$1',[s.data.id])).rows[0];
    assert.equal(Number(stored.fee_minor),250);
    assert.equal(Number((await db.query('SELECT amount_minor FROM shipments WHERE id=$1',[s.data.id])).rows[0].amount_minor),Number(q.data.amount_minor),'the booked fare does not change');

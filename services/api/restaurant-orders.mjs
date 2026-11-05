@@ -188,7 +188,7 @@ export function restaurantOrderService(db, options = {}) {
       routeResult = await routing.route(
         {latitude: restaurant.latitude, longitude: restaurant.longitude},
         {latitude: data.deliveryLatitude, longitude: data.deliveryLongitude},
-        {vehicle: 'motorcycle'}
+        {vehicle: 'motorcycle', billing: true}
       );
     } catch (err) {
       check(false, 503, 'Routing service could not resolve road path: ' + (err.message || 'unreachable'));

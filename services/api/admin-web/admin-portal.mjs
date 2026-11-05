@@ -181,7 +181,7 @@ export function renderAdminPortalHtml() {
             <span>Dynamic Vehicle Pricing & Tariffs</span>
             <button class="action-btn" onclick="loadPricing()">Refresh Tariffs</button>
           </div>
-          <div class="card-subtitle">Unbeatable driver net rates vs Bolt & Yango. Platform fee standard: 13.0% (1,300 bps, max 20.0%).</div>
+          <div class="card-subtitle">Delivery commission default is 13%. Staff can set 0 to 100%, to 0.01%.</div>
           <div class="table-container">
             <table>
               <thead>
@@ -191,14 +191,49 @@ export function renderAdminPortalHtml() {
                   <th>Per-Km Fare</th>
                   <th>Per-Min</th>
                   <th>Commission</th>
+                  <th>Minimum</th>
                   <th>Rush Hour</th>
+                  <th>Booking Fee</th>
+                  <th>Waiting/Min</th>
                 </tr>
               </thead>
               <tbody id="pricingTable">
-                <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Loading pricing...</td></tr>
+                <tr><td colspan="9" style="text-align: center; color: var(--text-muted);">Loading pricing...</td></tr>
               </tbody>
             </table>
           </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Change a Vehicle Tariff</div>
+          <div class="card-subtitle">Saving creates a new tariff version. Issued quotes keep their price.</div>
+          <form onsubmit="handleTariffUpdate(event)" style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Vehicle</label><select id="tariffVehicle" class="form-input" onchange="fillTariffForm()"><option value="motorcycle">Motorcycle</option><option value="car">Car</option><option value="van">Van</option></select></div>
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Start GH₵</label><input type="number" id="tariffBase" class="form-input" step="0.01" min="0.01" required></div>
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Per km GH₵</label><input type="number" id="tariffKm" class="form-input" step="0.01" min="0" required></div>
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Per minute GH₵</label><input type="number" id="tariffMin" class="form-input" step="0.01" min="0" required></div>
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Minimum GH₵</label><input type="number" id="tariffMinimum" class="form-input" step="0.01" min="0" required></div>
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Rush multiplier</label><input type="number" id="tariffRush" class="form-input" step="0.01" min="1" max="2" required></div>
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Rush hour</label><select id="tariffRushOn" class="form-input"><option value="true">On</option><option value="false">Off</option></select></div>
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Booking fee %</label><input type="number" id="tariffBooking" class="form-input" step="0.01" min="0" max="30" required></div>
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Waiting GH₵/min</label><input type="number" id="tariffWait" class="form-input" step="0.01" min="0" max="10" required></div>
+            <button type="submit" class="action-btn">Save tariff</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Tolls</div>
+          <div class="card-subtitle">Add a toll only where riders really pay one. It goes to the rider in full, with no commission.</div>
+          <form onsubmit="handleTollAdd(event)" style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
+            <div style="flex: 2; min-width: 140px;"><label class="form-label">Name</label><input id="tollName" class="form-input" required></div>
+            <div style="flex: 1; min-width: 110px;"><label class="form-label">Latitude</label><input type="number" id="tollLat" class="form-input" step="any" required></div>
+            <div style="flex: 1; min-width: 110px;"><label class="form-label">Longitude</label><input type="number" id="tollLng" class="form-input" step="any" required></div>
+            <div style="flex: 1; min-width: 110px;"><label class="form-label">Radius m</label><input type="number" id="tollRadius" class="form-input" value="50" min="10" max="100" required></div>
+            <div style="flex: 1; min-width: 110px;"><label class="form-label">Amount GH₵</label><input type="number" id="tollAmount" class="form-input" step="0.01" min="0.01" required></div>
+            <div style="flex: 2; min-width: 140px;"><label class="form-label">Source</label><input id="tollSource" class="form-input" required></div>
+            <button type="submit" class="action-btn">Add toll</button>
+          </form>
+          <div class="table-container"><table><thead><tr><th>Name</th><th>Amount</th><th>Source</th><th></th></tr></thead><tbody id="tollTable"></tbody></table></div>
         </div>
 
         <div class="card">
@@ -932,6 +967,9 @@ export function renderAdminPortalHtml() {
       try {
         const tariffs = await api('/api/v1/admin/pricing');
         const tb = document.getElementById('pricingTable');
+        window.__tariffs = tariffs;
+        fillTariffForm();
+        loadTolls();
         tb.innerHTML = tariffs.map(t => \`
           <tr>
             <td><strong>\${escapeHtml((t.vehicle || 'STANDARD').toUpperCase())}</strong></td>
@@ -939,11 +977,110 @@ export function renderAdminPortalHtml() {
             <td>\${ghc(t.per_km_minor)}</td>
             <td>\${ghc(t.per_minute_minor || 0)}</td>
             <td><span class="badge badge-active">\${(t.commission_bps / 100).toFixed(2)}% (\${escapeHtml(t.commission_mode || 'pct')})</span></td>
-            <td>\${t.rush_hour_enabled ? 'Active ⚡' : 'Off'}</td>
+            <td>\${ghc(t.minimum_minor || 0)}</td>
+            <td>\${t.rush_hour_enabled ? (Number(t.rush_hour_bps || 14000) / 10000).toFixed(2) + 'x' : 'Off'}</td>
+            <td>\${(Number(t.booking_fee_bps || 0) / 100).toFixed(2)}%</td>
+            <td>\${ghc(t.wait_per_minute_minor || 0)}</td>
           </tr>
         \`).join('');
       } catch (e) {
         console.error(e);
+      }
+    }
+
+    function fillTariffForm() {
+      const vehicle = document.getElementById('tariffVehicle').value;
+      const t = (window.__tariffs || []).find(x => x.vehicle === vehicle);
+      if (!t) return;
+      const set = (id, value) => { document.getElementById(id).value = value; };
+      set('tariffBase', (t.base_minor / 100).toFixed(2));
+      set('tariffKm', (t.per_km_minor / 100).toFixed(2));
+      set('tariffMin', ((t.per_minute_minor || 0) / 100).toFixed(2));
+      set('tariffMinimum', ((t.minimum_minor || 0) / 100).toFixed(2));
+      set('tariffRush', (Number(t.rush_hour_bps || 14000) / 10000).toFixed(2));
+      set('tariffRushOn', String(Boolean(t.rush_hour_enabled)));
+      set('tariffBooking', (Number(t.booking_fee_bps || 0) / 100).toFixed(2));
+      set('tariffWait', ((t.wait_per_minute_minor || 0) / 100).toFixed(2));
+    }
+
+    async function handleTariffUpdate(e) {
+      e.preventDefault();
+      const vehicle = document.getElementById('tariffVehicle').value;
+      const t = (window.__tariffs || []).find(x => x.vehicle === vehicle);
+      if (!t) { alert('Load the tariffs first.'); return; }
+      const num = id => parseFloat(document.getElementById(id).value);
+      if (!confirm('Save a new ' + vehicle + ' tariff? New quotes use it straight away.')) return;
+      try {
+        await api('/api/v1/admin/pricing/vehicles', {
+          method: 'POST',
+          body: JSON.stringify({
+            vehicle,
+            baseMinor: Math.round(num('tariffBase') * 100),
+            perKmMinor: Math.round(num('tariffKm') * 100),
+            perMinuteMinor: Math.round(num('tariffMin') * 100),
+            minimumMinor: Math.round(num('tariffMinimum') * 100),
+            rushHourEnabled: document.getElementById('tariffRushOn').value === 'true',
+            supplyDemandEnabled: Boolean(t.supply_demand_enabled),
+            commissionBps: Number(t.commission_bps),
+            rushHourBps: Math.round(num('tariffRush') * 10000),
+            bookingFeeBps: Math.round(num('tariffBooking') * 100),
+            waitPerMinuteMinor: Math.round(num('tariffWait') * 100),
+            trafficTimePricing: Boolean(t.traffic_time_pricing)
+          })
+        });
+        alert('Tariff saved.');
+        loadPricing();
+      } catch (err) {
+        alert('Failed: ' + err.message);
+      }
+    }
+
+    async function loadTolls() {
+      try {
+        const rules = await api('/api/v1/admin/pricing/tolls');
+        const rows = rules.filter(r => !r.effective_to || new Date(r.effective_to) > new Date());
+        document.getElementById('tollTable').innerHTML = rows.length ? rows.map(r => \`
+          <tr>
+            <td>\${escapeHtml(r.name)}</td>
+            <td>\${ghc(r.amount_minor)}</td>
+            <td>\${escapeHtml(r.source || '')}</td>
+            <td><button class="action-btn" data-toll="\${escapeHtml(r.id)}" onclick="retireToll(this.dataset.toll)">Retire</button></td>
+          </tr>\`).join('') : '<tr><td colspan="4">No tolls. None are charged.</td></tr>';
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function handleTollAdd(e) {
+      e.preventDefault();
+      const value = id => document.getElementById(id).value;
+      try {
+        await api('/api/v1/admin/pricing/tolls', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: value('tollName'),
+            latitude: parseFloat(value('tollLat')),
+            longitude: parseFloat(value('tollLng')),
+            radiusMeters: parseInt(value('tollRadius'), 10),
+            vehicles: ['motorcycle', 'car', 'van'],
+            amountMinor: Math.round(parseFloat(value('tollAmount')) * 100),
+            source: value('tollSource')
+          })
+        });
+        e.target.reset();
+        loadTolls();
+      } catch (err) {
+        alert('Failed: ' + err.message);
+      }
+    }
+
+    async function retireToll(id) {
+      if (!confirm('Retire this toll? New quotes stop charging it.')) return;
+      try {
+        await api('/api/v1/admin/pricing/tolls/' + id + '/retire', { method: 'POST', body: '{}' });
+        loadTolls();
+      } catch (err) {
+        alert('Failed: ' + err.message);
       }
     }
 

@@ -29,7 +29,7 @@ function routeSegments(route){
 }
 
 /** Distances and durations are ONLY from a configured road-network routing service. */
-export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,maxSnapMeters=2500,maxInFlight=48,fetchImpl=fetch}){
+export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,maxSnapMeters=2500,billingSnapMeters=500,minBilledRoadRatio=0.75,maxInFlight=48,fetchImpl=fetch}){
  function base(value){const u=new URL(value);check(['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash,500,'Routing base URL must not contain secrets/query');return u;}
  check(endpoint||vehicleRoutes,500,'OSRM graph configuration required');
  const origin=endpoint?base(endpoint):null;
@@ -57,23 +57,25 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,m
    check(!['NoRoute','NoTable'].includes(body.code),422,'No connected road path');check(body.code==='Ok',503,'Routing service could not resolve road path');return body;
   }finally{inFlight--;}
  }
- function validateWaypoints(waypoints){
+ function validateWaypoints(waypoints,limit=maxSnapMeters,message='No connected road path'){
   if(!Array.isArray(waypoints))return;
   for(const wp of waypoints){
    if(wp&&Number.isFinite(wp.distance)){
-    check(wp.distance<=maxSnapMeters,422,'No connected road path');
+    check(wp.distance<=limit,422,message);
    }
   }
  }
  function normalize(distance,duration){check(Number.isFinite(distance)&&distance>=0&&distance<=10000000&&Number.isFinite(duration)&&duration>=0&&duration<=604800,503,'Invalid road estimate');return {distanceMeters:Math.ceil(distance),durationSeconds:Math.ceil(duration),source:'routing-provider',trafficAware:false};}
  return {
-  async route(from,to,{vehicle='car',steps=false,annotations=false,alternatives=false}={}){
+  async route(from,to,{vehicle='car',steps=false,annotations=false,alternatives=false,billing=false}={}){
    const p=profile(vehicle),body=await request(`/route/v1/${p}/${coords(from)};${coords(to)}?overview=full&geometries=geojson&steps=${steps?'true':'false'}${annotations?'&annotations=nodes,distance,duration':''}${alternatives?'&alternatives=true':''}`,vehicle);
    check(body.routes?.length&&body.routes[0].geometry,503,'No connected road route');
-   validateWaypoints(body.waypoints);
+   // A fare pays for the road between the pins, so a pin far from the road would ride unbilled.
+   if(billing)validateWaypoints(body.waypoints,billingSnapMeters,'This pin is too far from a mapped road. Move it closer to the road.');
+   else validateWaypoints(body.waypoints);
    const straightLine=haversine(from,to);
    if(straightLine>250){
-    check(Number(body.routes[0].distance)>=straightLine*0.25,422,'No connected road path');
+    check(Number(body.routes[0].distance)>=straightLine*(billing?minBilledRoadRatio:0.25),422,billing?'This route looks too short for these pins. Check both pins.':'No connected road path');
    }
    const shape=route=>({...normalize(route.distance,route.duration),geometry:route.geometry,...(steps?{steps:navigationSteps(route)}:{}),...(annotations?{segments:routeSegments(route)}:{})});
    return {...shape(body.routes[0]),...(alternatives&&body.routes.length>1?{alternatives:body.routes.slice(1).map(shape)}:{})};

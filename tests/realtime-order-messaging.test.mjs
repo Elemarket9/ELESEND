@@ -150,7 +150,7 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
       }
     };
 
-    await t.test('1. Strict participant authorization & IDOR protection across all 4 conversation categories', () =>
+    await t.test('1. Strict participant authorization & IDOR protection across all 4 conversation categories',
       fixture(async ({ c, chat, order, customer, intruderCustomer, kitchenA, kitchenB, rider1, rider2 }) => {
         // Before any rider is assigned, CUSTOMER_RIDER and RIDER_RESTAURANT cannot be opened
         await assert.rejects(
@@ -229,7 +229,7 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
       })
     );
 
-    await t.test('2. Rider reassignment immediately revokes old rider access, expires pending notifications, and isolates new rider epoch', () =>
+    await t.test('2. Rider reassignment immediately revokes old rider access, expires pending notifications, and isolates new rider epoch',
       fixture(async ({ c, chat, order, customer, rider1, rider2 }) => {
         await c.query("UPDATE shipments SET rider_id = $2, state = 'RIDER_ASSIGNED' WHERE id = $1", [order.shipment_id, rider1.id]);
 
@@ -293,7 +293,7 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
       })
     );
 
-    await t.test('3. Monotonic seq, idempotent clientMessageId retries, delta sync, SENT/DELIVERED/READ receipts, and zero-DB typing indicator', () =>
+    await t.test('3. Monotonic seq, idempotent clientMessageId retries, delta sync, SENT/DELIVERED/READ receipts, and zero-DB typing indicator',
       fixture(async ({ c, chat, order, customer, kitchenA }) => {
         const conv = await chat.openOrCreateConversation(customer, {
           conversationType: 'CUSTOMER_RESTAURANT',
@@ -346,7 +346,7 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
       })
     );
 
-    await t.test('4. OTP & paid-address safety guards, confirmed location pin validation, privacy-safe push notifications, and audited support moderation', () =>
+    await t.test('4. OTP & paid-address safety guards, confirmed location pin validation, privacy-safe push notifications, and audited support moderation',
       fixture(async ({ c, chat, order, admin, customer, kitchenA }) => {
         const conv = await chat.openOrCreateConversation(customer, {
           conversationType: 'CUSTOMER_RESTAURANT',

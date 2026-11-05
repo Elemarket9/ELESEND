@@ -15,15 +15,19 @@ const TRANSIT_SAMPLES=`
  JOIN delivery_milestones done ON done.shipment_id=p.shipment_id AND done.milestone='otp_completed' AND done.rider_id=p.rider_id
  WHERE p.stage IN ('PICKUP_VERIFIED','IN_TRANSIT') AND p.adjusted_seconds IS NOT NULL AND p.predicted_at>=up.occurred_at`;
 
+/** Measured trip times against raw road time, so a past adjustment cannot feed the next one. */
+export async function tripEvidence(db,{vehicle,deliveryType,city,bucket}){
+ const rows=(await db.query(`${TRANSIT_SAMPLES} AND p.vehicle=$1 AND p.delivery_type=$2 AND p.city=$3 AND p.time_bucket=$4 ORDER BY p.predicted_at DESC LIMIT 500`,[vehicle,deliveryType,city,bucket])).rows;
+ return summarizeTripEvidence(rows.map(r=>({predictedSeconds:r.roadSeconds,actualSeconds:r.actualSeconds})));
+}
+
 export function etaService(db,{routing=null,baselineFactors={},routingLabel='osrm',now=()=>Date.now()}={}){
  const evidenceCache=new Map();
 
  async function evidenceFor({vehicle,deliveryType,city,bucket}){
   const key=[vehicle,deliveryType,city,bucket].join(':'),cached=evidenceCache.get(key);
   if(cached&&cached.expires>now())return cached.value;
-  const rows=(await db.query(`${TRANSIT_SAMPLES} AND p.vehicle=$1 AND p.delivery_type=$2 AND p.city=$3 AND p.time_bucket=$4 ORDER BY p.predicted_at DESC LIMIT 500`,[vehicle,deliveryType,city,bucket])).rows;
-  // Compare with raw road time, so a past adjustment cannot feed back into the next one.
-  const value=summarizeTripEvidence(rows.map(r=>({predictedSeconds:r.roadSeconds,actualSeconds:r.actualSeconds})));
+  const value=await tripEvidence(db,{vehicle,deliveryType,city,bucket});
   evidenceCache.set(key,{value,expires:now()+EVIDENCE_CACHE_MS});
   return value;
  }

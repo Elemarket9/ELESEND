@@ -30,7 +30,7 @@ export default function FareSummary({ quote }) {
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={{ fontSize: 15, fontWeight: '800', color: '#0F172A' }}>{ghc(quote.amount_minor)}</Text>
-          {quote.etaMinutes && <Text style={label}>About {quote.etaMinutes.low} to {quote.etaMinutes.high} min trip, {km.toFixed(1)} km</Text>}
+          {quote.etaMinutes && <Text style={label}>{quote.etaMinutes.includesPickup ? `Delivered in about ${quote.etaMinutes.low} to ${quote.etaMinutes.high} min` : `About ${quote.etaMinutes.low} to ${quote.etaMinutes.high} min trip, plus the rider reaching the pickup`}, {km.toFixed(1)} km</Text>}
         </View>
         <Text style={{ fontSize: 13, fontWeight: '700', color: '#0F172A' }}>{open ? 'Hide' : 'See rates'}</Text>
       </View>
