@@ -38,7 +38,7 @@ for(const [name,a,b] of trips){
   const unnamed=r.steps.filter(s=>!s.name&&s.type!=='arrive'&&s.type!=='depart').length,sum=r.steps.reduce((x,s)=>x+s.distanceMeters,0);
   let voice={},rs={},spoken=[],reroutes=0,arrived=false,prog=null,back=0,last=0,local=seed;const R=()=>{local=(local*1664525+1013904223)>>>0;return local/2**32;},g=()=>Math.sqrt(-2*Math.log(R()||1e-9))*Math.cos(2*Math.PI*R());
   let walked=0,now=1e6;for(let i=0;i<pts.length-1;i++){const d=metersBetween(pts[i],pts[i+1]);for(let m=0;m<d;m+=10){const t=m/d,p={latitude:pts[i].latitude+t*(pts[i+1].latitude-pts[i].latitude)+g()*15/111320,longitude:pts[i].longitude+t*(pts[i+1].longitude-pts[i].longitude)+g()*15/111320};now+=1000;
-     const place=locateOnRoute(p,pts,{after:prog});if(place.offRouteMeters<=60)prog=place.traveledMeters;if(last-place.traveledMeters>100)back++;last=Math.max(last,place.traveledMeters);
+     const place=locateOnRoute(p,pts,{after:prog});if(place.offRouteMeters<=60)prog=place.traveledMeters;if(last-place.traveledMeters>100){back++;if(back<=3)console.log('JUMP',name,'at',Math.round(last),'to',Math.round(place.traveledMeters),'off',Math.round(place.offRouteMeters));}last=Math.max(last,place.traveledMeters);
      const q=rerouteCheck(rs,{offRouteMeters:place.offRouteMeters,accuracy:20,now});rs=q;if(q.reroute)reroutes++;
      const n=upcomingStep(r.steps,place.traveledMeters),v=voicePrompt(voice,{index:n.index,metersToStep:n.metersToStep,step:n.step,speed:10});voice=v.state;if(v.say)spoken.push(v.say);if(hasArrived(place))arrived=true;}}
   const manoeuvres=r.steps.length-1,announced=new Set(spoken.map(s=>s.replace(/^In [^,]+, /,'').toLowerCase())).size;
