@@ -41,12 +41,13 @@ sh "$root/scripts/prepare-ghana-osrm.sh" "$next"
 # Test the new map before anyone uses it.
 smoke_point_a=${MAP_REFRESH_SMOKE_FROM:--0.1825,5.5560}
 smoke_point_b=${MAP_REFRESH_SMOKE_TO:--1.6240,6.6960}
+min_route_m=${MAP_REFRESH_MIN_ROUTE_METERS:-100000} # A broken road network cannot connect Accra to Kumasi.
 for graph in ghana-latest ghana-motorcycle; do
   docker rm -f elesend-map-smoke >/dev/null 2>&1 || true
   docker run -d --name elesend-map-smoke --network bridge -p 127.0.0.1:5999:5000 --mount "type=bind,source=$next,target=/data,readonly" "$image" osrm-routed --algorithm mld "/data/$graph.osrm" >/dev/null
   routed=
   for _ in $(seq 1 30); do
-    if curl -fsS --max-time 5 "http://127.0.0.1:5999/route/v1/driving/$smoke_point_a;$smoke_point_b?overview=false" 2>/dev/null | grep -q '"code":"Ok"'; then routed=yes; break; fi
+    if curl -fsS --max-time 5 "http://127.0.0.1:5999/route/v1/driving/$smoke_point_a;$smoke_point_b?overview=false" 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const b=JSON.parse(s);process.exit(b.code==='Ok'&&b.routes[0].distance>=$min_route_m?0:1)})"; then routed=yes; break; fi
     sleep 2
   done
   docker rm -f elesend-map-smoke >/dev/null
