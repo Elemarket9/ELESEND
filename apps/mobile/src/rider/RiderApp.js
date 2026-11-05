@@ -36,6 +36,7 @@ import { normalizeGhanaPhone, isValidGhanaPhone } from '../phone';
 import { colors, typography, spacing, radii } from '../theme';
 import { riderStatus } from '../status-labels';
 import RiderNavigation from './RiderNavigation';
+import OfflineMapCard from './OfflineMapCard';
 import { prepareDeviceLocation } from '../customer-location';
 
 const initialCreds = {
@@ -1943,13 +1944,14 @@ export default function RiderApp() {
               <Text style={styles.switchAuthText}>Sign Out</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setDeleteAccountOpen(true)} style={styles.switchAuthBtn} accessibilityRole="button">
-              <Text style={[styles.switchAuthText, { color: '#B91C1C' }]}>Delete Account</Text>
+              <Text style={[styles.switchAuthText, { color: '#FCA5A5' }]}>Delete Account</Text>
             </TouchableOpacity>
           </View>
         )}
         {tab === 'Earnings' && (
           <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
             <CompanyInvitations />
+            <OfflineMapCard />
             <WithdrawalHistory refreshKey={`${financeSnapshot?.inPayoutMinor}:${availableNow}`} />
             <RatingPrompts />
             <RiderTools />
@@ -1962,7 +1964,7 @@ export default function RiderApp() {
         onClose={() => setDeleteAccountOpen(false)}
         onDeleted={finishAccountDeletion}
       />
-      {navigating && <RiderNavigation {...navigating} onClose={() => setNavigating(null)} />}
+      {navigating && <RiderNavigation key={navigating.shipmentId} {...navigating} onClose={() => setNavigating(null)} />}
     </View>
   );
 }

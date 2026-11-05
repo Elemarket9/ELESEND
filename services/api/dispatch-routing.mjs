@@ -19,6 +19,15 @@ export function navigationSteps(route){
  return raw.map((step,i)=>({type:step.maneuver?.type,modifier:step.maneuver?.modifier??null,name:step.name||step.ref||null,instruction:stepInstruction(step,i===raw.length-1),distanceMeters:Math.ceil(step.distance||0),durationSeconds:Math.ceil(step.duration||0),location:{latitude:step.maneuver?.location?.[1],longitude:step.maneuver?.location?.[0]}}));
 }
 
+function routeSegments(route){
+ const nodes=[],distances=[],durations=[];
+ for(const leg of route?.legs||[]){
+  const a=leg.annotation;if(!a?.nodes?.length)continue;
+  nodes.push(...(nodes.length?a.nodes.slice(1):a.nodes));distances.push(...(a.distance||[]));durations.push(...(a.duration||[]));
+ }
+ return {nodes,distances,durations};
+}
+
 /** Distances and durations are ONLY from a configured road-network routing service. */
 export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,maxSnapMeters=2500,maxInFlight=48,fetchImpl=fetch}){
  function base(value){const u=new URL(value);check(['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash,500,'Routing base URL must not contain secrets/query');return u;}
@@ -58,15 +67,16 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,m
  }
  function normalize(distance,duration){check(Number.isFinite(distance)&&distance>=0&&distance<=10000000&&Number.isFinite(duration)&&duration>=0&&duration<=604800,503,'Invalid road estimate');return {distanceMeters:Math.ceil(distance),durationSeconds:Math.ceil(duration),source:'routing-provider',trafficAware:false};}
  return {
-  async route(from,to,{vehicle='car',steps=false}={}){
-   const p=profile(vehicle),body=await request(`/route/v1/${p}/${coords(from)};${coords(to)}?overview=full&geometries=geojson&steps=${steps?'true':'false'}`,vehicle);
+  async route(from,to,{vehicle='car',steps=false,annotations=false,alternatives=false}={}){
+   const p=profile(vehicle),body=await request(`/route/v1/${p}/${coords(from)};${coords(to)}?overview=full&geometries=geojson&steps=${steps?'true':'false'}${annotations?'&annotations=nodes,distance,duration':''}${alternatives?'&alternatives=true':''}`,vehicle);
    check(body.routes?.length&&body.routes[0].geometry,503,'No connected road route');
    validateWaypoints(body.waypoints);
    const straightLine=haversine(from,to);
    if(straightLine>250){
     check(Number(body.routes[0].distance)>=straightLine*0.25,422,'No connected road path');
    }
-   return {...normalize(body.routes[0].distance,body.routes[0].duration),geometry:body.routes[0].geometry,...(steps?{steps:navigationSteps(body.routes[0])}:{})};
+   const shape=route=>({...normalize(route.distance,route.duration),geometry:route.geometry,...(steps?{steps:navigationSteps(route)}:{}),...(annotations?{segments:routeSegments(route)}:{})});
+   return {...shape(body.routes[0]),...(alternatives&&body.routes.length>1?{alternatives:body.routes.slice(1).map(shape)}:{})};
   },
   async matrix(sources,destination,{vehicle='car'}={}){
    check(Array.isArray(sources)&&sources.length>0&&sources.length<=30,400,'Invalid matrix');const p=profile(vehicle);
@@ -90,7 +100,13 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,m
    check(Number.isFinite(meters),503,'Invalid nearest road response');
    return meters;
   },
-  capabilities:Object.freeze({roadNetwork:true,traffic:false,mapMatching:false,multiVehicleProfileMustBeConfigured:true})
+  /** Snaps a rider's GPS trip to roads. Used to measure road speeds. */
+  async matchTrace(points,{vehicle='car'}={}){
+   check(Array.isArray(points)&&points.length>=2&&points.length<=100,400,'Invalid trace');
+   const times=points.map(p=>Math.floor(Date.parse(p.observedAt)/1000)),radii=points.map(p=>Math.max(5,Math.min(50,Math.round(p.accuracyMeters||20))));
+   return request(`/match/v1/${profile(vehicle)}/${points.map(coords).join(';')}?overview=false&annotations=nodes,distance&gaps=split&timestamps=${times.join(';')}&radiuses=${radii.join(';')}`,vehicle);
+  },
+  capabilities:Object.freeze({roadNetwork:true,traffic:false,mapMatching:true,multiVehicleProfileMustBeConfigured:true})
  };
 }
 /** Strictly test-only: caller supplies a deterministic road graph/fixture, not a GPS heuristic. */

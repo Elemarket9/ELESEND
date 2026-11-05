@@ -28,6 +28,7 @@ const audit=(c,who,action,sid)=>c.query('INSERT INTO audit_logs(actor_id,action,
 const change=(c,sid,type)=>c.query('INSERT INTO outbox(shipment_id,kind,payload) VALUES($1,$2,$3)',[sid,type,JSON.stringify({shipmentId:sid,kind:type})]);
 async function policy(db){return (await db.query('SELECT * FROM dispatch_policy WHERE id=1')).rows[0];}
 function authorizedRider(r){check(r&&r.status==='approved',403,'Approved rider required');}
+const TRACE_ROW_LIMIT=20000;
 export function dispatchEngine(db,{routing}={}){
  check(routing&&typeof routing.route==='function'&&typeof routing.matrix==='function',500,'Road routing adapter required');
  const features=featureService(db);
@@ -546,6 +547,18 @@ export function dispatchEngine(db,{routing}={}){
   }
   return {refreshed:results.length,checked:rows.length};
  }
+ /** Moving riders' GPS trips between two times, for measuring road speeds. Carries no rider id onward. */
+ async function recentRiderTraces(since,until){
+  const rows=(await db.query(`SELECT s.rider_id,r.vehicle,ST_Y(s.position::geometry) AS latitude,ST_X(s.position::geometry) AS longitude,s.accuracy_m,s.observed_at
+    FROM rider_location_samples s JOIN riders r ON r.id=s.rider_id WHERE s.observed_at>$1 AND s.observed_at<=$2 AND s.accuracy_m<=50 ORDER BY s.observed_at LIMIT ${TRACE_ROW_LIMIT}`,[since,until])).rows;
+  const byRider=new Map();
+  for(const row of rows){
+   if(!byRider.has(row.rider_id))byRider.set(row.rider_id,{vehicle:row.vehicle,points:[]});
+   byRider.get(row.rider_id).points.push({latitude:Number(row.latitude),longitude:Number(row.longitude),accuracyMeters:Number(row.accuracy_m),observedAt:new Date(row.observed_at).toISOString()});
+  }
+  // A full batch stops at its last row, so the next read carries on from there.
+  return {traces:[...byRider.values()],until:rows.length===TRACE_ROW_LIMIT?new Date(rows.at(-1).observed_at):until};
+ }
  async function pruneSamples(){const p=await policy(db);
    getRedisClient().purgeStaleRiders(p.fresh_seconds || 120).catch(() => 0);
    return db.tx(async c=>{
@@ -667,5 +680,5 @@ export function dispatchEngine(db,{routing}={}){
     ORDER BY next_dispatch_at,created_at LIMIT $1`,[limit])).rows;
   const results=[];for(const row of due){try{results.push(await dispatchShipment(row.id));}catch(e){results.push({shipmentId:row.id,status:'error',code:e.code??e.status??'internal'});}}return results;
  }
- return {getPolicy,configure,algorithmFeatures:features.list,setAlgorithmFeature:features.set,riskSignals,reviewRisk,previewFleetBatch,trackingSettings,vehiclePolicy,setVehiclePolicy,riderPosition,optIn,manifest,nearby,availability,evaluate,dispatchShipment,offers,accept,decline,release,pruneSamples,refreshCorridors,watchdog,tick};
+ return {recentRiderTraces,getPolicy,configure,algorithmFeatures:features.list,setAlgorithmFeature:features.set,riskSignals,reviewRisk,previewFleetBatch,trackingSettings,vehiclePolicy,setVehiclePolicy,riderPosition,optIn,manifest,nearby,availability,evaluate,dispatchShipment,offers,accept,decline,release,pruneSamples,refreshCorridors,watchdog,tick};
 }

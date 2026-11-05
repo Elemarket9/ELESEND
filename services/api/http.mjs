@@ -1,3 +1,5 @@
+import {trafficRouting,trafficService} from './traffic.mjs';
+import {privateMapStyle} from '../../apps/mobile/src/maps/private-map-style.mjs';
 import {settlementIntentForRider} from './modules/payments/index.mjs';
 import {publicMapConfig} from './map-config.mjs';
 import {saveTrustedContact,getTrustedContact,raiseEmergency,listSafetyAlerts,resolveSafetyAlert,createShareLink,rateDelivery,myRating,pendingRatings} from './safety.mjs';
@@ -68,7 +70,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const promos=promotionEngine(db);
   const chat=chatEngine(db);
   const mapLifecycle=createMapLifecycleService(db);
-  const eta=etaService(db,{routing:app?.routing,baselineFactors:etaBaselineFactors});
+  const trafficRoutes=trafficRouting(app?.routing,trafficService(db));
+  const eta=etaService(db,{routing:trafficRoutes,baselineFactors:etaBaselineFactors});
   const ipLimit=ipLimits(),floodGuard=memoryRateLimiter();
   const server=createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192,keepAliveTimeout:65000},async(req,res)=>{
  const requestId=randomUUID();res.setHeader('X-Request-Id',requestId);
@@ -158,6 +161,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   if(method==='POST'&&['/api/v1/payments/webhook','/api/v1/payments/checkout-webhook','/api/v1/payments/commission-webhook'].includes(path)&&paymentsWebhook){send(200,await paymentsWebhook(rawBody,req.headers));return;}
   if(method==='POST'&&path==='/api/v1/rider-documents/upload'){await limit(db,'document-upload-ip:'+ipKey,30,3600);send(200,await uploadRiderDocument(db,body));return;}
   // Public, because the map must load before sign-in.
+  if(method==='GET'&&path==='/api/v1/maps/style.json'){const config=publicMapConfig();check(config.tileUrl,503,'Map not configured');send(200,privateMapStyle(config.tileUrl,{glyphsUrl:config.glyphsUrl}));return;}
   if(method==='GET'&&path==='/api/v1/maps/config'){send(200,{renderer:'private',routing:'osrm',ghanaPostGpsLookup:Boolean(ghanaPostGps),...publicMapConfig()});return;}
   if(method==='POST'&&path==='/api/v1/identity/webhook'){send(200,await identityWebhook(db,rawBody,req.headers));return;}
   if(method==='POST'&&path==='/api/v1/payments/checkout-webhook'){
@@ -486,7 +490,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    const to={latitude:Number(stop?.latitude),longitude:Number(stop?.longitude)};
    check(Number.isFinite(to.latitude)&&Number.isFinite(to.longitude),422,'This stop has no confirmed location');
    check(typeof app?.routing?.route==='function',503,'Directions are not available right now');
-   result=await app.routing.route(from,to,{vehicle:job.request?.vehicle||'motorcycle',steps:true});
+   result=await trafficRoutes.route(from,to,{vehicle:job.request?.vehicle||'motorcycle',steps:true,traffic:true});
   }
   else if(method==='GET'&&path==='/api/v1/rider/manifest'){check(dispatcher,503);result=await dispatcher.manifest(actor);}
   else if(method==='POST'&&path==='/api/v1/rider/multi-stop'){check(dispatcher,503);result=await dispatcher.optIn(actor,body);}

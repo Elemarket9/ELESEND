@@ -53,7 +53,7 @@ export function etaService(db,{routing=null,baselineFactors={},routingLabel='osr
  async function routeThroughStops(start,earlierStops,target,vehicle){
   let previous=start,durationSeconds=0,distanceMeters=0;const coordinates=[];
   for(const point of [...earlierStops,target]){
-   const leg=await routing.route(previous,point,{vehicle});
+   const leg=await routing.route(previous,point,{vehicle,traffic:true});
    if(leg?.source!=='routing-provider'&&leg?.source!=='fixture')return null;
    durationSeconds+=leg.durationSeconds;distanceMeters+=leg.distanceMeters;
    coordinates.push(...(leg.geometry?.coordinates??[]));
@@ -105,7 +105,7 @@ export function etaService(db,{routing=null,baselineFactors={},routingLabel='osr
    }else roadSeconds=decision.remainingSeconds;
    if(toPickup&&!routeFailed&&pickupToDropoff===null&&pickup&&dropoff&&routing){
     try{
-     const leg=await routing.route(pickup,dropoff,{vehicle});
+     const leg=await routing.route(pickup,dropoff,{vehicle,traffic:true});
      if(leg?.source==='routing-provider'||leg?.source==='fixture'){
       pickupToDropoff=leg.durationSeconds;
       await db.query('UPDATE shipment_eta_state SET pickup_to_dropoff_seconds=$2 WHERE shipment_id=$1',[shipmentId,pickupToDropoff]);

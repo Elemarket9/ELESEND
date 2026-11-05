@@ -1,16 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import * as Location from 'expo-location';
+import * as Speech from 'expo-speech';
+import { useKeepAwake } from 'expo-keep-awake';
 import { call } from '../api';
 import { colors, radii } from '../theme';
 import MapView, { Marker, Polyline, RiderMarker, openTurnByTurnNavigation } from '../maps/map-adapter';
-import { ARRIVED_METERS, formatDistance, formatDuration, locateOnRoute, rerouteCheck, stepArrow, upcomingStep } from './navigation-logic.mjs';
+import { ARRIVED_METERS, formatDistance, formatDuration, locateOnRoute, rerouteCheck, stepArrow, upcomingStep, voicePrompt } from './navigation-logic.mjs';
 
 const FOLLOW_ZOOM = 16.5;
 const ROUTE_RETRY_MS = 15000;
 
 /** Turn-by-turn directions on our own map, from our own routing server. */
 export default function RiderNavigation({ shipmentId, target, label, onClose }) {
+  useKeepAwake();
+  const [muted, setMuted] = useState(false);
+  const voice = useRef({});
   const map = useRef(null);
   const [route, setRoute] = useState(null);
   const [position, setPosition] = useState(null);
@@ -27,6 +32,7 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
     try {
       const next = await call('POST', '/api/v1/rider/navigation', { shipmentId, latitude: from.latitude, longitude: from.longitude });
       haveRoute.current = true;
+      voice.current = {};
       setRoute(next);
       setFailed('');
     } catch (e) {
@@ -79,6 +85,14 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
     if (following && position) map.current?.animateCamera({ center: position, zoom: FOLLOW_ZOOM, heading: position.heading, pitch: 45 }, { duration: 800 });
   }, [position, following]);
 
+  useEffect(() => {
+    if (!next) return;
+    const prompt = voicePrompt(voice.current, { index: next.index, metersToStep: next.metersToStep, step: next.step });
+    voice.current = prompt.state;
+    if (prompt.say && !muted) Speech.speak(prompt.say, { language: 'en' });
+  }, [next?.index, next?.metersToStep, muted]);
+  useEffect(() => () => { Speech.stop(); }, []);
+
   const otherApp = () => openTurnByTurnNavigation({ ...target, label });
 
   return (
@@ -123,6 +137,10 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
           </TouchableOpacity>
         )}
 
+        <TouchableOpacity accessibilityRole="switch" accessibilityState={{ checked: !muted }} accessibilityLabel="Voice directions" style={styles.voice} onPress={() => { Speech.stop(); setMuted(v => !v); }}>
+          <Text style={styles.recenterText}>{muted ? '🔇' : '🔊'}</Text>
+        </TouchableOpacity>
+
         <View style={styles.footer}>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={styles.footerTime}>{secondsLeft ? formatDuration(secondsLeft) : ' '}</Text>
@@ -150,6 +168,7 @@ const styles = StyleSheet.create({
   stepDistance: { fontSize: 22, fontWeight: '800', color: colors.text },
   instructionText: { fontSize: 15, fontWeight: '600', color: colors.text, marginTop: 2 },
   rerouting: { fontSize: 13, color: colors.primary, marginTop: 6 },
+  voice: { position: 'absolute', top: 150, right: 12, width: 46, height: 46, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface, borderRadius: radii.full, borderWidth: 1, borderColor: colors.cardBorder },
   recenter: { position: 'absolute', bottom: 104, alignSelf: 'center', backgroundColor: colors.surface, borderRadius: radii.full, paddingVertical: 10, paddingHorizontal: 18, borderWidth: 1, borderColor: colors.cardBorder },
   recenterText: { color: colors.text, fontWeight: '700', fontSize: 14 },
   footer: { position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.surface, padding: 14, paddingBottom: 24, borderTopWidth: 1, borderColor: colors.cardBorder },
