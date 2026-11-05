@@ -8,3 +8,5 @@ export const registerRootComponent=()=>{};
 export const OfflineManager={getPack:async()=>null,deletePack:async()=>{},createPack:async()=>{}};
 export const speak=()=>{},stop=()=>{};
 export const useKeepAwake=()=>{};
+
+export const AudioModule={requestRecordingPermissionsAsync:async()=>({granted:true})},AudioQuality={LOW:32},IOSOutputFormat={MPEG4AAC:'aac '},setAudioModeAsync=async()=>{},useAudioPlayer=()=>({play(){},pause(){},seekTo(){}}),useAudioPlayerStatus=()=>({isLoaded:true}),useAudioRecorder=()=>({prepareToRecordAsync:async()=>{},record(){},stop:async()=>{},uri:'x'}),EncodingType={Base64:'base64'},readAsStringAsync=async()=>'',randomUUID=()=>'u';
