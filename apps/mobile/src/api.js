@@ -8,11 +8,11 @@ export const loadToken = () => SecureStore.getItemAsync('elesend.session');
 export const saveToken = t => SecureStore.setItemAsync('elesend.session', t);
 export const clearToken = () => SecureStore.deleteItemAsync('elesend.session');
 
-export async function call(method, path, body = null, {token = null, idempotencyKey = null} = {}) {
+export async function call(method, path, body = null, {token = null, idempotencyKey = null, timeoutMs = 12000} = {}) {
   if (!BASE) throw Error('Configure EXPO_PUBLIC_ELESEND_API_BASE_URL to an HTTPS backend');
   const bearer = token ?? await loadToken();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`${BASE}${path}`, {
       method,
