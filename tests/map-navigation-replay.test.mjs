@@ -30,6 +30,20 @@ test('a noisy fix on a road that doubles back does not skip ahead',()=>{
  const place=locateOnRoute(here,route,{after:90});
  assert.ok(place.traveledMeters<150,String(place.traveledMeters));
 });
+test('a long ride with GPS noise keeps pace and arrives',()=>{
+ const pts=[];for(let m=0;m<=30000;m+=40)pts.push(east(m));
+ const total=locateOnRoute(pts.at(-1),pts).routeMeters,rand=seeded(9);
+ let progress=null,behind=0,arrived=false;
+ for(let m=0;m<=total;m+=12){
+  const p=along(pts,m),here={latitude:p.latitude+gauss(rand)*15*METER,longitude:p.longitude+gauss(rand)*15*METER};
+  const place=locateOnRoute(here,pts,{after:progress});
+  if(place.offRouteMeters<=60)progress=place.traveledMeters;
+  behind=Math.max(behind,m-place.traveledMeters);
+  if(hasArrived(place))arrived=true;
+ }
+ assert.ok(behind<80,String(behind));
+ assert.equal(arrived,true);
+});
 test('a jump far from the expected stretch falls back to the closest point',()=>{
  const route=line(0,1000,2000,3000);
  assert.ok(Math.abs(locateOnRoute(east(2500),route,{after:100}).traveledMeters-2488)<10);

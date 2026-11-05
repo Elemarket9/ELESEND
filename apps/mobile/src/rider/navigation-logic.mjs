@@ -8,7 +8,7 @@ export function metersBetween(a, b) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
-const PROGRESS_BACK_METERS = 40, PROGRESS_AHEAD_METERS = 400, DOUBLE_BACK_METERS = 30;
+const PROGRESS_BACK_METERS = 40, PROGRESS_AHEAD_METERS = 400, PROGRESS_WEIGHT = 0.1;
 /**
  * Closest point on the route: how far off it the rider is and how far along it they have come.
  * Given the last progress, it prefers the stretch the rider is on, so a road the route uses twice,
@@ -31,9 +31,10 @@ export function locateOnRoute(position, points, { after = null } = {}) {
     if (Number.isFinite(after) && found.traveledMeters >= after - PROGRESS_BACK_METERS && found.traveledMeters <= after + PROGRESS_AHEAD_METERS) nearby.push(found);
     along += length;
   }
-  // Where the road doubles back, both sides can fit a noisy fix. The earlier one is where the rider is.
-  const closest = nearby.length ? Math.min(...nearby.map(n => n.offRouteMeters)) : Infinity;
-  const ahead = nearby.find(n => n.offRouteMeters <= closest + DOUBLE_BACK_METERS);
+  // Where the road doubles back, both sides can fit a noisy fix. Each metre away from the last
+  // progress counts against a stretch, so the one the rider is on wins without holding them back.
+  const fit = n => n.offRouteMeters + Math.abs(n.traveledMeters - after) * PROGRESS_WEIGHT;
+  const ahead = nearby.reduce((pick, n) => (!pick || fit(n) < fit(pick) ? n : pick), null);
   const chosen = ahead && ahead.offRouteMeters <= Math.max(OFF_ROUTE_METERS, best.offRouteMeters + 20) ? ahead : best;
   return { ...chosen, routeMeters: along, remainingMeters: Math.max(0, along - chosen.traveledMeters) };
 }
