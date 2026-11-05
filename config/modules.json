@@ -11,7 +11,7 @@
   "maps":{"paths":["traffic.mjs","map-config.mjs","infrastructure/maps/","providers/ghanapostgps.mjs"],
    "tables":["candidate_landmarks","candidate_roads","map_update_versions","national_businesses","rider_map_reports","spatial_landmarks","temporary_delivery_references","traffic_cursor","traffic_observations","traffic_typical_speeds"]},
   "safety":{"paths":["safety.mjs","chat-engine.mjs"],
-   "tables":["chat_abuse_reports","chat_audit_logs","chat_conversations","chat_messages","chat_messaging_policy","chat_participants","chat_realtime_outbox","delivery_ratings","delivery_stop_watch","safety_alerts","trusted_contacts"]}
+   "tables":["chat_abuse_reports","chat_audit_logs","chat_conversations","chat_messages","chat_voice_notes","chat_messaging_policy","chat_participants","chat_realtime_outbox","delivery_ratings","delivery_stop_watch","safety_alerts","trusted_contacts"]}
  },
  "shared":{"paths":["firebase-account.mjs","env-values.mjs","permissions.mjs","sealed-values.mjs","security.mjs","config.mjs","db.mjs","market.mjs","markets.mjs","rate-limits.mjs","client-ip.mjs","process-guards.mjs","runtime-enforce.mjs","startup-guards.mjs","sms-gateway.mjs","providers/hubtel-sms.mjs","algorithms/","infrastructure/cache/","infrastructure/monitoring/"],
   "tables":["audit_logs","rate_limits","service_markets"]},

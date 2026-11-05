@@ -16,7 +16,7 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
   try {
     await migrate(root);
 
-    async function fixture(fn) {
+    const fixture = fn => async () => {
       const c = await root.pool.connect();
       await c.query('BEGIN');
       let savepoint = 0;
@@ -148,7 +148,7 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
         await c.query('ROLLBACK');
         c.release();
       }
-    }
+    };
 
     await t.test('1. Strict participant authorization & IDOR protection across all 4 conversation categories', () =>
       fixture(async ({ c, chat, order, customer, intruderCustomer, kitchenA, kitchenB, rider1, rider2 }) => {
@@ -412,6 +412,90 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
           supportReason: 'Investigating kitchen abuse report #' + report.id
         });
         assert.ok(adminRead.messages.length >= 2);
+      })
+    );
+
+    await t.test('5. Voice notes: order participants only, removed after their time unless reported',
+      fixture(async ({ c, chat, order, customer, intruderCustomer, kitchenA, rider1 }) => {
+        process.env.OTP_KEY ||= 'a'.repeat(64);
+        await c.query('UPDATE shipments SET rider_id = $1, state = $2 WHERE id = $3', [rider1.id, 'RIDER_ASSIGNED', order.shipment_id]);
+        const conv = await chat.openOrCreateConversation(customer, { conversationType: 'CUSTOMER_RIDER', shipmentId: order.shipment_id, foodOrderId: order.id });
+        const m4a = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypM4A '), Buffer.alloc(200, 7)]);
+        const send = (key, audio = m4a) => chat.sendVoiceNote(customer, conv.id, { clientMessageId: key, durationSeconds: 12, audioBase64: audio.toString('base64') });
+
+        const note = await send('voice-001');
+        assert.equal(note.messageType, 'voice_note');
+        assert.deepEqual(note.voiceNote, { durationSeconds: 12, available: true });
+        const retry = await send('voice-001');
+        assert.equal(retry.duplicate, true, 'a retry does not duplicate it');
+        assert.equal(retry.id, note.id);
+        assert.equal(retry.voiceNote.available, true, 'a retried note can still be played');
+        await assert.rejects(send('voice-bad', Buffer.alloc(100, 1)), /could not be read/);
+        await assert.rejects(chat.sendMessage(customer, conv.id, { clientMessageId: 'voice-fake', messageType: 'voice_note', body: 'x' }));
+
+        const stored = (await c.query('SELECT audio_encrypted FROM chat_voice_notes WHERE message_id = $1', [note.id])).rows[0];
+        assert.equal(stored.audio_encrypted.includes(m4a.toString('base64')), false, 'audio is encrypted');
+        assert.deepEqual(await chat.voiceNoteAudio(rider1, conv.id, note.id), m4a);
+        await assert.rejects(chat.voiceNoteAudio(intruderCustomer, conv.id, note.id));
+        const listed = (await chat.listMessages(rider1, conv.id)).messages.find(m => m.id === note.id);
+        assert.deepEqual(listed.voiceNote, { durationSeconds: 12, available: true });
+
+        // Redacted by staff: participants lose it, the reviewer does not.
+        const removed = await send('voice-redact');
+        await c.query("UPDATE chat_messages SET moderation_status = 'redacted' WHERE id = $1", [removed.id]);
+        await assert.rejects(chat.voiceNoteAudio(rider1, conv.id, removed.id), /no longer available/);
+        assert.equal((await chat.listMessages(rider1, conv.id)).messages.find(m => m.id === removed.id).voiceNote.available, false);
+
+        // Delivered and past the two minutes: no more sending.
+        await c.query("UPDATE chat_conversations SET restricted_after = now() - interval '1 minute' WHERE id = $1", [conv.id]);
+        await assert.rejects(send('voice-003'));
+
+        const restaurantChat = await chat.openOrCreateConversation(kitchenA, { conversationType: 'CUSTOMER_RESTAURANT', foodOrderId: order.id });
+        await assert.rejects(chat.sendVoiceNote(kitchenA, restaurantChat.id, { clientMessageId: 'voice-004', durationSeconds: 3, audioBase64: m4a.toString('base64') }), /customers and couriers/);
+      })
+    );
+
+    await t.test('6. Chats are removed entirely after a day, except while a problem is under review',
+      fixture(async ({ c, chat, order, customer, rider1 }) => {
+        process.env.OTP_KEY ||= 'a'.repeat(64);
+        await c.query('UPDATE shipments SET rider_id = $1, state = $2 WHERE id = $3', [rider1.id, 'RIDER_ASSIGNED', order.shipment_id]);
+        const conv = await chat.openOrCreateConversation(customer, { conversationType: 'CUSTOMER_RIDER', shipmentId: order.shipment_id, foodOrderId: order.id });
+        const m4a = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypM4A '), Buffer.alloc(200, 7)]);
+        const voice = await chat.sendVoiceNote(customer, conv.id, { clientMessageId: 'purge-voice', durationSeconds: 5, audioBase64: m4a.toString('base64') });
+        const text = await chat.sendMessage(customer, conv.id, { clientMessageId: 'purge-text', body: 'At the blue gate' });
+        const count = async (table, column = 'conversation_id') => Number((await c.query(`SELECT count(*) FROM ${table} WHERE ${column} = $1`, [conv.id])).rows[0].count);
+        const age = sql => c.query(`UPDATE chat_messages SET created_at = ${sql} WHERE conversation_id = $1`, [conv.id]);
+
+        // Fresh: nothing goes.
+        assert.deepEqual(await chat.purgeExpiredChats(), { conversations: 0, messages: 0 });
+        assert.equal(await count('chat_messages'), 2);
+
+        // Order still running: day-old messages and audio go, the open chat stays usable.
+        await age("now() - interval '25 hours'");
+        assert.equal((await chat.purgeExpiredChats()).messages, 2);
+        assert.equal(await count('chat_voice_notes'), 0);
+        assert.equal(await count('chat_conversations', 'id'), 1);
+        const conversationPreview = (await c.query('SELECT last_message_preview FROM chat_conversations WHERE id = $1', [conv.id])).rows[0].last_message_preview;
+        assert.equal(conversationPreview, null);
+        assert.ok(voice.id && text.id);
+
+        // A report keeps everything past a day.
+        await chat.sendMessage(customer, conv.id, { clientMessageId: 'purge-held', body: 'Threat' });
+        const report = await chat.reportAbuse(customer, conv.id, { category: 'threats', details: 'Threatening message' });
+        await age("now() - interval '25 hours'");
+        await c.query("UPDATE food_orders SET state = 'CANCELLED', updated_at = now() - interval '25 hours' WHERE id = $1", [order.id]);
+        await c.query("UPDATE chat_conversations SET last_message_at = now() - interval '25 hours' WHERE id = $1", [conv.id]);
+        assert.deepEqual(await chat.purgeExpiredChats(), { conversations: 0, messages: 0 });
+        assert.equal(await count('chat_messages'), 1);
+
+        // Resolved: the whole chat goes, with no record left anywhere.
+        await c.query("UPDATE chat_abuse_reports SET status = 'resolved' WHERE id = $1", [report.id]);
+        await c.query('INSERT INTO chat_audit_logs(conversation_id, actor_id, actor_role, action) VALUES($1, $2, $3, $4)', [conv.id, customer.id, 'customer', 'test_action']);
+        await c.query("INSERT INTO notification_jobs(id, recipient_id, kind, payload) VALUES($1, $2, 'chat_message', $3)", [`chat:test:${conv.id}`, rider1.id, JSON.stringify({ conversationId: conv.id })]);
+        assert.equal((await chat.purgeExpiredChats()).conversations, 1);
+        for (const table of ['chat_messages', 'chat_voice_notes', 'chat_participants', 'chat_abuse_reports', 'chat_audit_logs', 'chat_realtime_outbox']) assert.equal(await count(table), 0, table);
+        assert.equal(await count('chat_conversations', 'id'), 0);
+        assert.equal(Number((await c.query("SELECT count(*) FROM notification_jobs WHERE kind = 'chat_message' AND payload->>'conversationId' = $1", [conv.id])).rows[0].count), 0);
       })
     );
   } finally {

@@ -76,7 +76,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const server=createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192,keepAliveTimeout:65000},async(req,res)=>{
  const requestId=randomUUID();res.setHeader('X-Request-Id',requestId);
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
- res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+ res.setHeader('Content-Security-Policy',"default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
  res.setHeader('X-Frame-Options','DENY');res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=(), payment=(), usb=()');res.setHeader('Cross-Origin-Opener-Policy','same-origin');res.setHeader('Cross-Origin-Resource-Policy','same-site');res.setHeader('X-Permitted-Cross-Domain-Policies','none');
  if(process.env.NODE_ENV==='production')res.setHeader('Strict-Transport-Security','max-age=31536000; includeSubDomains');
  // Serialize before writing headers: a failure must stay recoverable by the catch block below.
@@ -154,7 +154,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   if(!path.startsWith('/api/v1/'))check(false,404,'Endpoint not found');
   let body={},rawBody=Buffer.alloc(0);if(method==='POST'){
    check((req.headers['content-type']??'').split(';')[0]==='application/json',415,'JSON required');let size=0;const parts=[];
-   const bodyLimit=path==='/api/v1/identity/webhook'?1048576:path==='/api/v1/rider-documents/upload'?3200000:32768;
+   const bodyLimit=path==='/api/v1/identity/webhook'?1048576:path==='/api/v1/rider-documents/upload'?3200000:/^\/api\/v1\/chat\/conversations\/[0-9a-f-]+\/voice-notes$/.test(path)?600000:32768;
    for await(const part of req.iterator({destroyOnReturn:false})){size+=part.length;if(size>bodyLimit){res.setHeader('Connection','close');req.resume();check(false,413,'Request too large');}parts.push(part);}
    rawBody=Buffer.concat(parts);try{body=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(rawBody)||'{}');}catch{check(false,400,'Invalid JSON');}
   }
@@ -689,6 +689,11 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
      result=await chat.listMessages(actor,path.split('/')[5],{afterSeq:u.get('afterSeq'),beforeSeq:u.get('beforeSeq'),limit:u.get('limit'),supportJustification:u.get('justification')||req.headers['x-support-justification']||null});
    }
    else if(method==='POST'&&/^\/api\/v1\/chat\/conversations\/[0-9a-f-]+\/messages$/.test(path))result=await chat.sendMessage(actor,path.split('/')[5],body);
+   else if(method==='POST'&&/^\/api\/v1\/chat\/conversations\/[0-9a-f-]+\/voice-notes$/.test(path))result=await chat.sendVoiceNote(actor,path.split('/')[5],body);
+   else if(method==='GET'&&/^\/api\/v1\/chat\/conversations\/[0-9a-f-]+\/messages\/[0-9a-f-]+\/audio$/.test(path)){
+    const audio=await chat.voiceNoteAudio(actor,path.split('/')[5],path.split('/')[7],{supportJustification:req.headers['x-support-justification']||null});
+    res.writeHead(200,{'Content-Type':'audio/mp4','Content-Length':audio.length,'Cache-Control':'no-store'});res.end(audio);return;
+   }
    else if(method==='POST'&&/^\/api\/v1\/chat\/conversations\/[0-9a-f-]+\/delivered$/.test(path))result=await chat.acknowledgeDelivered(actor,path.split('/')[5],body);
    else if(method==='POST'&&/^\/api\/v1\/chat\/conversations\/[0-9a-f-]+\/read$/.test(path))result=await chat.markRead(actor,path.split('/')[5],body);
    else if(method==='POST'&&/^\/api\/v1\/chat\/conversations\/[0-9a-f-]+\/typing$/.test(path))result=await chat.sendTypingIndicator(actor,path.split('/')[5],body);

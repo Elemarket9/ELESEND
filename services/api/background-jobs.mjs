@@ -42,6 +42,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
  };
  const jobs={
   notifications:guarded('notifications',null,async()=>{await notifications?.tick();}),
+  chatRetention:guarded('chat_retention',null,async()=>{await chatSvc?.purgeExpiredChats();}),
   chatOutbox:guarded('chat_outbox',null,async()=>{await chatSvc?.flushRealtimeOutbox();}),
   apiWebhooks:guarded('api_webhooks',null,async()=>{await webhookService(db).tick();}),
   foodExpiry:guarded('food_expiry',LOCKS.foodExpiry,async()=>{await restOrders?.expireUnfulfilledOrders();await restOrders?.alertUnconfirmedReturns?.();}),
@@ -107,6 +108,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
  function start({unref=false}={}){
   const every=(fn,ms,enabled=true)=>{if(!enabled)return;const t=setInterval(()=>{fn();},ms);if(unref)t.unref();timers.push(t);};
   every(jobs.notifications,3000,!!notifications);
+  every(jobs.chatRetention,600000,!!chatSvc);
   every(jobs.chatOutbox,3000,!!chatSvc);
   every(jobs.apiWebhooks,5000);
   every(jobs.foodExpiry,15000,!!restOrders);

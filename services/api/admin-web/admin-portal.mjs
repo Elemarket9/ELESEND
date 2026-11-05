@@ -1666,6 +1666,7 @@ export function renderAdminPortalHtml() {
               <td><strong>\${escapeHtml(r.message_body || '(Conversation Report)')}</strong><br><small style="color:var(--text-muted);">\${escapeHtml(r.details)}</small></td>
               <td><span class="badge \${r.status === 'resolved' ? 'badge-active' : 'badge-warn'}">\${escapeHtml(r.status.toUpperCase())}</span></td>
               <td>
+                <button class="action-btn" onclick="inspectSupportConversation('\${escapeHtml(r.conversation_id)}')">View chat</button>
                 \${r.status === 'open' || r.status === 'investigating' ? \`
                   <button class="action-btn" onclick="moderateAbuseReport('\${escapeHtml(r.id)}', true)">Redact & Resolve</button>
                   <button class="action-btn" onclick="moderateAbuseReport('\${escapeHtml(r.id)}', false)">Dismiss</button>
@@ -1687,9 +1688,24 @@ export function renderAdminPortalHtml() {
           <div style="margin-bottom:8px; padding:8px; border-radius:6px; background:rgba(255,255,255,0.04);">
             <div style="font-size:11px; color:var(--primary); font-weight:700;">\${escapeHtml(m.senderRole.toUpperCase())} • \${escapeHtml(m.deliveryStatus)}</div>
             <div style="font-size:13px; margin-top:2px;">\${escapeHtml(m.body)}</div>
+            \${m.voiceNote ? (m.voiceNote.available ? \`<button class="action-btn" onclick="playSupportVoiceNote('\${escapeHtml(convId)}','\${escapeHtml(m.id)}',this)">Play voice note</button>\` : '<div style="font-size:12px; color:var(--text-muted);">Audio deleted</div>') : ''}
           </div>
         \`).join('') || '<div style="color:var(--text-muted);">No messages yet.</div>';
         document.getElementById('supportInspectorCard').style.display = 'block';
+      } catch (err) { alert(err.message); }
+    }
+
+    async function playSupportVoiceNote(convId, messageId, button) {
+      try {
+        const response = await fetch(\`/api/v1/chat/conversations/\${convId}/messages/\${messageId}/audio\`, {
+          headers: { 'Authorization': 'Bearer ' + token, 'X-Support-Justification': 'Support Queue Investigation' }
+        });
+        if (!response.ok) throw new Error('This voice note is no longer available');
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.src = URL.createObjectURL(await response.blob());
+        button.replaceWith(audio);
+        audio.play();
       } catch (err) { alert(err.message); }
     }
 

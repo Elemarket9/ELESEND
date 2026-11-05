@@ -1,3 +1,5 @@
+import {hkdfSync} from 'node:crypto';
+import {seal,unseal} from './sealed-values.mjs';
 import {randomUUID, createHash} from 'node:crypto';
 import {envInt} from './env-values.mjs';
 import {z} from 'zod';
@@ -621,6 +623,24 @@ export function upgradeToChatWebSocket(req, socket, head, { actor, sessionToken 
   socket.on('error', cleanup);
   conn.send('connected', { userId: actor.id, role: actor.kind });
 }
+
+const VOICE_MAX_SECONDS = 60;
+const VOICE_MAX_BYTES = 400 * 1024;
+const chatRetentionHours = () => envInt(process.env.CHAT_RETENTION_HOURS, 24, 1);
+const chatReportHoldDays = () => envInt(process.env.CHAT_REPORT_HOLD_DAYS, 30, 1);
+const CHAT_PURGE_BATCH = 500;
+const voiceContext = conversationId => `elesend:chat-voice:v1:${conversationId}`;
+function voiceKey() {
+  const root = (process.env.ADMIN_MFA_ENCRYPTION_KEY || process.env.OTP_KEY || '').trim();
+  check(/^[a-fA-F0-9]{64}$/.test(root), 503, 'Voice notes are not available right now');
+  return Buffer.from(hkdfSync('sha256', Buffer.from(root, 'hex'), Buffer.alloc(0), 'elesend:chat-voice:v1', 32));
+}
+// A chat with an unresolved problem stays for review, up to the hold limit.
+const CHAT_UNDER_REVIEW = `(c.created_at > now() - make_interval(days => $2) AND (
+  EXISTS (SELECT 1 FROM chat_abuse_reports r WHERE r.conversation_id = c.id AND r.status IN ('open', 'investigating'))
+  OR EXISTS (SELECT 1 FROM chat_conversations e WHERE e.escalated_from_conversation_id = c.id AND e.state NOT IN ('CLOSED', 'ARCHIVED'))
+  OR (c.conversation_type = 'CUSTOMER_SUPPORT' AND c.state NOT IN ('CLOSED', 'ARCHIVED'))
+))`;
 
 export function chatEngine(db, options = {}) {
   check(db && typeof db.query === 'function', 500, 'Database instance required for chatEngine');
@@ -1395,7 +1415,89 @@ export function chatEngine(db, options = {}) {
      * - OTP & Paid-Address safety guards (never triggers OTP or alters paid address)
      * - Push notification enqueueing for authorized recipients
      */
-    async sendMessage(actor, conversationId, input) {
+    async sendVoiceNote(actor, conversationId, input) {
+      check(actor && actor.id, 401, 'Authentication required');
+      const v = z.object({
+        clientMessageId: z.string().trim().min(4).max(120),
+        durationSeconds: z.number().int().min(1).max(VOICE_MAX_SECONDS),
+        audioBase64: z.string().min(16).max(Math.ceil(VOICE_MAX_BYTES * 4 / 3) + 4)
+      }).strict().parse(input);
+      const audio = Buffer.from(v.audioBase64, 'base64');
+      check(audio.length <= VOICE_MAX_BYTES, 413, 'This voice note is too long');
+      check(audio.subarray(4, 8).toString('latin1') === 'ftyp', 400, 'This recording could not be read');
+      return this.sendMessage(actor, conversationId, {
+        clientMessageId: v.clientMessageId,
+        body: `🎤 Voice note, ${v.durationSeconds} sec`
+      }, {
+        voiceNote: {
+          audioEncrypted: seal(voiceKey(), voiceContext(conversationId), audio),
+          byteSize: audio.length,
+          durationSeconds: v.durationSeconds
+        }
+      });
+    },
+
+    async voiceNoteAudio(actor, conversationId, messageId, { supportJustification = null } = {}) {
+      check(uuid.safeParse(messageId).success, 400, 'Invalid message ID');
+      const { conv } = await authorizeConversationAccess(db, actor, conversationId, { supportJustification });
+      const note = (await db.query(
+        `SELECT n.audio_encrypted, m.moderation_status FROM chat_voice_notes n JOIN chat_messages m ON m.id = n.message_id
+         WHERE n.message_id = $1 AND n.conversation_id = $2`,
+        [messageId, conv.id]
+      )).rows[0];
+      check(note?.audio_encrypted && (note.moderation_status !== 'redacted' || actor.kind === 'admin'), 404, 'This voice note is no longer available');
+      return unseal(voiceKey(), voiceContext(conv.id), note.audio_encrypted);
+    },
+
+    /** Permanently removes chats and voice notes past their time, leaving no record of them. */
+    async purgeExpiredChats() {
+      const hours = chatRetentionHours(), holdDays = chatReportHoldDays();
+      let conversations = 0, messages = 0, batch;
+      do {
+        batch = await db.tx(async c => {
+          const ids = (await c.query(
+            `SELECT c.id FROM chat_conversations c
+             LEFT JOIN shipments s ON s.id = c.shipment_id
+             LEFT JOIN food_orders f ON f.id = c.food_order_id
+             WHERE NOT ${CHAT_UNDER_REVIEW} AND (
+               c.created_at <= now() - make_interval(days => $2)
+               OR (GREATEST(COALESCE(c.last_message_at, c.created_at), s.completed_at, f.updated_at) <= now() - make_interval(hours => $1) AND (
+                 c.conversation_type = 'CUSTOMER_SUPPORT'
+                 OR s.state IN ('COMPLETED', 'CANCELLED', 'RETURNED')
+                 OR f.state IN ('DELIVERED', 'CANCELLED', 'REJECTED')
+               ))
+             )
+             LIMIT ${CHAT_PURGE_BATCH}`,
+            [hours, holdDays]
+          )).rows.map(row => row.id);
+          if (!ids.length) return 0;
+          await c.query('DELETE FROM chat_audit_logs WHERE conversation_id = ANY($1::uuid[])', [ids]);
+          await c.query("DELETE FROM notification_jobs WHERE kind = 'chat_message' AND payload->>'conversationId' = ANY($1::text[])", [ids]);
+          await c.query('DELETE FROM chat_conversations WHERE id = ANY($1::uuid[])', [ids]);
+          return ids.length;
+        });
+        conversations += batch;
+      } while (batch === CHAT_PURGE_BATCH);
+      // An order still running after a day keeps its chat open, but its older messages still go.
+      do {
+        batch = (await db.query(
+          `DELETE FROM chat_messages WHERE id IN (
+             SELECT m.id FROM chat_messages m JOIN chat_conversations c ON c.id = m.conversation_id
+             WHERE m.created_at <= now() - make_interval(hours => $1) AND NOT ${CHAT_UNDER_REVIEW}
+             LIMIT ${CHAT_PURGE_BATCH})`,
+          [hours, holdDays]
+        )).rowCount || 0;
+        messages += batch;
+      } while (batch === CHAT_PURGE_BATCH);
+      await db.query(
+        `UPDATE chat_conversations c SET last_message_preview = NULL
+         WHERE last_message_preview IS NOT NULL AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id)`
+      );
+      await db.query("DELETE FROM notification_jobs WHERE kind = 'chat_message' AND created_at <= now() - make_interval(hours => $1)", [hours]);
+      return { conversations, messages };
+    },
+
+    async sendMessage(actor, conversationId, input, { voiceNote = null } = {}) {
       check(actor && actor.id, 401, 'Authentication required');
       const schema = z.object({
         clientMessageId: z.string().trim().min(4).max(120),
@@ -1419,10 +1521,13 @@ export function chatEngine(db, options = {}) {
           supportJustification: 'Support agent sending message'
         });
 
+        if (voiceNote) check(conv.conversation_type === 'CUSTOMER_RIDER', 403, 'Voice notes are for chats between customers and couriers');
+
         // Check idempotency BEFORE rate-limiting so retries of already-accepted messages always succeed
         const existingMsg = (await c.query(
-          `SELECT * FROM chat_messages
-           WHERE conversation_id = $1 AND sender_id = $2 AND client_message_id = $3`,
+          `SELECT m.*, n.duration_seconds AS voice_duration_seconds, n.audio_encrypted IS NOT NULL AS voice_available
+           FROM chat_messages m LEFT JOIN chat_voice_notes n ON n.message_id = m.id
+           WHERE m.conversation_id = $1 AND m.sender_id = $2 AND m.client_message_id = $3`,
           [conv.id, actor.id, v.clientMessageId]
         )).rows[0];
         if (existingMsg) {
@@ -1489,7 +1594,7 @@ export function chatEngine(db, options = {}) {
             actor.id,
             senderRole,
             v.clientMessageId,
-            v.messageType,
+            voiceNote ? 'voice_note' : v.messageType,
             messageBody,
             v.quickReplyKey || null,
             locationPinPayload ? JSON.stringify(locationPinPayload) : null,
@@ -1497,6 +1602,16 @@ export function chatEngine(db, options = {}) {
             addressChangeWarning
           ]
         )).rows[0];
+
+        if (voiceNote) {
+          await c.query(
+            `INSERT INTO chat_voice_notes (message_id, conversation_id, audio_encrypted, byte_size, duration_seconds)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [msgId, conv.id, voiceNote.audioEncrypted, voiceNote.byteSize, voiceNote.durationSeconds]
+          );
+          msgRow.voice_duration_seconds = voiceNote.durationSeconds;
+          msgRow.voice_available = true;
+        }
 
         const preview = messageBody.slice(0, 120);
         await c.query(
@@ -1596,6 +1711,7 @@ export function chatEngine(db, options = {}) {
         senderRole: row.sender_role,
         clientMessageId: row.client_message_id,
         messageType: row.message_type,
+        ...(row.message_type === 'voice_note' ? { voiceNote: { durationSeconds: Number(row.voice_duration_seconds) || 0, available: Boolean(row.voice_available) && row.moderation_status !== 'redacted' } } : {}),
         body: row.moderation_status === 'redacted'
           ? '[Message removed by ELESEND Safety Moderation]'
           : row.body,
@@ -1635,7 +1751,7 @@ export function chatEngine(db, options = {}) {
           supportJustification: effectiveJustification
         });
 
-        const conds = ['conversation_id = $1'];
+        const conds = ['m.conversation_id = $1'];
         const params = [conv.id];
 
         if (afterSeq !== null && afterSeq !== undefined && Number.isFinite(Number(afterSeq))) {
@@ -1650,7 +1766,8 @@ export function chatEngine(db, options = {}) {
         params.push(lim);
         const orderDir = afterSeq !== null && afterSeq !== undefined ? 'ASC' : 'DESC';
         const rows = (await c.query(
-          `SELECT * FROM chat_messages
+          `SELECT m.*, n.duration_seconds AS voice_duration_seconds, n.audio_encrypted IS NOT NULL AS voice_available
+           FROM chat_messages m LEFT JOIN chat_voice_notes n ON n.message_id = m.id
            WHERE ${conds.join(' AND ')}
            ORDER BY seq ${orderDir}
            LIMIT $${params.length}`,
@@ -1673,7 +1790,12 @@ export function chatEngine(db, options = {}) {
 
         return {
           conversation: summary,
-          messages: ordered.map(r => this.formatMessage(r)),
+          messages: ordered.map(r => {
+            const message = this.formatMessage(r);
+            // The reviewer can still hear a note removed from the chat.
+            if (message.voiceNote && actor.kind === 'admin') message.voiceNote.available = Boolean(r.voice_available);
+            return message;
+          }),
           typing: typingUsers,
           hasMore: rows.length === lim
         };
