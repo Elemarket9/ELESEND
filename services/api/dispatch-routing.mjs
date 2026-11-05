@@ -1,6 +1,7 @@
 import {check} from './security.mjs';
 import {haversine} from './dispatch-geometry.mjs';
 
+const BEARING_MAX_SNAP_METERS=50;
 const ROAD_TURNS={uturn:'Make a U-turn','sharp right':'Turn sharp right',right:'Turn right','slight right':'Keep right',straight:'Continue','slight left':'Keep left',left:'Turn left','sharp left':'Turn sharp left'};
 /** Words a rider can follow, from one OSRM route step. */
 export function stepInstruction({maneuver:m={},name,ref}={},last=false){
@@ -72,7 +73,9 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,m
    const path=hint=>`/route/v1/${p}/${coords(from)};${coords(to)}?${hint}overview=full&geometries=geojson&steps=${steps?'true':'false'}${annotations?'&annotations=nodes,distance,duration':''}${alternatives?'&alternatives=true':''}`;
    // Starts in the rider's direction of travel, so a reroute does not begin with a needless U-turn.
    const hint=Number.isFinite(bearing)&&bearing>=0&&bearing<360?`bearings=${Math.round(bearing)%360},60;&`:'';
-   const body=await request(path(hint),vehicle).catch(e=>{if(!hint)throw e;return request(path(''),vehicle);});
+   let body=await request(path(hint),vehicle).catch(e=>{if(!hint)throw e;return null;});
+   // A heading can pull the start onto a different road, so it only counts if the road is close by.
+   if(hint&&!(body?.waypoints?.[0]?.distance<=BEARING_MAX_SNAP_METERS))body=await request(path(''),vehicle);
    check(body.routes?.length&&body.routes[0].geometry,503,'No connected road route');
    // A fare pays for the road between the pins, so a pin far from the road would ride unbilled.
    if(billing)validateWaypoints(body.waypoints,billingSnapMeters,'This pin is too far from a mapped road. Move it closer to the road.');

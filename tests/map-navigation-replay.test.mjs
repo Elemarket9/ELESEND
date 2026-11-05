@@ -44,6 +44,26 @@ test('a long ride with GPS noise keeps pace and arrives',()=>{
  assert.ok(behind<80,String(behind));
  assert.equal(arrived,true);
 });
+test('on a long trip a turn is not passed early when steps and the line measure differently',()=>{
+ const steps=[{distanceMeters:32000,instruction:'Straight on'},{distanceMeters:930,instruction:'Turn left'},{distanceMeters:0,type:'arrive',instruction:'You have arrived'}];
+ const geometry=32970,turnOnLine=32000*geometry/32930;
+ const before=upcomingStep(steps,turnOnLine-20,geometry);
+ assert.equal(before.step.instruction,'Turn left');
+ assert.ok(Math.abs(before.metersToStep-20)<1,String(before.metersToStep));
+ assert.equal(upcomingStep(steps,turnOnLine+20,geometry).step.type,'arrive');
+});
+test('a wrong phone clock or one bad fix cannot stop navigation for good',()=>{
+ const now=1000000,old={timestamp:now-3600000,coords:{latitude:5.6,longitude:-0.2,accuracy:10}};
+ assert.equal(usableFix(null,old,now),null);
+ assert.notEqual(usableFix(null,old,now,{trustClock:false}),null);
+});
+test('a heading that pulls the start onto a distant road is dropped',async()=>{
+ const urls=[];
+ const routing=osrmRouting({endpoint:'http://osrm.test',profiles:{motorcycle:'driving'},fetchImpl:async url=>{urls.push(String(url));const hinted=String(url).includes('bearings');return {ok:true,status:200,json:async()=>({code:'Ok',routes:[{distance:hinted?9000:1000,duration:60,geometry:{type:'LineString',coordinates:[]},legs:[]}],waypoints:[{distance:hinted?400:3},{distance:1}]})};}});
+ const r=await routing.route({latitude:5.6,longitude:-0.2},{latitude:5.6,longitude:-0.19},{vehicle:'motorcycle',bearing:90});
+ assert.equal(r.distanceMeters,1000);
+ assert.equal(urls.length,2);
+});
 test('a jump far from the expected stretch falls back to the closest point',()=>{
  const route=line(0,1000,2000,3000);
  assert.ok(Math.abs(locateOnRoute(east(2500),route,{after:100}).traveledMeters-2488)<10);

@@ -17,11 +17,25 @@ const nightMapStyle = privateMapStyle(tileUrl, { glyphsUrl, night: true });
 // The API says where the map lives, so moving it needs no app release. A build-time address still wins.
 let remoteSource = null;
 let remoteRequest = null;
+// Remembered on the phone, so a saved offline map still opens when the app starts with no signal.
+const SAVED_MAP_CONFIG = 'elesend.mapConfig';
+const secureStore = () => import('expo-secure-store').catch(() => null);
+async function freshMapConfig() {
+  const response = await fetch(`${API_BASE_URL}/api/v1/maps/config`);
+  if (!response.ok) throw Error('Map address unavailable');
+  const config = await response.json();
+  if (config?.tileUrl) (await secureStore())?.setItemAsync(SAVED_MAP_CONFIG, JSON.stringify({ tileUrl: config.tileUrl, glyphsUrl: config.glyphsUrl })).catch(() => {});
+  return config;
+}
+async function savedMapConfig() {
+  const saved = await (await secureStore())?.getItemAsync(SAVED_MAP_CONFIG);
+  return saved ? JSON.parse(saved) : null;
+}
 function loadRemoteMapSource() {
   if (remoteSource) return Promise.resolve(remoteSource);
   if (!remoteRequest) {
-    remoteRequest = fetch(`${API_BASE_URL}/api/v1/maps/config`)
-      .then(response => response.json())
+    remoteRequest = freshMapConfig()
+      .catch(savedMapConfig)
       .then(config => {
         if (!config?.tileUrl) return null;
         const url = privateTileUrl(config.tileUrl, { development: isDevelopmentEnvironment() });
