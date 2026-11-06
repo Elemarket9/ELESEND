@@ -17,6 +17,9 @@ test('the check catches repeated ids, places outside Ghana and bad dates',()=>{
  assert.ok(errors.some(e=>e.includes('outside Ghana')));
  assert.ok(errors.some(e=>e.includes('bad created_at')));
 });
+test('no place appears in two files',()=>{
+ const seen=new Set();for(const file of files)for(const row of load(file)){assert.ok(!seen.has(row[0]),row[0]);seen.add(row[0]);}
+});
 test('no landmark file claims a check it has no record of',()=>{
  for(const file of files)assert.equal(load(file).filter(r=>r[LANDMARK_COLUMNS.indexOf('verification_status')]==='source_verified').length,0);
 });
@@ -27,6 +30,9 @@ test('the files load into a real database',{skip:!process.env.TEST_DATABASE_URL}
   const before=await has();
   await db.query("DELETE FROM spatial_landmarks WHERE id LIKE 'GEO_%' OR id LIKE 'OSM_%'");
   execFileSync('sh',['scripts/import-landmarks.sh'],{env:{...process.env,DATABASE_URL:url},stdio:'pipe'});
+  await db.query("UPDATE spatial_landmarks SET name='Corrected' WHERE id='GEO_000001'");
+  execFileSync('sh',['scripts/import-landmarks.sh'],{env:{...process.env,DATABASE_URL:url},stdio:'pipe'});
+  assert.equal((await db.query("SELECT name FROM spatial_landmarks WHERE id='GEO_000001'")).rows[0].name,'Corrected','a second run keeps corrections');
   const expected=files.reduce((sum,f)=>sum+load(f).length,0);
   assert.ok(await has()>=expected,String(before));
   const one=await db.query("SELECT region,ST_Y(geom::geometry) AS lat,aliases FROM spatial_landmarks WHERE id='GEO_000001'");
