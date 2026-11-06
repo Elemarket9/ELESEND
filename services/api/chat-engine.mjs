@@ -1461,7 +1461,7 @@ export function chatEngine(db, options = {}) {
              LEFT JOIN food_orders f ON f.id = c.food_order_id
              WHERE NOT ${CHAT_UNDER_REVIEW} AND (
                c.created_at <= now() - make_interval(days => $2)
-               OR (GREATEST(COALESCE(c.last_message_at, c.created_at), c.closed_at, s.completed_at, s.updated_at, f.updated_at) <= now() - make_interval(hours => $1) AND (
+               OR (GREATEST(COALESCE(c.last_message_at, c.created_at), c.closed_at, s.completed_at, f.updated_at) <= now() - make_interval(hours => $1) AND (
                  c.conversation_type = 'CUSTOMER_SUPPORT'
                  OR s.state IN ('COMPLETED', 'CANCELLED', 'RETURNED')
                  OR f.state IN ('DELIVERED', 'CANCELLED', 'REJECTED')
