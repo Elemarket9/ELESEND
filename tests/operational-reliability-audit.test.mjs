@@ -1376,6 +1376,10 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
           "INSERT INTO pricing_policies(id, base_minor, per_km_minor, commission_bps, vehicle, active) VALUES($1, 1000, 100, 1300, 'motorcycle', true)",
           [policyId]
         );
+        // Test short urban trips with a modest, explicit dispatch buffer; the
+        // default 20-minute slack makes a 30-minute food SLA impossible for
+        // reassignments once food has already been ready for 20 minutes.
+        await c.query("UPDATE dispatch_policy SET delivery_slack_seconds = 120 WHERE id = 1");
         await c.query("UPDATE checkout_method_policies SET enabled = true WHERE method = 'MOMO'");
         await c.query("UPDATE service_markets SET service_enabled = true WHERE country_code = 'GH'");
 
@@ -1434,7 +1438,8 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
           const d = Math.hypot((a?.latitude ?? 5.56) - (b?.latitude ?? 5.56), (a?.longitude ?? -0.18) - (b?.longitude ?? -0.18));
           return {
             distanceMeters: Math.max(100, Math.round(d * 111000)),
-            durationSeconds: Math.max(30, Math.round(d * 150000)),
+            // Approx. 7.4 m/s (27 km/h) for a motorcycle urban-road fixture; never use slow-motion test data to bypass the production 30-minute food SLA.
+            durationSeconds: Math.max(30, Math.round(d * 15000)),
             source: 'fixture'
           };
         };
