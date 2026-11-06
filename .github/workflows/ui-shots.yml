@@ -3,7 +3,7 @@ on:
   push:
     branches: ['audit/ui-shots']
 permissions:
-  contents: read
+  contents: write
 jobs:
   shots:
     runs-on: ubuntu-latest
@@ -20,5 +20,6 @@ jobs:
           for m in @maplibre/maplibre-react-native expo-crypto expo-keep-awake expo-location expo-notifications expo-secure-store expo-speech expo-task-manager expo-audio expo-file-system/legacy expo-file-system; do A="$A --alias:$m=./$S"; done
           npx esbuild scripts/ui-shots/entry.jsx --bundle --outfile=ui-out/app.js --loader:.js=jsx --jsx=automatic --format=iife --define:process.env.NODE_ENV='"production"' --define:process.env.EXPO_PUBLIC_ELESEND_API_BASE_URL='"http://app.test"' --define:process.env.EXPO_PUBLIC_ELESEND_APP_VARIANT='"customer"' --define:__DEV__=false --define:global=window --log-level=error $A 2>&1 | head -40 || true
           node scripts/ui-shots/shoot.mjs 2>&1 | tail -30
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with: {name: shots, path: shots, if-no-files-found: warn}
+      - run: |
+          git config user.name ui-shots; git config user.email ui-shots@users.noreply.github.com
+          git checkout --orphan audit/ui-images; git rm -rfq --cached . ; git add -f shots; git commit -qm "UI screenshots"; git push -f origin audit/ui-images
