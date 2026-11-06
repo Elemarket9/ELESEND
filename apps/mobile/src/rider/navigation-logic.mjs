@@ -47,7 +47,7 @@ const WORST_USABLE_ACCURACY = 50;
 
 /** Reroutes only on repeated, trustworthy fixes, so GPS jitter does not trigger it. */
 export function rerouteCheck(state, { offRouteMeters, accuracy, now }) {
-  const usable = !Number.isFinite(accuracy) || accuracy <= WORST_USABLE_ACCURACY;
+  const usable = Number.isFinite(accuracy) && accuracy >= 0 && accuracy <= WORST_USABLE_ACCURACY;
   if (!usable) return { ...state, reroute: false };
   const strikes = offRouteMeters > OFF_ROUTE_METERS ? (state.strikes || 0) + 1 : 0;
   const reroute = strikes >= OFF_ROUTE_FIXES && now - (state.lastRerouteAt || 0) >= REROUTE_COOLDOWN_MS;
@@ -55,6 +55,15 @@ export function rerouteCheck(state, { offRouteMeters, accuracy, now }) {
 }
 
 export const ARRIVED_METERS = 30;
+/** Visual arrival indication only, never custody or delivery verification. */
+export function isReliableArrival(position,target,routeProgress,{maxMeters=ARRIVED_METERS,maxAccuracy=30}={}){
+ return Boolean(position&&target&&routeProgress&&
+  Number.isFinite(position.latitude)&&Number.isFinite(position.longitude)&&
+  Number.isFinite(target.latitude)&&Number.isFinite(target.longitude)&&
+  Number.isFinite(position.accuracy)&&position.accuracy>=0&&position.accuracy<=maxAccuracy&&
+  routeProgress.remainingMeters<=maxMeters&&
+  metersBetween(position,target)<=maxMeters);
+}
 
 export function formatDistance(meters) {
   if (!Number.isFinite(meters)) return '';
