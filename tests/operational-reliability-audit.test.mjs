@@ -1376,6 +1376,10 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
           "INSERT INTO pricing_policies(id, base_minor, per_km_minor, commission_bps, vehicle, active) VALUES($1, 1000, 100, 1300, 'motorcycle', true)",
           [policyId]
         );
+        // Test short urban trips with a modest, explicit dispatch buffer; the
+        // default 20-minute slack makes a 30-minute food SLA impossible for
+        // reassignments once food has already been ready for 20 minutes.
+        await c.query("UPDATE dispatch_policy SET delivery_slack_seconds = 120 WHERE id = 1");
         await c.query("UPDATE checkout_method_policies SET enabled = true WHERE method = 'MOMO'");
         await c.query("UPDATE service_markets SET service_enabled = true WHERE country_code = 'GH'");
 
