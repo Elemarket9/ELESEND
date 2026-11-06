@@ -18,7 +18,7 @@ jobs:
           S=scripts/ui-shots/stubs.jsx
           A="--alias:react-native=react-native-web"
           for m in @maplibre/maplibre-react-native expo-crypto expo-keep-awake expo-location expo-notifications expo-secure-store expo-speech expo-task-manager expo-audio expo-file-system/legacy expo-file-system; do A="$A --alias:$m=./$S"; done
-          npx esbuild scripts/ui-shots/entry.jsx --bundle --outfile=ui-out/app.js --loader:.js=jsx --jsx=automatic --format=iife --define:process.env.NODE_ENV='"production"' --define:process.env.EXPO_PUBLIC_ELESEND_API_BASE_URL='"http://app.test"' --define:process.env.EXPO_PUBLIC_ELESEND_APP_VARIANT='"customer"' --define:__DEV__=false --define:global=window --log-level=error $A 2>&1 | head -40 || true
+          npx esbuild scripts/ui-shots/entry.jsx --bundle --outfile=ui-out/app.js --loader:.js=jsx --jsx=automatic --format=iife --define:process.env.NODE_ENV='"production"' --define:process.env.EXPO_PUBLIC_ELESEND_API_BASE_URL='"https://app.test"' --define:process.env.EXPO_PUBLIC_ELESEND_APP_VARIANT='"customer"' --define:__DEV__=false --define:global=window --log-level=error $A 2>&1 | head -40 || true
           node scripts/ui-shots/shoot.mjs 2>&1 | tail -30
       - run: |
           git config user.name ui-shots; git config user.email ui-shots@users.noreply.github.com
