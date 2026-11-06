@@ -1,0 +1,13 @@
+import React from 'react';import {View,Text} from 'react-native';
+const Box=({children,style})=><View style={[{backgroundColor:'#DDE5D8'},style]}>{children}</View>;
+export const MapView=React.forwardRef((p,r)=><Box style={p.style}>{p.children}</Box>);export const Camera=React.forwardRef((p,r)=>{React.useImperativeHandle(r,()=>({setCamera(){},fitBounds(){},flyTo(){}}));return null;});
+const None=()=>null;export const MarkerView=None,PointAnnotation=None,ShapeSource=None,LineLayer=None,CircleLayer=None,SymbolLayer=None,UserLocation=None;
+export const OfflineManager={getPacks:async()=>[],createPack:async()=>{},deletePack:async()=>{}};
+export const getRandomBytes=n=>new Uint8Array(n),randomUUID=()=>crypto.randomUUID(),getRandomBytesAsync=async n=>new Uint8Array(n);export const activateKeepAwake=()=>{},deactivateKeepAwake=()=>{},useKeepAwake=()=>{};
+export const Accuracy={Balanced:3,High:4,BestForNavigation:6,Highest:5};
+const here={coords:{latitude:5.5547,longitude:-0.4341,accuracy:10,speed:0,heading:0},timestamp:Date.now()};
+export const requestForegroundPermissionsAsync=async()=>({status:'granted',granted:true}),requestBackgroundPermissionsAsync=async()=>({status:'granted',granted:true}),getForegroundPermissionsAsync=async()=>({status:'granted',granted:true}),getBackgroundPermissionsAsync=async()=>({status:'granted',granted:true}),hasServicesEnabledAsync=async()=>true,enableNetworkProviderAsync=async()=>{},getCurrentPositionAsync=async()=>here,getLastKnownPositionAsync=async()=>here,watchPositionAsync=async(o,f)=>{f(here);return {remove(){}};},hasStartedLocationUpdatesAsync=async()=>false,startLocationUpdatesAsync=async()=>{},stopLocationUpdatesAsync=async()=>{},reverseGeocodeAsync=async()=>[],geocodeAsync=async()=>[];
+export const getItemAsync=async k=>localStorage.getItem(k),setItemAsync=async(k,v)=>localStorage.setItem(k,v),deleteItemAsync=async k=>localStorage.removeItem(k);
+export const speak=()=>{},stop=()=>{};export const defineTask=()=>{},isTaskRegisteredAsync=async()=>false;
+export const setNotificationHandler=()=>{},getPermissionsAsync=async()=>({status:'granted'}),requestPermissionsAsync=async()=>({status:'granted'}),getDevicePushTokenAsync=async()=>({data:'x'}),getExpoPushTokenAsync=async()=>({data:'x'}),setNotificationChannelAsync=async()=>{},scheduleNotificationAsync=async()=>{},addNotificationReceivedListener=()=>({remove(){}}),addNotificationResponseReceivedListener=()=>({remove(){}}),AndroidImportance={MAX:5,HIGH:4};
+export default {MapView,Camera};

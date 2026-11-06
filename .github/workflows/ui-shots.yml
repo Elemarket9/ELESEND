@@ -1,0 +1,24 @@
+name: UI shots
+on:
+  push:
+    branches: ['audit/ui-shots']
+permissions:
+  contents: read
+jobs:
+  shots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: {node-version: '22'}
+      - run: |
+          npm i --no-save --no-audit --no-fund --ignore-scripts --legacy-peer-deps react@19.1.0 react-dom@19.1.0 react-native-web@0.21 esbuild@0.25 playwright@1.48 >/dev/null 2>&1
+          npx playwright install --with-deps chromium >/dev/null 2>&1
+          S=scripts/ui-shots/stubs.jsx
+          A="--alias:react-native=react-native-web"
+          for m in @maplibre/maplibre-react-native expo-crypto expo-keep-awake expo-location expo-notifications expo-secure-store expo-speech expo-task-manager; do A="$A --alias:$m=./$S"; done
+          npx esbuild scripts/ui-shots/entry.jsx --bundle --outfile=ui-out/app.js --loader:.js=jsx --jsx=automatic --format=iife --define:process.env.NODE_ENV='"production"' --define:process.env.EXPO_PUBLIC_ELESEND_API_BASE_URL='"http://app.test"' --define:process.env.EXPO_PUBLIC_ELESEND_APP_VARIANT='"customer"' --define:__DEV__=false --define:global=window --log-level=error $A
+          node scripts/ui-shots/shoot.mjs 2>&1 | tail -30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: {name: shots, path: shots, if-no-files-found: warn}
