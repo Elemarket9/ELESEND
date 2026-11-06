@@ -32,7 +32,12 @@ console.log('STEP accounts',Boolean(customer.token),Boolean(owner.token),Boolean
 await db.query("UPDATE riders SET status='approved' WHERE id=$1",[rider.id]);
 const safe=d=>JSON.stringify(d,(k,v)=>/code|otp|phone|token/i.test(k)?undefined:v);
 let watchSid=null;
-async function watch(label){const a=await api(customer.token,'GET','/api/v1/shipments/'+watchSid+'/tracking');console.log('TRACK',label,a.status,safe(a.data).slice(0,1500));const stranger=await signUp('customer');const b=await api(stranger.token,'GET','/api/v1/shipments/'+watchSid+'/tracking');console.log('STRANGER',label,b.status,safe(b.data).slice(0,120));}
+async function watch(label){
+ const a=await api(customer.token,'GET','/api/v1/public-track/'+watchSid);const d=a.data||{};
+ console.log('ETA',label,a.status,JSON.stringify({state:d.state,deliveryEta:d.deliveryEta,rider:d.riderPosition||d.rider&&{name:Boolean(d.rider.name),lat:d.rider.latitude,hasPhone:Boolean(d.rider.phone)},keys:Object.keys(d)}).slice(0,900));
+ const stranger=await signUp('customer');const b=await api(stranger.token,'GET','/api/v1/public-track/'+watchSid);console.log('STRANGER',label,b.status,JSON.stringify({hasEta:Boolean(b.data?.deliveryEta),hasRider:Boolean(b.data?.riderPosition||b.data?.rider),hasToken:Boolean(b.data?.trackingToken)}));
+ if(d.trackingToken){const page=await fetch(base+'/track/'+d.trackingToken);const html=await page.text();console.log('LINK',label,page.status,'noLogin','hasPhone',/\+233\d{9}/.test(html),'etaText',(html.match(/about \d+[^<]{0,24}/i)||[''])[0]);}
+}
 const made=await api(owner.token,'POST','/api/v1/restaurants',{name:'Lab Cheezzy Buduburam',phone:'0241234567',address:'Near Buduburam Fire Service',latitude:P.latitude,longitude:P.longitude});log('restaurant created',made);
 await db.query("UPDATE restaurants SET status='approved' WHERE id=$1",[made.data.id]);
 const item=await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id+'/items',{name:'Pizza order (lab price)',priceMinor:14000});log('menu item',item);
