@@ -6,7 +6,7 @@ import { useKeepAwake } from 'expo-keep-awake';
 import { call } from '../api';
 import { colors, radii } from '../theme';
 import MapView, { Marker, Polyline, RiderMarker, openTurnByTurnNavigation } from '../maps/map-adapter';
-import { ARRIVED_METERS, formatDistance, formatDuration, locateOnRoute, rerouteCheck, stepArrow, upcomingStep, voicePrompt } from './navigation-logic.mjs';
+import { formatDistance, formatDuration, isReliableArrival, locateOnRoute, rerouteCheck, stepArrow, upcomingStep, voicePrompt } from './navigation-logic.mjs';
 
 const FOLLOW_ZOOM = 16.5;
 const ROUTE_RETRY_MS = 15000;
@@ -71,7 +71,7 @@ export default function RiderNavigation({ shipmentId, target, label, onClose }) 
   const points = useMemo(() => (route?.geometry?.coordinates || []).map(([longitude, latitude]) => ({ latitude, longitude })), [route]);
   const place = useMemo(() => locateOnRoute(position, points), [position, points]);
   const next = place ? upcomingStep(route.steps, place.traveledMeters) : null;
-  const arrived = place && place.remainingMeters <= ARRIVED_METERS;
+  const arrived = isReliableArrival(position,target,place);
   const secondsLeft = place && route?.distanceMeters ? route.durationSeconds * (place.remainingMeters / route.distanceMeters) : route?.durationSeconds;
 
   useEffect(() => {
