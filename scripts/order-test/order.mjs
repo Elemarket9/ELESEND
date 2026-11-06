@@ -30,6 +30,9 @@ const P={latitude:5.5220648,longitude:-0.4745987},D={latitude:5.5124671,longitud
 const customer=await signUp('customer'),owner=await signUp('restaurant').catch(()=>null)||await signUp('business'),rider=await signUp('rider',{vehicle:'motorcycle',maxWeightG:20000});
 console.log('STEP accounts',Boolean(customer.token),Boolean(owner.token),Boolean(rider.token));
 await db.query("UPDATE riders SET status='approved' WHERE id=$1",[rider.id]);
+const safe=d=>JSON.stringify(d,(k,v)=>/code|otp|phone|token/i.test(k)?undefined:v);
+let watchSid=null;
+async function watch(label){const a=await api(customer.token,'GET','/api/v1/shipments/'+watchSid+'/tracking');console.log('TRACK',label,a.status,safe(a.data).slice(0,1500));const stranger=await signUp('customer');const b=await api(stranger.token,'GET','/api/v1/shipments/'+watchSid+'/tracking');console.log('STRANGER',label,b.status,safe(b.data).slice(0,120));}
 const made=await api(owner.token,'POST','/api/v1/restaurants',{name:'Lab Cheezzy Buduburam',phone:'0241234567',address:'Near Buduburam Fire Service',latitude:P.latitude,longitude:P.longitude});log('restaurant created',made);
 await db.query("UPDATE restaurants SET status='approved' WHERE id=$1",[made.data.id]);
 const item=await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id+'/items',{name:'Pizza order (lab price)',priceMinor:14000});log('menu item',item);
@@ -40,27 +43,32 @@ const order={restaurantId:made.data.id,items:[{itemId:item.data.id,quantity:1}],
 const q=await api(customer.token,'POST','/api/v1/food-orders/quote',order);log('quote',q,d=>({subtotal:d.subtotalMinor,delivery:d.deliveryFeeMinor,total:d.totalMinor,keys:Object.keys(d).length}));
 const created=await api(customer.token,'POST','/api/v1/food-orders',{...order,paymentMethod:'MOMO'},{'Idempotency-Key':'lab-'+randomInt(1e9)});log('order placed',created,d=>({id:d.id,state:d.state,paid:d.payment_status,total:d.total_minor??d.totalMinor}));
 const oid=created.data.id,sid=created.data.shipment_id??created.data.shipmentId;
+watchSid=sid;
 const pay=await api(customer.token,'POST','/api/v1/shipments/'+sid+'/checkout',{idempotencyKey:randomUUID(),email:'lab@example.test'});log('checkout started',pay,d=>({reference:d.reference}));
 const amount=Number((await db.query('SELECT amount_minor FROM shipment_checkout_intents WHERE reference=$1',[pay.data.reference])).rows[0].amount_minor);console.log('STEP amount charged',amount);
 await checkout.confirmVerified({status:'success',reference:pay.data.reference,amountMinor:amount,currency:'GHS',eventId:'lab'+randomInt(1e9),channel:'mobile_money'});console.log('STEP payment confirmed');
 log('restaurant accepts',await api(owner.token,'POST','/api/v1/food-orders/'+oid+'/accept',{estimatedPrepMinutes:15}),d=>({state:d.state}));
+await watch('paid, kitchen accepted');
 log('restaurant ready',await api(owner.token,'POST','/api/v1/food-orders/'+oid+'/ready',{}),d=>({state:d.state}));
 await dispatch.tick();
 const offers=await api(rider.token,'GET','/api/v1/rider/offers');const offer=(offers.data||[]).find(o=>o.id===sid);console.log('STEP offer to rider',Boolean(offer),JSON.stringify(offer?{earnings:offer.riderEarningsMinor??offer.earningsMinor,keys:Object.keys(offer).slice(0,24)}:offers.data).slice(0,420));
 log('rider accepts',await api(rider.token,'POST','/api/v1/shipments/'+sid+'/accept',{offerId:offer?.offerId}),d=>({state:d.state}));
 const nav=await api(rider.token,'POST','/api/v1/rider/navigation',{shipmentId:sid,latitude:start.latitude,longitude:start.longitude}).catch(()=>null);
 const n=nav;console.log('STEP directions to restaurant',n.status,n.status===200?JSON.stringify({km:(n.data.distanceMeters/1000).toFixed(2),min:(n.data.durationSeconds/60).toFixed(1),first:n.data.steps?.slice(0,4).map(s=>s.instruction)}):JSON.stringify(n.data).slice(0,160));
-const t1=await api(customer.token,'GET','/api/v1/shipments/'+sid+'/tracking');console.log('STEP customer tracking after accept',t1.status,JSON.stringify({state:t1.data?.state,eta:t1.data?.eta&&{min:t1.data.eta.minMinutes,max:t1.data.eta.maxMinutes,stage:t1.data.eta.stage,confidence:t1.data.eta.confidence},riderShown:Boolean(t1.data?.rider||t1.data?.riderPosition)}));
+await watch('accepted, rider 1.2 km from restaurant');
 log('rider reaches restaurant',await move(P));
 const pc=await api(rider.token,'POST','/api/v1/shipments/'+sid+'/pickup-challenge',{});log('pickup code requested',pc);const pcode=code();
 log('wrong pickup code refused',await api(rider.token,'POST','/api/v1/shipments/'+sid+'/verify',{challengeId:pc.data?.challengeId,code:pcode==='000000'?'111111':'000000'}),d=>({error:d.error??d.message}));
+await watch('rider waiting at restaurant');
 const pv=await api(rider.token,'POST','/api/v1/shipments/'+sid+'/verify',{challengeId:pc.data?.challengeId,code:pcode});log('pickup verified',pv,d=>({state:d.state}));
 const st=await api(rider.token,'POST','/api/v1/shipments/'+sid+'/transition',{action:'start'});log('trip started',st,d=>({state:d.state}));
 const route=await routing.route(P,D,{vehicle:'motorcycle'}),pts=route.geometry.coordinates;for(const f of [.25,.5,.75]){const [lng,lat]=pts[Math.floor(pts.length*f)];log('rider moves '+f,await move({latitude:lat,longitude:lng}));}
-const t2=await api(customer.token,'GET','/api/v1/shipments/'+sid+'/tracking');console.log('STEP customer tracking mid-trip',t2.status,JSON.stringify({state:t2.data?.state,eta:t2.data?.eta&&{min:t2.data.eta.minMinutes,max:t2.data.eta.maxMinutes,stage:t2.data.eta.stage}}));
+await watch('in transit, 3/4 of the way');
 log('rider reaches customer',await move(D));
+await watch('rider at customer');
 const dc=await api(rider.token,'POST','/api/v1/shipments/'+sid+'/delivery-challenge',{});log('delivery code requested',dc);const dcode=code();
 const dv=await api(rider.token,'POST','/api/v1/shipments/'+sid+'/verify',{challengeId:dc.data?.challengeId,code:dcode});log('delivered',dv,d=>({state:d.state}));
+await watch('delivered');
 const row=(await db.query('SELECT s.state,s.amount_minor,s.commission_minor,f.state AS food_state,f.payment_status,f.subtotal_minor,f.food_commission_minor,f.delivery_fee_minor,f.total_minor FROM shipments s JOIN food_orders f ON f.shipment_id=s.id WHERE s.id=$1',[sid])).rows[0];console.log('FINAL',JSON.stringify(row));
 const wallet=await api(rider.token,'GET','/api/v1/rider/finance');console.log('RIDER',wallet.status,JSON.stringify(wallet.data).slice(0,380));
 for(const [name,sql] of [['journals',"SELECT kind,count(*)::int n FROM checkout_accounting_journals WHERE shipment_id=$1 GROUP BY 1"],['balance',"SELECT sum(CASE WHEN l.side='debit' THEN l.amount_minor ELSE -l.amount_minor END)::int net FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id WHERE j.shipment_id=$1"],['lines',"SELECT l.account,l.side,l.amount_minor::int a FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id WHERE j.shipment_id=$1 ORDER BY j.created_at,l.account"]])try{console.log('BOOKS',name,JSON.stringify((await db.query(sql,[sid])).rows).slice(0,800));}catch(e){console.log('BOOKS',name,'ERR',e.message);}
