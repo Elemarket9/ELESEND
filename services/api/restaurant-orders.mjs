@@ -706,6 +706,14 @@ export function restaurantOrderService(db, options = {}) {
         [orderId]
       )).rows[0];
 
+      // The kitchen can finish earlier than estimated. Rebase any existing rider
+      // commitment to the actual ready timestamp so it never exceeds 30 minutes.
+      if (order.shipment_id) {
+        await c.query(`UPDATE dispatch_commitments
+          SET promised_delivery_before=LEAST(promised_delivery_before,now()+interval '30 minutes')
+          WHERE shipment_id=$1`,[order.shipment_id]);
+      }
+
       // Priority Dispatch: Immediately make the delivery shipment dispatchable
       if (order.shipment_id) {
         await c.query(
@@ -957,7 +965,7 @@ export function restaurantOrderService(db, options = {}) {
           ${RIDER_LATE_OR_SILENT_SQL}
           OR (s.state IN ('PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP') AND (
             (dc.promised_delivery_before IS NOT NULL AND dc.promised_delivery_before < now())
-            OR (dc.promised_delivery_before IS NULL AND COALESCE(f.ready_at, f.accepted_at, f.created_at) < now() - interval '45 minutes')
+            OR (dc.promised_delivery_before IS NULL AND COALESCE(f.ready_at, f.accepted_at, f.created_at) < now() - interval '30 minutes')
           ))
         )
       ORDER BY
@@ -984,7 +992,7 @@ export function restaurantOrderService(db, options = {}) {
           const accOffer=(await c.query("SELECT id,accepted_at,pickup_eta_seconds FROM dispatch_offers WHERE shipment_id=$1 AND rider_id=$2 AND status='accepted' ORDER BY accepted_at DESC LIMIT 1",[s.id,s.rider_id])).rows[0];
           const pickedUp=s.state!=='RIDER_ASSIGNED'||f.state==='IN_TRANSIT'||
             Boolean((await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount);
-          const {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,latestGpsMs,nowMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f.ready_at,offer:accOffer,deliveryDeadlineMs:dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():new Date(f.ready_at||f.accepted_at||f.created_at).getTime()+45*60*1000});
+          const {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,latestGpsMs,nowMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f.ready_at,offer:accOffer,deliveryDeadlineMs:Math.min(dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():Infinity,new Date(f.ready_at||f.accepted_at||f.created_at).getTime()+30*60*1000)});
           if(!reasons.length)return null;
           const oldRiderId=s.rider_id;
           await recordRiderRiskSignals(c, oldRiderId, s.id, signals, {orderId:f.id,reasons,state:s.state,lastGpsAt:Number.isFinite(latestGpsMs)?new Date(latestGpsMs).toISOString():null});
