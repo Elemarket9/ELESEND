@@ -1,0 +1,20 @@
+name: OSM regions
+on:
+  push:
+    branches: ['audit/osm-regions']
+permissions:
+  contents: write
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: |
+          pip install -q osmium shapely
+          D=$HOME/d; mkdir -p $D; sh scripts/download-ghana.sh $D >/dev/null 2>&1
+          python3 scripts/osm-regions/extract.py $D/ghana-latest.osm.pbf
+          node scripts/check-landmarks.mjs data/spatial_landmarks_osm_regions.tsv
+          mkdir /tmp/o; cp data/spatial_landmarks_osm_regions.tsv /tmp/o/
+          git config user.name data; git config user.email data@users.noreply.github.com
+          git checkout --orphan audit/osm-output; git rm -rfq --cached . ; cp /tmp/o/*.tsv .; git add -f spatial_landmarks_osm_regions.tsv; git commit -qm "OSM regions"; git push -f origin audit/osm-output
