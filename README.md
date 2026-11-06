@@ -96,7 +96,6 @@ Deployment requires explicit `API_PUBLIC_ORIGIN` and `WEB_PUBLIC_ORIGIN`. Config
 ├── deploy/
 │   ├── maps/                # Dockerfile and schema for self-hosted map tile service
 │   └── runtime/             # Environment-neutral runtime templates (Caddy, backup & rollback scripts)
-├── packages/                # Shared contracts and type definitions
 ├── scripts/                 # Operational CLI utilities (migrate, admin, tiles)
 ├── services/
 │   ├── api/                 # Modular monolith backend API
