@@ -1049,11 +1049,11 @@ export function restaurantOrderService(db, options = {}) {
     return rows.length;
   }
 
-  async function expireUnfulfilledOrders({limit=25,includeAssignedWatchdog=true,staleGpsSeconds=null,pickupGraceSeconds=null,autoReassignPreCustody=true}={}){
+  async function expireUnfulfilledOrders({limit=25,includeAssignedWatchdog=true,staleGpsSeconds=null,pickupGraceSeconds=null,autoReassignPreCustody=true,onlyDueReviews=true}={}){
     check(Number.isInteger(limit)&&limit>=1&&limit<=100,400,'Invalid expiry batch size');
     const results=[];
     if(includeAssignedWatchdog){
-      const watchdogResults=await monitorAssignedDeliveries({limit,staleGpsSeconds,pickupGraceSeconds,autoReassignPreCustody});
+      const watchdogResults=await monitorAssignedDeliveries({limit,staleGpsSeconds,pickupGraceSeconds,autoReassignPreCustody,onlyDueReviews});
       results.push(...watchdogResults);
     }
     const ids=(await db.query(`SELECT f.id FROM food_orders f JOIN shipments s ON s.id=f.shipment_id
@@ -1102,7 +1102,7 @@ export function restaurantOrderService(db, options = {}) {
          AND o.state IN ('ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP')
          AND s.state = 'AWAITING_ASSIGNMENT'
        ORDER BY o.ready_at ASC NULLS LAST, o.created_at ASC
-       LIMIT 8`,
+       LIMIT 5`,
       [restaurantId]
     );
 

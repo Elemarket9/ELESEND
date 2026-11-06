@@ -356,13 +356,17 @@ test('Offline cache state machine: segment chunking, metadata commitment, and ex
     assert.ok(seg.length <= SEGMENT_CHARS, `Segment ${i} must not exceed ${SEGMENT_CHARS} chars`);
   }
 
-  // 2. Read back cached jobs
+  // 2. Read back cached jobs and verify stop hydration for offline manifest UI
   const restored = await cache.readCachedJobs(actorId);
   assert.ok(restored, 'readCachedJobs must return cached jobs');
   assert.equal(restored.readOnly, true);
   assert.equal(restored.shipments.length, 2);
   assert.equal(restored.shipments[0].id, 'ship-1');
   assert.equal(restored.stops.length, 2);
+  assert.equal(restored.stops[0].id, 'ship-1');
+  assert.equal(restored.stops[0].state, 'IN_TRANSIT');
+  assert.equal(restored.stops[0].payment_method, 'CASH');
+  assert.equal(restored.stops[0].pickup?.address, 'Accra Mall');
 
   // 3. Actor isolation: reading with another actor returns null
   const otherRestored = await cache.readCachedJobs('different-rider-uuid');
@@ -396,5 +400,46 @@ test('Offline cache state machine: segment chunking, metadata commitment, and ex
   assert.equal(metaAfterClear, null, 'clearCachedJobs must delete meta');
 });
 
+test('Real-world readiness regressions: Hubtel return SMS, IPv6 proxy CIDR, informal landmark city preservation, and food menu contract', async () => {
+  const { hubtelSmsGateway } = await import('../services/api/providers/hubtel-sms.mjs');
+  const { clientIp } = await import('../services/api/client-ip.mjs');
+  const { parseInformalDescription } = await import('../services/api/infrastructure/maps/egia/informal-geocoder.mjs');
 
+  // 1. Hubtel SMS gateway supports parcel return OTPs
+  let sentBody = '';
+  const sms = hubtelSmsGateway({
+    clientId: 'cid',
+    clientSecret: 'csec',
+    senderId: 'ELESEND',
+    fetchImpl: async (_url, opts) => {
+      sentBody = String(opts?.body || '');
+      return { ok: true, status: 200, json: async () => ({ Code: '00', MessageId: 'hub-ret-1' }) };
+    }
+  });
+  const res = await sms.send({ phone: '+233244123456', code: '654321', purpose: 'return', challengeId: 'ch-1', shipmentId: 'ship-ret-1' });
+  assert.equal(res.accepted, true);
+  assert.ok(sentBody.includes('ELESEND parcel return verification: 654321'), 'Hubtel SMS formats parcel return OTP message');
 
+  // 2. IPv6 CIDR proxy trust in clientIp
+  const ip = clientIp(
+    {
+      socket: { remoteAddress: '2001:db8::1' },
+      headers: { 'x-forwarded-for': '197.251.128.10, 2001:db8::1' }
+    },
+    '2001:db8::/32'
+  );
+  assert.equal(ip, '197.251.128.10', 'clientIp trusts IPv6 proxy matching CIDR and extracts client IP');
+
+  // 3. Informal geocoder preserves city landmark names like Accra Mall and Kumasi City Mall
+  assert.equal(parseInformalDescription('Accra Mall').coreTarget, 'accra mall');
+  assert.equal(parseInformalDescription('Kumasi City Mall').coreTarget, 'kumasi city mall');
+  assert.equal(parseInformalDescription('Opposite Goil Filling Station, Osu, Accra').coreTarget, 'goil filling station');
+
+  // 4. CustomerApp food menu contract & rider-safety navigation contract
+  const customerSrc = readFileSync('apps/mobile/src/customer/CustomerApp.js', 'utf8');
+  const riderSafetySrc = readFileSync('apps/mobile/src/rider-safety.js', 'utf8');
+  assert.ok(customerSrc.includes('(menu?.categories || []).flatMap'), 'CustomerApp flattens categorized menu items from backend');
+  assert.ok(customerSrc.includes('mod.min_selections ?? mod.min_selection'), 'CustomerApp supports min_selections modifier schema');
+  assert.ok(customerSrc.includes('opt.price_minor ?? opt.extra_minor'), 'CustomerApp supports price_minor modifier option schema');
+  assert.ok(!riderSafetySrc.includes('maps.google.com'), 'rider-safety.js uses provider-neutral openTurnByTurnNavigation instead of Google Maps');
+});

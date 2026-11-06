@@ -881,7 +881,7 @@ export default function CustomerApp() {
         return;
       }
       const data = await call('GET', `/api/v1/restaurants?lat=${targetCoords.latitude}&lon=${targetCoords.longitude}`);
-      setFoodRestaurants(data?.restaurants || []);
+      setFoodRestaurants(Array.isArray(data) ? data : (data?.restaurants || []));
       setFoodNotice('');
     } catch {
       setFoodRestaurants([]);
@@ -893,7 +893,13 @@ export default function CustomerApp() {
     setSelectedRest(rest);
     try {
       const menu = await call('GET', `/api/v1/restaurants/${rest.id}/menu`);
-      setRestMenu(menu);
+      const flatItems = Array.isArray(menu?.items)
+        ? menu.items
+        : [
+            ...(menu?.categories || []).flatMap(c => c.items || []),
+            ...(menu?.uncategorized || [])
+          ];
+      setRestMenu({ ...(menu || {}), items: flatItems });
     } catch {
       setRestMenu({ categories: [], items: [] });
     }
@@ -906,7 +912,8 @@ export default function CustomerApp() {
   }
 
   function toggleModifierOption(modifier, option) {
-    const isSingle = modifier.max_selection === 1;
+    const maxSel = modifier.max_selections ?? modifier.max_selection ?? 1;
+    const isSingle = maxSel === 1;
     const isSelected = selectedOptions.some(o => o.id === option.id);
     if (isSingle) {
       setSelectedOptions(opts => [...opts.filter(o => o.modifier_id !== modifier.id), option]);
@@ -915,7 +922,7 @@ export default function CustomerApp() {
         setSelectedOptions(opts => opts.filter(o => o.id !== option.id));
       } else {
         const currentCount = selectedOptions.filter(o => o.modifier_id === modifier.id).length;
-        if (currentCount < (modifier.max_selection || 10)) {
+        if (currentCount < (maxSel || 10)) {
           setSelectedOptions(opts => [...opts, option]);
         }
       }
@@ -926,10 +933,11 @@ export default function CustomerApp() {
     if (!selectedDish) return;
     const mods = selectedDish.modifiers || [];
     for (const mod of mods) {
-      if (mod.min_selection > 0) {
+      const minSel = mod.min_selections ?? mod.min_selection ?? (mod.is_required ? 1 : 0);
+      if (minSel > 0) {
         const picked = selectedOptions.filter(o => o.modifier_id === mod.id);
-        if (picked.length < mod.min_selection) {
-          Alert.alert('Required Selection Missing', `Please select at least ${mod.min_selection} option(s) for "${mod.name}".`);
+        if (picked.length < minSel) {
+          Alert.alert('Required Selection Missing', `Please select at least ${minSel} option(s) for "${mod.name}".`);
           return;
         }
       }
@@ -2731,10 +2739,11 @@ export default function CustomerApp() {
 
             <ScrollView style={{ maxHeight: 260, marginVertical: 12 }}>
               {(selectedDish?.modifiers || []).map(mod => {
-                const isSingle = mod.max_selection === 1;
+                const isSingle = (mod.max_selections ?? mod.max_selection ?? 1) === 1;
+                const minSel = mod.min_selections ?? mod.min_selection ?? (mod.is_required ? 1 : 0);
                 return (
                   <View key={mod.id} style={{ marginBottom: 12 }}>
-                    <Text style={styles.modifierGroupName}>{mod.name} {mod.min_selection > 0 ? '(Required)' : '(Optional)'}</Text>
+                    <Text style={styles.modifierGroupName}>{mod.name} {minSel > 0 ? '(Required)' : '(Optional)'}</Text>
                     {(mod.options || []).map(opt => {
                       const isSelected = selectedOptions.some(o => o.id === opt.id);
                       return (
@@ -2747,7 +2756,7 @@ export default function CustomerApp() {
                             {isSingle ? (isSelected ? '◉' : '○') : (isSelected ? '☑' : '☐')}
                           </Text>
                           <Text style={{ flex: 1, fontSize: 14, color: colors.textDark }}>{opt.name}</Text>
-                          <Text style={{ fontSize: 13, fontWeight: '600', color: colors.textSecondary }}>+{ghc(opt.extra_minor)}</Text>
+                          <Text style={{ fontSize: 13, fontWeight: '600', color: colors.textSecondary }}>+{ghc(opt.price_minor ?? opt.extra_minor ?? 0)}</Text>
                         </TouchableOpacity>
                       );
                     })}

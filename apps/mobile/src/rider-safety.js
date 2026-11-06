@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, Linking, Share, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import * as Location from 'expo-location';
 import { BASE, call, ghc, parseGhs } from './api';
+import { openTurnByTurnNavigation } from './maps/map-adapter';
 
 const card = { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 12, padding: 14, marginBottom: 12 };
 const title = { fontSize: 15, fontWeight: '800', color: '#0F172A', marginBottom: 6 };
@@ -137,7 +138,7 @@ export function RiderTools() {
         <Text style={title}>Busy Areas</Text>
         {!areas.length && <Text style={body}>No busy areas right now.</Text>}
         {areas.map(a => (
-          <TouchableOpacity key={`${a.latitude},${a.longitude}`} onPress={() => Linking.openURL(`https://maps.google.com/?q=${a.latitude},${a.longitude}`).catch(() => {})}>
+          <TouchableOpacity key={`${a.latitude},${a.longitude}`} onPress={() => openTurnByTurnNavigation({ latitude: a.latitude, longitude: a.longitude, label: 'Busy Area' })}>
             <Text style={[body, { color: '#0F172A', paddingVertical: 4 }]}>{a.orders} customers waiting{a.distanceMeters != null ? `, ${(a.distanceMeters / 1000).toFixed(1)} km away` : ''}. Open map</Text>
           </TouchableOpacity>
         ))}

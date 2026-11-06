@@ -102,7 +102,7 @@ export function hubtelSmsGateway({
   async send({phone, code, purpose, challengeId}) {
    const cleanPhone = normalizeGhanaPhone(phone);
    check(/^\d{6}$/.test(code), 400, 'Invalid 6-digit OTP code');
-   check(['pickup', 'delivery', 'account', 'account_recovery'].includes(purpose), 400, 'Invalid OTP purpose');
+   check(['pickup', 'delivery', 'return', 'account', 'account_recovery'].includes(purpose), 400, 'Invalid OTP purpose');
    check(typeof challengeId === 'string' && challengeId.length > 0, 400, 'ChallengeId required');
 
    const messageContent = purpose === 'account'
@@ -111,6 +111,8 @@ export function hubtelSmsGateway({
     ? `ELESEND password recovery code: ${code}. Expires in 10 minutes. Do not share this code with anyone.`
     : purpose === 'pickup'
     ? `ELESEND parcel pickup verification: ${code}. Never share with anyone except your assigned rider at handover.`
+    : purpose === 'return'
+    ? `ELESEND parcel return verification: ${code}. Share only with the assigned rider returning your parcel.`
     : `ELESEND parcel delivery verification: ${code}. Give this to your assigned rider only when receiving the parcel.`;
 
    return dispatchHubtel({cleanPhone, messageContent, clientReference: challengeId});

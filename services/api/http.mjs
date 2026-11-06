@@ -94,7 +94,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
 
   if(method==='OPTIONS'){
    res.setHeader('Access-Control-Allow-Origin','*');
-   res.setHeader('Access-Control-Allow-Methods','GET, POST, OPTIONS');
+   res.setHeader('Access-Control-Allow-Methods','GET, POST, PUT, DELETE, OPTIONS');
    res.setHeader('Access-Control-Allow-Headers','Authorization, Content-Type, Idempotency-Key');
    res.writeHead(204).end();return;
   }
@@ -103,7 +103,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});
    res.end('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Return to ELESEND</title></head><body><h1>Return to ELESEND</h1><p>The app will verify your payment status. This page does not confirm a charge or cancellation.</p><p><a href="elesend://payments">Open ELESEND</a></p></body></html>');return;
   }
-  if(method==='GET'&&path==='/rider-documents'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Referrer-Policy':'no-referrer'});res.end(renderDocumentUploadPage());return;}
+  if(method==='GET'&&path==='/rider-documents'){res.setHeader('Permissions-Policy','camera=(self), microphone=(), geolocation=(), payment=(), usb=()');res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','Referrer-Policy':'no-referrer'});res.end(renderDocumentUploadPage());return;}
   if((path==='/ready'||path==='/readyz')&&method==='GET'){
    const secret=readinessToken!==null?readinessToken:(process.env.READINESS_PROBE_TOKEN||'');
    const hdr=req.headers['x-elesend-health-token']||req.headers['x-readiness-token'];
@@ -142,6 +142,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    return;
   }
   if(method==='GET'&&(path==='/restaurant'||path==='/restaurant/'||path==='/restaurant/index.html')){
+   res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=(self), payment=(), usb=()');
    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});
    res.end(renderRestaurantPortalHtml());
    return;
@@ -157,7 +158,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    return;
   }
   if(!path.startsWith('/api/v1/'))check(false,404,'Endpoint not found');
-  let body={},rawBody=Buffer.alloc(0);if(method==='POST'){
+  let body={},rawBody=Buffer.alloc(0);if(method==='POST'||method==='PUT'){
    check((req.headers['content-type']??'').split(';')[0]==='application/json',415,'JSON required');let size=0;const parts=[];
    const bodyLimit=path==='/api/v1/identity/webhook'?1048576:path==='/api/v1/rider-documents/upload'?3200000:/^\/api\/v1\/chat\/conversations\/[0-9a-f-]+\/voice-notes$/.test(path)?600000:32768;
    for await(const part of req.iterator({destroyOnReturn:false})){size+=part.length;if(size>bodyLimit){res.setHeader('Connection','close');req.resume();check(false,413,'Request too large');}parts.push(part);}

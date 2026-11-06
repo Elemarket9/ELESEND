@@ -1,26 +1,29 @@
-import {isIP} from 'node:net';
+import {BlockList,isIP} from 'node:net';
 
 /** Derive rate-limit subject without allowing caller-controlled XFF spoofing.
  * By default the socket peer is authoritative. Enable CIDRs ONLY for a proxy
  * that is the exclusive ingress to the API; do not whitelist arbitrary LANs.
  */
-function v4int(s){if(isIP(s)!==4)return null;return s.split('.').reduce((a,b)=>((a<<8)>>>0)+Number(b),0)>>>0;}
 function normalizedIp(value){
  if(typeof value!=='string'||value.length>64)return null;
  const x=value.startsWith('::ffff:')&&isIP(value.slice(7))===4?value.slice(7):value;
  return isIP(x)?x:null;
 }
 function trusted(ip,entries){
- if(!ip)return false;
+ const clean=normalizedIp(ip);
+ if(!clean)return false;
+ const list=new BlockList();
  for(const entry of entries){
   const [raw,prefix]=entry.split('/');const base=normalizedIp(raw);
   if(!base)continue;
-  if(prefix===undefined){if(base===ip)return true;continue;}
-  const bits=Number(prefix),a=v4int(ip),b=v4int(base);
-  if(a===null||b===null||!Number.isInteger(bits)||bits<0||bits>32)continue;
-  if(bits===0||((a>>>(32-bits))===(b>>>(32-bits))))return true;
+  const family=isIP(base)===6?'ipv6':'ipv4';
+  const maxBits=family==='ipv6'?128:32;
+  if(prefix===undefined){list.addAddress(base,family);continue;}
+  const bits=Number(prefix);
+  if(!Number.isInteger(bits)||bits<0||bits>maxBits)continue;
+  list.addSubnet(base,bits,family);
  }
- return false;
+ return list.check(clean,isIP(clean)===6?'ipv6':'ipv4');
 }
 export function clientIp(req,trustedCidrs=process.env.TRUSTED_PROXY_CIDRS??''){
  const peer=normalizedIp(req.socket?.remoteAddress)||'unknown';

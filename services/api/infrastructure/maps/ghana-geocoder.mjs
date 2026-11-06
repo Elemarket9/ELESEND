@@ -616,8 +616,6 @@ export async function ghanaSearchPostGIS(db, query, {limit = 10} = {}) {
   const rawWords = clean.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 0 && !STOP_WORDS.has(w));
   const searchPattern = rawWords.join(' ');
 
-  await db.query('SET enable_seqscan = off').catch(() => {});
-
   const res = await db.query(`
     SELECT id, name, category, subcategory, locality, city, region,
            latitude, longitude, aliases, entrance, popularity, street, coordinate_kind,

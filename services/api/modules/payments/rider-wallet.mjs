@@ -405,7 +405,7 @@ export async function walletReconciliation(c){
  add('REFUND_WITHOUT_ACCOUNTING_REVERSAL','high',(await c.query(`SELECT r.id,r.shipment_id FROM refund_operations r WHERE r.status='refunded'
    AND NOT EXISTS(SELECT 1 FROM checkout_accounting_journals j WHERE j.shipment_id=r.shipment_id AND j.kind='refund_completed') LIMIT 50`)).rows);
  add('PAID_FOOD_WITHOUT_VERIFIED_PAYMENT','critical',(await c.query(`SELECT f.id,f.shipment_id FROM food_orders f WHERE f.payment_status='PAID'
-   AND NOT EXISTS(SELECT 1 FROM shipment_checkout_intents i WHERE i.shipment_id=f.shipment_id AND i.status='confirmed' AND i.amount_minor=f.total_minor) LIMIT 50`)).rows);
+   AND NOT EXISTS(SELECT 1 FROM shipment_checkout_intents i WHERE i.shipment_id=f.shipment_id AND i.status='confirmed' AND i.amount_minor-coalesce(i.processing_fee_minor,0)=f.total_minor) LIMIT 50`)).rows);
  add('LEGACY_CASH_FOOD_ORDER','medium',(await c.query(`SELECT f.id,f.shipment_id,f.state,f.payment_status FROM food_orders f JOIN shipments s ON s.id=f.shipment_id
    WHERE (s.payment_method='CASH' OR f.payment_method='CASH') AND f.state NOT IN ('CANCELLED','REJECTED') LIMIT 50`)).rows,{action:'Cancel through the food order cancellation flow; these orders cannot be dispatched'});
  const policy=await getWalletPolicy(c);

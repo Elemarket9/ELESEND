@@ -69,7 +69,20 @@ export function createOfflineCache(store = nativeStore) {
         if (!part) return null;
         text += part;
       }
-      return { ...JSON.parse(text), cachedAt: new Date(meta.savedAt).toISOString(), readOnly: true };
+      const parsed = JSON.parse(text);
+      const byId = new Map((parsed.shipments || []).map(sm => [sm.id, sm]));
+      const stops = (parsed.stops || []).map(st => {
+        const sh = byId.get(st.shipmentId);
+        return {
+          ...st,
+          id: st.id || st.shipmentId,
+          state: st.state || sh?.state || 'RIDER_ASSIGNED',
+          payment_method: st.payment_method || sh?.payment_method || 'CASH',
+          pickup: st.pickup || (sh?.details?.pickup ? { address: sh.details.pickup } : undefined),
+          destination: st.destination || (sh?.details?.destination ? { address: sh.details.destination } : undefined)
+        };
+      });
+      return { ...parsed, stops, cachedAt: new Date(meta.savedAt).toISOString(), readOnly: true };
     }
   };
 }

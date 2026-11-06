@@ -83,10 +83,13 @@ export function parseInformalDescription(text) {
   // Strip relative marker keywords to isolate target landmark
   let coreTarget = normalized;
   if (localityContext) {
-    coreTarget = coreTarget.replace(new RegExp(`\\b${localityContext}\\b`, 'gi'), '').trim();
+    const genericLandmarkRe = /^((city|central|new|main|old|international|regional|sports|bus|lorry|trotro)\s+)?(mall|market|circle|university|hospital|station|junction|roundabout|airport|stadium|polytechnic|college|hotel|beach)$/i;
+    const withoutLoc = coreTarget.replace(new RegExp(`\\b${localityContext}\\b`, 'gi'), ' ').replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+    if (withoutLoc && !genericLandmarkRe.test(withoutLoc)) {
+      coreTarget = withoutLoc;
+      coreTarget = coreTarget.replace(/\b(kumasi|accra|cape coast|takoradi)\b/gi, ' ');
+    }
   }
-  // Also strip generic parent city if specific locality was found (e.g. "kumasi" when "bantama" was found)
-  coreTarget = coreTarget.replace(/\b(kumasi|accra|cape coast|takoradi)\b/gi, ' ');
   coreTarget = coreTarget.replace(/\b(behind|opposite|near|close to|in front of|beside|next to|at|around|the|near the junction|last stop)\b/gi, ' ')
                          .replace(/,/g, ' ')
                          .replace(/\s+/g, ' ')

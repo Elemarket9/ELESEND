@@ -121,6 +121,10 @@ if grep -qE '^AUDIT_LOG_SECRET=(.*REPLACE_WITH_.*|$)' "${ENV_FILE}" || ! grep -q
   update_env_var "AUDIT_LOG_SECRET" "$(generate_hex 16)" "${ENV_FILE}"
 fi
 
+if grep -qE '^TRACKING_TOKEN_SECRET=(.*REPLACE_WITH_.*|$)' "${ENV_FILE}" || ! grep -qE '^TRACKING_TOKEN_SECRET=' "${ENV_FILE}"; then
+  update_env_var "TRACKING_TOKEN_SECRET" "$(generate_hex 32)" "${ENV_FILE}"
+fi
+
 if grep -qE '^POSTGRES_PASSWORD=(.*REPLACE_WITH_.*|$)' "${ENV_FILE}" || ! grep -qE '^POSTGRES_PASSWORD=' "${ENV_FILE}"; then
   NEW_PG_PASS="$(generate_hex 16)"
   update_env_var "POSTGRES_PASSWORD" "$NEW_PG_PASS" "${ENV_FILE}"

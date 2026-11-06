@@ -226,6 +226,10 @@ export function dispatchEngine(db,{routing}={}){
   if(!active.length&&existing.length)return null;
   const onboardIds=active.filter(s=>s.state!=='RIDER_ASSIGNED').map(s=>s.id),newStops=freshStops(sid,request);
   const deadlines=Object.fromEntries(active.map(s=>[s.id,s.promised_delivery_before]));
+  const foodOrder=(await db.query('SELECT ready_at FROM food_orders WHERE shipment_id=$1',[sid])).rows[0];
+  if(foodOrder?.ready_at){
+   deadlines[sid]=new Date(new Date(foodOrder.ready_at).getTime()+30*60*1000-Number(p.delivery_slack_seconds||0)*1000).toISOString();
+  }
   const opts={vehicle:r.vehicle,capacityG:r.max_weight_g,deadlines,now:Date.now()+p.offer_seconds*1000,onboardIds,maxPickupSeconds:p.max_pickup_eta_seconds,maxDetourSeconds:p.max_detour_seconds};
   const start=point(r);let result;
   if(active.length)result=await bestInsertion(routeEngine,start,existing,newStops,opts);
@@ -697,7 +701,7 @@ export function dispatchEngine(db,{routing}={}){
   return results;
  }
  async function tick(limit=8){check(Number.isInteger(limit)&&limit>=1&&limit<=20,400);
-  await watchdog({limit});
+  await watchdog({limit,onlyDueReviews:true});
   const due=(await db.query(`SELECT s.id FROM shipments s WHERE state='AWAITING_ASSIGNMENT' AND (paid OR payment_method='CASH') AND next_dispatch_at<=now()
     AND NOT EXISTS (SELECT 1 FROM food_orders f WHERE f.shipment_id=s.id AND (f.payment_status<>'PAID' OR f.payment_method='CASH' OR f.state NOT IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')))
     AND NOT EXISTS (SELECT 1 FROM dispatch_offers o WHERE o.shipment_id=s.id AND o.status='offered' AND o.expires_at>now())

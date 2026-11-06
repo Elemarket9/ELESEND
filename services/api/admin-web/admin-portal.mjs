@@ -1498,9 +1498,12 @@ export function renderAdminPortalHtml() {
         const totalOutstanding = Array.isArray(aging)
           ? aging.reduce((s, r) => s + Number(r.outstanding_minor || 0), 0)
           : Number(aging?.currentMinor || 0);
+        const blockedOutstanding = Array.isArray(aging)
+          ? aging.filter(r => r.blocked).reduce((s, r) => s + Number(r.outstanding_minor || 0), 0)
+          : Number(aging?.criticalMinor || 0);
         document.getElementById('agingCurrent').textContent = ghc(totalOutstanding);
-        document.getElementById('agingOverdue').textContent = ghc(aging?.overdueMinor || 0);
-        document.getElementById('agingCritical').textContent = ghc(aging?.criticalMinor || 0);
+        document.getElementById('agingOverdue').textContent = ghc(aging?.overdueMinor ?? totalOutstanding);
+        document.getElementById('agingCritical').textContent = ghc(aging?.criticalMinor ?? blockedOutstanding);
       } catch (e) {
         console.error(e);
       }

@@ -202,11 +202,19 @@ export function generateGlyphsPbf(fontstack,start,end){
 
 const FONT_DIR=fileURLToPath(new URL('./fonts/',import.meta.url));
 const FONT_NAMES=new Set(['Noto Sans Regular','Noto Sans Bold']);
+const realGlyphCache=new Map();
 /** Real Noto Sans glyphs when bundled; the built-in fallback font otherwise. */
 function realGlyphs(fontstack,start,end){
  const name=fontstack.split(',').map(s=>s.trim()).find(s=>FONT_NAMES.has(s));
  if(!name)return null;
- try{return readFileSync(join(FONT_DIR,name,`${start}-${end}.pbf`));}catch{return null;}
+ const key=`${name}:${start}-${end}`;
+ if(realGlyphCache.has(key))return realGlyphCache.get(key);
+ try{
+  const buf=readFileSync(join(FONT_DIR,name,`${start}-${end}.pbf`));
+  if(realGlyphCache.size>=512)realGlyphCache.delete(realGlyphCache.keys().next().value);
+  realGlyphCache.set(key,buf);
+  return buf;
+ }catch{return null;}
 }
 
 export function tileServer(filename){
@@ -214,6 +222,7 @@ export function tileServer(filename){
  const tile=db.prepare('SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?');
  const metadata=Object.fromEntries(db.prepare('SELECT name,value FROM metadata').all().map(r=>[r.name,r.value]));
  if(metadata.format!=='pbf'){db.close();throw Error('Only vector PBF MBTiles supported');}
+ const maxZoom=Number(metadata.maxzoom)||14;
  const server=createServer({requestTimeout:10000,headersTimeout:8000,maxHeaderSize:8192},(req,res)=>{
   res.setHeader('X-Content-Type-Options','nosniff');
   res.setHeader('Access-Control-Allow-Origin','*');
@@ -228,12 +237,13 @@ export function tileServer(filename){
    const [fontstack,startStr,endStr]=fontMatch.slice(1);
    const start=Number(startStr),end=Number(endStr);
    if(start<0||end>65535||start>=end||end-start>256){res.writeHead(400).end();return;}
-   const etag=`"font-sdf-v3-${fontstack}-${start}-${end}"`;
+   const real=realGlyphs(fontstack,start,end);
+   const etag=`"font-sdf-v3-${real?'real':'fallback'}-${fontstack}-${start}-${end}"`;
    if(req.headers['if-none-match']===etag){
      res.writeHead(304,{'ETag':etag,'Cache-Control':'public,max-age=2592000,immutable'}).end();
      return;
    }
-   const body=realGlyphs(fontstack,start,end)||generateGlyphsPbf(fontstack,start,end);
+   const body=real||generateGlyphsPbf(fontstack,start,end);
    res.writeHead(200,{'Content-Type':'application/x-protobuf','Cache-Control':'public,max-age=2592000,immutable','ETag':etag,'Content-Length':body.length});
    res.end(req.method==='HEAD'?undefined:body);
    return;
@@ -241,7 +251,7 @@ export function tileServer(filename){
   const match=/^\/tiles\/(\d{1,2})\/(\d{1,6})\/(\d{1,6})\.pbf$/.exec(path);
   if(!match){res.writeHead(404).end();return;}
   const [z,x,y]=match.slice(1).map(Number);
-  if(z>14||x>=2**z||y>=2**z){res.writeHead(400).end();return;}
+  if(z>maxZoom||x>=2**z||y>=2**z){res.writeHead(400).end();return;}
   try{
    const row=tile.get(z,x,2**z-1-y);
    if(!row){res.writeHead(204,{'Cache-Control':'public,max-age=86400'}).end();return;}

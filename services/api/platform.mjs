@@ -529,7 +529,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     const rest=(await c.query('SELECT rest_until FROM riders WHERE id=$1 AND rest_until>now()',[actor.id])).rows[0];
     check(!rest,409,'You have reached your driving time limit. You can go online again after your rest');
    }
-   await c.query('UPDATE riders SET online=$2 WHERE id=$1',[actor.id,v.online]);if(!v.online){await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[actor.id]);getRedisClient().removeRiderLocation(actor.id).catch(()=>{});}return v;});},
+    await c.query('UPDATE riders SET online=$2,shift_started_at=CASE WHEN $2 THEN COALESCE(shift_started_at,now()) ELSE shift_started_at END,last_offline_at=CASE WHEN NOT $2 THEN now() ELSE last_offline_at END WHERE id=$1',[actor.id,v.online]);if(!v.online){await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[actor.id]);getRedisClient().removeRiderLocation(actor.id).catch(()=>{});}return v;});},
  async quote(actor,input){check(['customer','business','company'].includes(actor.kind),403);await assertCompanyDelivery(db,actor);
   // Do not accept live bookings when an essential custody-verification provider is absent.
   if(process.env.NODE_ENV==='production'){
@@ -654,10 +654,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    const pending=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
    if(ch.purpose!=='return'&&pending?.stops.length){const next=await nextOpenStop(c,pending.stops);check(next?.shipmentId===sid&&next?.kind===(ch.purpose==='pickup'?'pickup':'dropoff'),409,'Stop order changed; verification blocked');}
    let expectedPhone=s.recipient_phone;
-   if(ch.purpose==='return')expectedPhone=(await c.query('SELECT phone FROM users WHERE id=$1',[s.customer_id])).rows[0]?.phone;
-   if(ch.purpose==='pickup'){
-    const fo=(await c.query(`SELECT r.phone AS restaurant_phone,u.phone AS owner_phone FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id LEFT JOIN users u ON u.id=r.owner_id WHERE f.shipment_id=$1`,[sid])).rows[0];
-    expectedPhone=fo?(fo.restaurant_phone||fo.owner_phone):(await c.query('SELECT phone FROM users WHERE id=$1',[s.customer_id])).rows[0]?.phone;
+   if(ch.purpose==='return'||ch.purpose==='pickup'){
+    const fo=ch.purpose==='pickup'?(await c.query(`SELECT r.phone AS restaurant_phone,u.phone AS owner_phone FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id LEFT JOIN users u ON u.id=r.owner_id WHERE f.shipment_id=$1`,[sid])).rows[0]:null;
+    const pickupContact=!fo?(await c.query("SELECT request->>'pickupPhone' AS phone FROM quotes WHERE id=$1",[s.quote_id])).rows[0]?.phone:null;
+    expectedPhone=fo?(fo.restaurant_phone||fo.owner_phone):(pickupContact||(await c.query('SELECT phone FROM users WHERE id=$1',[s.customer_id])).rows[0]?.phone);
    }
    check(Boolean(expectedPhone)&&ch.phone===expectedPhone,409,'Challenge recipient mismatch');
    if(!equal(ch.digest,mac(otpKey,[ch.purpose,ch.id,sid,actor.id,expectedPhone,v.code]))){await c.query('UPDATE challenges SET attempts=attempts+1,expires_at=CASE WHEN attempts+1>=5 THEN now() ELSE expires_at END WHERE id=$1',[ch.id]);await audit(c,actor.id,'otp.rejected',sid);
