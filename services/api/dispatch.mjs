@@ -481,7 +481,20 @@ export function dispatchEngine(db,{routing}={}){
    await c.query("UPDATE shipments SET rider_id=$2,company_id=$3,state='RIDER_ASSIGNED',no_rider_since=NULL,watchdog_last_inspected_at=NULL,watchdog_next_review_at=NULL WHERE id=$1",[sid,r.id,r.company_id]);
    await c.query(`INSERT INTO rider_dispatch_plans(rider_id,revision,stops) VALUES($1,1,$2)
       ON CONFLICT(rider_id) DO UPDATE SET revision=rider_dispatch_plans.revision+1,stops=$2,updated_at=now()`,[r.id,JSON.stringify(o.proposed_stops)]);
-   await c.query("INSERT INTO dispatch_commitments(shipment_id,rider_id,promised_delivery_before) VALUES($1,$2,now()+($3::int * interval '1 second'))",[sid,r.id,o.planned_dropoff_seconds+p.delivery_slack_seconds]);
+   // Food must reach OTP handover within 30 minutes of the actual/estimated ready time.
+   // Reject a route that cannot satisfy this bound instead of silently promising a later delivery.
+   const foodDeadline=(await c.query('SELECT ready_at FROM food_orders WHERE shipment_id=$1',[sid])).rows[0];
+   if(foodDeadline){
+    check(foodDeadline.ready_at,409,'Food ready time unavailable: refresh dispatch offer');
+    const dueAt=new Date(foodDeadline.ready_at).getTime()+30*60*1000;
+    check(Date.now()+Number(o.planned_dropoff_seconds+p.delivery_slack_seconds)*1000<=dueAt,
+      409,'Food delivery deadline cannot be met: request a new rider offer');
+    await c.query(`INSERT INTO dispatch_commitments(shipment_id,rider_id,promised_delivery_before)
+      VALUES($1,$2,LEAST(now()+($3::int * interval '1 second'),$4::timestamptz))`,
+      [sid,r.id,o.planned_dropoff_seconds+p.delivery_slack_seconds,new Date(dueAt)]);
+   }else{
+    await c.query("INSERT INTO dispatch_commitments(shipment_id,rider_id,promised_delivery_before) VALUES($1,$2,now()+($3::int * interval '1 second'))",[sid,r.id,o.planned_dropoff_seconds+p.delivery_slack_seconds]);
+   }
    if(!Array.isArray(o.proposed_stops)||!o.proposed_stops.length||o.proposed_stops[0]?.shipmentId===sid){
     await c.query(`INSERT INTO locations(shipment_id,rider_id,latitude,longitude,updated_at) VALUES($1,$2,$3,$4,$5)
      ON CONFLICT(shipment_id) DO UPDATE SET rider_id=EXCLUDED.rider_id,latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,updated_at=EXCLUDED.updated_at`,
