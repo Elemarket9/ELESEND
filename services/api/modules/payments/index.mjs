@@ -8,7 +8,7 @@ export {createPaymentProvider,paymentWebhook} from './payment-provider.mjs';
 export {adminWalletOverview,adminWalletReconciliation,debtState,requireDebtEligible,runScheduledRecovery,settleCompletedDelivery,updateWalletPolicy,walletDebt,walletPolicyView,walletSummary,walletWithdrawals,walletStatement,walletTransactions} from './rider-wallet.mjs';
 export {evaluateRiderWeeklyEligibility,getAdminSettlementOverview,getRiderWeeklyHistory,getRiderWeeklySummary,getWeeklySettlementSettings,reconcileAndEnforceWeeklyRestrictions,updateWeeklySettlementSettings} from './weekly-settlement.mjs';
 export {ensureCommissionAccount,paymentMethodEnabled,findPaymentEvent,recordPaymentEvent,recordFinancialEntry,earningsEntriesFor,senderCashCollectedInFull,cashCollectionFor,cashAlreadyReported,accrueRestaurantSettlement,firstConfirmedPaymentAt,settlementIntentForRider,restaurantFinanceSummary,riderEarningsTotals} from './public-queries.mjs';
-export {companyBalance} from './company-commission.mjs';
+export {companyBalance,companyDebtMinor} from './company-commission.mjs';
 export {confirmedPaymentMinor} from './checkout-accounting.mjs';
 export {withdrawalFeeMinor} from './public-queries.mjs';
 export {unpaidEarningsMinor} from './money-operations.mjs';

@@ -1,6 +1,6 @@
 import {payoutSettings} from './payout-settings.mjs';
 import {errorText,pool,raceTimeout} from './async-helpers.mjs';
-import {recoverCompanyDebt} from './company-commission.mjs';
+import {companyDebtMinor,recoverCompanyDebt} from './company-commission.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check,passwordMatches} from '../../security.mjs';
@@ -375,7 +375,7 @@ export function moneyOperations(db,{provider,notify=null,verifyTimeoutMs=10000,c
     const rows=await claim('payout_operations',limit,olderThanSeconds);
     const withdrawals=await claim('payout_withdrawals',limit,olderThanSeconds);
     // Released withdrawals are rechecked for a week, in case the provider pays one late.
-    const released=(await db.query("UPDATE payout_withdrawals SET last_reconciled_at=now() WHERE id IN (SELECT id FROM payout_withdrawals WHERE provider=$1 AND status IN ('failed','reversed') AND provider_attempted_at IS NOT NULL AND updated_at>now()-interval '7 days' AND coalesce(last_reconciled_at,updated_at)<now()-interval '1 hour' ORDER BY coalesce(last_reconciled_at,updated_at) LIMIT $2) RETURNING *",[provider.name,limit])).rows;
+    const released=(await db.query("UPDATE payout_withdrawals SET last_reconciled_at=now() WHERE id IN (SELECT w.id FROM payout_withdrawals w WHERE w.provider=$1 AND w.status IN ('failed','reversed') AND w.provider_attempted_at IS NOT NULL AND w.updated_at>now()-interval '7 days' AND coalesce(w.last_reconciled_at,w.updated_at)<now()-interval '1 hour' AND NOT EXISTS(SELECT 1 FROM payout_holds h WHERE h.withdrawal_id=w.id) ORDER BY coalesce(w.last_reconciled_at,w.updated_at) LIMIT $2) RETURNING *",[provider.name,limit])).rows;
     results.push(...await pool(released,concurrency,async w=>{try{return await reconcileWithdrawal(w);}catch(e){return {id:w.id,status:'verification_unavailable',error:e.code??'error'};}}));
     results.push(...await pool(withdrawals,concurrency,async w=>{try{return await reconcileWithdrawal(w);}catch(e){return {id:w.id,status:'verification_unavailable',error:e.code??'error'};}finally{await release('payout_withdrawals',w.id);}}));
     results.push(...await pool(rows,concurrency,async p=>{try{return await verifyPayoutOp(p);}catch(e){return {id:p.id,status:'verification_unavailable',error:e.code??'error'};}finally{await release('payout_operations',p.id).catch(()=>{});}}));
@@ -574,6 +574,8 @@ export function moneyOperations(db,{provider,notify=null,verifyTimeoutMs=10000,c
       await recoverDebtFromEarnings(c,s.rider_id,{trigger:'payout_precheck'});
       const debt=await debtState(c,s.rider_id);
       debtMinor=debt.debtMinor;
+     }else if(row.company_id){
+      debtMinor=await companyDebtMinor(c,row.company_id);
      }
      const current=await payableOrZero(c,row.shipment_id,'rider');
      if(debtMinor>0||current<=0){
@@ -723,7 +725,13 @@ export function moneyOperations(db,{provider,notify=null,verifyTimeoutMs=10000,c
  }
  /** Independent riders never withdraw while owing commission: unpaid earnings settle the debt first. */
  async function applyRiderDebtBeforePayout(c,s,kind){
-  if(kind!=='rider'||s.company_id||!s.rider_id)return;
+  if(kind!=='rider')return;
+  if(s.company_id){
+   await recoverCompanyDebt(c,s.company_id);
+   check(await companyDebtMinor(c,s.company_id)===0,409,'Company has outstanding ELESEND commission debt; earnings are applied to the debt before any withdrawal');
+   return;
+  }
+  if(!s.rider_id)return;
   await recoverDebtFromEarnings(c,s.rider_id,{trigger:'payout_precheck'});
   const d=await debtState(c,s.rider_id);
   check(d.debtMinor===0,409,'Rider has outstanding ELESEND commission debt; earnings are applied to the debt before any withdrawal');

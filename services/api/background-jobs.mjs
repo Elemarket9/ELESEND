@@ -16,7 +16,7 @@ import {scanMapChangesIfDue} from './infrastructure/maps/egia/imagery-change-sca
 import {egiaEnabled} from './infrastructure/maps/egia/road-verification.mjs';
 import {chatEngine} from './chat-engine.mjs';
 
-export const LOCKS={mapChangeScan:839292,traffic:839291,dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209,etaRefresh:839210,businessPayouts:839211,parcelCustody:839213,riderSafety:839214};
+export const LOCKS={mapChangeScan:839292,traffic:839291,dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209,etaRefresh:839210,businessPayouts:839211,parcelCustody:839213,riderSafety:839214,chatRetention:839215};
 
 const warn=(component,code,extra={})=>process.stderr.write(JSON.stringify({level:'warn',component,code,...extra})+'\n');
 
@@ -39,15 +39,15 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
  const guarded=(name,lockId,fn)=>async()=>{
   if(busy.has(name))return false;busy.add(name);
   try{return lockId?await withAdvisoryLock(db,lockId,fn):(await fn(),true);}
-  catch(e){warn(name,e.code??'failed');return false;}
+  catch(e){warn(name,e.code??'failed',{err:e.message});return false;}
   finally{busy.delete(name);}
  };
  const jobs={
   notifications:guarded('notifications',null,async()=>{await notifications?.tick();}),
-  chatRetention:guarded('chat_retention',null,async()=>{await chatSvc?.purgeExpiredChats();}),
+  chatRetention:guarded('chat_retention',LOCKS.chatRetention,async()=>{await chatSvc?.purgeExpiredChats();}),
   chatOutbox:guarded('chat_outbox',null,async()=>{await chatSvc?.flushRealtimeOutbox();}),
   apiWebhooks:guarded('api_webhooks',null,async()=>{await webhookService(db).tick();}),
-  foodExpiry:guarded('food_expiry',LOCKS.foodExpiry,async()=>{await restOrders?.expireUnfulfilledOrders();await restOrders?.alertUnconfirmedReturns?.();}),
+  foodExpiry:guarded('food_expiry',LOCKS.foodExpiry,async()=>{await restOrders?.expireUnfulfilledOrders({includeAssignedWatchdog:false});await restOrders?.alertUnconfirmedReturns?.();}),
   deliveryWatchdog:guarded('delivery_watchdog',LOCKS.deliveryWatchdog,async()=>{
    if(restOrders&&typeof restOrders.monitorAssignedDeliveries==='function')await restOrders.monitorAssignedDeliveries({onlyDueReviews:true});
    if(dispatch&&typeof dispatch.watchdog==='function')await dispatch.watchdog({onlyDueReviews:true});

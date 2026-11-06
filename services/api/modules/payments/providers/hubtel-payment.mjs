@@ -87,7 +87,7 @@ export function hubtelCheckout({
 
   const amountGhs = Number(data?.Amount || data?.amount || data?.AmountCharged || 0);
   const amountMinor = Math.round(amountGhs * 100);
-  const transactionId = data?.TransactionId || data?.ExternalTransactionId || data?.transactionId || reference;
+  const transactionId = data?.TransactionId || data?.ExternalTransactionId || data?.transactionId || '';
 
   return {
    reference: data?.ClientReference || reference,
@@ -95,7 +95,7 @@ export function hubtelCheckout({
    amountMinor,
    currency: 'GHS',
    channel,
-   eventId: `hubtel-transaction:${transactionId}`,
+   eventId: transactionId ? `hubtel-transaction:${transactionId}` : '',
    environment: production ? 'live' : 'test'
   };
  }

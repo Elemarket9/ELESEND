@@ -33,12 +33,14 @@ export async function raiseEmergency(db,actor,input,{sms=null,dutyPhone=process.
  if(v.shipmentId)await ownShipment(db,actor,v.shipmentId);
  const recent=(await db.query("SELECT id,notified_count FROM safety_alerts WHERE user_id=$1 AND status='open' AND created_at>now()-interval '5 minutes' ORDER BY created_at DESC LIMIT 1",[actor.id])).rows[0];
  const emergencyNumber=process.env.EMERGENCY_NUMBER||'112';
- if(recent)return {id:recent.id,notified:recent.notified_count,duplicate:true,emergencyNumber};
- const id=randomUUID();
+ if(recent&&(recent.notified_count>0||!sms))return {id:recent.id,notified:recent.notified_count,duplicate:true,emergencyNumber};
+ const id=recent?.id||randomUUID();
  const user=(await db.query('SELECT phone,kind FROM users WHERE id=$1',[actor.id])).rows[0];
- await db.query('INSERT INTO safety_alerts(id,user_id,shipment_id,latitude,longitude) VALUES($1,$2,$3,$4,$5)',[id,actor.id,v.shipmentId??null,v.latitude??null,v.longitude??null]);
- await db.query("INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,'safety.emergency_raised',$1)",[actor.id]);
- await db.query("INSERT INTO operational_risk_signals(rider_id,shipment_id,signal_code,severity,evidence) VALUES($1,$2,'EMERGENCY_ALERT','high',$3)",[user?.kind==='rider'?actor.id:null,v.shipmentId??null,JSON.stringify({alertId:id})]);
+ if(!recent){
+  await db.query('INSERT INTO safety_alerts(id,user_id,shipment_id,latitude,longitude) VALUES($1,$2,$3,$4,$5)',[id,actor.id,v.shipmentId??null,v.latitude??null,v.longitude??null]);
+  await db.query("INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,'safety.emergency_raised',$1)",[actor.id]);
+  await db.query("INSERT INTO operational_risk_signals(rider_id,shipment_id,signal_code,severity,evidence) VALUES($1,$2,'EMERGENCY_ALERT','high',$3)",[user?.kind==='rider'?actor.id:null,v.shipmentId??null,JSON.stringify({alertId:id})]);
+ }
  const place=v.latitude!==undefined&&v.longitude!==undefined?` Location: https://maps.google.com/?q=${v.latitude},${v.longitude}`:' Location unavailable.';
  const contact=await getTrustedContact(db,actor);
  const targets=[[dutyPhone,`ELESEND EMERGENCY: ${user?.kind||'user'} ${user?.phone||''} pressed the emergency button.${place}`],[contact?.phone,`ELESEND safety alert: ${user?.phone||'Your contact'} pressed the emergency button and named you as a trusted contact.${place}`]].filter(([to])=>to);

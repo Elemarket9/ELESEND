@@ -168,7 +168,8 @@ export function moolreCheckout({apiUser,publicKey,privateKey,accountNumber,callb
    const out=await transferOutcome(REFUND+requestId,amountMinor);
    if(!['success','failed'].includes(out.state))return {verified:true,type:'refund',provider:'moolre',status:'pending',requestId};
    return {verified:true,type:'refund',provider:'moolre',status:out.state==='success'?'refunded':'failed',requestId,reference,providerId:out.transactionId,amountMinor,currency,
-    eventId:out.transactionId?`refund:${out.transactionId}`:''};
+    eventId:out.transactionId?`refund:${out.transactionId}${out.state==='failed'?':failed':''}`:'',
+    ...(out.state==='failed'?{failureReason:'Moolre reported the refund failed'}:{})};
   }
  };
 }

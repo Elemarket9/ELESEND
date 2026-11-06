@@ -17,7 +17,7 @@ import {z} from 'zod';
 import {assertAcceptablePassword,passwordNeedsUpgrade,UNKNOWN_ACCOUNT_HASH,check,phone,hash,passwordHash,passwordMatches,newToken,newCode,mac,equal,limit} from './security.mjs';
 import {carRegistration,registerVehicleInTx} from './vehicle.mjs';
 import {removeStop,removeShipment} from './multi-parcel.mjs';
-import {settleCompletedDelivery,debtState} from './modules/payments/index.mjs';
+import {settleCompletedDelivery,debtState,companyDebtMinor} from './modules/payments/index.mjs';
 import {requestCheckoutRefund} from './modules/payments/index.mjs';
 import {requireFoodPayment} from './modules/payments/index.mjs';
 import {calculateQuote,waitingFeeMinor} from './pricing.mjs';
@@ -435,7 +435,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    // Earned money is paid out first, because a deleted account cannot receive it.
    const unpaid=await unpaidEarningsMinor(c,actor.id);
    check(unpaid<=withdrawalFeeMinor(),409,`You have GH₵${(unpaid/100).toFixed(2)} in unpaid earnings. Withdraw or receive it before deleting your account. Earnings become available 24 hours after each delivery.`);
-   check(!(await c.query("SELECT 1 FROM shipments WHERE (customer_id=$1 OR rider_id=$1) AND state NOT IN ('COMPLETED','CANCELLED','RETURNED') LIMIT 1",[actor.id])).rowCount,409,'Finish or cancel your active deliveries first');
+   check(!(await c.query("SELECT 1 FROM shipments WHERE (customer_id=$1 OR rider_id=$1 OR company_id IN (SELECT id FROM companies WHERE owner_id=$1)) AND state NOT IN ('COMPLETED','CANCELLED','RETURNED') LIMIT 1",[actor.id])).rowCount,409,'Finish or cancel your active deliveries first');
    check(!(await c.query("SELECT 1 FROM food_orders f JOIN restaurants r ON r.id=f.restaurant_id WHERE r.owner_id=$1 AND f.state NOT IN ('DELIVERED','CANCELLED','REJECTED') LIMIT 1",[actor.id])).rowCount,409,'Finish your open restaurant orders first');
    if(user.kind==='rider'){
     const debt=await debtState(c,actor.id);
@@ -443,9 +443,17 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     await c.query("UPDATE riders SET online=false,status='suspended',current_position=NULL,position_at=NULL WHERE id=$1",[actor.id]);
     await c.query('DELETE FROM rider_location_samples WHERE rider_id=$1',[actor.id]);
     await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[actor.id]);
+   }else if(user.kind==='company'){
+    const cos=(await c.query('SELECT id FROM companies WHERE owner_id=$1 FOR UPDATE',[actor.id])).rows;
+    for(const co of cos){
+     check(await companyDebtMinor(c,co.id)===0,409,'Settle your outstanding company commission first');
+     await c.query("UPDATE companies SET status='suspended' WHERE id=$1",[co.id]);
+     await c.query('UPDATE riders SET company_id=NULL,online=false WHERE company_id=$1',[co.id]);
+    }
    }
    await c.query("UPDATE restaurants SET status='suspended' WHERE owner_id=$1",[actor.id]);
    await c.query('UPDATE api_clients SET revoked_at=now() WHERE owner_id=$1 AND revoked_at IS NULL',[actor.id]);
+   await c.query('DELETE FROM api_webhooks WHERE owner_id=$1',[actor.id]);
    await c.query('DELETE FROM sessions WHERE user_id=$1',[actor.id]);
    await c.query('DELETE FROM user_push_tokens WHERE user_id=$1',[actor.id]);
    await c.query('DELETE FROM account_phone_challenges WHERE user_id=$1',[actor.id]);
@@ -707,11 +715,11 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
      await requireFoodPayment(c,food);
      await c.query("UPDATE food_orders SET state='DELIVERED', payment_status='PAID', completed_at=now(), updated_at=now() WHERE id=$1",[fo.id]);
      const grossSales=Number(fo.subtotal_minor);
-     const restDiscount=Number(fo.restaurant_funded_discount_minor||0);
-     const elesendSubsidy=Number(fo.elesend_funded_discount_minor||0);
      const commBps=Number(fo.food_commission_bps);
      const commMinor=Number(fo.food_commission_minor);
-     const netPayable=grossSales-restDiscount-commMinor;
+     const restDiscount=Math.min(Number(fo.restaurant_funded_discount_minor||0),Math.max(0,grossSales-commMinor));
+     const elesendSubsidy=Number(fo.elesend_funded_discount_minor||0);
+     const netPayable=Math.max(0,grossSales-restDiscount-commMinor);
      const commBasis=fo.commission_calculation_basis||'gross_subtotal';
      const commBase=Number(fo.commission_base_minor??grossSales);
      await accrueRestaurantSettlement(c,{orderId:fo.id,restaurantId:fo.restaurant_id,grossSales,restDiscount,elesendSubsidy,commBps,commMinor,netPayable,commBasis,commBase,commissionSnapshot:fo.commission_snapshot,promotionSnapshot:fo.promotion_snapshot});

@@ -14,6 +14,7 @@ import { loadConfig } from './config.mjs';
 import { dispatchEngine } from './dispatch.mjs';
 import { osrmRouting } from './dispatch-routing.mjs';
 import { etaService } from './eta/eta-service.mjs';
+import { trafficRouting, trafficService } from './traffic.mjs';
 import { installProcessGuards } from './process-guards.mjs';
 import { privateRoutingPriority } from './infrastructure/maps/PrivateRoutingPolicy.mjs';
 import { financeService } from './modules/payments/index.mjs';
@@ -110,7 +111,7 @@ export async function startWorker(options = {}) {
     finance,
     paymentProvider,
     routing,
-    eta: etaService(db, { routing, baselineFactors: config.routing.etaBaselineFactors })
+    eta: etaService(db, { routing: trafficRouting(routing, trafficService(db)), baselineFactors: config.routing.etaBaselineFactors })
   }).start({ unref: false });
 
   function stop() {

@@ -20,6 +20,7 @@ import {notificationGateway,notificationWorker,queueNotification} from './notifi
 import {backgroundJobs} from './background-jobs.mjs';
 import {firebasePush} from './providers/firebase-push.mjs';
 import {etaService} from './eta/eta-service.mjs';
+import {trafficRouting,trafficService} from './traffic.mjs';
 import {installProcessGuards} from './process-guards.mjs';
 
 installProcessGuards('api');
@@ -68,7 +69,7 @@ const money=moneyOperations(db,{provider:paymentProvider,notify:queueNotificatio
 const restOrders = restaurantOrderService(db, {platform: app, dispatcher: dispatch, routing, sms, ...config.food});
 
 const scheduler = config.server.backgroundJobsEnabled
-  ? backgroundJobs({db,dispatch,notifications,restOrders,money,checkout,finance,paymentProvider,routing,eta:etaService(db,{routing,baselineFactors:config.routing.etaBaselineFactors})}).start({unref:true})
+  ? backgroundJobs({db,dispatch,notifications,restOrders,money,checkout,finance,paymentProvider,routing,eta:etaService(db,{routing:trafficRouting(routing,trafficService(db)),baselineFactors:config.routing.etaBaselineFactors})}).start({unref:true})
   : null;
 
 const server = httpServer(db, app, dispatch, finance, checkout, {

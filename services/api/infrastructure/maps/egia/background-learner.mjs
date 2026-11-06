@@ -114,10 +114,12 @@ export async function runGeographicLearningCycle(db, { routing = null, riderVehi
       if (known.rows.length === 0) {
         const insertRoad = await db.query(`
           INSERT INTO candidate_roads (
-            id, name, corridor, status, confidence, observation_count, distinct_riders, source, contributor_rider_ids
+            id, name, corridor, status, confidence, observation_count, distinct_riders, temporal_span_seconds, source, contributor_rider_ids
           )
           SELECT $1, 'Rider Reported Road', ST_SetSRID(ST_GeomFromGeoJSON($2), 4326)::geography,
-                 'CORROBORATED', 65, count(DISTINCT rider_id), count(DISTINCT rider_id), 'rider_corroborated_report', array_agg(DISTINCT rider_id)
+                 'CORROBORATED', 65, count(DISTINCT rider_id), count(DISTINCT rider_id),
+                 COALESCE(EXTRACT(EPOCH FROM (max(created_at) - min(created_at)))::int, 0),
+                 'rider_corroborated_report', array_agg(DISTINCT rider_id)
           FROM rider_map_reports
           WHERE report_type = 'missing_road' AND status = 'pending'
             AND ST_DWithin(location, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, 50)

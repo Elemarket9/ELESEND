@@ -654,7 +654,7 @@ export function chatEngine(db, options = {}) {
       LEFT JOIN shipments s ON s.id=c.shipment_id
       WHERE p.conversation_id=$1 AND p.user_id=ANY($2::uuid[])
         AND p.membership_status='active'
-        AND (p.role<>'rider' OR s.rider_id=p.user_id)`, [conversationId,userIds])).rows.map(r=>r.user_id);
+        AND (p.role<>'rider' OR s.rider_id=p.user_id OR (c.conversation_type='CUSTOMER_SUPPORT' AND c.active_rider_id=p.user_id))`, [conversationId,userIds])).rows.map(r=>r.user_id);
   }
 
   async function publishClaimedOutboxEvent(outboxEvent) {
@@ -874,7 +874,7 @@ export function chatEngine(db, options = {}) {
       // Double-check live object-level role ownership!
       if (participant.role === 'rider') {
         check(
-          shipment && shipment.rider_id === actor.id && conv.active_rider_id === actor.id,
+          conv.active_rider_id === actor.id && ((shipment && shipment.rider_id === actor.id) || conv.conversation_type === 'CUSTOMER_SUPPORT'),
           403,
           'You are no longer the assigned courier for this delivery'
         );
@@ -1461,7 +1461,7 @@ export function chatEngine(db, options = {}) {
              LEFT JOIN food_orders f ON f.id = c.food_order_id
              WHERE NOT ${CHAT_UNDER_REVIEW} AND (
                c.created_at <= now() - make_interval(days => $2)
-               OR (GREATEST(COALESCE(c.last_message_at, c.created_at), s.completed_at, f.updated_at) <= now() - make_interval(hours => $1) AND (
+               OR (GREATEST(COALESCE(c.last_message_at, c.created_at), c.closed_at, s.completed_at, s.cancelled_at, f.updated_at) <= now() - make_interval(hours => $1) AND (
                  c.conversation_type = 'CUSTOMER_SUPPORT'
                  OR s.state IN ('COMPLETED', 'CANCELLED', 'RETURNED')
                  OR f.state IN ('DELIVERED', 'CANCELLED', 'REJECTED')

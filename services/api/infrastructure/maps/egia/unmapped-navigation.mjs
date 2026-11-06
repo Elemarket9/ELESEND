@@ -130,7 +130,7 @@ export async function buildUnmappedCommunityRoute({
             ST_DWithin(corridor, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, 50)
             OR ST_DWithin(corridor, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, 200)
           )
-        ORDER BY dist_to_dest_m ASC
+        ORDER BY dist_from_endpoint_m ASC, dist_to_dest_m ASC
         LIMIT 5;
       `, [roadEndpoint.longitude, roadEndpoint.latitude, destPoint.longitude, destPoint.latitude]);
 
@@ -159,10 +159,10 @@ export async function buildUnmappedCommunityRoute({
         const entryPt = forward ? firstPt : lastPt;
         const exitPt = forward ? lastPt : firstPt;
 
-        // Snapping / continuity validation: Must connect within 50m of current endpoint
+        // Snapping / continuity validation: Must connect within 50m of current endpoint and move closer to destination
         const snapDist = Math.min(distFromFirst, distFromLast);
-        if (snapDist > 50) {
-          // Disconnected floating line cannot be traversed from road network
+        if (snapDist > 50 || haversine(exitPt, destPoint) >= haversine(effectiveRoadEndpoint, destPoint)) {
+          // Disconnected floating line or segment moving away from destination
           continue;
         }
 

@@ -62,13 +62,13 @@ const completedSince=(c,riderId,from,to)=>c.query("SELECT count(*)::int AS n FRO
 /** Rewards are commission credit, used automatically against future cash commission. */
 export async function settleRiderRewards(db,{limit=100}={}){
  const target=setting(process.env.REFERRAL_TARGET_DELIVERIES,10),reward=setting(process.env.REFERRAL_REWARD_MINOR,0);
- const due=(await db.query(`SELECT f.referred_id,f.referrer_id FROM rider_referrals f
-   WHERE f.status='pending' AND (SELECT count(*) FROM shipments s WHERE s.rider_id=f.referred_id AND s.state='COMPLETED')>=$1 ORDER BY f.created_at LIMIT $2`,[target,limit])).rows;
+ const due=reward>0?(await db.query(`SELECT f.referred_id,f.referrer_id FROM rider_referrals f
+   WHERE f.status='pending' AND (SELECT count(*) FROM shipments s WHERE s.rider_id=f.referred_id AND s.state='COMPLETED')>=$1 ORDER BY f.created_at LIMIT $2`,[target,limit])).rows:[];
  for(const f of due)await db.tx(async c=>{
   const updated=await c.query("UPDATE rider_referrals SET status='earned',reward_minor=$2,earned_at=now() WHERE referred_id=$1 AND status='pending' RETURNING referred_id",[f.referred_id,reward]);
   if(updated.rowCount&&reward>0)await awardCredit(c,f.referrer_id,'referral:'+f.referred_id,reward);
  });
- const campaigns=(await db.query('SELECT * FROM rider_reward_campaigns WHERE active AND starts_at<=now()')).rows;
+ const campaigns=(await db.query("SELECT * FROM rider_reward_campaigns WHERE active AND starts_at<=now() AND ends_at>=now()-interval '7 days'")).rows;
  for(const k of campaigns){
   const winners=(await db.query(`SELECT s.rider_id FROM shipments s WHERE s.state='COMPLETED' AND s.completed_at>=$1 AND s.completed_at<=$2 AND s.rider_id IS NOT NULL
     AND NOT EXISTS(SELECT 1 FROM rider_campaign_awards a WHERE a.campaign_id=$3 AND a.rider_id=s.rider_id)
@@ -118,7 +118,7 @@ export async function flagUnusualStops(db,{minutes=setting(process.env.UNUSUAL_S
  const rows=(await db.query(`SELECT s.id,s.rider_id,ST_Y(r.current_position::geometry) AS latitude,ST_X(r.current_position::geometry) AS longitude,
     w.latitude AS w_lat,w.longitude AS w_lng,w.since,w.alerted_at
    FROM shipments s JOIN riders r ON r.id=s.rider_id LEFT JOIN delivery_stop_watch w ON w.shipment_id=s.id
-   WHERE s.state IN ('PICKUP_VERIFIED','IN_TRANSIT') AND r.current_position IS NOT NULL AND r.position_at>now()-interval '5 minutes' LIMIT 500`)).rows;
+   WHERE s.state IN ('PICKUP_VERIFIED','IN_TRANSIT') AND r.current_position IS NOT NULL AND r.position_at>now()-make_interval(mins=>$1) LIMIT 500`,[Math.max(30,minutes*2)])).rows;
  const flagged=[];
  for(const x of rows){
   if(x.w_lat===null||haversine({latitude:x.w_lat,longitude:x.w_lng},x)>metres){

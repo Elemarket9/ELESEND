@@ -970,6 +970,7 @@ export default function CustomerApp() {
       promoCode: activeCode || undefined
     });
     const quote = await call('POST', ENDPOINTS.foodQuote, quoteBody);
+    setAppliedPromoCode(activeCode);
     setFoodQuote({ ...quote, requestBody: quoteBody, orderIdempotencyKey: `food_${Crypto.randomUUID()}` });
   }
 
@@ -1104,11 +1105,11 @@ export default function CustomerApp() {
     }
   }
 
-  async function reportCustomerChatAbuse() {
+  async function reportCustomerChatAbuse(category = 'inappropriate_messages') {
     if (!activeConversation?.id) return;
     try {
       await call('POST', ENDPOINTS.chatReport(activeConversation.id), {
-        category: 'inappropriate_messages',
+        category,
         details: 'Customer reported conversation from mobile app for safety review.'
       });
       Alert.alert('Report Submitted', 'ELESEND Safety & Support has received your report.');
@@ -2933,7 +2934,7 @@ export default function CustomerApp() {
               </TouchableOpacity>
               <TouchableOpacity
                 style={{ backgroundColor: '#FEE2E2', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 }}
-                onPress={() => reportCustomerChatAbuse('inappropriate_behavior')}>
+                onPress={() => reportCustomerChatAbuse('inappropriate_messages')}>
                 <Text style={{ fontSize: 11, fontWeight: '700', color: '#DC2626' }}>🚩 Report</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={() => setChatModalVisible(false)} style={{ paddingHorizontal: 8, paddingVertical: 4 }}>

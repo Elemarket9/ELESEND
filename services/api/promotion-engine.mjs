@@ -637,6 +637,9 @@ export function promotionEngine(db) {
                  WHEN promotion_campaign_restaurants.consent_status = 'accepted' THEN 'accepted'
                  ELSE 'invited'
                END,
+               per_order_restaurant_cap_minor = COALESCE(EXCLUDED.per_order_restaurant_cap_minor, promotion_campaign_restaurants.per_order_restaurant_cap_minor),
+               restaurant_budget_cap_minor = COALESCE(EXCLUDED.restaurant_budget_cap_minor, promotion_campaign_restaurants.restaurant_budget_cap_minor),
+               commission_concession_bps = COALESCE(EXCLUDED.commission_concession_bps, promotion_campaign_restaurants.commission_concession_bps),
                updated_at = now()
              RETURNING *`,
             [
@@ -826,7 +829,7 @@ export function promotionEngine(db) {
           discountType: camp.discount_type,
           discountBps: camp.discount_bps,
           discountMinor: camp.discount_minor,
-          commissionConcessionBps: camp.commission_concession_bps,
+          commissionConcessionBps: existing?.commission_concession_bps ?? camp.commission_concession_bps,
           commissionBasisOverride: camp.commission_basis_override,
           startsAt: camp.starts_at,
           endsAt: camp.ends_at,
@@ -843,8 +846,8 @@ export function promotionEngine(db) {
            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), $13, $14, now())
            ON CONFLICT (campaign_id, restaurant_id) DO UPDATE SET
              consent_status = EXCLUDED.consent_status,
-             per_order_restaurant_cap_minor = COALESCE(EXCLUDED.per_order_restaurant_cap_minor, promotion_campaign_restaurants.per_order_restaurant_cap_minor),
-             restaurant_budget_cap_minor = COALESCE(EXCLUDED.restaurant_budget_cap_minor, promotion_campaign_restaurants.restaurant_budget_cap_minor),
+             per_order_restaurant_cap_minor = COALESCE($15, promotion_campaign_restaurants.per_order_restaurant_cap_minor, EXCLUDED.per_order_restaurant_cap_minor),
+             restaurant_budget_cap_minor = COALESCE($16, promotion_campaign_restaurants.restaurant_budget_cap_minor, EXCLUDED.restaurant_budget_cap_minor),
              consented_by = EXCLUDED.consented_by,
              consented_at = now(),
              decision_notes = EXCLUDED.decision_notes,
@@ -857,10 +860,12 @@ export function promotionEngine(db) {
             restaurantId,
             v.decision,
             ...campaignRestaurantTerms(camp, v),
-            camp.commission_concession_bps ?? null,
+            existing?.commission_concession_bps ?? camp.commission_concession_bps ?? null,
             actor.id,
             v.decisionNotes,
-            JSON.stringify(agreementSnapshot)
+            JSON.stringify(agreementSnapshot),
+            v.perOrderRestaurantCapMinor ?? null,
+            v.restaurantBudgetCapMinor ?? null
           ]
         )).rows[0];
 
