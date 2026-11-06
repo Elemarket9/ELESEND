@@ -1434,7 +1434,8 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
           const d = Math.hypot((a?.latitude ?? 5.56) - (b?.latitude ?? 5.56), (a?.longitude ?? -0.18) - (b?.longitude ?? -0.18));
           return {
             distanceMeters: Math.max(100, Math.round(d * 111000)),
-            durationSeconds: Math.max(30, Math.round(d * 150000)),
+            // Approx. 7.4 m/s (27 km/h) for a motorcycle urban-road fixture; never use slow-motion test data to bypass the production 30-minute food SLA.
+            durationSeconds: Math.max(30, Math.round(d * 15000)),
             source: 'fixture'
           };
         };
