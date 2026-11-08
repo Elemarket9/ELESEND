@@ -8,7 +8,7 @@ ELESEND runs its own maps. Customers search for places, riders get turn-by-turn 
 |---|---|---|
 | Place search | Finds what the customer types, such as "GTBank Kasoa" or "Domestic Terminal" | `services/api/infrastructure/maps/ghana-geocoder.mjs`, served at `GET /api/v1/maps/search` |
 | Built-in places | About 44,500 settlements, businesses and landmarks shipped with the API | `ghana-gazetteer-data.json` |
-| OpenStreetMap places | Named businesses and landmarks from the latest Ghana OpenStreetMap data, rebuilt monthly | `ghana-osm-places.json`, built by `scripts/build-ghana-places.sh` |
+| OpenStreetMap places | Named businesses and landmarks from the latest Ghana OpenStreetMap data, rebuilt every night on each server | `ghana-osm-places.json` in the map data folder, built by `scripts/build-ghana-places.sh` |
 | Hand-added places | Places a person checked, each with where its position came from | `ghana-places-overlay.json` |
 | Database places | Places approved into the database, including places riders taught the map | `spatial_landmarks` and `national_businesses`, merged into search by `searchPlaces` |
 | Reverse lookup | Turns a dropped pin into a readable address | `GET /api/v1/maps/reverse` |
@@ -21,7 +21,7 @@ Every optional piece fails soft. If a data file is missing, search runs on the r
 
 ## Adding a place customers can't find
 
-1. **It's on OpenStreetMap.** It arrives with the next map refresh, or you can run the refresh by hand from the Actions tab ("Map refresh", then "Run workflow").
+1. **It's on OpenStreetMap.** It arrives in ELESEND the next morning, after the nightly refresh.
 2. **It's not on OpenStreetMap.** Add it to OpenStreetMap at openstreetmap.org (this improves the map for everyone), and add it to `ghana-places-overlay.json` in the meantime:
 
    ```json
@@ -39,17 +39,32 @@ Then add the search to `config/map-quality.json`, so it can never silently break
 {"query": "GTBank Kasoa", "first": "GTBank Kasoa"}
 ```
 
-## The monthly map refresh
+## Daily automatic updates
 
-`.github/workflows/map-refresh.yml` runs on the 3rd of each month and can also be started by hand. It:
+Geofabrik publishes a fresh Ghana OpenStreetMap extract every day, and ELESEND picks it up every night on its own.
 
-1. downloads the Ghana extract from Geofabrik and checks its checksum
-2. rebuilds the OpenStreetMap places
-3. builds the car and motorbike road graphs
-4. runs every search and route in `config/map-quality.json` against the new data
-5. opens a pull request with the new places file and the check results
+**On the server** (`deploy/runtime/refresh-map.sh`, run by `elesend-map-refresh.timer` at 02:30 each day), the refresh:
 
-Review the counts in the pull request and merge it. Servers rebuild their own road graphs with `scripts/download-ghana.sh` and `scripts/prepare-ghana-osrm.sh`, then restart OSRM. If GitHub stops Actions from opening pull requests, the workflow still pushes the branch and says so. You can allow it under Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests".
+1. downloads the extract and checks its checksum
+2. adds approved rider roads
+3. rebuilds the map tiles, both road graphs and the searchable places
+4. tests a long route (Accra to Kumasi) on both graphs, and checks the new places against `config/map-quality.json`
+5. swaps the new map in, restarts the map services and the API (a few seconds, at the quietest hour), and keeps the previous map
+
+If the road test fails, the live map is left untouched. If the places fail their checks, roads still update and yesterday's places are kept. If the new map does not come up, the refresh switches back to the previous one.
+
+Setup on the server, once:
+
+```sh
+sudo apt install osmium-tool openjdk-21-jre-headless
+echo "ELESEND_ROOT=/path/to/ELESEND" | sudo tee /etc/elesend/map-refresh.env
+sudo cp deploy/runtime/elesend-map-refresh.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now elesend-map-refresh.timer
+```
+
+Keep at least 6 GB free on the map disk (`MAP_REFRESH_MIN_FREE_GB`). Check the last run with `journalctl -u elesend-map-refresh`.
+
+**On GitHub** (`.github/workflows/map-refresh.yml`, daily at 01:41 UTC), the same map is rebuilt from that day's data and every check runs. Nothing is committed. A failed run means that day's OpenStreetMap data would break a search or route, and GitHub emails you. The built places file is kept for 7 days as a download on the run page. The generated places file is never committed, because a new copy every day would grow the repository by gigabytes a year.
 
 ## Checking routes after a change
 

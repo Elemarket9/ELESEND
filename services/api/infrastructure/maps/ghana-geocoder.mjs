@@ -62,13 +62,14 @@ const NATIONAL_ANCHORS = [
 
 /** An optional data file next to this module. A missing or broken file leaves search running on the rest. */
 function optionalPlaces(file) {
-  try { const rows = JSON.parse(readFileSync(join(__dirname, file), 'utf8')); return Array.isArray(rows) ? rows : []; }
+  try { const rows = JSON.parse(readFileSync(file.startsWith('/') ? file : join(__dirname, file), 'utf8')); return Array.isArray(rows) ? rows : []; }
   catch { return []; }
 }
 // Places added by hand, each with where its position came from (see docs/maps.md).
 export const PLACE_OVERLAY = optionalPlaces('ghana-places-overlay.json');
-// Businesses and landmarks from OpenStreetMap, rebuilt by scripts/build-ghana-places.sh and the map refresh workflow.
-const OSM_PLACES = optionalPlaces('ghana-osm-places.json');
+// Businesses and landmarks from OpenStreetMap. On servers the daily map refresh rebuilds them into the map data folder
+// (GHANA_OSM_PLACES_FILE); otherwise a copy next to this module is used if one exists.
+const OSM_PLACES = optionalPlaces(process.env.GHANA_OSM_PLACES_FILE || 'ghana-osm-places.json');
 
 // Some imported map entries carry only a generic word as their name ("Market", "Junction", "Village"). Shown as a
 // search result they tell the customer nothing about where they are, so they are left out.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rebuilds the map from fresh OpenStreetMap data and approved rider roads, tests it, then swaps it in.
 # The live map keeps running during the build. If anything fails, it is left untouched.
-# Needs Docker, Java 21+, Node and curl. Run from a timer: see deploy/runtime/elesend-map-refresh.timer.
+# Needs Docker, Java 21+, Node and curl; osmium-tool for searchable places. Runs daily: see deploy/runtime/elesend-map-refresh.timer.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 compose_file="$root/deploy/runtime/compose.yaml"
@@ -38,6 +38,16 @@ fi
 sh "$root/scripts/build-ghana-tiles.sh" "$next"
 sh "$root/scripts/prepare-ghana-osrm.sh" "$next"
 
+# Searchable places. Never stops the road refresh: if the build or its checks fail, yesterday's places are kept.
+keep_old_places() { if [ -f "$live/ghana-osm-places.json" ]; then cp "$live/ghana-osm-places.json" "$next/ghana-osm-places.json"; fi; }
+if ! command -v osmium >/dev/null; then
+  say 'osmium-tool is not installed, so searchable places were not rebuilt (apt install osmium-tool)'; keep_old_places
+elif ! sh "$root/scripts/build-ghana-places.sh" "$next" "$next/ghana-osm-places.json"; then
+  say 'Building searchable places failed. Keeping the previous places'; rm -f "$next/ghana-osm-places.json"; keep_old_places
+elif ! GHANA_OSM_PLACES_FILE="$next/ghana-osm-places.json" node "$root/scripts/map-quality.mjs"; then
+  say 'New places failed the search checks in config/map-quality.json. Keeping the previous places'; rm -f "$next/ghana-osm-places.json"; keep_old_places
+fi
+
 # Test the new map before anyone uses it.
 smoke_point_a=${MAP_REFRESH_SMOKE_FROM:--0.1825,5.5560}
 smoke_point_b=${MAP_REFRESH_SMOKE_TO:--1.6240,6.6960}
@@ -58,7 +68,12 @@ if [ -e "$live/ghana.mbtiles" ]; then
   [ $((new * 100)) -ge $((old * 80)) ] || { say "Stopped: new map is much smaller than the live one. Live map unchanged"; exit 1; }
 fi
 
-restart_map() { [ "${MAP_REFRESH_NO_RESTART:-}" = 1 ] || dc up -d --force-recreate osrm osrm-motorcycle maps; }
+restart_map() {
+  [ "${MAP_REFRESH_NO_RESTART:-}" = 1 ] && return 0
+  dc up -d --force-recreate osrm osrm-motorcycle maps
+  # The API reads places from the map folder that was just swapped in, so it restarts to pick them up.
+  dc up -d --no-deps --force-recreate api
+}
 live_map_healthy() {
   [ "${MAP_REFRESH_NO_RESTART:-}" = 1 ] && return 0
   for _ in $(seq 1 30); do

@@ -1,8 +1,9 @@
 [Unit]
-Description=Weekly ELESEND map refresh
+Description=Daily ELESEND map refresh (roads, map tiles and searchable places)
 
 [Timer]
-OnCalendar=Sun 02:30
+# Geofabrik publishes a new Ghana extract every day. 02:30 Accra time is the quietest hour for deliveries.
+OnCalendar=*-*-* 02:30
 RandomizedDelaySec=30min
 Persistent=true
 
