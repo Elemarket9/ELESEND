@@ -735,13 +735,29 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  },
  async offers(actor){check(dispatch,503,'Dispatch engine unavailable');return dispatch.offers(actor);},
  async accept(actor,sid,offerId){check(dispatch,503,'Dispatch engine unavailable');return dispatch.accept(actor,sid,offerId);},
- async get(actor,sid){uuid.parse(sid);const s=(await db.query('SELECT * FROM shipments WHERE id=$1',[sid])).rows[0];check(s,404);await access(db,actor,s);const q=(await db.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];const waiting=(await db.query('SELECT stop,waited_seconds,fee_minor,collection FROM shipment_waiting_charges WHERE shipment_id=$1',[sid])).rows;return hideEndedContacts(actor,{...s,details:q.request,waitingCharges:waiting});},
+ async get(actor,sid){uuid.parse(sid);const s=(await db.query(`SELECT sh.*,(SELECT confirmed_at FROM shipment_receipt_confirmations WHERE shipment_id=sh.id) AS receipt_confirmed_at,(SELECT confirmed_at FROM shipment_handover_events WHERE shipment_id=sh.id AND kind='delivery') AS rider_reported_at FROM shipments sh WHERE sh.id=$1`,[sid])).rows[0];check(s,404);await access(db,actor,s);const q=(await db.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];const waiting=(await db.query('SELECT stop,waited_seconds,fee_minor,collection FROM shipment_waiting_charges WHERE shipment_id=$1',[sid])).rows;return hideEndedContacts(actor,{...s,details:q.request,waitingCharges:waiting});},
  async list(actor,{asClient=Boolean(actor.api_client_id)}={}){
-  const baseQuery=`SELECT s.*, (SELECT id FROM food_orders WHERE shipment_id=s.id) AS food_order_id, (SELECT phone FROM users WHERE id=s.rider_id) AS rider_phone, q.request AS details, q.request->'pickup' AS pickup, q.request->'destination' AS destination FROM shipments s JOIN quotes q ON q.id=s.quote_id`;
+  const baseQuery=`SELECT s.*, (SELECT confirmed_at FROM shipment_receipt_confirmations WHERE shipment_id=s.id) AS receipt_confirmed_at, (SELECT confirmed_at FROM shipment_handover_events WHERE shipment_id=s.id AND kind='delivery') AS rider_reported_at, (SELECT id FROM food_orders WHERE shipment_id=s.id) AS food_order_id, (SELECT phone FROM users WHERE id=s.rider_id) AS rider_phone, q.request AS details, q.request->'pickup' AS pickup, q.request->'destination' AS destination FROM shipments s JOIN quotes q ON q.id=s.quote_id`;
   if(['customer','business'].includes(actor.kind)||(actor.kind==='company'&&asClient))return (await db.query(`${baseQuery} WHERE s.customer_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows.map(r=>hideEndedContacts(actor,r));
   if(actor.kind==='rider')return (await db.query(`${baseQuery} WHERE s.rider_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows.map(r=>hideEndedContacts(actor,r));
   if(actor.kind==='company')return (await db.query(`${baseQuery} JOIN companies c ON c.id=s.company_id WHERE c.owner_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows.map(r=>hideEndedContacts(actor,r));
   await permission(db,actor,'shipments:read');return (await db.query(`${baseQuery} ORDER BY s.created_at DESC LIMIT 100`)).rows;
+ },
+ async confirmReceipt(actor,sid,input){
+  z.object({received:z.literal(true)}).strict().parse(input);
+  check(['customer','business','company'].includes(actor?.kind)&&!actor?.api_client_id,403,'Booking customer required');
+  return db.tx(async c=>{
+   const shipment=await locked(c,sid);
+   check(shipment.customer_id===actor.id,403,'Only the booking customer can acknowledge receipt');
+   check(shipment.state==='COMPLETED',409,'Delivery must be reported complete before receipt acknowledgement');
+   const inserted=await c.query('INSERT INTO shipment_receipt_confirmations(shipment_id,customer_id) VALUES($1,$2) ON CONFLICT(shipment_id) DO NOTHING RETURNING confirmed_at',[sid,actor.id]);
+   if(inserted.rowCount){
+    await audit(c,actor.id,'shipment.customer_receipt_acknowledged',sid);
+   }
+   const row=inserted.rows[0]||(await c.query('SELECT confirmed_at FROM shipment_receipt_confirmations WHERE shipment_id=$1 AND customer_id=$2',[sid,actor.id])).rows[0];
+   check(row,409,'Receipt acknowledgement belongs to another account');
+   return {received:true,duplicate:!inserted.rowCount,confirmedAt:row.confirmed_at};
+  });
  },
  async challenge(actor,sid,purpose){check(allowLegacySmsHandover(),410,'SMS handover verification is disabled; update the rider app');check(['pickup','delivery','return'].includes(purpose),400);check(sms,503,'SMS adapter unavailable');
   const code=newCode(),cid=id();
