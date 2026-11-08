@@ -1731,7 +1731,7 @@ export function chatEngine(db, options = {}) {
           addressChangeWarning: Boolean(row.address_change_warning)
         },
         safetyNotice: row.otp_warning
-          ? 'SECURITY REMINDER: Never share your 6-digit delivery OTP in chat. Enter verification codes only in the official confirmation prompt.'
+          ? 'SECURITY REMINDER: Never share account verification or password reset codes in delivery chat. ELESEND does not require an SMS code to confirm physical delivery.'
           : row.address_change_warning
           ? 'ORDER POLICY: Chat messages cannot change a paid delivery destination. Use the official Support Escalation button if you need assistance.'
           : null,
