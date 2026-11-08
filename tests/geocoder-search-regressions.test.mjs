@@ -18,3 +18,6 @@ test('placeholder names such as "village" or "shop" are not offered as places',(
 test('the airport domestic terminal is found by the words customers use',()=>{
  for(const q of ['Domestic Terminal','Kotoka domestic terminal','Accra Airport Terminal 2'])assert.match(first(q).name,/Domestic Terminal/i,q);
 });
+test('GTBank Kasoa is found however the customer spells the bank',()=>{
+ for(const q of ['GTBank Kasoa','GT Bank Kasoa','GTBank Kasoa branch','gtb kasoa'])assert.match(first(q).name,/GTBank Kasoa/i,q);
+});

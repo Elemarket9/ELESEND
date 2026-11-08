@@ -60,6 +60,9 @@ const NATIONAL_ANCHORS = [
   {name:'Lawra Town Center',category:'town',locality:'Central',city:'Lawra',region:'Upper West',latitude:10.6433,longitude:-2.8242,popularity:72},
   // Kotoka's domestic terminal (Terminal 2), where domestic flights and airport courier counters are. Position from
   // OpenStreetMap (aeroway=terminal "Domestic Arrivals"/"Domestic Departures"), Geofabrik Ghana extract, 2026-11-08.
+  // GTBank's Kasoa branch is on the new Kasoa market road (gtbghana.com, "GTBank opens new branch at Kasoa"; confirmed by
+  // the ELESEND owner, 2026-11-08). Placed at the Kasoa New Market point until a surveyed pin is supplied.
+  {name:'GTBank Kasoa Branch (New Market)',category:'bank',locality:'Kasoa',city:'Kasoa',region:'Central',latitude:5.5367,longitude:-0.4215,popularity:80,aliases:['GT Bank Kasoa','GTBank Kasoa','Guaranty Trust Bank Kasoa','GTB Kasoa']},
   {name:'Kotoka Airport Domestic Terminal (Terminal 2)',category:'airport',locality:'Airport',city:'Accra',region:'Greater Accra',latitude:5.60712,longitude:-0.17167,popularity:90,aliases:['Domestic Terminal','Terminal 2','Domestic Arrivals','Domestic Departures','Accra Airport Domestic Terminal']}
 ];
 
