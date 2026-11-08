@@ -1989,7 +1989,7 @@ export default function CustomerApp() {
             <RecipientPhoneModal
               shipment={recipientEdit}
               onClose={() => setRecipientEdit(null)}
-              onChanged={() => { refreshActivity(); Alert.alert('Number changed', 'The handover code will go to the new number.'); }}
+              onChanged={() => { refreshActivity(); Alert.alert('Number changed', 'The rider will call the new number on arrival.'); }}
             />
 
             {/* Active Food Orders */}

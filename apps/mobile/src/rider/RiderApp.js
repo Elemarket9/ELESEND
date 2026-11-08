@@ -547,30 +547,36 @@ export default function RiderApp() {
     ]);
   }
 
+  // Cash is collected from whoever pays: the sender before pickup, or the recipient before delivery. The server refuses
+  // the handover until that cash is recorded, so the rider is asked at the right moment rather than hitting an error.
+  function collectCashThen(shipment, payer, kind) {
+    const who = payer === 'sender' ? 'sender' : 'recipient';
+    Alert.alert(
+      'Confirm Cash Collection',
+      `Collect ${ghc(shipment.amount_minor)} in cash from the ${who} before confirming ${kind === 'pickup' ? 'pickup' : 'delivery'}.`,
+      [
+        {text:'Cancel',style:'cancel'},
+        {text:'I Collected Full Cash',onPress:()=>execute(async()=>{
+          await call('POST','/api/v1/rider/cash-report',{
+            shipmentId:shipment.id,reportedMinor:shipment.amount_minor,
+            cashPayer:who,idempotencyKey:Crypto.randomUUID()
+          });
+          setReportedCash(r=>({...r,[shipment.id]:true}));
+          askPhysicalHandover(shipment,kind);
+        })}
+      ]
+    );
+  }
+
   async function initiatePickupVerification(shipment) {
+    if (!isStationary(speed)) throw Error('Stop safely before confirming pickup');
+    if (shipment.payment_method === 'CASH' && shipment.cash_payer === 'sender' && !reportedCash[shipment.id]) return collectCashThen(shipment, 'sender', 'pickup');
     askPhysicalHandover(shipment,'pickup');
   }
 
   async function initiateDeliveryVerification(shipment) {
     if (!isStationary(speed)) throw Error('Stop safely before confirming delivery');
-    if (shipment.payment_method === 'CASH' && !reportedCash[shipment.id] && shipment.cash_payer === 'recipient') {
-      Alert.alert(
-        'Confirm Cash Collection',
-        `Collect ${ghc(shipment.amount_minor)} in cash from the recipient before confirming delivery.`,
-        [
-          {text:'Cancel',style:'cancel'},
-          {text:'I Collected Full Cash',onPress:()=>execute(async()=>{
-            await call('POST','/api/v1/rider/cash-report',{
-              shipmentId:shipment.id,reportedMinor:shipment.amount_minor,
-              cashPayer:shipment.cash_payer||'recipient',idempotencyKey:Crypto.randomUUID()
-            });
-            setReportedCash(r=>({...r,[shipment.id]:true}));
-            askPhysicalHandover(shipment,'delivery');
-          })}
-        ]
-      );
-      return;
-    }
+    if (shipment.payment_method === 'CASH' && shipment.cash_payer === 'recipient' && !reportedCash[shipment.id]) return collectCashThen(shipment, 'recipient', 'delivery');
     askPhysicalHandover(shipment,'delivery');
   }
 
