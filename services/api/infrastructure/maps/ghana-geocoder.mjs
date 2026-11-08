@@ -60,7 +60,10 @@ const NATIONAL_ANCHORS = [
   {name:'Lawra Town Center',category:'town',locality:'Central',city:'Lawra',region:'Upper West',latitude:10.6433,longitude:-2.8242,popularity:72}
 ];
 
-export const GHANA_GAZETTEER = [...rawGazetteer, ...NATIONAL_ANCHORS];
+// Some imported map entries carry only a generic word as their name ("Market", "Junction", "Village"). Shown as a
+// search result they tell the customer nothing about where they are, so they are left out.
+const NAMELESS = new Set(['village','church','mosque','clinic','hospital','market','shop','store','junction','house','bar','hotel','pharmacy','bank','station','filling station','police','school','building','office','yes','unnamed']);
+export const GHANA_GAZETTEER = [...rawGazetteer.filter(p => !NAMELESS.has(String(p.name || '').trim().toLowerCase())), ...NATIONAL_ANCHORS];
 
 const ABBREVIATIONS = {
   uni: 'university',
@@ -303,6 +306,18 @@ export function ghanaSearch(query, {limit = 10, db = null} = {}) {
       }
     }
 
+    // 1b. Names people type as one word, like "GTBank" or "Stanbic Bank" written "StanbicBank": try every split into
+    // two indexed words and keep the places that have both. The reverse ("Shop Rite" for "Shoprite") is handled after
+    // this loop by joining neighbouring query words.
+    if (term.length >= 5) {
+      for (let cut = 2; cut <= term.length - 2; cut++) {
+        const left = INVERTED_INDEX.get(term.slice(0, cut)), right = INVERTED_INDEX.get(term.slice(cut));
+        if (!left || !right) continue;
+        const rightSet = new Set(right);
+        for (const idx of left) if (rightSet.has(idx)) termMatches.set(idx, Math.max(termMatches.get(idx) || 0, 48));
+      }
+    }
+
     // 2. Prefix matches (for terms >= 3 chars, skip if exact term already matches 8+ places)
     const firstChar = term[0];
     const bucket = INITIAL_BUCKET.get(firstChar);
@@ -358,8 +373,22 @@ export function ghanaSearch(query, {limit = 10, db = null} = {}) {
     }
   }
 
+  // Two neighbouring query words that form one indexed word ("shop rite" -> "shoprite") count as both words matched.
+  for (let ti = 0; ti + 1 < terms.length; ti++) {
+    const joined = INVERTED_INDEX.get(terms[ti] + terms[ti + 1]);
+    if (!joined) continue;
+    for (const idx of joined) {
+      let entry = candidateScores.get(idx);
+      if (!entry) { entry = {matchedTerms: new Set(), score: 0}; candidateScores.set(idx, entry); }
+      if (!entry.matchedTerms.has(ti)) { entry.matchedTerms.add(ti); entry.score += 48; }
+      if (!entry.matchedTerms.has(ti + 1)) { entry.matchedTerms.add(ti + 1); entry.score += 48; }
+    }
+  }
+
   // 3. Score and Rank Matches
   const scored = [];
+  const queryIsKnownWord = terms.length === 1 && INVERTED_INDEX.has(terms[0]);
+  const compactQuery = cleanLower.replace(/[^a-z0-9]/g, '');
   const minMatches = terms.length <= 2 ? 1 : Math.max(2, Math.ceil(terms.length * 0.65));
   const nonGenericTerms = terms.filter(t => !GENERIC_CATEGORY_WORDS.has(t));
 
@@ -401,18 +430,23 @@ export function ghanaSearch(query, {limit = 10, db = null} = {}) {
     } else if (baseNameWithoutBranch === cleanLower || baseNameWithoutBranch === expandedQuery) {
       score += 150; // Non-commercial parenthetical suffix
     } else {
-      // Fuzzy full name match (Typo in entire single/multi-word name)
+      // Fuzzy full name match (Typo in entire single/multi-word name). When the query is itself a real indexed word
+      // ("Kotoka"), a place one letter off ("Kotoya") is probably not what was meant, so it gets far less.
       const lenDiff = Math.abs(place._nameLower.length - cleanLower.length);
       if (lenDiff <= 2 && place._nameLower[0] === cleanLower[0]) {
         const fullDist = levenshtein(place._nameLower, cleanLower);
         if (fullDist === 1) {
-          score += 180;
+          score += queryIsKnownWord ? 40 : 180;
         } else if (fullDist === 2 && cleanLower.length >= 6) {
-          score += 110;
+          score += queryIsKnownWord ? 20 : 110;
         }
       }
 
-      if (cleanLower.includes(place._nameLower) && place._nameLower.length >= 3) {
+      // The same name written with or without spaces ("GTBank" and "GT Bank") counts as the name being in the query.
+      const compactName = place._nameLower.replace(/[^a-z0-9]/g, '');
+      if (!cleanLower.includes(place._nameLower) && compactName.length >= 4 && compactQuery.includes(compactName)) {
+        score += Math.round(120 * compactName.length / compactQuery.length);
+      } else if (cleanLower.includes(place._nameLower) && place._nameLower.length >= 3) {
         // Query contains place full name (e.g. "Koforidua Market, Eastern Region")
         const ratio = place._nameLower.length / cleanLower.length;
         score += Math.round(120 * ratio);
@@ -428,6 +462,11 @@ export function ghanaSearch(query, {limit = 10, db = null} = {}) {
       score += 40; // All words in multi-word query matched!
     } else if (matchCount === 1 && terms.length >= 3) {
       score -= 30; // Penalize matching only 1 word of a 3+ word query
+    }
+    // A distinctive word the place does not explain ("GTBank" in "GTBank Cape Coast") means the person wants something
+    // more specific than this place, so the town alone should not beat the business in that town.
+    for (let ti = 0; ti < terms.length; ti++) {
+      if (!data.matchedTerms.has(ti) && !GENERIC_CATEGORY_WORDS.has(terms[ti]) && terms[ti].length >= 3 && !place._searchable.includes(terms[ti])) score -= 60;
     }
 
     // C. EXACT PHRASE IN SEARCHABLE TEXT
