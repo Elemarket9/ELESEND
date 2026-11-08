@@ -2063,7 +2063,27 @@ export default function CustomerApp() {
               <View key={s.id} style={styles.pastOrderRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.orderIdText} numberOfLines={1}>{s.destination?.address ? `To ${s.destination.address}` : `Parcel #${s.id.slice(0, 8)}`}</Text>
-                  <Text style={styles.orderFareText}>{customerStatus(s.state)}, {ghc(s.amount_minor)}</Text>
+                  <Text style={styles.orderFareText}>{s.state === 'COMPLETED' ? 'Rider reported delivered' : customerStatus(s.state)}, {ghc(s.amount_minor)}</Text>
+                  {s.state === 'COMPLETED' && (
+                    <Text style={styles.orderFareText}>
+                      {s.receipt_confirmed_at ? 'You acknowledged receipt' : 'Receipt not confirmed by the booking customer'}
+                    </Text>
+                  )}
+                  {s.state === 'COMPLETED' && !s.receipt_confirmed_at && (
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      accessibilityLabel="Confirm you received this delivery"
+                      style={[styles.secondaryBtn, { marginTop: 10, padding: 10, minHeight: 44 }]}
+                      onPress={() => Alert.alert('Confirm Received', 'Only confirm if you personally received this delivery. This is optional and does not change the rider\'s report.', [
+                        {text: 'Cancel', style: 'cancel'},
+                        {text: 'Yes, I received it', onPress: () => execute(async () => {
+                          await call('POST', `/api/v1/shipments/${s.id}/receipt`, {received:true});
+                          await refreshActivity();
+                        })}
+                      ])}>
+                      <Text style={styles.secondaryBtnText}>Confirm Received (Optional)</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               </View>
             ))}
