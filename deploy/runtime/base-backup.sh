@@ -19,6 +19,6 @@ echo "Base backup stored offsite: $file ($(stat -c '%s' "$work/$file") bytes)"
 # Old base backups and the WAL they need go together. The newest base backup is never removed.
 newest=$(rclone lsf "$OFFSITE/base" --files-only --include 'base-*.tar.gz.gpg' | sort | tail -1)
 [[ "$newest" == "$file" ]] || { echo 'The new base backup is not the newest offsite; not pruning' >&2; exit 1; }
-rclone delete --min-age "${BACKUP_RETENTION_DAYS}d" --exclude "$newest" "$OFFSITE/base" || true
-rclone delete --min-age "$((BACKUP_RETENTION_DAYS+1))d" "$OFFSITE/wal" || true
+rclone delete --min-age "${BACKUP_RETENTION_DAYS}d" --exclude "$newest" "$OFFSITE/base" 2>/dev/null || true
+rclone lsf "$OFFSITE/wal" >/dev/null 2>&1 && rclone delete --min-age "$((BACKUP_RETENTION_DAYS+1))d" "$OFFSITE/wal" || true
 heartbeat "${BASE_BACKUP_HEARTBEAT_URL:-}"

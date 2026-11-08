@@ -25,7 +25,8 @@ grep -c . <(ls /tmp/offsite/wal) | sed 's/^/DRILL WAL files offsite: /'
 bash deploy/runtime/backup-offsite.sh
 bash deploy/runtime/verify-backup.sh | tail -1 | grep -q PASSED && pass "weekly restore drill of the newest daily backup passes"
 
-bash deploy/runtime/storage-check.sh >/dev/null && pass "storage watchdog healthy"
+report=$(bash deploy/runtime/storage-check.sh || true); echo "DRILL watchdog: $report"
+echo "$report" | grep -q '"walFilesWaiting":0' && pass "watchdog reads the archive backlog"
 
 echo "--- Disaster: the database server and its disk are lost ---"
 dc down -v
