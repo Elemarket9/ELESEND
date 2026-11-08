@@ -62,7 +62,7 @@ Deployment requires explicit `API_PUBLIC_ORIGIN` and `WEB_PUBLIC_ORIGIN`. Config
 
 ### 1. Cash-First Logistics & Double-Entry Financial Ledger
 - **Integer Pesewas Accounting**: All monetary values are strictly computed and stored as integer pesewas (`1 GH₵ = 100 pesewas`), eliminating floating-point errors.
-- **Rider Cash Custody & Double-Entry Journal**: Cash collections on delivery are recorded with verified OTP handovers. Cash collected creates an auditable receivable owed to ELESEND without claiming uncollected digital revenue.
+- **Rider Cash Custody & Double-Entry Journal**: Cash collections are rider-reported and associated with recorded rider-declared handovers; customer receipt is not independently verified. Cash collected creates an auditable receivable owed to ELESEND without claiming uncollected digital revenue.
 - **Weekly Rider Settlement**: Unpaid cash commissions close every Sunday at midnight (UTC). Couriers exceeding cutoff terms are automatically restricted from accepting new jobs until debts are settled via Mobile Money or audited two-person admin waiver.
 - **Multiple Payment Channels**: Checkout is designed for `CASH`, Mobile Money (`MOMO`), card (`CARD`), and hosted `QR` payments. Digital methods need a complete payment adapter in production; see the payment notes above.
 
