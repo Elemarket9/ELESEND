@@ -581,6 +581,32 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    assert.equal((await api(null,'POST','/api/v1/rider-documents/upload',{token,kind:'insurance',expiresOn:'2030-01-01',imageBase64:jpeg})).status,200,'renewing papers does not');
    await offline();
   });
+  await t.test('security: prices that were never booked are deleted a week after they expire',async()=>{
+   const {backgroundJobs}=await import('../services/api/background-jobs.mjs');
+   const c=await customer();
+   const unused=await api(c.token,'POST','/api/v1/quotes',trip());assert.equal(unused.status,200);
+   const booked=await paidOrder(c);const bookedQuote=(await db.query('SELECT quote_id FROM shipments WHERE id=$1',[booked])).rows[0].quote_id;
+   const fresh=await api(c.token,'POST','/api/v1/quotes',trip());
+   await db.query("UPDATE quotes SET expires_at=now()-interval '8 days' WHERE id=ANY($1::uuid[])",[[unused.data.id,bookedQuote]]);
+   await backgroundJobs({db,chat:{}}).jobs.maintenance();
+   const left=(await db.query('SELECT id FROM quotes WHERE id=ANY($1::uuid[])',[[unused.data.id,bookedQuote,fresh.data.id]])).rows.map(r=>r.id);
+   assert.equal(left.includes(unused.data.id),false,'the unused price and its phone number are gone');
+   assert.equal(left.includes(bookedQuote),true,'the booked one stays with its delivery');
+   assert.equal(left.includes(fresh.data.id),true,'a current price is untouched');
+  });
+  await t.test('security: menu prices and order totals stay within safe limits',async()=>{
+   const {restaurantService}=await import('../services/api/restaurant.mjs');
+   const owner=await signUp('business');await verifyPhone(owner);const c=await customer();
+   const made=await api(owner.token,'POST','/api/v1/restaurants',{name:'Limit Kitchen '+randomInt(1e6),phone:'0241234567',address:'Spintex Road, Accra',latitude:P.latitude,longitude:P.longitude});
+   assert.equal((await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id+'/items',{name:'Gold plate',priceMinor:2147483647})).status,400,'an absurd price is refused');
+   const item=await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id+'/items',{name:'Party tray',priceMinor:5000000});assert.equal(item.status,200);
+   const admin=randomUUID();await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'test-only','admin',now())",[admin,phone()]);
+   await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'verification:write')",[admin]);
+   await restaurantService(db).updateRestaurant({id:admin,kind:'admin'},made.data.id,{status:'approved'});
+   const order=q=>({restaurantId:made.data.id,items:[{itemId:item.data.id,quantity:q}],deliveryAddress:D.address,deliveryLatitude:D.latitude,deliveryLongitude:D.longitude,customerPhone:'0241234567'});
+   const big=await api(c.token,'POST','/api/v1/food-orders/quote',order(50));assert.equal(big.status,400);assert.match(big.data.error,/too large/);
+   assert.equal((await api(c.token,'POST','/api/v1/food-orders/quote',order(2))).status,200);
+  });
   await t.test('the customer is told when a refund has gone out, and the company page loads',async()=>{
    const page=await fetch(base+'/company');const html=await page.text();
    assert.equal(page.status,200);assert.match(html,/ELESEND for Companies/);

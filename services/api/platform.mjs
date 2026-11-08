@@ -37,6 +37,11 @@ const uuid=z.string().uuid();
 // cancelled or returned. Staff keep access. Later contact goes through support.
 const CONTACT_WINDOW_MS=2*3600*1000;
 const contactOpen=s=>s.state==='COMPLETED'?Boolean(s.completed_at)&&Date.now()-new Date(s.completed_at).getTime()<CONTACT_WINDOW_MS:!['CANCELLED','RETURNED'].includes(s.state);
+/** A price that was never booked still holds the recipient's phone number and both addresses, so it is removed a week
+ * after it expired. Booked quotes stay with their delivery. */
+export async function purgeUnbookedQuotes(db){
+ return (await db.query("DELETE FROM quotes WHERE id IN (SELECT q.id FROM quotes q WHERE q.expires_at<now()-interval '7 days' AND NOT EXISTS(SELECT 1 FROM shipments s WHERE s.quote_id=q.id) LIMIT 5000)")).rowCount;
+}
 export function hideEndedContacts(actor,s){
  if(!s||actor?.kind==='admin'||contactOpen(s))return s;
  if(actor?.id===s.customer_id)return {...s,rider_phone:s.rider_phone===undefined?undefined:null};

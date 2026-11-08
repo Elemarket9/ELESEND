@@ -1,4 +1,5 @@
 import {trafficService} from './traffic.mjs';
+import {purgeUnbookedQuotes} from './platform.mjs';
 import {suspendExpiredDocuments} from './rider-documents.mjs';
 import {suspendExpiredLicences,syncOpenIdentityChecks,requireIdentityRefresh} from './rider-licence.mjs';
 import {enforceDrivingLimits,flagUnusualStops,offlineSignedOutRiders,settleRiderRewards} from './rider-tools.mjs';
@@ -90,6 +91,7 @@ export function backgroundJobs({db,dispatch=null,notifications=null,restOrders=n
    await db.query("DELETE FROM sessions WHERE expires_at<now()-interval '24 hours'");
    await db.query("DELETE FROM account_phone_challenges WHERE expires_at<now()-interval '24 hours'");
    await db.query("DELETE FROM account_recovery_challenges WHERE expires_at<now()-interval '24 hours'");
+   await purgeUnbookedQuotes(db);
    const notifDays = parseInt(process.env.NOTIFICATION_RETENTION_DAYS || '14', 10);
    if (notifDays > 0) {
      await db.query("DELETE FROM notification_jobs WHERE state IN ('sent','expired') AND created_at < now() - ($1::int * interval '1 day')", [notifDays]);

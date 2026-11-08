@@ -107,3 +107,14 @@ test('no deployment domain is stored in the repository',()=>{
  for(const file of ['.env.example','deploy/runtime/.env.example'])assert.match(readFileSync(new URL('../'+file,import.meta.url),'utf8'),/^ELESEND_DOMAIN=your-domain\.example$/m,file);
  assert.equal(readFileSync(new URL('../apps/mobile/eas.json',import.meta.url),'utf8').includes('EXPO_PUBLIC_ELESEND_API_BASE_URL'),false);
 });
+
+test('a production database reached over a network must use TLS',()=>{
+ const remote={...base,DATABASE_URL:'postgres://app:pw@db.example-cloud.test:5432/elesend'};
+ const plain=validateConfig(remote);
+ assert.equal(plain.ok,false);assert.ok(plain.errors.some(e=>/without TLS/.test(e)));
+ assert.equal(validateConfig({...remote,DATABASE_URL:remote.DATABASE_URL+'?sslmode=verify-full'}).errors.some(e=>/without TLS/.test(e)),false);
+ assert.equal(validateConfig({...remote,DATABASE_SSL:'require'}).errors.some(e=>/without TLS/.test(e)),false);
+ assert.equal(validateConfig({...remote,DATABASE_SSL:'disable'}).errors.some(e=>/without TLS/.test(e)),false,'an explicit choice for a private network');
+ for(const local of ['postgres://a:b@localhost/x','postgres://a:b@127.0.0.1/x','postgres://a:b@db:5432/x'])
+  assert.equal(validateConfig({...base,DATABASE_URL:local}).errors.some(e=>/without TLS/.test(e)),false,local);
+});

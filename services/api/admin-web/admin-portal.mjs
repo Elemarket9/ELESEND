@@ -813,7 +813,10 @@ export function renderAdminPortalHtml() {
   </div>
 
   <script>
-    let token = localStorage.getItem('elesend_admin_token') || '';
+    // Staff sign-ins last only for this tab, so closing the browser on a shared computer signs out. A copy kept by
+    // older versions of this page is removed.
+    try { localStorage.removeItem('elesend_admin_token'); } catch (e) {}
+    let token = (() => { try { return sessionStorage.getItem('elesend_admin_token') || ''; } catch (e) { return ''; } })();
     
     function api(path, options = {}) {
       return fetch(path, {
@@ -852,7 +855,7 @@ export function renderAdminPortalHtml() {
         showDashboard(me);
       } catch (e) {
         token = '';
-        localStorage.removeItem('elesend_admin_token');
+        try { sessionStorage.removeItem('elesend_admin_token'); } catch (e) {}
         showLogin();
       }
     }
@@ -888,7 +891,7 @@ export function renderAdminPortalHtml() {
           body: JSON.stringify({ phone, password, totpCode })
         });
         token = res.token;
-        localStorage.setItem('elesend_admin_token', token);
+        try { sessionStorage.setItem('elesend_admin_token', token); } catch (e) {}
         await checkAuth();
       } catch (err) {
         errBox.textContent = '⚠️ ' + err.message;
@@ -899,7 +902,7 @@ export function renderAdminPortalHtml() {
     async function logout() {
       try { await api('/api/v1/auth/logout', { method: 'POST' }); } catch {}
       token = '';
-      localStorage.removeItem('elesend_admin_token');
+      try { sessionStorage.removeItem('elesend_admin_token'); } catch (e) {}
       showLogin();
     }
 

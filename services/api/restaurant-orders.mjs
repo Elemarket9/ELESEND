@@ -163,6 +163,8 @@ export function restaurantOrderService(db, options = {}) {
       const unitPriceMinor = BigInt(it.price_minor) + modifierExtraMinor;
       const totalItemMinor = unitPriceMinor * BigInt(requested.quantity);
       foodSubtotalMinor += totalItemMinor;
+      // Totals are stored as whole pesewas in 32-bit columns; refuse an order that would not fit rather than fail later.
+      check(foodSubtotalMinor <= 10000000n, 400, 'This order is too large. Split it into smaller orders');
 
       orderItems.push({
         itemId: it.id,

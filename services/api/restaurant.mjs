@@ -79,6 +79,8 @@ export function isPrivateOrLocalHost(hostname) {
   return false;
 }
 
+// GH₵50,000 per item or option: well above any real menu price, and safely inside the database's limits.
+const MAX_PRICE_MINOR = 5000000;
 export const httpsImageUrlSchema = z.string().trim().max(2048).refine(val => {
   try {
     const u = new URL(val);
@@ -365,7 +367,7 @@ export function restaurantService(db) {
       categoryId: z.string().uuid().optional().nullable(),
       name: z.string().trim().min(1).max(120),
       description: z.string().trim().max(500).optional().nullable(),
-      priceMinor: z.number().int().min(0),
+      priceMinor: z.number().int().min(0).max(MAX_PRICE_MINOR),
       imageUrl: httpsImageUrlSchema.optional().nullable(),
       isAvailable: z.boolean().default(true),
       prepTimeMinutes: z.number().int().min(1).max(180).default(15)
@@ -397,7 +399,7 @@ export function restaurantService(db) {
       categoryId: z.string().uuid().optional().nullable(),
       name: z.string().trim().min(1).max(120).optional(),
       description: z.string().trim().max(500).optional().nullable(),
-      priceMinor: z.number().int().min(0).optional(),
+      priceMinor: z.number().int().min(0).max(MAX_PRICE_MINOR).optional(),
       imageUrl: httpsImageUrlSchema.optional().nullable(),
       isAvailable: z.boolean().optional(),
       prepTimeMinutes: z.number().int().min(1).max(180).optional()
@@ -471,7 +473,7 @@ export function restaurantService(db) {
 
     const schema = z.object({
       name: z.string().trim().min(1).max(100),
-      priceMinor: z.number().int().min(0).default(0),
+      priceMinor: z.number().int().min(0).max(MAX_PRICE_MINOR).default(0),
       isAvailable: z.boolean().default(true)
     }).strict();
     const data = schema.parse(input);

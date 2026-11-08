@@ -265,3 +265,21 @@ test('tracking links cannot be forged with a key from the code, and do not reuse
   assert.throws(()=>createPublicTrackingToken(id),/required in production/);
  }finally{for(const [k,v] of Object.entries(saved)){if(v===undefined)delete process.env[k];else process.env[k]=v;}}
 });
+
+test('staff sign-ins are kept only for the browser tab',async()=>{
+ const {renderAdminPortalHtml}=await import('../services/api/admin-web/admin-portal.mjs');
+ const html=renderAdminPortalHtml();
+ assert.equal(/localStorage\.(get|set)Item\('elesend_admin_token'/.test(html),false);
+ assert.match(html,/sessionStorage\.setItem\('elesend_admin_token'/);
+ assert.match(html,/localStorage\.removeItem\('elesend_admin_token'\)/,'an old saved copy is cleared');
+});
+
+test('only operations staff see server health',async()=>{
+ const admin={id:'00000000-0000-4000-8000-0000000000a1',kind:'admin'};
+ const app={authenticate:async()=>admin};
+ const db=permissive(sql=>sql.includes('FROM permissions')?{rowCount:0,rows:[]}:null);
+ const server=httpServer(db,app,null,null,null,{restaurant:{},restaurantOrders:{}});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ try{assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/api/v1/admin/system-health`,{headers:auth})).status,403);}
+ finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
+});

@@ -108,6 +108,16 @@ export function validateConfig(env = process.env) {
     }
   };
 
+  // A production database reached over a network must use TLS, or passwords and customer data cross it readable.
+  // Plain connections stay allowed to the same machine or a container on the same private network (a host name
+  // without dots, such as "db"), or when DATABASE_SSL=disable is set on purpose.
+  if (isProduction && dbUrl && !sslEnabled && rawSsl !== 'disable' && rawSsl !== 'false' && rawSsl !== '0') {
+    let dbHost = '';
+    try { dbHost = new URL(dbUrl).hostname.replace(/^\[|\]$/g, '').toLowerCase(); } catch {}
+    const sameMachineOrPrivateContainer = !dbHost || dbHost === 'localhost' || dbHost === '::1' || /^127\./.test(dbHost) || !dbHost.includes('.') && !dbHost.includes(':');
+    if (!sameMachineOrPrivateContainer) errors.push(`The production database at ${dbHost} is reached without TLS. Add sslmode=verify-full to DATABASE_URL or set DATABASE_SSL=require. Set DATABASE_SSL=disable only if the network is private.`);
+  }
+
   // --- Server & Network ---
   const port = parseInteger(env.PORT, 3090);
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {

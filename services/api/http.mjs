@@ -621,6 +621,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&/^\/api\/v1\/admin\/riders\/[0-9a-f-]{36}\/licence\/reject$/.test(path))result=await rejectRiderLicence(db,actor,path.split('/')[5],body);
   else if(method==='GET'&&path==='/api/v1/admin/system-health'){
    check(actor?.kind==='admin',403,'Administrator required');
+   // Server memory, disk and connection details help an attacker plan, so only operations staff see them.
+   check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission='dispatch:configure'",[actor.id])).rowCount,403,'Operations permission required');
    result=await getSystemHealthReport(db);
   }
   else if(method==='GET'&&path==='/api/v1/admin/dispatch/exceptions')result=await app.openExceptions(actor);
