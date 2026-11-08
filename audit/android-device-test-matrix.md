@@ -14,3 +14,9 @@ Audit date: 2026-11-08. Base: main @ 612b44101b6581e4a1d2774eca067658462178e8. W
 | APK compilation and installation | Android Gradle app exists | No build executed by this audit | Unverified |
 
 Before pilot, execute on actual low-end Android handset and rider/customer identities: cold start, login, expiry, background GPS, airplane mode, screen off/Doze, network switch, cash pickup vs cash delivery, rapid duplicate handover taps, stopped GPS, merchant chat, payment redirect, map outage and app restoration. Record OS/device, build SHA, logs, screenshots and outcome.
+
+## Additional Android source fixes (not device tested)
+- Customer phone modal now reflects pre-pickup correction rather than an SMS code, commit 81e16c38.
+- CustomerApp corrected SMS notice, commit 246105185.
+- Rider sender cash pickup and recipient cash delivery use a shared testable helper and server cash-report route before declaration (603b7c5a, 71efaa823).
+- No APK/ADB installation, background GPS trace, low-end Android measurement or Expo build was performed as part of this audit.
