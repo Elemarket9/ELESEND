@@ -15,3 +15,6 @@ test('a town name is never ranked under a place that lacks it',()=>{
 test('placeholder names such as "village" or "shop" are not offered as places',()=>{
  assert.ok(!GHANA_GAZETTEER.some(p=>['village','shop','church','yes'].includes(String(p.name).trim().toLowerCase())));
 });
+test('the airport domestic terminal is found by the words customers use',()=>{
+ for(const q of ['Domestic Terminal','Kotoka domestic terminal','Accra Airport Terminal 2'])assert.match(first(q).name,/Domestic Terminal/i,q);
+});
