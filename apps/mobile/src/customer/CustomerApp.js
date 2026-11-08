@@ -2073,7 +2073,7 @@ export default function CustomerApp() {
                     <TouchableOpacity
                       accessibilityRole="button"
                       accessibilityLabel="Confirm you received this delivery"
-                      style={[styles.secondaryBtn, { marginTop: 10, padding: 10, minHeight: 44 }]}
+                      style={{ marginTop: 10, padding: 10, minHeight: 44, backgroundColor: '#E0F2FE', borderRadius: 8, alignItems: 'center', justifyContent: 'center' }}
                       onPress={() => Alert.alert('Confirm Received', 'Only confirm if you personally received this delivery. This is optional and does not change the rider\'s report.', [
                         {text: 'Cancel', style: 'cancel'},
                         {text: 'Yes, I received it', onPress: () => execute(async () => {
@@ -2081,7 +2081,7 @@ export default function CustomerApp() {
                           await refreshActivity();
                         })}
                       ])}>
-                      <Text style={styles.secondaryBtnText}>Confirm Received (Optional)</Text>
+                      <Text style={{ color: '#0369A1', fontWeight: '700' }}>Confirm Received (Optional)</Text>
                     </TouchableOpacity>
                   )}
                 </View>
