@@ -16,3 +16,11 @@ data/overture/
 audit-reports/
 tests/screenshots/
 apps/mobile/android/app/google-services.json
+
+# Generated private Ghana map datasets and incomplete build outputs
+map-data/
+ghana-map-data/
+*.osm.pbf
+*.osrm
+*.osrm.*
+*.mbtiles

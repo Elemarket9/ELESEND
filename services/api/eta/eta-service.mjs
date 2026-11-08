@@ -65,7 +65,7 @@ export function etaService(db,{routing=null,baselineFactors={},routingLabel='osr
    coordinates.push(...(leg.geometry?.coordinates??[]));
    previous=point;
   }
-  durationSeconds+=earlierStops.length*ETA_ASSUMPTIONS.pickupHandoverSeconds;
+  durationSeconds+=earlierStops.reduce((sum,stop)=>sum+(stop.kind==='pickup'?ETA_ASSUMPTIONS.pickupHandoverSeconds:ETA_ASSUMPTIONS.dropoffHandoverSeconds),0);
   return {durationSeconds,distanceMeters,geometry:coordinates.length>1?{type:'LineString',coordinates}:null};
  }
 
