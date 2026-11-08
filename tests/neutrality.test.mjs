@@ -22,8 +22,10 @@ test('unused competitor and paid routing code is gone',()=>{
 
 test('address lookup needs an explicitly chosen service',()=>{
  for(const file of ['services/api/config.mjs','services/api/providers/ghanapostgps.mjs','compose.yaml','compose.private-maps.yaml','deploy/runtime/compose.yaml','.env.example'])assert.equal(read(file).includes('sperixlabs'),false,file);
+ // A missing lookup address warns and keeps the lookup off; it never stops a deploy.
  const missing=validateConfig({GHANAPOSTGPS_LOOKUP_ENABLED:'true'});
- assert.ok(missing.errors.some(e=>e.includes('GHANAPOSTGPS_LOOKUP_URL')));
+ assert.equal(missing.errors.some(e=>e.includes('GHANAPOSTGPS_LOOKUP_URL')),false);
+ assert.ok(missing.warnings.some(e=>e.includes('GHANAPOSTGPS_LOOKUP_URL')));
  assert.equal(validateConfig({GHANAPOSTGPS_LOOKUP_ENABLED:'true',GHANAPOSTGPS_LOOKUP_URL:'https://lookup.example.test'}).errors.some(e=>e.includes('GHANAPOSTGPS_LOOKUP_URL')),false);
 });
 

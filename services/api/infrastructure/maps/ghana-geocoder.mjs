@@ -66,10 +66,20 @@ const NATIONAL_ANCHORS = [
   {name:'Kotoka Airport Domestic Terminal (Terminal 2)',category:'airport',locality:'Airport',city:'Accra',region:'Greater Accra',latitude:5.60712,longitude:-0.17167,popularity:90,aliases:['Domestic Terminal','Terminal 2','Domestic Arrivals','Domestic Departures','Accra Airport Domestic Terminal']}
 ];
 
+/** An optional data file next to this module. A missing or broken file leaves search running on the rest. */
+function optionalPlaces(file) {
+  try { const rows = JSON.parse(readFileSync(join(__dirname, file), 'utf8')); return Array.isArray(rows) ? rows : []; }
+  catch { return []; }
+}
+// Places added by hand, each with where its position came from (see docs/maps.md).
+export const PLACE_OVERLAY = optionalPlaces('ghana-places-overlay.json');
+// Businesses and landmarks from OpenStreetMap, rebuilt by scripts/build-ghana-places.sh and the map refresh workflow.
+const OSM_PLACES = optionalPlaces('ghana-osm-places.json');
+
 // Some imported map entries carry only a generic word as their name ("Market", "Junction", "Village"). Shown as a
 // search result they tell the customer nothing about where they are, so they are left out.
 const NAMELESS = new Set(['village','church','mosque','clinic','hospital','market','shop','store','junction','house','bar','hotel','pharmacy','bank','station','filling station','police','school','building','office','yes','unnamed']);
-export const GHANA_GAZETTEER = [...rawGazetteer.filter(p => !NAMELESS.has(String(p.name || '').trim().toLowerCase())), ...NATIONAL_ANCHORS];
+export const GHANA_GAZETTEER = [...rawGazetteer, ...OSM_PLACES].filter(p => !NAMELESS.has(String(p.name || '').trim().toLowerCase())).concat(NATIONAL_ANCHORS, PLACE_OVERLAY);
 
 const ABBREVIATIONS = {
   uni: 'university',
@@ -736,4 +746,29 @@ export async function ghanaReverseGeocodePostGIS(db, lat, lon) {
     latitude: lat,
     longitude: lon
   };
+}
+
+/**
+ * What the customer search box returns: the built-in places, plus places in the database (businesses added there and
+ * places riders taught the map once they are approved). Those used to be saved but never offered in search.
+ * If the database is slow or unavailable the built-in results are returned on their own.
+ */
+export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800} = {}) {
+  const local = ghanaSearch(query, {limit});
+  if (!db) return local;
+  let stored = [];
+  let timer;
+  try {
+    stored = await Promise.race([ghanaSearchPostGIS(db, query, {limit}), new Promise(resolve => { timer = setTimeout(resolve, timeoutMs, []); })]) || [];
+  } catch { stored = []; } finally { clearTimeout(timer); }
+  const sameSpot = (a, b) => String(a.name).trim().toLowerCase() === String(b.name).trim().toLowerCase()
+    && haversine({latitude: Number(a.latitude), longitude: Number(a.longitude)}, {latitude: Number(b.latitude), longitude: Number(b.longitude)}) < 150;
+  const compact = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const wanted = compact(query);
+  const fresh = stored.filter(s => Number.isFinite(Number(s.latitude)) && Number.isFinite(Number(s.longitude)) && !local.some(l => sameSpot(l, s)))
+    .map(s => ({...s, latitude: Number(s.latitude), longitude: Number(s.longitude)}));
+  // A stored place whose name holds everything typed is what was asked for; anything else follows the built-in results.
+  const exact = fresh.filter(s => wanted.length >= 3 && compact(s.name).includes(wanted));
+  const rest = fresh.filter(s => !exact.includes(s));
+  return [...exact, ...local, ...rest].slice(0, limit);
 }

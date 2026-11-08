@@ -29,7 +29,7 @@ export default function RecipientPhoneModal({ shipment, onClose, onChanged }) {
         <View style={{ backgroundColor: '#FFFFFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 22 }}>
           <Text style={{ fontSize: 18, fontWeight: '800', color: '#0F172A' }}>Change recipient number</Text>
           <Text style={{ fontSize: 14, color: '#475569', marginTop: 6, lineHeight: 20 }}>
-            The handover code is sent to this number. If a code was already sent to the old number, it stops working and the rider requests a new one.
+            The rider calls this number when they arrive with the parcel. Change it if the person receiving the parcel has changed.
           </Text>
           <TextInput
             value={value}
