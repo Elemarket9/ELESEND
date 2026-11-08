@@ -502,7 +502,8 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    const stream=async headers=>{const ctl=new AbortController();const res=await fetch(base+'/api/v1/chat/stream?conversationId='+conv.data.id,{headers:{Authorization:'Bearer '+staffToken,...headers},signal:ctl.signal});const status=res.status;ctl.abort();await res.body?.cancel().catch(()=>{});return status;};
    assert.equal(await stream({}),403,'no reason, no access');
    assert.equal(await stream({'X-Support-Justification':'Customer reported a missing parcel'}),200);
-   assert.equal((await db.query("SELECT 1 FROM chat_audit_logs WHERE conversation_id=$1 AND action='support.investigate_conversation'",[conv.data.id]).catch(()=>({rowCount:1}))).rowCount>0,true);
+   const logged=(await db.query("SELECT justification FROM chat_audit_logs WHERE conversation_id=$1 AND action='support.investigate_conversation'",[conv.data.id])).rows;
+   assert.deepEqual(logged.map(x=>x.justification),['Customer reported a missing parcel'],'only the typed reason is recorded');
    await api(c.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'cancel',reason:'Changed my mind'});
    await offline();
   });
