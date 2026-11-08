@@ -10,7 +10,7 @@ The Moolre adapter is off unless `PAYMENT_PROVIDER=moolre`. It has passed fixtur
 | Confirm a payment | Callback secret check, then `POST /open/transact/status` |
 | Rider withdrawal | `POST /open/transact/transfer` |
 | Confirm a withdrawal or refund | `POST /open/transact/status`, polled by reconciliation |
-| Refund | Transfer to the customer's SMS-verified number |
+| Refund | Manual review unless a separately verified network and exact refund destination reference are supplied; phone prefix is never used to choose network |
 
 ## Confirm with Moolre before going live
 
@@ -28,3 +28,6 @@ The Moolre adapter is off unless `PAYMENT_PROVIDER=moolre`. It has passed fixtur
 1. Set `MOOLRE_SANDBOX=true`, the API user, account number, callback secret and merchant email.
 2. Run one checkout, one failed payment, one withdrawal and one refund in the sandbox.
 3. In live mode, repeat with small real amounts, with a low daily payout limit.
+
+## Refund safety — explicit network required
+The adapter does not infer a transfer network from the customer's Ghana number prefix. A successful collection does not independently verify the network of the refund recipient. Until a verified matching `verifiedRefundRecipientReference` is supplied by an authorized destination-verification flow, `createRefund` returns 409 for manual handling and does **not** submit a transfer. Treat this as an operational limitation, not as a completed refund. Continue reconciling outstanding customer refund liabilities; do not mark a refund successful before provider verification. The supported source does not establish a native Moolre collection-reversal endpoint. Reconfirm the current Moolre contract independently before live refunds.

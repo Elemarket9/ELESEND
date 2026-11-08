@@ -9,8 +9,6 @@ import {validatedCheckoutUrl} from '../checkout-policy.mjs';
  */
 const LIVE='https://api.moolre.com',SANDBOX='https://sandbox.moolre.com';
 const CHANNELS={MTN:'1',TELECEL:'6',AT:'7'};
-// Ghana's number prefixes. Refunds only: a ported number fails safely and goes to staff.
-const PREFIX_CHANNELS={'024':'1','025':'1','053':'1','054':'1','055':'1','059':'1','020':'6','050':'6','026':'7','027':'7','056':'7','057':'7'};
 const NOT_FOUND='SS07';
 const local=value=>{try{return '0'+canonicalGhanaPhone(value).slice(4);}catch{return null;}};
 const decimal=minor=>{check(Number.isSafeInteger(minor)&&minor>0,400,'Invalid amount');return `${Math.floor(minor/100)}.${String(minor%100).padStart(2,'0')}`;};
@@ -154,14 +152,18 @@ export function moolreCheckout({apiUser,publicKey,privateKey,accountNumber,callb
     providerId:out.transactionId,recipientReference,amountMinor,currency,eventId:out.transactionId?`transfer:${out.transactionId}${out.state==='failed'?':failed':''}`:'',
     ...(out.state==='failed'?{failureReason:'Moolre reported the transfer failed'}:{})};
   },
-  /** Moolre documents no refund for collections, so the money goes back to the customer's verified number as a transfer. */
-  async createRefund({requestId,reference,amountMinor,currency,customerPhone}){
+  /** This PSP has no documented collection-reversal endpoint; refund is a separately authorized transfer.
+   * Do not guess the destination network from the telephone prefix.
+   * The refund coordinator must supply a destination verified independently of this adapter.
+   * Until that evidence is available, fail closed for manual reconciliation rather than misdirect funds.
+   */
+  async createRefund({requestId,reference,amountMinor,currency,customerPhone,verifiedRefundRecipientReference}){
    check(/^[0-9a-f-]{36}$/.test(requestId),400,'Invalid refund request');
-   const receiver=local(customerPhone),channel=receiver&&PREFIX_CHANNELS[receiver.slice(0,3)];
-   check(channel,409,'Refund needs staff: the customer number or its network is unknown');
+   const receiver=local(customerPhone),recipient=parseRecipient(verifiedRefundRecipientReference);
+   check(receiver&&recipient&&recipient.phone===receiver,409,'Refund needs staff: verified network and matching refund destination are required');
    const paid=await verifyPayment(reference);
    check(paid.status==='success'&&paid.amountMinor>=amountMinor,409,'Refund exceeds the verified payment');
-   return transfer({externalref:REFUND+requestId,channel,receiver,amountMinor,currency,note:'ELESEND refund'});
+   return transfer({externalref:REFUND+requestId,channel:recipient.channel,receiver,amountMinor,currency,note:'ELESEND refund'});
   },
   async verifyRefund({requestId,reference,amountMinor,currency}){
    check(/^[0-9a-f-]{36}$/.test(requestId),400,'Invalid refund request');

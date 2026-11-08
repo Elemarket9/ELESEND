@@ -695,9 +695,9 @@ export function moneyOperations(db,{provider,notify=null,verifyTimeoutMs=10000,c
      await c.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[actor.id,'dispute.dismissed:'+v.reason,d.id]);
      return {disputeId:d.id,status:'dismissed',approvedRefundMinor:0,refundOperationId:null,duplicate:false};
     }
-    // Delivery confirmed by SMS, and failed deliveries, are never refunded and commission is never given up.
+    // Administrative refund policy remains separate from rider-reported handover and customer dispute intake.
     const food=(await c.query('SELECT 1 FROM food_orders WHERE shipment_id=$1',[d.shipment_id])).rowCount;
-    check(false,409,food?'Delivered food orders are not refunded by ELESEND. The customer should chat with the restaurant':'Parcels confirmed by SMS and failed deliveries are not refunded');
+    check(false,409,food?'Delivered food orders are not refunded by ELESEND. The customer should chat with the restaurant':'Parcel refund is not available under the current policy; a report may still be investigated');
    });
    return result;
   }

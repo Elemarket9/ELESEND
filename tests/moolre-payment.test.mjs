@@ -117,11 +117,14 @@ test('a refund goes to the verified customer number, up to what was paid',async(
  const requestId=randomUUID(),input={requestId,reference:'es_abc12345',amountMinor:6250,currency:'GHS',customerPhone:'+233241234567'};
  const {p,calls}=adapter((u,b)=>u.endsWith('/status')?status(b.id):{status:'1',code:'OBGH01',data:{transactionid:'7'}});
  assert.equal(p.requiresRefundPhone,true);
- assert.deepEqual(await p.createRefund(input),{providerId:'7'});
+ await assert.rejects(p.createRefund(input),/verified network/,'phone prefix alone never authorizes a refund');
+ assert.equal(calls.filter(x=>x.url?.endsWith('/transfer')).length,0,'no transfer to a guessed network');
+ const verified={...input,verifiedRefundRecipientReference:'moolre:1:0241234567'};
+ assert.deepEqual(await p.createRefund(verified),{providerId:'7'});
  const sent=calls.at(-1);
  assert.deepEqual([sent.body.receiver,sent.body.channel,sent.body.externalref],['0241234567','1','esrefund-'+requestId]);
- await assert.rejects(p.createRefund({...input,amountMinor:6251}),/exceeds/);
- await assert.rejects(p.createRefund({...input,customerPhone:'+233111234567'}),/needs staff/);
+ await assert.rejects(p.createRefund({...verified,amountMinor:6251}),/exceeds/);
+ await assert.rejects(p.createRefund({...verified,customerPhone:'+233111234567'}),/needs staff/);
  const done=adapter((u,b)=>status(b.id));
  const v=await done.p.verifyRefund({requestId,reference:'es_abc12345',amountMinor:6250,currency:'GHS'});
  assert.deepEqual([v.status,v.requestId,v.reference,v.providerId],['refunded',requestId,'es_abc12345','31772290']);

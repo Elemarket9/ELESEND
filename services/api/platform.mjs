@@ -176,12 +176,21 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    }
    if(purpose==='pickup'){
     if(s.payment_method==='CASH'&&s.cash_payer==='sender')check(await senderCashCollectedInFull(c,sid,s.amount_minor),409,'Full sender cash collection required before normal pickup; report shortfall and use dispute/exception flow');
+    // Being assigned a rider is not permission to remove food while a kitchen is still preparing it.
+    const foodAtPickup=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[sid])).rows[0];
+    if(foodAtPickup){
+      check(foodAtPickup.state==='READY_FOR_PICKUP',409,'Restaurant has not marked the order ready for rider pickup');
+      await requireFoodPayment(c,foodAtPickup);
+    }
     await c.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[sid]);
-    await c.query("UPDATE food_orders SET state='IN_TRANSIT', updated_at=now() WHERE shipment_id=$1 AND state IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')",[sid]);
+    await c.query("UPDATE food_orders SET state='IN_TRANSIT', updated_at=now() WHERE shipment_id=$1 AND state='READY_FOR_PICKUP'",[sid]);
     await c.query(
      `INSERT INTO locations(shipment_id,rider_id,latitude,longitude,updated_at)
-      SELECT $1,$2,ST_Y(current_position::geometry),ST_X(current_position::geometry),COALESCE(position_at,now())
-      FROM riders WHERE id=$2 AND current_position IS NOT NULL
+      SELECT $1,$2,ST_Y(r.current_position::geometry),ST_X(r.current_position::geometry),r.position_at
+      FROM riders r JOIN dispatch_policy p ON p.id=1
+      WHERE r.id=$2 AND r.current_position IS NOT NULL
+        AND r.position_at BETWEEN now() - (p.fresh_seconds * interval '1 second') AND now()
+        AND r.position_accuracy_m <= p.max_accuracy_m
       ON CONFLICT(shipment_id) DO UPDATE SET rider_id=EXCLUDED.rider_id,latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,updated_at=EXCLUDED.updated_at`,
      [sid,actor.id]
     );
@@ -221,6 +230,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const v=z.object({kind:z.enum(['pickup','delivery']),confirmed:z.literal(true)}).strict().parse(input);
   return db.tx(async c=>{
    await rider(c,actor);
+   check(!(actor.custodyOnly&&v.kind==='pickup'),403,'Suspended riders cannot take custody of another parcel');
    const s=await locked(c,sid);
    check(s.rider_id===actor.id,403,'Only the assigned rider may confirm a handover');
    check(s.verification_authority==='elesend',409,'External verification not enabled');
@@ -239,7 +249,14 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    if(v.kind==='delivery'&&s.state==='PICKUP_VERIFIED')await c.query("UPDATE shipments SET state='IN_TRANSIT' WHERE id=$1",[sid]);
    // Capture actual server time and the rider's most recent observed position without inventing GPS.
    await c.query(`INSERT INTO shipment_handover_events(shipment_id,rider_id,kind,confirmed_at,position,position_at,accuracy_m)
-    SELECT $1,r.id,$2,now(),r.current_position,r.position_at,r.position_accuracy_m FROM riders r WHERE r.id=$3
+    SELECT $1,r.id,$2,now(),
+       CASE WHEN r.position_at BETWEEN now() - (p.fresh_seconds * interval '1 second') AND now()
+                 AND r.position_accuracy_m <= p.max_accuracy_m THEN r.current_position ELSE NULL END,
+       CASE WHEN r.position_at BETWEEN now() - (p.fresh_seconds * interval '1 second') AND now()
+                 AND r.position_accuracy_m <= p.max_accuracy_m THEN r.position_at ELSE NULL END,
+       CASE WHEN r.position_at BETWEEN now() - (p.fresh_seconds * interval '1 second') AND now()
+                 AND r.position_accuracy_m <= p.max_accuracy_m THEN r.position_accuracy_m ELSE NULL END
+    FROM riders r JOIN dispatch_policy p ON p.id=1 WHERE r.id=$3
     ON CONFLICT(shipment_id,kind) DO NOTHING`,[sid,v.kind,actor.id]);
    check((await c.query('SELECT 1 FROM shipment_handover_events WHERE shipment_id=$1 AND rider_id=$2 AND kind=$3',[sid,actor.id,v.kind])).rowCount,409,'Handover evidence mismatch');
    return applyHandover(c,actor,s,sid,v.kind,'rider_reported');
@@ -800,18 +817,18 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   });check(false,503,'We could not send the code by SMS. Try again in a minute. ELESEND support has been alerted.');}
   return {challengeId:cid,expiresInSeconds:300};
  },
- // The customer fixes a mistyped recipient number before handover. Any unused delivery code is cancelled so it cannot reach the old number.
+ // The customer may correct a recipient number before pickup. Invalidate any historical unused legacy SMS challenges.
  async correctRecipient(actor,sid,input){const v=z.object({recipientPhone:z.string().max(30)}).strict().parse(input);const p=phone(v.recipientPhone);
   return db.tx(async c=>{const s=await locked(c,sid);check(s.customer_id===actor.id,404,'Shipment not found');
-   check(['AWAITING_PAYMENT','AWAITING_ASSIGNMENT','RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state),409,'The recipient can no longer be changed for this delivery');
+   check(['AWAITING_PAYMENT','AWAITING_ASSIGNMENT','RIDER_ASSIGNED'].includes(s.state),409,'The recipient can no longer be changed after parcel pickup');
    if(s.recipient_phone===p)return {shipmentId:sid,recipientPhone:p,changed:false};
    await limit(c,'recipient:'+sid,3,86400);
    await c.query("SELECT set_config('elesend.recipient_correction',$1,true)",[sid]);
    await c.query('UPDATE shipments SET recipient_phone=$2 WHERE id=$1',[sid,p]);
    await c.query("SELECT set_config('elesend.recipient_correction','',true)");
-   const cancelled=(await c.query("UPDATE challenges SET expires_at=now() WHERE shipment_id=$1 AND purpose='delivery' AND consumed_at IS NULL AND expires_at>now() RETURNING id",[sid])).rowCount;
+   await c.query("UPDATE challenges SET expires_at=now() WHERE shipment_id=$1 AND purpose='delivery' AND consumed_at IS NULL AND expires_at>now()",[sid]);
    await audit(c,actor.id,'shipment.recipient_changed',sid);
-   return {shipmentId:sid,recipientPhone:p,changed:true,deliveryCodeCancelled:cancelled>0};
+   return {shipmentId:sid,recipientPhone:p,changed:true};
   });
  },
  async handover(actor,sid,input){return handover(actor,sid,input);},
@@ -955,11 +972,12 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   await this.get(actor,sid);
   return db.tx(async c=>{
    await locked(c,sid);
-   // Delivery confirmed by SMS, or a failed delivery the sender pays for, is never refunded.
+   // Finished deliveries are subject to the existing refund policy; a rider report is not recipient proof.
    const refundClaim=['lost','damaged','missing_items','quality','payment'].includes(v.category)||v.items?.length||v.requestedRefundMinor;
    const finished=(await c.query("SELECT state,EXISTS(SELECT 1 FROM food_orders f WHERE f.shipment_id=s.id) AS food FROM shipments s WHERE s.id=$1 AND s.state IN ('COMPLETED','FAILED','RETURN_REQUESTED','RETURNED')",[sid])).rows[0];
    if(refundClaim&&finished?.food&&finished.state==='COMPLETED')check(false,409,'Delivered food orders are handled by the restaurant. Please chat with the restaurant from your order');
-   if(refundClaim&&finished&&!finished.food)check(false,409,'Parcels confirmed by SMS and failed deliveries are not refunded');
+   // A missing-parcel report is always allowed for review. This does not automatically issue a refund.
+   if(refundClaim&&finished&&!finished.food&&finished.state!=='COMPLETED')check(false,409,'Failed or returned parcel fares are not refundable through the customer dispute form');
    const did=id();
    await c.query(
     'INSERT INTO disputes(id,shipment_id,reporter_id,category,detail,items_json,requested_refund_minor) VALUES($1,$2,$3,$4,$5,$6,$7)',

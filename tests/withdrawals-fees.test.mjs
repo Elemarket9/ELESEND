@@ -56,11 +56,11 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await db.query("INSERT INTO shipments(id,customer_id,quote_id,idempotency_key,state,recipient_phone,amount_minor,commission_minor,payment_method,paid) VALUES($1,$2,$3,$4,$5,'+233241234567',$6,130,'MOMO',$7)",[id,customer,quote,randomUUID(),state,amount,paid]);
   return id;
  }
- async function completedEarning(rider,customer,amount){
+ async function completedEarning(rider,customer,amount,companyId=null){
   const id=await shipment(customer,'AWAITING_ASSIGNMENT',true,amount+130);
   const stop=kind=>({shipmentId:id,kind,weightG:100,latitude:5.5,longitude:-0.2});
   await db.query('INSERT INTO rider_dispatch_plans(rider_id,revision,stops) VALUES($1,1,$2) ON CONFLICT(rider_id) DO UPDATE SET stops=$2',[rider,JSON.stringify([stop('pickup'),stop('dropoff')])]);
-  await db.query("UPDATE shipments SET rider_id=$2,state='RIDER_ASSIGNED' WHERE id=$1",[id,rider]);
+  await db.query("UPDATE shipments SET rider_id=$2,company_id=$3,state='RIDER_ASSIGNED' WHERE id=$1",[id,rider,companyId]);
   const challenge=purpose=>db.query("INSERT INTO challenges(id,shipment_id,rider_id,purpose,phone,digest,expires_at,sent,consumed_at) VALUES($1,$2,$3,$4,'+233241234567','x',now()+interval '5 minutes',true,now())",[randomUUID(),id,rider,purpose]);
   await challenge('pickup');
   await db.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[id]);
@@ -230,15 +230,13 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await db.query("INSERT INTO companies(id,owner_id,name,status) VALUES($1,$2,'Fleet Co','approved')",[companyId,owner]);
   await db.query('INSERT INTO payout_beneficiaries(user_id,provider,recipient_reference) VALUES($1,$2,$3)',[owner,'fixture','RCP_fleet']);
   const fleetRider=await newRider();
-  const fleet=await completedEarning(fleetRider,customer,2500);
-  await db.query('UPDATE shipments SET company_id=$2 WHERE id=$1',[fleet,companyId]);
+  await db.query('UPDATE riders SET company_id=$2 WHERE id=$1',[fleetRider,companyId]);
+  const fleet=await completedEarning(fleetRider,customer,2500,companyId);
   // Cash commission on a company job is the company's debt, never the rider's, and earnings repay it.
   const {settleCompletedDelivery,debtState}=await import('../services/api/modules/payments/rider-wallet.mjs');
   const {companyDebtMinor}=await import('../services/api/modules/payments/company-commission.mjs');
   const {cashEligible}=await import('../services/api/modules/payments/finance.mjs');
-  await db.query('UPDATE riders SET company_id=$2 WHERE id=$1',[fleetRider,companyId]);
-  const cashJob=await completedEarning(fleetRider,customer,1);
-  await db.query('UPDATE shipments SET company_id=$2 WHERE id=$1',[cashJob,companyId]);
+  const cashJob=await completedEarning(fleetRider,customer,1,companyId);
   await db.tx(c=>settleCompletedDelivery(c,{id:cashJob,rider_id:fleetRider,company_id:companyId,payment_method:'CASH',commission_minor:500}));
   assert.equal((await db.tx(c=>debtState(c,fleetRider))).debtMinor,0);
   assert.equal(await db.tx(c=>companyDebtMinor(c,companyId)),0);

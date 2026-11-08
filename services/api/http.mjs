@@ -61,8 +61,8 @@ function forCustomer(actor,value){
  if(Array.isArray(value))return value.map(row=>forCustomer(actor,row));
  return value?.customer_id===actor.id?withoutInternalFigures(value):value;
 }
-const CUSTODY_ROUTES=new Set(['GET /api/v1/me','GET /api/v1/me/phone','POST /api/v1/auth/logout','GET /api/v1/rider/manifest','POST /api/v1/rider/navigation']);
-const CUSTODY_SHIPMENT_ROUTE=/^(GET \/api\/v1\/shipments\/[0-9a-f-]{36}(\/tracking)?|POST \/api\/v1\/shipments\/[0-9a-f-]{36}\/(delivery-challenge|return-challenge|verify|transition|location))$/;
+const CUSTODY_ROUTES=new Set(['GET /api/v1/me','GET /api/v1/me/phone','POST /api/v1/auth/logout','GET /api/v1/rider/manifest','POST /api/v1/rider/navigation','POST /api/v1/rider/cash-report']);
+const CUSTODY_SHIPMENT_ROUTE=/^(GET \/api\/v1\/shipments\/[0-9a-f-]{36}(\/tracking)?|POST \/api\/v1\/shipments\/[0-9a-f-]{36}\/(handover|delivery-challenge|return-challenge|verify|transition|location))$/;
 const AWAITING_APPROVAL_ROUTES=new Set(['GET /api/v1/me','GET /api/v1/me/phone','POST /api/v1/me/phone-challenge','POST /api/v1/me/phone-verify','POST /api/v1/auth/logout','POST /api/v1/me/delete-account',
  'GET /api/v1/rider/licence','POST /api/v1/rider/licence','POST /api/v1/rider/licence/identity-check','GET /api/v1/rider/documents','POST /api/v1/rider/documents/upload-link','POST /api/v1/rider/profile',
  'GET /api/v1/rider/invitations','POST /api/v1/rider/invitations/accept','POST /api/v1/rider/company/leave',

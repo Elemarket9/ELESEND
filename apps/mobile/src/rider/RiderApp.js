@@ -37,6 +37,7 @@ import { normalizeGhanaPhone, isValidGhanaPhone } from '../phone';
 import { colors, typography, spacing, radii } from '../theme';
 import { riderStatus } from '../status-labels';
 import RiderNavigation from './RiderNavigation';
+import { cashToCollect } from './handover-logic.mjs';
 import { VoiceNoteBubble, VoiceNoteRecorder } from '../chat/VoiceNote';
 import OfflineMapCard from './OfflineMapCard';
 import { prepareDeviceLocation } from '../customer-location';
@@ -547,31 +548,36 @@ export default function RiderApp() {
     ]);
   }
 
-  async function initiatePickupVerification(shipment) {
-    askPhysicalHandover(shipment,'pickup');
-  }
-
-  async function initiateDeliveryVerification(shipment) {
-    if (!isStationary(speed)) throw Error('Stop safely before confirming delivery');
-    if (shipment.payment_method === 'CASH' && !reportedCash[shipment.id] && shipment.cash_payer === 'recipient') {
+  async function collectAndConfirm(shipment,kind){
+    const cash=cashToCollect(shipment, kind, reportedCash);
+    if(cash){
       Alert.alert(
         'Confirm Cash Collection',
-        `Collect ${ghc(shipment.amount_minor)} in cash from the recipient before confirming delivery.`,
+        `Collect ${ghc(cash.amountMinor)} in cash from the ${cash.payer} before confirming ${kind}.`,
         [
           {text:'Cancel',style:'cancel'},
           {text:'I Collected Full Cash',onPress:()=>execute(async()=>{
             await call('POST','/api/v1/rider/cash-report',{
-              shipmentId:shipment.id,reportedMinor:shipment.amount_minor,
-              cashPayer:shipment.cash_payer||'recipient',idempotencyKey:Crypto.randomUUID()
+              shipmentId:shipment.id,reportedMinor:cash.amountMinor,
+              cashPayer:cash.payer,idempotencyKey:Crypto.randomUUID()
             });
             setReportedCash(r=>({...r,[shipment.id]:true}));
-            askPhysicalHandover(shipment,'delivery');
+            askPhysicalHandover(shipment,kind);
           })}
         ]
       );
       return;
     }
-    askPhysicalHandover(shipment,'delivery');
+    askPhysicalHandover(shipment,kind);
+  }
+
+  async function initiatePickupVerification(shipment) {
+    await collectAndConfirm(shipment,'pickup');
+  }
+
+  async function initiateDeliveryVerification(shipment) {
+    if (!isStationary(speed)) throw Error('Stop safely before confirming delivery');
+    await collectAndConfirm(shipment,'delivery');
   }
 
   async function initiateReturnVerification(shipment) {

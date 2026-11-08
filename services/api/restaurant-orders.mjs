@@ -1,3 +1,4 @@
+import {hasPickupCustodyEvidence} from './custody-evidence.mjs';
 import {assessDeliveryHealth,RIDER_LATE_OR_SILENT_SQL} from './algorithms/delivery-health.mjs';
 import {recordRiderRiskSignals} from './risk-signals.mjs';
 import {restaurantFinanceSummary,firstConfirmedPaymentAt} from './modules/payments/index.mjs';
@@ -864,7 +865,7 @@ export function restaurantOrderService(db, options = {}) {
       const isOwner = Boolean(actor && restaurant && restaurant.owner_id === actor.id);
       const isRider = Boolean(actor && shipment.rider_id && shipment.rider_id === actor.id);
       const isCustomer = Boolean(actor && order.customer_id === actor.id);
-      const pickedUp = Boolean((await c.query("SELECT 1 FROM shipment_handover_events WHERE shipment_id=$1 AND kind='pickup' UNION SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[shipment.id])).rowCount) ||
+      const pickedUp = await hasPickupCustodyEvidence(c,shipment.id) ||
         ['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP', 'RETURN_REQUESTED', 'RETURNED'].includes(shipment.state) ||
         order.state === 'IN_TRANSIT';
 
