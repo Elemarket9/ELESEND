@@ -48,6 +48,9 @@ test('GPS quality: good, missing, lost, stale, inaccurate and jumping',()=>{
  assert.equal(quality(fix).quality,'good');
  assert.equal(quality({...fix,latitude:null}).usable,false);
  assert.equal(quality({...fix,updatedAt:null}).quality,'missing');
+ assert.equal(quality({...fix,latitude:91}).usable,false);
+ assert.equal(quality({...fix,longitude:181}).usable,false);
+ assert.equal(quality({...fix,updatedAt:inSeconds(30)}).usable,false);
  assert.equal(quality({...fix,updatedAt:inSeconds(-700)}).usable,false);
  assert.equal(quality({...fix,updatedAt:inSeconds(-200)}).quality,'stale');
  assert.equal(quality({...fix,accuracyMeters:90}).quality,'inaccurate');
@@ -169,6 +172,11 @@ test('other stops before this delivery add time and lower confidence',async()=>{
  const result=await service.customerEta('s1');
  assert.equal(calls.length,2);
  assert.equal(result.confidence,'low');
+ const prediction=serviceDb({...active,plan_stops:stops});
+ const observed=await etaService(prediction,{routing:{route:async()=>roadLeg},now:()=>NOW}).customerEta('s1');
+ assert.equal(observed.status,'estimated');
+ const saved=prediction.log.find(entry=>entry.sql.includes('INSERT INTO shipment_eta_state')&&entry.params.length===8);
+ assert.equal(saved.params[3],2*roadLeg.durationSeconds+A.dropoffHandoverSeconds,'preceding dropoff must use dropoff handover time');
 });
 
 test('ETA reports and diagnostics need the right permission',async()=>{
