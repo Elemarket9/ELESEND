@@ -1,5 +1,7 @@
 name: npm audit (temporary)
 on: push
+permissions:
+  contents: write
 jobs:
   audit:
     runs-on: ubuntu-latest
@@ -7,10 +9,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - name: Versions
+      - name: CVE numbers
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          for g in GHSA-86w9-cpqp-85rv GHSA-7wch-p9px-956x GHSA-jc66-7q78-782g GHSA-8hrf-8g6f-7xwp GHSA-hqq3-7jhf-c5jx GHSA-5x38-2vff-x55p GHSA-6wvx-3r32-xmcg GHSA-525v-9gp9-w22h GHSA-5cwg-6vw7-rj6p GHSA-4642-5mcj-2rqw GHSA-h6cr-wjv9-3cpp GHSA-4487-j8r4-4g2f GHSA-6g55-p6wh-862q GHSA-r28c-9q8g-f849 GHSA-qx2v-qp2m-jg93 GHSA-fxqj-rqcc-2cmp GHSA-w74x-v6f9-j3xg GHSA-wjr9-j795-jxcr GHSA-xhq7-xmqj-769h GHSA-333x-w4r6-6crp GHSA-5p2g-fcmc-qvqq GHSA-w3rx-r6r6-pgpr GHSA-3g3m-2fjr-6pw4 GHSA-g3hv-75wg-m249 GHSA-w5hq-g745-h8pq GHSA-gcqx-w48m-w2h4; do
+            curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/advisories/$g | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const a=JSON.parse(s);console.log('CVE',a.ghsa_id,a.cve_id,a.severity,(a.cvss_severities?.cvss_v3?.score??a.cvss?.score??''),a.summary)})"
+          done
+      - name: Update mobile lockfile with patched packages
         working-directory: apps/mobile
         run: |
-          for p in postcss node-forge fast-uri image-size uuid glob minimatch deepmerge; do echo "LATEST $p $(npm view $p version) dist-tags: $(npm view $p dist-tags --json | tr -d '\n ')"; done
-          for p in postcss node-forge fast-uri image-size uuid glob minimatch deepmerge xcode; do echo "WHO $p"; npm ls $p --all --package-lock-only 2>/dev/null | grep -E "$p@" | sort -u | head -8; done
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          npm ls node-forge postcss fast-uri --all --package-lock-only | grep -E "node-forge@|postcss@|fast-uri@" | sort -u
           npm audit --json --package-lock-only > m.json || true
-          node -e "const a=require('./m.json');for(const [n,v] of Object.entries(a.vulnerabilities||{}))for(const x of (v.via||[]))if(typeof x==='object')console.log('ADV',n,x.url,x.range,x.severity)"
+          node -e "console.log('AFTER',JSON.stringify(require('./m.json').metadata.vulnerabilities));for(const [n,v] of Object.entries(require('./m.json').vulnerabilities||{}))console.log('LEFT',n,v.severity)"
+      - name: Push lockfile
+        run: |
+          git config user.name "elesend-audit"; git config user.email "audit@users.noreply.github.com"
+          git add apps/mobile/package-lock.json apps/mobile/package.json
+          git commit -m "Lockfile with patched node-forge, postcss, fast-uri" || echo nothing
+          git push origin HEAD:refs/heads/audit/npm-lock

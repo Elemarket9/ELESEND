@@ -35,5 +35,10 @@
   },
   "devDependencies": {
     "expo-doctor": "1.21.5"
+  },
+  "overrides": {
+    "node-forge": "1.4.3",
+    "postcss": "8.5.32",
+    "fast-uri": "3.1.9"
   }
 }
