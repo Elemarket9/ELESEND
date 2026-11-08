@@ -5,7 +5,7 @@ const url=process.env.TEST_DATABASE_URL;
 /** Starts from brand-new accounts through the real API, so a rule that locks people out cannot pass unnoticed. */
 test('real journeys from brand-new accounts',{skip:!url},async t=>{
  assert.match(new URL(url).pathname,/^\/elesend_test/);
- const previous=process.env.NODE_ENV;process.env.NODE_ENV='production';process.env.OTP_KEY??='d'.repeat(64);
+ const previous=process.env.NODE_ENV,previousLegacySms=process.env.HANDOVER_SMS_LEGACY_ENABLED;process.env.NODE_ENV='production';process.env.HANDOVER_SMS_LEGACY_ENABLED='true';process.env.OTP_KEY??='d'.repeat(64);
  const {database}=await import('../services/api/db.mjs');
  const {migrate}=await import('../scripts/migrate.mjs');
  const {platform}=await import('../services/api/platform.mjs');
@@ -662,6 +662,47 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    assert.equal((await stops()).length,0,'nothing left on the route');
    await offline();
   });
+  await t.test('production SMS-free physical handover preserves rider assignment, cash guards and exact-once earnings',async()=>{
+   await db.query("UPDATE shipments SET state='CANCELLED' WHERE state='AWAITING_ASSIGNMENT'");
+   await db.query("UPDATE dispatch_offers SET status='expired' WHERE status='offered'");
+   await offline();
+   const c=await customer(),r=await readyRider(),other=await readyRider();
+   await db.query('UPDATE riders SET online=false WHERE id=$1',[other.id]);
+   const shipmentId=await paidOrder(c);
+   await dispatch.tick();
+   const offer=await offerFor(r,shipmentId);
+   assert.ok(offer,'dispatch must offer the prepaid order');
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+shipmentId+'/accept',{offerId:offer.offerId})).status,200);
+   const messagesBefore=texts.length;
+   process.env.HANDOVER_SMS_LEGACY_ENABLED='false';
+   smsWorks=false;
+   try{
+    const smsChallenge=await api(r.token,'POST','/api/v1/shipments/'+shipmentId+'/delivery-challenge',{});
+    assert.equal(smsChallenge.status,410,'legacy delivery OTP is disabled in production');
+    assert.equal((await api(other.token,'POST','/api/v1/shipments/'+shipmentId+'/handover',{kind:'pickup',confirmed:true})).status,403,'another rider cannot declare pickup');
+    assert.equal((await api(r.token,'POST','/api/v1/shipments/'+shipmentId+'/handover',{kind:'delivery',confirmed:true})).status,409,'delivery requires pickup first');
+    const pickup=await api(r.token,'POST','/api/v1/shipments/'+shipmentId+'/handover',{kind:'pickup',confirmed:true});
+    assert.equal(pickup.status,200,JSON.stringify(pickup.data));
+    const duplicatePickup=await api(r.token,'POST','/api/v1/shipments/'+shipmentId+'/handover',{kind:'pickup',confirmed:true});
+    assert.equal(duplicatePickup.status,200,JSON.stringify(duplicatePickup.data));
+    assert.equal(duplicatePickup.data.duplicate,true);
+    const delivered=await api(r.token,'POST','/api/v1/shipments/'+shipmentId+'/handover',{kind:'delivery',confirmed:true});
+    assert.equal(delivered.status,200,JSON.stringify(delivered.data));
+    const duplicate=await api(r.token,'POST','/api/v1/shipments/'+shipmentId+'/handover',{kind:'delivery',confirmed:true});
+    assert.equal(duplicate.status,200,JSON.stringify(duplicate.data));
+    assert.equal(duplicate.data.duplicate,true);
+    const shipment=(await db.query('SELECT state,completed_at FROM shipments WHERE id=$1',[shipmentId])).rows[0];
+    assert.equal(shipment.state,'COMPLETED');assert.ok(shipment.completed_at);
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM shipment_handover_events WHERE shipment_id=$1',[shipmentId])).rows[0].n,2);
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM financial_entries WHERE shipment_id=$1',[shipmentId])).rows[0].n,1,'financial entitlement posted once');
+    assert.equal(texts.length,messagesBefore,'neither pickup nor delivery sends an SMS');
+    assert.equal((await api(other.token,'POST','/api/v1/shipments/'+shipmentId+'/handover',{kind:'delivery',confirmed:true})).status,403);
+   }finally{
+    smsWorks=true;
+    process.env.HANDOVER_SMS_LEGACY_ENABLED='true';
+    await offline();
+   }
+  });
   await t.test('people in use stay signed in, and riders with ended sessions go offline',async()=>{
    const r=await readyRider();
    const lifetime=(await db.query("SELECT expires_at>now()+interval '29 days' AS long FROM sessions WHERE user_id=$1",[r.id])).rows[0];
@@ -676,6 +717,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
   });
  }finally{
   process.env.NODE_ENV=previous;
+  if(previousLegacySms===undefined)delete process.env.HANDOVER_SMS_LEGACY_ENABLED;else process.env.HANDOVER_SMS_LEGACY_ENABLED=previousLegacySms;
   server.closeAllConnections?.();await new Promise(r=>server.close(r));
   await db.close();
  }
