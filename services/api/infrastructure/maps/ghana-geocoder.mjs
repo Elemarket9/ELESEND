@@ -57,7 +57,10 @@ const NATIONAL_ANCHORS = [
   {name:'Bawku Central Market',category:'market',locality:'Central',city:'Bawku',region:'Upper East',latitude:11.0558,longitude:-0.2417,popularity:76},
   {name:'Wa',category:'town',locality:'Central',city:'Wa',region:'Upper West',latitude:10.0607,longitude:-2.5099,popularity:90},
   {name:'Wa Central Market',category:'market',locality:'Central',city:'Wa',region:'Upper West',latitude:10.0607,longitude:-2.5099,popularity:80},
-  {name:'Lawra Town Center',category:'town',locality:'Central',city:'Lawra',region:'Upper West',latitude:10.6433,longitude:-2.8242,popularity:72}
+  {name:'Lawra Town Center',category:'town',locality:'Central',city:'Lawra',region:'Upper West',latitude:10.6433,longitude:-2.8242,popularity:72},
+  // Kotoka's domestic terminal (Terminal 2), where domestic flights and airport courier counters are. Position from
+  // OpenStreetMap (aeroway=terminal "Domestic Arrivals"/"Domestic Departures"), Geofabrik Ghana extract, 2026-11-08.
+  {name:'Kotoka Airport Domestic Terminal (Terminal 2)',category:'airport',locality:'Airport',city:'Accra',region:'Greater Accra',latitude:5.60712,longitude:-0.17167,popularity:90,aliases:['Domestic Terminal','Terminal 2','Domestic Arrivals','Domestic Departures','Accra Airport Domestic Terminal']}
 ];
 
 // Some imported map entries carry only a generic word as their name ("Market", "Junction", "Village"). Shown as a
