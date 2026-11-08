@@ -9,7 +9,7 @@ import {createHash} from 'node:crypto';
 import {createReadStream,existsSync,readFileSync,statSync,readdirSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
-import {pathToFileURL} from 'node:url';
+import {pathToFileURL,fileURLToPath} from 'node:url';
 
 const fail=message=>{throw new Error(message)};
 async function digest(filename){
@@ -18,6 +18,7 @@ async function digest(filename){
  return hash.digest('hex');
 }
 const required=['.osrm','.osrm.partition','.osrm.cells'];
+const repositoryMotorcycleProfile=fileURLToPath(new URL('../deploy/maps/motorcycle.lua',import.meta.url));
 function graphFiles(directory,base){
  const prefix=base+'.osrm';
  const entries=readdirSync(directory).filter(name=>name===prefix||(name.startsWith(prefix+'.')&&!name.endsWith('.build.json')));
@@ -32,6 +33,7 @@ export async function recordOsrm(directory,base,profile){
  if(!existsSync(source))fail('Missing Ghana source extract');
  if(profile!=='car'&&!existsSync(profilePath))fail('Missing motorcycle Lua profile');
  const metadata=JSON.parse(readFileSync(join(directory,'ghana-source.json'),'utf8'));
+ if(profile==='motorcycle'&&(await digest(profilePath))!==(await digest(repositoryMotorcycleProfile)))fail('Copied motorcycle profile does not match repository profile');
  const sourceSha=await digest(source);
  if(sourceSha!==metadata.sha256)fail('Ghana source checksum mismatch');
  const marker={version:1,base,sourceSha,profileSha:profile==='car'?'osrm-container-car-v26.4.0':await digest(profilePath),files,generatedAt:new Date().toISOString()};
@@ -50,6 +52,7 @@ export async function verifyOsrm(directory,base,profile){
  if(sourceSha!==metadata.sha256||sourceSha!==marker.sourceSha)fail('OSRM source data changed since build');
  const profileSha=profile==='car'?'osrm-container-car-v26.4.0':await digest(join(directory,'motorcycle.lua'));
  if(profileSha!==marker.profileSha)fail('OSRM routing profile changed since build');
+ if(profile==='motorcycle'&&profileSha!==(await digest(repositoryMotorcycleProfile)))fail('Motorcycle graph profile differs from current repository code');
  return {verified:true,base,fileCount:files.length,verification:'structural only'};
 }
 export function verifyTiles(filename){
