@@ -29,6 +29,7 @@ import * as Crypto from 'expo-crypto';
 import MapView, { Marker, RiderMarker, Polyline, openTurnByTurnNavigation } from '../maps/map-adapter';
 import { call, loadToken, saveToken, clearToken, ghc, parseGhs, BASE } from '../api';
 import DeleteAccountModal from '../delete-account';
+import { LegalNotice, termsAcceptance } from '../legal-notice';
 import CompanyHome from '../company/CompanyHome';
 import { sample, startShiftTracking, stopShiftTracking, subscribeBackgroundOfferAlerts, acquireDevicePushToken, registerDevicePushChannel } from '../tracking';
 import { cacheJobs, readCachedJobs, readLastCachedJobs, clearCachedJobs } from '../offline';
@@ -360,7 +361,7 @@ export default function RiderApp() {
       const services = [credentials.sendDeliveries && 'delivery', credentials.provideRiders && 'riders'].filter(Boolean);
       if (credentials.name.trim().length < 2) throw Error('Enter your company name');
       if (!services.length) throw Error('Choose at least one service');
-      await call('POST', '/api/v1/auth/register', { phone: normPhone, password: credentials.password, kind: 'company', name: credentials.name.trim(), services });
+      await call('POST', '/api/v1/auth/register', { phone: normPhone, password: credentials.password, kind: 'company', name: credentials.name.trim(), services, ...termsAcceptance() });
       setIsSignup(false);
       await signIn();
       return;
@@ -383,7 +384,7 @@ export default function RiderApp() {
       };
     }
 
-    await call('POST', '/api/v1/auth/register', body);
+    await call('POST', '/api/v1/auth/register', { ...body, ...termsAcceptance() });
     setIsSignup(false);
     await signIn();
   }
@@ -954,6 +955,8 @@ export default function RiderApp() {
               </View>
             )}
 
+            {isSignup && <LegalNotice style={{ color: colors.textMuted }} linkColor={colors.primary} />}
+
             <TouchableOpacity
               activeOpacity={0.85}
               onPress={() => execute(isSignup ? signUp : signIn)}
@@ -1294,8 +1297,6 @@ export default function RiderApp() {
                 await call('POST', '/api/v1/rider/multi-stop', { enabled: !manifest?.optedIn });
                 setManifest(await call('GET', '/api/v1/rider/manifest'));
               })}
-              accessibilityRole="switch"
-              accessibilityState={{ checked: Boolean(manifest?.optedIn) }}
               style={styles.carryToggle}>
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={styles.carryToggleTitle}>Carry parcels going my way</Text>

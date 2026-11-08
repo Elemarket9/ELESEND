@@ -32,7 +32,7 @@ import {promotionEngine} from './promotion-engine.mjs';
 import {disconnectRealtimeUser} from './chat-engine.mjs';
 const id=()=>randomUUID();
 const uuid=z.string().uuid();
-const registration=z.object({phone:z.string().max(30),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
+const registration=z.object({phone:z.string().max(30),termsVersion:z.string().trim().min(1).max(40).optional(),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
 const address=z.object({address:z.string().min(5).max(400),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict();
 const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(['motorcycle','car','van']).optional(),recipientPhone:z.string().max(30),pickupPhone:z.string().max(30).optional(),weightG:z.number().int().min(1).max(10000000),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
 const ACCOUNT_SMS_PER_NUMBER=5,ACCOUNT_SMS_BLOCK_SECONDS=900;
@@ -349,6 +349,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     if(type==='car')await registerVehicleInTx(c,uid,{vehicle:type,maxWeightG:v.maxWeightG??20000,car:v.car});
    }
    if(v.kind==='company'){check(v.name,400,'Company name required');await c.query('INSERT INTO companies(id,owner_id,name,services) VALUES($1,$2,$3,$4)',[id(),uid,v.name,[...new Set(v.services??['riders'])]]);}
+   if(v.termsVersion)await c.query('UPDATE users SET terms_version=$2,terms_accepted_at=now() WHERE id=$1',[uid,v.termsVersion]);
    await audit(c,uid,'registered',uid);
   });return {id:uid,kind:v.kind,phone:p,phoneVerified:false};
  },
@@ -653,6 +654,20 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await c.query("INSERT INTO dispatch_exceptions(shipment_id,actor_id,kind,reason) VALUES($1,$2,'handover_sms_failed',$3)",[sid,actor.id,`The ${purpose} code could not be sent by SMS`]);
   });check(false,503,'We could not send the code by SMS. Try again in a minute. ELESEND support has been alerted.');}
   return {challengeId:cid,expiresInSeconds:300};
+ },
+ // The customer fixes a mistyped recipient number before handover. Any unused delivery code is cancelled so it cannot reach the old number.
+ async correctRecipient(actor,sid,input){const v=z.object({recipientPhone:z.string().max(30)}).strict().parse(input);const p=phone(v.recipientPhone);
+  return db.tx(async c=>{const s=await locked(c,sid);check(s.customer_id===actor.id,404,'Shipment not found');
+   check(['AWAITING_PAYMENT','AWAITING_ASSIGNMENT','RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state),409,'The recipient can no longer be changed for this delivery');
+   if(s.recipient_phone===p)return {shipmentId:sid,recipientPhone:p,changed:false};
+   await limit(c,'recipient:'+sid,3,86400);
+   await c.query("SELECT set_config('elesend.recipient_correction',$1,true)",[sid]);
+   await c.query('UPDATE shipments SET recipient_phone=$2 WHERE id=$1',[sid,p]);
+   await c.query("SELECT set_config('elesend.recipient_correction','',true)");
+   const cancelled=(await c.query("UPDATE challenges SET expires_at=now() WHERE shipment_id=$1 AND purpose='delivery' AND consumed_at IS NULL AND expires_at>now() RETURNING id",[sid])).rowCount;
+   await audit(c,actor.id,'shipment.recipient_changed',sid);
+   return {shipmentId:sid,recipientPhone:p,changed:true,deliveryCodeCancelled:cancelled>0};
+  });
  },
  async verify(actor,sid,input){const v=z.object({challengeId:uuid.optional(),code:z.string().regex(/^\d{6}$/)}).strict().parse(input);
   const result=await db.tx(async c=>{await rider(c,actor);const s=await locked(c,sid);check(s.rider_id===actor.id,403,'Assigned rider required');

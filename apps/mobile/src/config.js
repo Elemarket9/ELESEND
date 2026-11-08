@@ -77,6 +77,11 @@ export function resolveGlyphsUrl(rawGlyphsUrl, tileUrl) {
 // Statically read and validated from embedded Expo environment
 const rawApiBase = process.env.EXPO_PUBLIC_ELESEND_API_BASE_URL || '';
 export const SUPPORT_PHONE = (process.env.EXPO_PUBLIC_ELESEND_SUPPORT_PHONE || '').trim();
+// Published privacy notice and terms. Set per deployment; no address is built into the app.
+export const PRIVACY_URL = (process.env.EXPO_PUBLIC_ELESEND_PRIVACY_URL || '').trim();
+export const TERMS_URL = (process.env.EXPO_PUBLIC_ELESEND_TERMS_URL || '').trim();
+// Version label of the terms shown at sign-up, stored with the account when the person agrees.
+export const TERMS_VERSION = (process.env.EXPO_PUBLIC_ELESEND_TERMS_VERSION || '').trim();
 const rawTileUrl = process.env.EXPO_PUBLIC_ELESEND_VECTOR_TILE_URL || '';
 const rawGlyphs = process.env.EXPO_PUBLIC_ELESEND_GLYPHS_URL || '';
 

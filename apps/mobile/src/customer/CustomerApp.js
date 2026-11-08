@@ -14,6 +14,7 @@
 
 import { runGuarded, useSignInState, signInWithPassword } from '../account-actions';
 import { SUPPORT_PHONE } from '../config.js';
+import { LegalNotice, termsAcceptance } from '../legal-notice';
 import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, TextInput, Pressable, ScrollView, StyleSheet,
@@ -47,6 +48,7 @@ import { normalizeGhanaPhone, isValidGhanaPhone, formatGhanaDisplayPhone } from 
 import { colors, typography, spacing, radii, shadows } from '../theme';
 import { customerStatus, paymentLabel } from '../status-labels';
 import FareSummary from './FareSummary';
+import RecipientPhoneModal from './RecipientPhoneModal';
 import { VoiceNoteBubble, VoiceNoteRecorder } from '../chat/VoiceNote';
 import {
   GHANA_REGIONS,
@@ -155,6 +157,7 @@ export default function CustomerApp() {
     deliveryInstructions: ''
   });
   const [addressConfirmModal, setAddressConfirmModal] = useState(false);
+  const [recipientEdit, setRecipientEdit] = useState(null);
   const [pendingAddressRecord, setPendingAddressRecord] = useState(null);
   const [confirmTarget, setConfirmTarget] = useState('pickup');
   const [isSearching, setIsSearching] = useState(false);
@@ -378,7 +381,8 @@ export default function CustomerApp() {
       phone: normPhone,
       password: credentials.password,
       kind: 'customer',
-      name: credentials.name || 'Customer'
+      name: credentials.name || 'Customer',
+      ...termsAcceptance()
     });
     await signIn();
   }
@@ -1189,6 +1193,8 @@ export default function CustomerApp() {
               />
             </View>
 
+            {isSignup && <LegalNotice style={{ color: '#475569' }} linkColor="#0F766E" />}
+
             <TouchableOpacity
               style={styles.primaryActionButton}
               disabled={busy}
@@ -1914,6 +1920,13 @@ export default function CustomerApp() {
                 </View>
                 <Text style={styles.orderFareText}>{ghc(s.amount_minor)}, {paymentLabel(s.payment_method)}</Text>
                 {Boolean(s.destination?.address) && <Text style={styles.orderFareText} numberOfLines={1}>To {s.destination.address}</Text>}
+                {['AWAITING_PAYMENT', 'AWAITING_ASSIGNMENT', 'RIDER_ASSIGNED', 'PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(s.state) && (
+                  <TouchableOpacity onPress={() => setRecipientEdit(s)} accessibilityRole="button" style={{ minHeight: 44, justifyContent: 'center' }}>
+                    <Text style={[styles.orderFareText, { textDecorationLine: 'underline' }]}>
+                      Recipient {s.recipient_phone ? formatGhanaDisplayPhone(s.recipient_phone) : ''}: change number
+                    </Text>
+                  </TouchableOpacity>
+                )}
 
                 {/* Handover OTP Display Banner */}
                 {s.state === 'AWAITING_DELIVERY_OTP' && (
@@ -1963,6 +1976,12 @@ export default function CustomerApp() {
                 </View>
               </View>
             ))}
+
+            <RecipientPhoneModal
+              shipment={recipientEdit}
+              onClose={() => setRecipientEdit(null)}
+              onChanged={() => { refreshActivity(); Alert.alert('Number changed', 'The handover code will go to the new number.'); }}
+            />
 
             {/* Active Food Orders */}
             {myFoodOrders.filter(o => !['DELIVERED', 'CANCELLED', 'REJECTED'].includes(o.state)).map(o => (

@@ -775,7 +775,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    }
   }
   else {
-   const m=path.match(/^\/api\/v1\/shipments\/([^/]+)(?:\/(accept|pickup-challenge|delivery-challenge|return-challenge|verify|transition|location|tracking|dispatch|disputes|cancel-terms))?$/);check(m,404,'Endpoint not found');const [,sid,action]=m;
+   const m=path.match(/^\/api\/v1\/shipments\/([^/]+)(?:\/(accept|pickup-challenge|delivery-challenge|return-challenge|verify|transition|location|tracking|dispatch|disputes|cancel-terms|recipient))?$/);check(m,404,'Endpoint not found');const [,sid,action]=m;
    if(method==='GET'&&!action)result=forCustomer(actor,await app.get(actor,sid));
    else if(method==='GET'&&action==='cancel-terms')result=await app.cancelTerms(actor,sid);
    else if(method==='GET'&&action==='tracking')result=await app.tracking(actor,sid);
@@ -784,6 +784,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    else if(method==='POST'&&action==='pickup-challenge')result=await app.challenge(actor,sid,'pickup');
    else if(method==='POST'&&action==='delivery-challenge')result=await app.challenge(actor,sid,'delivery');
    else if(method==='POST'&&action==='return-challenge')result=await app.challenge(actor,sid,'return');
+   else if(method==='POST'&&action==='recipient')result=await app.correctRecipient(actor,sid,body);
    else if(method==='POST'&&action==='verify')result=await app.verify(actor,sid,body);
    else if(method==='POST'&&action==='transition'){result=await app.transition(actor,sid,body);if(result?.releasedRiderId)await chat.revokeRiderConversations(db,{shipmentId:sid,oldRiderUserId:result.releasedRiderId,reason:'customer_cancelled'}).catch(()=>{});}
    else if(method==='POST'&&action==='location')result=await app.location(actor,sid,body);
