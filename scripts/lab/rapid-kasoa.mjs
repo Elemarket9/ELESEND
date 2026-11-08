@@ -93,6 +93,9 @@ try{
  const nav1=await api(rider.token,'POST','/api/v1/rider/navigation',{shipmentId:sid,...at(pickup,0.002,0.001)});
  out('nav to pickup',nav1.status,nav1.ms+'ms',`${nav1.data.distanceMeters}m ${nav1.data.durationSeconds}s steps=${nav1.data.steps?.length}`,JSON.stringify(nav1.data.steps?.slice(0,3))?.slice(0,300));
  await sleep(16000);out('gps at pickup',(await gps(pickup)).status);
+ // Sender pays cash, so (like the rider app) the cash is recorded before the pickup is confirmed.
+ const cash=await api(rider.token,'POST','/api/v1/rider/cash-report',{shipmentId:sid,reportedMinor:Number(quote.amountMinor??quote.amount_minor),cashPayer:'sender',idempotencyKey:'lab-cash-'+sid});
+ out('sender cash report',cash.status,JSON.stringify(cash.data).slice(0,300));if(cash.status>=300)problems.push('cash report '+JSON.stringify(cash.data));
  const pk=await api(rider.token,'POST',`/api/v1/shipments/${sid}/handover`,{kind:'pickup',confirmed:true});out('pickup handover',pk.status,JSON.stringify(pk.data).slice(0,300));
  if(pk.status>=300)problems.push('pickup handover '+JSON.stringify(pk.data));
 
@@ -112,8 +115,6 @@ try{
   if(etas.length<1||idx%Math.max(1,Math.floor(line.length/8))<3||idx>=line.length-1){const t=(await api(customer.token,'GET','/api/v1/public-track/'+sid)).data;etas.push({km:(travelled/1000).toFixed(1),eta:t.deliveryEta?.message||t.deliveryEta,stale:t.courierStale});out(`  ${(travelled/1000).toFixed(1)} km: ETA ${JSON.stringify(t.deliveryEta)?.slice(0,200)} stale=${t.courierStale}`);}
  }
  out('\n== 7. Cash and SMS-free delivery');
- const cash=await api(rider.token,'POST','/api/v1/rider/cash-report',{shipmentId:sid,reportedMinor:Number(quote.amountMinor??quote.amount_minor),cashPayer:'sender',idempotencyKey:'lab-cash-'+sid});
- out('cash report',cash.status,JSON.stringify(cash.data).slice(0,300));if(cash.status>=300)problems.push('cash report '+JSON.stringify(cash.data));
  const dl=await api(rider.token,'POST',`/api/v1/shipments/${sid}/handover`,{kind:'delivery',confirmed:true});out('delivery handover',dl.status,JSON.stringify(dl.data).slice(0,300));
  if(dl.status>=300)problems.push('delivery handover '+JSON.stringify(dl.data));
  const finalShip=(await api(customer.token,'GET','/api/v1/shipments/'+sid)).data;out('final state',finalShip.state,'amount',finalShip.amount_minor);
