@@ -575,7 +575,8 @@ export default function RiderApp() {
   }
 
   async function initiateReturnVerification(shipment) {
-    askPhysicalHandover(shipment,'return');
+    Alert.alert('Return requires review',
+      'No SMS code is needed. Tell ELESEND support or the sender that the parcel has been returned. An administrator must confirm the return before settlement.');
   }
 
   async function releaseAssignment(shipmentId, reason = 'Unable to complete pickup before custody') {
@@ -1590,7 +1591,7 @@ export default function RiderApp() {
                           <Text style={styles.primaryBtnText}>
                             {s.payment_method === 'CASH' && !reportedCash[s.id]
                               ? `Collect ${ghc(s.amount_minor)} cash, then confirm`
-                              : "Enter recipient's code"}
+                              : "Confirm Delivery"}
                           </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
@@ -1620,7 +1621,7 @@ export default function RiderApp() {
                       <TouchableOpacity
                         onPress={() => execute(() => initiateReturnVerification(s))}
                         style={[styles.primaryBtn, { marginTop: 10 }]}>
-                        <Text style={styles.primaryBtnText}>Get Sender's Return Code</Text>
+                        <Text style={styles.primaryBtnText}>Return Review Instructions</Text>
                       </TouchableOpacity>
                     )}
                   </View>
@@ -1634,7 +1635,7 @@ export default function RiderApp() {
               </View>
             )}
 
-            {/* Handover OTP Entry Modal */}
+            {/* Rider map issue report modal */}
             <Modal visible={Boolean(mapReportShipment)} animationType="fade" transparent onRequestClose={() => setMapReportShipment(null)}>
               <View style={styles.otpCard}>
                 <Text style={styles.otpCardTitle}>Report a missing road</Text>
