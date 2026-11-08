@@ -6,7 +6,7 @@
 source "$(dirname "$0")/backup-lib.sh"
 require_offsite
 [[ "${ELESEND_ALLOW_DATABASE_RESTORE:-}" == "YES" ]] || { echo 'Set ELESEND_ALLOW_DATABASE_RESTORE=YES to confirm the restore' >&2; exit 1; }
-if [[ -n "${RESTORE_TARGET_TIME:-}" && ! "$RESTORE_TARGET_TIME" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[\ T][0-9]{2}:[0-9]{2}(:[0-9]{2})?([+-][0-9]{2}(:?[0-9]{2})?|Z)?$ ]]; then
+if [[ -n "${RESTORE_TARGET_TIME:-}" && ! "$RESTORE_TARGET_TIME" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[\ T][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,6})?)?([+-][0-9]{2}(:?[0-9]{2})?|Z)?$ ]]; then
   echo 'RESTORE_TARGET_TIME must look like 2027-02-10 14:05:00+00' >&2; exit 1
 fi
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
