@@ -20,3 +20,6 @@ Before pilot, execute on actual low-end Android handset and rider/customer ident
 - CustomerApp corrected SMS notice, commit 246105185.
 - Rider sender cash pickup and recipient cash delivery use a shared testable helper and server cash-report route before declaration (603b7c5a, 71efaa823).
 - No APK/ADB installation, background GPS trace, low-end Android measurement or Expo build was performed as part of this audit.
+
+## Food readiness source contract
+Platform pickup now checks restaurant order is READY_FOR_PICKUP and payment verified within the handover transaction before advancing state, at commit 2110987c. Actual customer/rider devices and kitchen portal version compatibility remain unverified.

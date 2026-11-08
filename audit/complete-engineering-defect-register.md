@@ -37,3 +37,12 @@ Reproduction: adversarial static test Actions 42516692866 found RecipientPhoneMo
 
 ## EC-012 — Moderate engineering boundary defect — new DB tables not claimed by module
 Reproduction: Actions 42516692866 database ownership test found shipment_handover_events and shipment_receipt_confirmations unowned in config/modules.json. Fixed in 944c95965c8220092b1c97092abdbc41494ebf06. Test pending.
+
+## EC-013 — High — Moolre refund could transfer to network guessed from phone prefix
+Reproduction: source inspection services/api/modules/payments/providers/moolre-payment.mjs createRefund used PREFIX_CHANNELS[customerPhone.slice(0,3)] to create a transfer. A successfully paid checkout verifies a charge, not the recipient's current transfer network. Root cause: unsupported prefix-based destination assumption. Fix 50a2d916efa43a9938495d9604f10b73bf9b6475 removes prefix mapping, requires verifiedRefundRecipientReference matching customer phone before any transfer. Regression tests 82e58bbfa7aaec51edb419fad5a00d0b9dc2e08c reject missing verification and verify explicit destination. Status: CI pending. Operational limitation: existing refund coordinator supplies only customerPhone, so Moolre refund now requires manual processing until a verified destination workflow is implemented; customer liability must remain open.
+
+## EC-014 — High — food pickup allowed while restaurant still preparing
+Reproduction: services/api/platform.mjs applyHandover accepted food states ACCEPTED and PREPARING for the IN_TRANSIT update with no ready verification at pickup. Root cause: pickup flow treats rider arrival/assignment as kitchen readiness. Fix 2110987c117b6a072e0d74b72e0ada5060a81c32 locks food_order, requires READY_FOR_PICKUP and requireFoodPayment before updating shipment; both rider-declared and legacy paths use this shared function. Regression: full relevant food integration suite and device test pending. Release risk: database direct writes and third-party integrations not fully verified.
+
+## EC-015 — Medium — recipient correction after pickup returned 500 rather than expected client denial
+Reproduction: Actions 42517470774 PostgreSQL suite showed correction in PICKUP_VERIFIED returned HTTP 500, because platform endpoint admitted postpickup states and new DB immutability raised SQL exception. Fix ebc00f5b6b09a25579f30113ebb340f3064d24c9 narrows API to pre-pickup states with explicit 409. DB custody immutability remains. Regression: custody suite pending.
