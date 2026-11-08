@@ -1940,7 +1940,7 @@ export default function CustomerApp() {
                   <View style={styles.otpSecurityBanner}>
                     <Text style={styles.otpSecurityHeader}>Delivery handover in progress</Text>
                     <Text style={styles.otpSecurityCaption}>
-                      The rider is preparing to confirm physical handover. No SMS delivery code is required.
+                      The rider is preparing to confirm physical handover. No SMS is required.
                       Contact the rider if the parcel has not reached you.
                     </Text>
                   </View>
@@ -1989,7 +1989,7 @@ export default function CustomerApp() {
             <RecipientPhoneModal
               shipment={recipientEdit}
               onClose={() => setRecipientEdit(null)}
-              onChanged={() => { refreshActivity(); Alert.alert('Number changed', 'The handover code will go to the new number.'); }}
+              onChanged={() => { refreshActivity(); Alert.alert('Number changed', 'The rider can now contact the corrected number.'); }}
             />
 
             {/* Active Food Orders */}
