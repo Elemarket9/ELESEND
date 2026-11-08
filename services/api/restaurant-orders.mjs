@@ -30,16 +30,11 @@ export function restaurantOrderService(db, options = {}) {
   const promos = promotionEngine(db);
   const commissions = commissionEngine(db);
   const chat = chatEngine(db);
-  const hasSmsOption = 'sms' in options || (platform && 'sms' in platform);
   const hasDispatcherOption = ('dispatcher' in options && options.dispatcher === null) || ('dispatch' in options && options.dispatch === null) || (platform && 'dispatch' in platform && platform.dispatch === null);
-  const effectiveSms = sms !== undefined ? sms : platform?.sms;
   const effectiveDispatcher = dispatcher ?? options.dispatch ?? platform?.dispatch ?? null;
 
   function assertDeliveryCapabilities() {
     check(routing && typeof routing.route === 'function', 503, 'Road routing service required for delivery quotation');
-    if (process.env.NODE_ENV === 'production' || hasSmsOption) {
-      check(effectiveSms && typeof effectiveSms.send === 'function', 503, 'Food ordering paused: custody-verification SMS unavailable');
-    }
     if (process.env.NODE_ENV === 'production' || hasDispatcherOption) {
       check(Boolean(effectiveDispatcher), 503, 'Food ordering paused: dispatch engine unavailable');
     }
