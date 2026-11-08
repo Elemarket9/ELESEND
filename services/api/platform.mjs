@@ -224,6 +224,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const v=z.object({kind:z.enum(['pickup','delivery']),confirmed:z.literal(true)}).strict().parse(input);
   return db.tx(async c=>{
    await rider(c,actor);
+   check(!(actor.custodyOnly&&v.kind==='pickup'),403,'Suspended riders cannot take custody of another parcel');
    const s=await locked(c,sid);
    check(s.rider_id===actor.id,403,'Only the assigned rider may confirm a handover');
    check(s.verification_authority==='elesend',409,'External verification not enabled');
@@ -819,9 +820,9 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await c.query("SELECT set_config('elesend.recipient_correction',$1,true)",[sid]);
    await c.query('UPDATE shipments SET recipient_phone=$2 WHERE id=$1',[sid,p]);
    await c.query("SELECT set_config('elesend.recipient_correction','',true)");
-   const cancelled=(await c.query("UPDATE challenges SET expires_at=now() WHERE shipment_id=$1 AND purpose='delivery' AND consumed_at IS NULL AND expires_at>now() RETURNING id",[sid])).rowCount;
+   await c.query("UPDATE challenges SET expires_at=now() WHERE shipment_id=$1 AND purpose='delivery' AND consumed_at IS NULL AND expires_at>now()",[sid]);
    await audit(c,actor.id,'shipment.recipient_changed',sid);
-   return {shipmentId:sid,recipientPhone:p,changed:true,deliveryCodeCancelled:cancelled>0};
+   return {shipmentId:sid,recipientPhone:p,changed:true};
   });
  },
  async handover(actor,sid,input){return handover(actor,sid,input);},
@@ -969,7 +970,8 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    const refundClaim=['lost','damaged','missing_items','quality','payment'].includes(v.category)||v.items?.length||v.requestedRefundMinor;
    const finished=(await c.query("SELECT state,EXISTS(SELECT 1 FROM food_orders f WHERE f.shipment_id=s.id) AS food FROM shipments s WHERE s.id=$1 AND s.state IN ('COMPLETED','FAILED','RETURN_REQUESTED','RETURNED')",[sid])).rows[0];
    if(refundClaim&&finished?.food&&finished.state==='COMPLETED')check(false,409,'Delivered food orders are handled by the restaurant. Please chat with the restaurant from your order');
-   if(refundClaim&&finished&&!finished.food)check(false,409,'Parcels confirmed by SMS and failed deliveries are not refunded');
+   // A missing-parcel report is always allowed for review. This does not automatically issue a refund.
+   if(refundClaim&&finished&&!finished.food&&finished.state!=='COMPLETED')check(false,409,'Failed or returned parcel fares are not refundable through the customer dispute form');
    const did=id();
    await c.query(
     'INSERT INTO disputes(id,shipment_id,reporter_id,category,detail,items_json,requested_refund_minor) VALUES($1,$2,$3,$4,$5,$6,$7)',
