@@ -1,0 +1,41 @@
+[
+ {
+  "name": "Kotoka Airport Domestic Terminal (Terminal 2)",
+  "category": "airport",
+  "locality": "Airport",
+  "city": "Accra",
+  "region": "Greater Accra",
+  "latitude": 5.60712,
+  "longitude": -0.17167,
+  "popularity": 90,
+  "aliases": [
+   "Domestic Terminal",
+   "Terminal 2",
+   "Domestic Arrivals",
+   "Domestic Departures",
+   "Accra Airport Domestic Terminal"
+  ],
+  "positionSource": "OpenStreetMap aeroway=terminal 'Domestic Arrivals' / 'Domestic Departures' (Geofabrik Ghana extract)",
+  "checkedOn": "2026-11-08",
+  "precision": "building"
+ },
+ {
+  "name": "GTBank Kasoa Branch (New Market)",
+  "category": "bank",
+  "locality": "Kasoa",
+  "city": "Kasoa",
+  "region": "Central",
+  "latitude": 5.5367,
+  "longitude": -0.4215,
+  "popularity": 80,
+  "aliases": [
+   "GT Bank Kasoa",
+   "GTBank Kasoa",
+   "Guaranty Trust Bank Kasoa",
+   "GTB Kasoa"
+  ],
+  "positionSource": "GTBank Ghana: branch is on the new Kasoa market road; confirmed by the ELESEND owner. Placed at the Kasoa New Market point",
+  "checkedOn": "2026-11-08",
+  "precision": "area"
+ }
+]

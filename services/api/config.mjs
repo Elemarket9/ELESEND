@@ -237,7 +237,7 @@ export function validateConfig(env = process.env) {
 
   // --- Routing & OSRM ---
   const rawVehiclesJson = parseJson(env.ROUTING_OSRM_VEHICLES_JSON, null);
-  if(env.ROUTING_OSRM_VEHICLES_JSON&&!rawVehiclesJson)errors.push('ROUTING_OSRM_VEHICLES_JSON must be valid JSON.');
+  if(env.ROUTING_OSRM_VEHICLES_JSON&&!rawVehiclesJson)warnings.push('ROUTING_OSRM_VEHICLES_JSON is not valid JSON and is ignored.');
   let assembledVehicleRoutes = rawVehiclesJson && typeof rawVehiclesJson === 'object' && !Array.isArray(rawVehiclesJson)
     ? { ...rawVehiclesJson }
     : null;
@@ -279,7 +279,7 @@ export function validateConfig(env = process.env) {
     try {
       profiles = JSON.parse(env.ROUTING_OSRM_PROFILES_JSON);
     } catch {
-      errors.push('ROUTING_OSRM_PROFILES_JSON must be valid JSON.');
+      warnings.push('ROUTING_OSRM_PROFILES_JSON is not valid JSON; the default profiles are used.');
       profiles = defaultProfiles;
     }
   }
@@ -290,16 +290,18 @@ export function validateConfig(env = process.env) {
   if (isProduction && (env.ROUTING_OSRM_URL || '').trim() && !assembledVehicleRoutes && !allowSingleEndpoint) {
     const hasNonCar = Object.keys(profiles).some(v => v !== 'car');
     if (hasNonCar) {
-      errors.push('Use independent OSRM graph endpoints for non-car vehicles (set ROUTING_OSRM_VEHICLES_JSON or ROUTING_OSRM_MOTORCYCLE_URL), or set ROUTING_ALLOW_SINGLE_ENDPOINT=true.');
+      warnings.push('Only a car road graph is configured, so non-car routes are refused until ROUTING_OSRM_MOTORCYCLE_URL (or ROUTING_OSRM_VEHICLES_JSON) is set, or ROUTING_ALLOW_SINGLE_ENDPOINT=true.');
     }
   }
 
   // Customer ETA only. Fares, dispatch ranking and delivery deadlines use raw road times.
   let etaFactors = {};
-  try { etaFactors = etaBaselineFactors(env); } catch (error) { errors.push(error.message); }
+  try { etaFactors = etaBaselineFactors(env); } catch (error) { warnings.push(error.message + ' Customer ETAs are shown without the traffic baseline.'); }
 
-  if (parseBoolean(env.GHANAPOSTGPS_LOOKUP_ENABLED, false) && !(env.GHANAPOSTGPS_LOOKUP_URL || '').trim()) {
-    errors.push('GHANAPOSTGPS_LOOKUP_URL is required when GHANAPOSTGPS_LOOKUP_ENABLED is true.');
+  const ghanaPostGpsUrl = (env.GHANAPOSTGPS_LOOKUP_URL || '').trim();
+  const ghanaPostGpsEnabled = parseBoolean(env.GHANAPOSTGPS_LOOKUP_ENABLED, false) && Boolean(ghanaPostGpsUrl);
+  if (parseBoolean(env.GHANAPOSTGPS_LOOKUP_ENABLED, false) && !ghanaPostGpsUrl) {
+    warnings.push('GHANAPOSTGPS_LOOKUP_ENABLED is on but GHANAPOSTGPS_LOOKUP_URL is empty, so GhanaPostGPS lookup stays off.');
   }
 
   const routingConfig = {
@@ -308,8 +310,8 @@ export function validateConfig(env = process.env) {
     vehicleRoutes: assembledVehicleRoutes,
     profiles,
     allowSingleEndpoint,
-    ghanaPostGpsLookupEnabled: parseBoolean(env.GHANAPOSTGPS_LOOKUP_ENABLED, false),
-    ghanaPostGpsLookupUrl: (env.GHANAPOSTGPS_LOOKUP_URL || '').trim()
+    ghanaPostGpsLookupEnabled: ghanaPostGpsEnabled,
+    ghanaPostGpsLookupUrl: ghanaPostGpsUrl
   };
 
   // --- Payment Provider Selection & Configuration ---

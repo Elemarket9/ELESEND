@@ -1,0 +1,53 @@
+# Monthly map refresh: pulls the latest Ghana OpenStreetMap data, rebuilds the searchable places and both road graphs,
+# runs config/map-quality.json against them, and opens a pull request with the new places for review.
+# Nothing reaches production until that pull request is reviewed and merged; servers rebuild their own road graphs.
+name: Map refresh
+on:
+  schedule: [{cron: '17 2 3 * *'}]
+  workflow_dispatch: {}
+permissions: {contents: write, pull-requests: write}
+concurrency: {group: map-refresh, cancel-in-progress: false}
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22, cache: npm}
+      - run: npm ci
+      - run: sudo apt-get update -q && sudo apt-get install -yq osmium-tool
+      - name: Download Ghana OpenStreetMap extract
+        run: mkdir -p /tmp/map && sh scripts/download-ghana.sh /tmp/map
+      - name: Build searchable places
+        run: |
+          sh scripts/build-ghana-places.sh /tmp/map | tee /tmp/places-summary.json
+          size=$(stat -c %s services/api/infrastructure/maps/ghana-osm-places.json)
+          echo "places file: $size bytes"
+          if [ "$size" -gt 90000000 ]; then echo '::error::Places file is over 90 MB; narrow the tag filter in scripts/build-ghana-places.sh'; exit 1; fi
+          if [ "$size" -gt 50000000 ]; then echo '::warning::Places file is over 50 MB; check server memory before merging'; fi
+      - name: Build road graphs
+        run: sh scripts/prepare-ghana-osrm.sh /tmp/map
+      - name: Start routing
+        run: |
+          docker run -d -p 5001:5000 -v /tmp/map:/data ghcr.io/project-osrm/osrm-backend:v26.4.0 osrm-routed --algorithm mld /data/ghana-latest.osrm
+          docker run -d -p 5002:5000 -v /tmp/map:/data ghcr.io/project-osrm/osrm-backend:v26.4.0 osrm-routed --algorithm mld /data/ghana-motorcycle.osrm
+          for i in $(seq 90); do curl -fs 'http://127.0.0.1:5001/route/v1/driving/-0.18,5.6;-0.19,5.61' >/dev/null && curl -fs 'http://127.0.0.1:5002/route/v1/driving/-0.18,5.6;-0.19,5.61' >/dev/null && break; sleep 2; done
+      - name: Map quality checks (searches with the new places, routes on the new graphs)
+        env: {ROUTING_OSRM_CAR_URL: 'http://127.0.0.1:5001', ROUTING_OSRM_MOTORCYCLE_URL: 'http://127.0.0.1:5002'}
+        run: node scripts/map-quality.mjs --routes-required | tee /tmp/map-quality.txt
+      - name: Test suite with the new places
+        run: node --test tests/geocoder-search-regressions.test.mjs tests/map-quality.test.mjs tests/map-search-stored-places.test.mjs tests/map-place-overlay.test.mjs
+      - name: Open pull request
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          if git diff --quiet -- services/api/infrastructure/maps/ghana-osm-places.json && git ls-files --error-unmatch services/api/infrastructure/maps/ghana-osm-places.json >/dev/null 2>&1; then echo 'No map changes'; exit 0; fi
+          branch="maps/refresh-$(date -u +%Y-%m-%d)"
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -b "$branch"
+          git add services/api/infrastructure/maps/ghana-osm-places.json
+          git commit -m "Map refresh $(date -u +%Y-%m-%d): OpenStreetMap places"
+          git push origin "$branch"
+          { echo 'Monthly OpenStreetMap refresh. Review the counts and the quality checks before merging.'; echo; echo '```'; cat /tmp/places-summary.json; echo; cat /tmp/map-quality.txt; echo '```'; echo; echo 'Map data © OpenStreetMap contributors.'; } > /tmp/body.md
+          gh pr create --base main --head "$branch" --title "Map refresh $(date -u +%Y-%m-%d)" --body-file /tmp/body.md \
+            || echo "::warning::Branch $branch pushed; open the pull request by hand (repository settings may stop Actions from opening pull requests)"

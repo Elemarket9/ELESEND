@@ -1,0 +1,22 @@
+{
+  "_about": "Checks the map must keep passing. Searches run in every test run; routes run in the map refresh workflow against freshly built OSRM graphs. Add a case whenever a customer reports a place or route that went wrong.",
+  "searches": [
+    {"query": "Kotoka", "first": "Kotoka"},
+    {"query": "Domestic Terminal", "first": "Domestic Terminal"},
+    {"query": "GTBank Kasoa", "first": "GTBank Kasoa"},
+    {"query": "GT Bank Kasoa", "first": "GTBank Kasoa"},
+    {"query": "GTBank Cape Coast", "first": "GT ?Bank"},
+    {"query": "Shop Rite", "first": "Shoprite"},
+    {"query": "Accra Mall", "first": "Accra Mall"},
+    {"query": "Kasoa new market", "first": "Kasoa"},
+    {"query": "Makola", "first": "Makola"}
+  ],
+  "routes": [
+    {"name": "RAPID Courier (Airport Domestic Terminal) to GTBank Kasoa", "from": [5.60712, -0.17167], "to": [5.5367, -0.4215], "vehicles": ["motorcycle", "car"], "minKm": 30, "maxKm": 40, "measured": "34.28 km by both profiles on 2026-11-08"},
+    {"name": "Accra Mall to Kotoka Airport", "from": [5.6212, -0.1748], "to": [5.60519, -0.16679], "vehicles": ["motorcycle", "car"]},
+    {"name": "Makola to Kaneshie Market", "from": [5.548074, -0.206932], "to": [5.564441, -0.234299], "vehicles": ["motorcycle", "car"]},
+    {"name": "Takoradi Market Circle to Sekondi", "from": [4.8872, -1.7584], "to": [4.9392, -1.7136], "vehicles": ["motorcycle", "car"]},
+    {"name": "Tamale Central to Savelugu", "from": [9.4072, -0.8392], "to": [9.6253, -0.8267], "vehicles": ["motorcycle", "car"]}
+  ],
+  "routeRules": {"maxDetourFactor": 2.5, "minAverageKmh": 8, "maxAverageKmh": 90}
+}
