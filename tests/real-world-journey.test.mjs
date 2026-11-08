@@ -699,7 +699,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     assert.equal((await api(other.token,'POST','/api/v1/shipments/'+shipmentId+'/handover',{kind:'delivery',confirmed:true})).status,403);
     const unauthorizedReceipt=await api(other.token,'POST','/api/v1/shipments/'+shipmentId+'/receipt',{received:true});
     assert.equal(unauthorizedReceipt.status,403,'rider cannot acknowledge customer receipt');
-    const anotherCustomer=await customer();
+    const anotherCustomer=await signUp('customer'); // no SMS auth needed to test ownership denial
     assert.equal((await api(anotherCustomer.token,'POST','/api/v1/shipments/'+shipmentId+'/receipt',{received:true})).status,403,'other customer cannot claim receipt');
     const initialView=await api(c.token,'GET','/api/v1/shipments/'+shipmentId);
     assert.equal(initialView.data.receipt_confirmed_at,null,'rider report must not falsely mark customer confirmation');
