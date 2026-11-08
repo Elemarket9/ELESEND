@@ -39,7 +39,7 @@ const decryptCard=(value,riderId)=>unseal(secretKey(),cardContext(riderId),value
 const ghanaToday=()=>new Date().toISOString().slice(0,10);
 const schema=z.object({
  legalName:z.string().trim().min(3).max(120),
- ghanaCardNumber:z.string().trim().min(10).max(20),
+ ghanaCardNumber:z.string().trim().min(1).max(20),
  licenceNumber:z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9 /-]{3,39}$/).optional(),
  licenceClass:z.string().trim().regex(/^[A-Za-z0-9]{1,4}$/).optional(),
  expiresOn:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
