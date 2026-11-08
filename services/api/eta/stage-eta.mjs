@@ -26,9 +26,9 @@ const CUSTOMER_MESSAGES={
 };
 
 export function classifyGps({latitude,longitude,updatedAt,accuracyMeters,previous=null},{now=Date.now(),assumptions=ETA_ASSUMPTIONS}={}){
- if(!Number.isFinite(latitude)||!Number.isFinite(longitude)||!updatedAt)return {quality:'missing',usable:false};
+ if(!Number.isFinite(latitude)||!Number.isFinite(longitude)||Math.abs(latitude)>90||Math.abs(longitude)>180||!updatedAt)return {quality:'missing',usable:false};
  const observedAt=new Date(updatedAt).getTime();
- if(!Number.isFinite(observedAt))return {quality:'missing',usable:false};
+ if(!Number.isFinite(observedAt)||observedAt>now+5000)return {quality:'missing',usable:false};
  const ageSeconds=Math.max(0,(now-observedAt)/1000);
  if(ageSeconds>assumptions.gpsUnusableSeconds)return {quality:'lost',usable:false,ageSeconds};
  if(previous&&Number.isFinite(previous.latitude)&&Number.isFinite(previous.longitude)&&previous.observedAt){
