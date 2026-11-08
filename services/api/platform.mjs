@@ -180,8 +180,11 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     await c.query("UPDATE food_orders SET state='IN_TRANSIT', updated_at=now() WHERE shipment_id=$1 AND state IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')",[sid]);
     await c.query(
      `INSERT INTO locations(shipment_id,rider_id,latitude,longitude,updated_at)
-      SELECT $1,$2,ST_Y(current_position::geometry),ST_X(current_position::geometry),COALESCE(position_at,now())
-      FROM riders WHERE id=$2 AND current_position IS NOT NULL
+      SELECT $1,$2,ST_Y(r.current_position::geometry),ST_X(r.current_position::geometry),r.position_at
+      FROM riders r JOIN dispatch_policy p ON p.id=1
+      WHERE r.id=$2 AND r.current_position IS NOT NULL
+        AND r.position_at BETWEEN now() - (p.fresh_seconds * interval '1 second') AND now()
+        AND r.position_accuracy_m <= p.max_accuracy_m
       ON CONFLICT(shipment_id) DO UPDATE SET rider_id=EXCLUDED.rider_id,latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,updated_at=EXCLUDED.updated_at`,
      [sid,actor.id]
     );
@@ -239,7 +242,14 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    if(v.kind==='delivery'&&s.state==='PICKUP_VERIFIED')await c.query("UPDATE shipments SET state='IN_TRANSIT' WHERE id=$1",[sid]);
    // Capture actual server time and the rider's most recent observed position without inventing GPS.
    await c.query(`INSERT INTO shipment_handover_events(shipment_id,rider_id,kind,confirmed_at,position,position_at,accuracy_m)
-    SELECT $1,r.id,$2,now(),r.current_position,r.position_at,r.position_accuracy_m FROM riders r WHERE r.id=$3
+    SELECT $1,r.id,$2,now(),
+       CASE WHEN r.position_at BETWEEN now() - (p.fresh_seconds * interval '1 second') AND now()
+                 AND r.position_accuracy_m <= p.max_accuracy_m THEN r.current_position ELSE NULL END,
+       CASE WHEN r.position_at BETWEEN now() - (p.fresh_seconds * interval '1 second') AND now()
+                 AND r.position_accuracy_m <= p.max_accuracy_m THEN r.position_at ELSE NULL END,
+       CASE WHEN r.position_at BETWEEN now() - (p.fresh_seconds * interval '1 second') AND now()
+                 AND r.position_accuracy_m <= p.max_accuracy_m THEN r.position_accuracy_m ELSE NULL END
+    FROM riders r JOIN dispatch_policy p ON p.id=1 WHERE r.id=$3
     ON CONFLICT(shipment_id,kind) DO NOTHING`,[sid,v.kind,actor.id]);
    check((await c.query('SELECT 1 FROM shipment_handover_events WHERE shipment_id=$1 AND rider_id=$2 AND kind=$3',[sid,actor.id,v.kind])).rowCount,409,'Handover evidence mismatch');
    return applyHandover(c,actor,s,sid,v.kind,'rider_reported');
