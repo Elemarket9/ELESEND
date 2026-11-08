@@ -697,6 +697,25 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     assert.equal((await db.query('SELECT count(*)::int AS n FROM financial_entries WHERE shipment_id=$1',[shipmentId])).rows[0].n,1,'financial entitlement posted once');
     assert.equal(texts.length,messagesBefore,'neither pickup nor delivery sends an SMS');
     assert.equal((await api(other.token,'POST','/api/v1/shipments/'+shipmentId+'/handover',{kind:'delivery',confirmed:true})).status,403);
+    const unauthorizedReceipt=await api(other.token,'POST','/api/v1/shipments/'+shipmentId+'/receipt',{received:true});
+    assert.equal(unauthorizedReceipt.status,403,'rider cannot acknowledge customer receipt');
+    const anotherCustomer=await customer();
+    assert.equal((await api(anotherCustomer.token,'POST','/api/v1/shipments/'+shipmentId+'/receipt',{received:true})).status,403,'other customer cannot claim receipt');
+    const initialView=await api(c.token,'GET','/api/v1/shipments/'+shipmentId);
+    assert.equal(initialView.data.receipt_confirmed_at,null,'rider report must not falsely mark customer confirmation');
+    assert.ok(initialView.data.rider_reported_at);
+    const receipt=await api(c.token,'POST','/api/v1/shipments/'+shipmentId+'/receipt',{received:true});
+    assert.equal(receipt.status,200,JSON.stringify(receipt.data));
+    assert.equal(receipt.data.received,true);
+    const receiptAgain=await api(c.token,'POST','/api/v1/shipments/'+shipmentId+'/receipt',{received:true});
+    assert.equal(receiptAgain.status,200);
+    assert.equal(receiptAgain.data.duplicate,true);
+    const list=await api(c.token,'GET','/api/v1/shipments');
+    assert.ok(list.data.find(sh=>sh.id===shipmentId)?.receipt_confirmed_at,'customer activity history shows optional receipt');
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM shipment_receipt_confirmations WHERE shipment_id=$1',[shipmentId])).rows[0].n,1);
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM financial_entries WHERE shipment_id=$1',[shipmentId])).rows[0].n,1,'optional confirmation never posts money');
+    assert.equal(texts.length,messagesBefore,'optional customer acknowledgement uses no SMS');
+
    }finally{
     smsWorks=true;
     process.env.HANDOVER_SMS_LEGACY_ENABLED='true';
