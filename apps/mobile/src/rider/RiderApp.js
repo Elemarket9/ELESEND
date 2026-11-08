@@ -1585,7 +1585,7 @@ export default function RiderApp() {
                         )}
                         <TouchableOpacity
                           accessibilityRole="button"
-                          accessibilityLabel="Enter the recipient's code"
+                          accessibilityLabel="Confirm physical handover"
                           onPress={() => execute(() => initiateDeliveryVerification(s))}
                           style={[styles.primaryBtn, { marginTop: 10, minHeight: 56 }]}>
                           <Text style={styles.primaryBtnText}>
