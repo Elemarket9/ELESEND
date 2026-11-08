@@ -7,8 +7,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - name: API packages
-        run: npm audit --json --package-lock-only > api.json || true; node -e "const a=require('./api.json');for(const [n,v] of Object.entries(a.vulnerabilities||{}))console.log('API',n,v.severity,v.range,JSON.stringify((v.via||[]).filter(x=>typeof x==='object').map(x=>[x.source,x.title,x.url,x.range])),'fix:',JSON.stringify(v.fixAvailable))"
-      - name: Mobile packages
+      - name: Versions
         working-directory: apps/mobile
-        run: npm audit --json --package-lock-only > m.json || true; node -e "const a=require('./m.json');for(const [n,v] of Object.entries(a.vulnerabilities||{}))console.log('MOBILE',n,v.severity,v.range,JSON.stringify((v.via||[]).filter(x=>typeof x==='object').map(x=>[x.source,x.title,x.url,x.range])),'fix:',JSON.stringify(v.fixAvailable))"; node -e "console.log('SUMMARY',JSON.stringify(require('./m.json').metadata))"
+        run: |
+          for p in postcss node-forge fast-uri image-size uuid glob minimatch deepmerge; do echo "LATEST $p $(npm view $p version) dist-tags: $(npm view $p dist-tags --json | tr -d '\n ')"; done
+          for p in postcss node-forge fast-uri image-size uuid glob minimatch deepmerge xcode; do echo "WHO $p"; npm ls $p --all --package-lock-only 2>/dev/null | grep -E "$p@" | sort -u | head -8; done
+          npm audit --json --package-lock-only > m.json || true
+          node -e "const a=require('./m.json');for(const [n,v] of Object.entries(a.vulnerabilities||{}))for(const x of (v.via||[]))if(typeof x==='object')console.log('ADV',n,x.url,x.range,x.severity)"
