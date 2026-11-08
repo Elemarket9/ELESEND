@@ -9,3 +9,6 @@ Required unresolved matrix: duplicate callbacks, verified payment preceding chec
 Test branch `audit/complete-custody` failed prematurely because the simulated MOMO method was not activated; fixture repair is in 40ef866. Do not count earlier blocked custody scenarios as payment failures. Cash reporting for a suspended carrier was 403 at the HTTP gate before the cash invariants could be exercised; targeted HTTP repair df584ef.
 
 **Decision still required:** reconcile on-demand withdrawal policy with configurable earnings/security holds; cannot change silently or assume the current production environment variables.
+
+## Additional money-lifecycle observations
+Test Actions run 42516692866 passed the concurrent duplicate-delivery handover subtest (6 simultaneous requests, one nonduplicate settlement in isolated PostgreSQL with mocked provider), and manifest sequencing and cancellation/return guards. This is narrow integration evidence, not generalized no-double-charge proof. Tests uncovered that suspended riders could request cash reporting even before custody (finance.mjs fixed 1a1c5d), and cash-from-sender pickup UI was absent (RiderApp 71efaa). Completed parcels now accept missing-parcel dispute report without automatic refund. The separate administrative refund path remains restricted. No verified provider payout/refund executed.
