@@ -721,6 +721,9 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     const cashBooked=await api(c.token,'POST','/api/v1/shipments',{quoteId:cashQuote.data.id},{'Idempotency-Key':'cod-no-sms-'+randomInt(1e9)});
     assert.equal(cashBooked.status,200,JSON.stringify(cashBooked.data));
     const cashId=cashBooked.data.id;
+    // Controlled synthetic assignment must supply the same complete pickup/dropoff manifest as dispatch.
+    await db.query(`INSERT INTO rider_dispatch_plans(rider_id,revision,stops) VALUES($1,1,$2)
+      ON CONFLICT(rider_id) DO UPDATE SET stops=EXCLUDED.stops,revision=rider_dispatch_plans.revision+1,updated_at=now()`,[r.id,JSON.stringify([{shipmentId:cashId,kind:'pickup',latitude:P.latitude,longitude:P.longitude,weightG:1000},{shipmentId:cashId,kind:'dropoff',latitude:D.latitude,longitude:D.longitude,weightG:1000}])]);
     await db.query("UPDATE shipments SET rider_id=$2,state='RIDER_ASSIGNED' WHERE id=$1",[cashId,r.id]);
     const cashPickup=await api(r.token,'POST','/api/v1/shipments/'+cashId+'/handover',{kind:'pickup',confirmed:true});
     assert.equal(cashPickup.status,200,JSON.stringify(cashPickup.data));
