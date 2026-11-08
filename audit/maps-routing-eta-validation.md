@@ -23,3 +23,13 @@ The current GitHub tree contains ELESEND MapLibre/OSRM/Photon-related source, in
 A strict private-OSRM-only diagnostic was added in `scripts/private-delivery-route-check.mjs` (commit `2c8dc9d5835ba8fb14e7bfe85ccfc62b5f41df60`). It requires a running `ELESEND_PRIVATE_OSRM_URL` and ELESEND-resolved `PICKUP_LAT/PICKUP_LON` and `DROP_LAT/DROP_LON`, retrieves billing-validated motorcycle road geometry and turn steps from ELESEND's `osrmRouting`, computes ETA via ELESEND's `calculateStageEta`, and optionally quotes with an explicit `ELESEND_TARIFF_JSON`. It refuses to fabricate an answer when these are unavailable.
 
 **Verification status:** source committed, not yet executed against private Ghana graph. No actual screenshot produced. Existing separate 9-route fixture-based CI tests are mock road responses, not the above live private-graph diagnostic.
+
+
+## Ghana .osrm / .mbtiles generation hardening — 2026-11-08
+Code changes on this audit branch:
+- `scripts/map-artifact-integrity.mjs`: checks OSRM MLD sidecars (.osrm, .partition, .cells), completion marker, graph file sizes, source SHA-256, and (for motorcycle) repository Lua-profile SHA. MBTiles validation opens SQLite, runs quick_check, validates PBF format/zoom range, and requires at least one nonempty tile.
+- `scripts/prepare-ghana-osrm.sh` and `.ps1`: existing .osrm no longer silently implies a finished graph; completion markers must validate before a build is skipped. Failed/interrupted graph outputs require deliberate preservation and cleanup before rebuilding.
+- `scripts/build-ghana-tiles.sh` and `.ps1`: write to `ghana.partial.mbtiles`, validate SQLite structure before promoting to `ghana.mbtiles`, preserve failed partial files for investigation. Shell build now validates source SHA-256 and streams it, reducing peak memory use.
+- `tests/map-artifact-integrity.test.mjs`: synthetic incomplete graph, tampering, source change, and SQLite MBTiles cases. These are mock artifacts, NOT actual OSRM generation.
+
+**Limit:** No actual Ghana `ghana-latest.osm.pbf`, `ghana-latest.osrm*`, `ghana-motorcycle.osrm*`, or `ghana.mbtiles` in the repository (generated externally under GHANA_MAP_DATA). No graph build, route query, tile render or image screenshot on real private data has been demonstrated by these structural tests. A successful CI test proves only the validation code works against test fixtures.
