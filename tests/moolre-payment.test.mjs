@@ -115,7 +115,9 @@ test('an unclear payout never releases money',async()=>{
 
 test('a refund goes to the verified customer number, up to what was paid',async()=>{
  const requestId=randomUUID(),input={requestId,reference:'es_abc12345',amountMinor:6250,currency:'GHS',customerPhone:'+233241234567'};
- const {p,calls}=adapter((u,b)=>u.endsWith('/status')?status(b.id):{status:'1',code:'OBGH01',data:{transactionid:'7'}});
+ // Moolre's name check confirms the number is on MTN (channel 1) and on no other network.
+ const validate=b=>b.channel==='1'?{status:1,code:'AVD01',data:'KWAME MENSAH'}:{status:0,code:'AVD02',data:'Phone No. not found',httpOk:false};
+ const {p,calls}=adapter((u,b)=>u.endsWith('/status')?status(b.id):u.endsWith('/validate')?validate(b):{status:'1',code:'OBGH01',data:{transactionid:'7'}});
  assert.equal(p.requiresRefundPhone,true);
  assert.deepEqual(await p.createRefund(input),{providerId:'7'});
  const sent=calls.at(-1);

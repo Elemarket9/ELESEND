@@ -9,8 +9,6 @@ import {validatedCheckoutUrl} from '../checkout-policy.mjs';
  */
 const LIVE='https://api.moolre.com',SANDBOX='https://sandbox.moolre.com';
 const CHANNELS={MTN:'1',TELECEL:'6',AT:'7'};
-// Ghana's number prefixes. Refunds only: a ported number fails safely and goes to staff.
-const PREFIX_CHANNELS={'024':'1','025':'1','053':'1','054':'1','055':'1','059':'1','020':'6','050':'6','026':'7','027':'7','056':'7','057':'7'};
 const NOT_FOUND='SS07';
 const local=value=>{try{return '0'+canonicalGhanaPhone(value).slice(4);}catch{return null;}};
 const decimal=minor=>{check(Number.isSafeInteger(minor)&&minor>0,400,'Invalid amount');return `${Math.floor(minor/100)}.${String(minor%100).padStart(2,'0')}`;};
@@ -94,6 +92,19 @@ export function moolreCheckout({apiUser,publicKey,privateKey,accountNumber,callb
   if(found.state==='success')check(found.amountMinor===amountMinor,409,'Moolre transfer amount mismatch');
   return {...found,state:found.state==='failed'&&!failedStatusConfirmed?'pending':found.state};
  }
+ /** Asks Moolre which network holds a number. A prefix is never trusted, because Ghana numbers can be ported
+  * to another network. Only one clear match is used; anything else goes to staff and nothing is sent. */
+ async function confirmedChannel(receiver){
+  const unclear='Refund needs staff: Moolre could not confirm the customer network';
+  const matches=[];
+  for(const channel of Object.values(CHANNELS)){
+   const r=await remote('/open/transact/validate',{type:1,receiver,channel,currency:'GHS'},{secret:true});
+   if(r.accepted&&r.code==='AVD01'&&typeof r.data==='string'&&r.data.trim())matches.push(channel);
+   else check(r.code==='AVD02',409,unclear);
+  }
+  check(matches.length===1,409,unclear);
+  return matches[0];
+ }
  const parseRecipient=value=>{const m=/^moolre:(1|6|7):(0\d{9})$/.exec(String(value??''));return m&&{channel:m[1],phone:m[2]};};
  const PAYOUT='espayout-',REFUND='esrefund-';
 
@@ -154,13 +165,15 @@ export function moolreCheckout({apiUser,publicKey,privateKey,accountNumber,callb
     providerId:out.transactionId,recipientReference,amountMinor,currency,eventId:out.transactionId?`transfer:${out.transactionId}${out.state==='failed'?':failed':''}`:'',
     ...(out.state==='failed'?{failureReason:'Moolre reported the transfer failed'}:{})};
   },
-  /** Moolre documents no refund for collections, so the money goes back to the customer's verified number as a transfer. */
+  /** Moolre documents no refund for collections, so the money goes back to the customer's verified number as a transfer,
+  * on the network Moolre confirms for that number. */
   async createRefund({requestId,reference,amountMinor,currency,customerPhone}){
    check(/^[0-9a-f-]{36}$/.test(requestId),400,'Invalid refund request');
-   const receiver=local(customerPhone),channel=receiver&&PREFIX_CHANNELS[receiver.slice(0,3)];
-   check(channel,409,'Refund needs staff: the customer number or its network is unknown');
+   const receiver=local(customerPhone);
+   check(receiver,409,'Refund needs staff: the customer number is unknown');
    const paid=await verifyPayment(reference);
    check(paid.status==='success'&&paid.amountMinor>=amountMinor,409,'Refund exceeds the verified payment');
+   const channel=await confirmedChannel(receiver);
    return transfer({externalref:REFUND+requestId,channel,receiver,amountMinor,currency,note:'ELESEND refund'});
   },
   async verifyRefund({requestId,reference,amountMinor,currency}){
