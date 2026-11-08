@@ -49,8 +49,8 @@ There is no limit on the amount a person can withdraw. Keep `WITHDRAWAL_FEE_MINO
 - **Independent riders' cash commission:** becomes the rider's debt, due at the Monday cutoff plus 24 hours. It is repaid from earnings first, then by Mobile Money.
 - **Company riders' cash commission:** the company owes it, and it is recovered from the company's unpaid earnings. At `COMPANY_COMMISSION_DEBT_LIMIT_MINOR` (default GH₵500), its riders stop receiving cash jobs until digital earnings clear the debt.
 - **Delivered food orders:** ELESEND does not refund them or give up commission. The customer chats with the restaurant.
-- **Parcels confirmed by SMS:** never refunded.
-- **Failed parcel deliveries after pickup:** the sender pays the full fare, with no refund. The rider returns the parcel and gets the sender's SMS code, then earnings and commission settle like a completed delivery. If the fare was cash payable by the recipient, the rider collects it from the sender first.
+- **Delivered parcels:** rider-declared handover is not independent recipient proof; missing-parcel reports remain available for investigation, without automatic refund.
+- **Failed parcel deliveries after pickup:** the sender pays the full fare, with no refund. The rider returns the parcel and gets authorized return confirmation, then earnings and commission settle like a completed delivery. If the fare was cash payable by the recipient, the rider collects it from the sender first.
 - **Parcels never picked up:** the rider releases the job, and the sender can cancel for a full refund.
 
 ## Exception payouts
