@@ -385,6 +385,18 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    const set=(await db.query('SELECT restricted_after FROM chat_conversations WHERE id=$1',[conv.data.id])).rows[0];assert.ok(set.restricted_after);
    await offline();
   });
+  await t.test('recipient cannot be rerouted once rider has confirmed pickup',async()=>{
+   await offline();
+   const c=await customer(),r=await readyRider(),sid=await paidOrder(c);
+   await dispatch.tick();
+   const offer=await offerFor(r,sid);
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+sid+'/accept',{offerId:offer.offerId})).status,200);
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+sid+'/handover',{kind:'pickup',confirmed:true})).status,200);
+   const next=phone();
+   const attempted=await api(c.token,'POST','/api/v1/shipments/'+sid+'/recipient',{recipientPhone:next});
+   assert.equal(attempted.status,409,'the original custody destination must not silently change after pickup');
+   await offline();
+  });
   await t.test('a customer fixes a mistyped recipient number and the code goes to the new number',async()=>{
    await offline();
    const c=await customer();const r=await readyRider();const id=await paidOrder(c);await dispatch.tick();
