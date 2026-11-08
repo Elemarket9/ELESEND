@@ -91,6 +91,7 @@ services:
       ADMIN_MASTER_KEY: ${ADMIN_MASTER_KEY:?Set 32+ character admin master key}
       AUDIT_LOG_SECRET: ${AUDIT_LOG_SECRET:?Set 32+ character audit log secret}
       NODE_ENV: production
+      HANDOVER_SMS_LEGACY_ENABLED: ${HANDOVER_SMS_LEGACY_ENABLED:-false}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       BACKGROUND_JOBS_ENABLED: ${BACKGROUND_JOBS_ENABLED:-true}
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-172.29.240.10/32}
