@@ -107,6 +107,7 @@ services:
       ROUTING_OSRM_URL: ${ROUTING_OSRM_URL:-}
       ROUTING_OSRM_MOTORCYCLE_URL: ${ROUTING_OSRM_MOTORCYCLE_URL:-http://osrm-motorcycle:5000}
       ROUTING_OSRM_CAR_URL: ${ROUTING_OSRM_CAR_URL:-http://osrm:5000}
+      GHANA_OSM_PLACES_FILE: /map-data/ghana-osm-places.json
       ROUTING_OSRM_VEHICLES_JSON: ${ROUTING_OSRM_VEHICLES_JSON:-}
       ROUTING_PROVIDER_PRIORITY: osrm
       EGIA_ENABLED: ${EGIA_ENABLED:-false}
@@ -181,6 +182,9 @@ services:
       SETTLEMENT_HUBTEL_PROVIDER_CHANNEL: ${SETTLEMENT_HUBTEL_PROVIDER_CHANNEL:-}
       SETTLEMENT_PAYSTACK_RECIPIENT_TYPE: ${SETTLEMENT_PAYSTACK_RECIPIENT_TYPE:-}
       SETTLEMENT_PAYSTACK_PROVIDER_CHANNEL: ${SETTLEMENT_PAYSTACK_PROVIDER_CHANNEL:-}
+    # Searchable places rebuilt by the daily map refresh. A missing folder or file leaves search on the built-in places.
+    volumes:
+      - {type: bind, source: '${GHANA_MAP_DATA:-./map-data}', target: /map-data, read_only: true, bind: {create_host_path: true}}
     depends_on:
       db: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}

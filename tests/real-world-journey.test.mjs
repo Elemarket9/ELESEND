@@ -385,27 +385,38 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    const set=(await db.query('SELECT restricted_after FROM chat_conversations WHERE id=$1',[conv.data.id])).rows[0];assert.ok(set.restricted_after);
    await offline();
   });
-  await t.test('a customer fixes a mistyped recipient number and the code goes to the new number',async()=>{
+  await t.test('recipient cannot be rerouted once rider has confirmed pickup',async()=>{
    await offline();
-   const c=await customer();const r=await readyRider();const id=await paidOrder(c);await dispatch.tick();
-   const o=await offerFor(r,id);await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:o.offerId});
-   const pc=await api(r.token,'POST','/api/v1/shipments/'+id+'/pickup-challenge',{});await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:pc.data.challengeId,code:code()});
-   await api(r.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'start'});
-   const first=await api(r.token,'POST','/api/v1/shipments/'+id+'/delivery-challenge',{});assert.equal(first.status,200,JSON.stringify(first.data));
-   const oldCode=code();
-   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+id+'/recipient',{recipientPhone:phone()})).status,404,'the rider cannot change it');
-   assert.equal((await api((await customer()).token,'POST','/api/v1/shipments/'+id+'/recipient',{recipientPhone:phone()})).status,404,'another customer cannot see it');
+   const c=await customer(),r=await readyRider(),sid=await paidOrder(c);
+   await dispatch.tick();
+   const offer=await offerFor(r,sid);
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+sid+'/accept',{offerId:offer.offerId})).status,200);
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+sid+'/handover',{kind:'pickup',confirmed:true})).status,200);
+   const next=phone();
+   const attempted=await api(c.token,'POST','/api/v1/shipments/'+sid+'/recipient',{recipientPhone:next});
+   assert.equal(attempted.status,409,'the original custody destination must not silently change after pickup');
+   await offline();
+  });
+  await t.test('recipient correction before pickup preserves the immutable handover contact',async()=>{
+   await offline();
+   const c=await customer(),r=await readyRider(),sid=await paidOrder(c);
+   await dispatch.tick();
+   const o=await offerFor(r,sid);
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+sid+'/accept',{offerId:o.offerId})).status,200);
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+sid+'/recipient',{recipientPhone:phone()})).status,404,'the rider cannot change it');
+   assert.equal((await api((await customer()).token,'POST','/api/v1/shipments/'+sid+'/recipient',{recipientPhone:phone()})).status,404,'another customer cannot see it');
    const fixed='0'+phone().slice(4);
-   const ch=await api(c.token,'POST','/api/v1/shipments/'+id+'/recipient',{recipientPhone:fixed});assert.equal(ch.status,200,JSON.stringify(ch.data));
-   assert.equal(ch.data.recipientPhone,'+233'+fixed.slice(1));assert.equal(ch.data.deliveryCodeCancelled,true);
-   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:first.data.challengeId,code:oldCode})).status,409,'the code sent to the old number no longer works');
-   const second=await api(r.token,'POST','/api/v1/shipments/'+id+'/delivery-challenge',{});assert.equal(second.status,200,JSON.stringify(second.data));
-   assert.equal(texts.at(-1).phone,'+233'+fixed.slice(1),'the new code goes to the corrected number');
-   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:second.data.challengeId,code:code()})).status,200);
-   assert.equal((await api(c.token,'POST','/api/v1/shipments/'+id+'/recipient',{recipientPhone:phone()})).status,409,'no change after delivery');
-   await assert.rejects(db.query('UPDATE shipments SET recipient_phone=$2 WHERE id=$1',[id,phone()]),/immutable/,'a direct change outside the correction is still blocked');
-   const logged=(await db.query("SELECT 1 FROM audit_logs WHERE action='shipment.recipient_changed' AND entity_id=$1",[id])).rowCount;
-   assert.notEqual(logged,0,'the change is recorded');
+   const correction=await api(c.token,'POST','/api/v1/shipments/'+sid+'/recipient',{recipientPhone:fixed});
+   assert.equal(correction.status,200,JSON.stringify(correction.data));
+   assert.equal(correction.data.recipientPhone,'+233'+fixed.slice(1));
+   assert.equal(correction.data.deliveryCodeCancelled,false,'no delivery challenge exists before pickup');
+   assert.equal((await api(r.token,'POST','/api/v1/shipments/'+sid+'/handover',{kind:'pickup',confirmed:true})).status,200);
+   assert.equal((await api(c.token,'POST','/api/v1/shipments/'+sid+'/recipient',{recipientPhone:phone()})).status,409,'no recipient changes after pickup');
+   const complete=await api(r.token,'POST','/api/v1/shipments/'+sid+'/handover',{kind:'delivery',confirmed:true});
+   assert.equal(complete.status,200,JSON.stringify(complete.data));
+   assert.equal((await api(c.token,'GET','/api/v1/shipments/'+sid)).data.recipient_phone,'+233'+fixed.slice(1));
+   await assert.rejects(db.query('UPDATE shipments SET recipient_phone=$2 WHERE id=$1',[sid,phone()]),/immutable/,'direct changes stay blocked');
+   assert.equal((await db.query("SELECT count(*)::int AS n FROM audit_logs WHERE action='shipment.recipient_changed' AND entity_id=$1",[sid])).rows[0].n,1);
    await offline();
   });
   await t.test('sign-up records which terms the person accepted',async()=>{

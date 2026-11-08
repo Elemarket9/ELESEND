@@ -21,7 +21,7 @@ import {network} from './network.mjs';
 import {vehicleService} from './vehicle.mjs';
 import {clientIp,rateLimitKey,resolveVerifiedHost} from './client-ip.mjs';
 import {marketService} from './markets.mjs';
-import {ghanaSearch,ghanaReverseGeocode} from './infrastructure/maps/ghana-geocoder.mjs';
+import {searchPlaces,ghanaReverseGeocode} from './infrastructure/maps/ghana-geocoder.mjs';
 import {searchInformalLocation} from './infrastructure/maps/egia/informal-geocoder.mjs';
 import {createTemporaryDeliveryReference,getTemporaryDeliveryReference} from './infrastructure/maps/egia/temporary-reference.mjs';
 import {submitRiderMapReport,getRiderMapFeedbackCategories} from './infrastructure/maps/egia/rider-map-reporter.mjs';
@@ -245,7 +245,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    const q=new URL(req.url,'http://localhost').searchParams.get('q')??'';
    check(q.length>=2,400,'Enter at least 2 characters to search');
    await limit(db,'maps-search:'+actor.id,60,60);
-   result=ghanaSearch(q);
+   result=await searchPlaces(db,q);
   }
   else if(method==='GET'&&path==='/api/v1/maps/reverse'){
    const u=new URL(req.url,'http://localhost').searchParams;

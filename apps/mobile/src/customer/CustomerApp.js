@@ -1927,7 +1927,7 @@ export default function CustomerApp() {
                 </View>
                 <Text style={styles.orderFareText}>{ghc(s.amount_minor)}, {paymentLabel(s.payment_method)}</Text>
                 {Boolean(s.destination?.address) && <Text style={styles.orderFareText} numberOfLines={1}>To {s.destination.address}</Text>}
-                {['AWAITING_PAYMENT', 'AWAITING_ASSIGNMENT', 'RIDER_ASSIGNED', 'PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP'].includes(s.state) && (
+                {['AWAITING_PAYMENT', 'AWAITING_ASSIGNMENT', 'RIDER_ASSIGNED'].includes(s.state) && (
                   <TouchableOpacity onPress={() => setRecipientEdit(s)} accessibilityRole="button" style={{ minHeight: 44, justifyContent: 'center' }}>
                     <Text style={[styles.orderFareText, { textDecorationLine: 'underline' }]}>
                       Recipient {s.recipient_phone ? formatGhanaDisplayPhone(s.recipient_phone) : ''}: change number
@@ -1989,7 +1989,7 @@ export default function CustomerApp() {
             <RecipientPhoneModal
               shipment={recipientEdit}
               onClose={() => setRecipientEdit(null)}
-              onChanged={() => { refreshActivity(); Alert.alert('Number changed', 'The handover code will go to the new number.'); }}
+              onChanged={() => { refreshActivity(); Alert.alert('Number changed', 'The rider will call the new number on arrival.'); }}
             />
 
             {/* Active Food Orders */}

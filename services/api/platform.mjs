@@ -800,10 +800,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   });check(false,503,'We could not send the code by SMS. Try again in a minute. ELESEND support has been alerted.');}
   return {challengeId:cid,expiresInSeconds:300};
  },
- // The customer fixes a mistyped recipient number before handover. Any unused delivery code is cancelled so it cannot reach the old number.
+ // The customer may correct an accidental phone typo before the rider takes custody.\n // After pickup, the original handover recipient must remain immutable; rerouting is a support/dispute action.
  async correctRecipient(actor,sid,input){const v=z.object({recipientPhone:z.string().max(30)}).strict().parse(input);const p=phone(v.recipientPhone);
   return db.tx(async c=>{const s=await locked(c,sid);check(s.customer_id===actor.id,404,'Shipment not found');
-   check(['AWAITING_PAYMENT','AWAITING_ASSIGNMENT','RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state),409,'The recipient can no longer be changed for this delivery');
+   check(['AWAITING_PAYMENT','AWAITING_ASSIGNMENT','RIDER_ASSIGNED'].includes(s.state),409,'Recipient correction is unavailable after pickup; contact support about a delivery dispute');
    if(s.recipient_phone===p)return {shipmentId:sid,recipientPhone:p,changed:false};
    await limit(c,'recipient:'+sid,3,86400);
    await c.query("SELECT set_config('elesend.recipient_correction',$1,true)",[sid]);
