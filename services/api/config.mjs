@@ -243,29 +243,20 @@ export function validateConfig(env = process.env) {
     : null;
 
   // Check vehicle-specific environment variables (e.g. ROUTING_OSRM_MOTORCYCLE_URL, ROUTING_OSRM_CAR_URL)
-  const carUrl = (env.ROUTING_OSRM_CAR_URL || '').trim();
-  const motorcycleUrl = (env.ROUTING_OSRM_MOTORCYCLE_URL || '').trim();
-  const osrmUrl = (env.ROUTING_OSRM_URL || '').trim() || null;
-
-  const routingUrls = [
-    ['ROUTING_OSRM_URL', osrmUrl],
-    ['ROUTING_OSRM_CAR_URL', carUrl],
-    ['ROUTING_OSRM_MOTORCYCLE_URL', motorcycleUrl]
-  ];
-  for (const [name, val] of routingUrls) {
-    if (val) {
-      try {
-        const u = new URL(val);
-        if (!['http:', 'https:'].includes(u.protocol)) {
-          errors.push(`${name} must use http: or https: (got "${u.protocol}").`);
-        } else if (u.username || u.password) {
-          errors.push(`${name} must not contain user credentials.`);
-        }
-      } catch {
-        errors.push(`${name} must be a valid URL (got "${val}").`);
-      }
-    }
-  }
+  // A routing address that cannot be used switches that road graph off with a warning; it never stops the server.
+  const routingUrl = name => {
+    const val = (env[name] || '').trim();
+    if (!val) return '';
+    try {
+      const u = new URL(val);
+      if (!['http:', 'https:'].includes(u.protocol)) { warnings.push(`${name} must use http: or https: (got "${u.protocol}"), so it is ignored.`); return ''; }
+      if (u.username || u.password) { warnings.push(`${name} must not contain user credentials, so it is ignored.`); return ''; }
+      return val;
+    } catch { warnings.push(`${name} is not a valid URL, so it is ignored.`); return ''; }
+  };
+  const carUrl = routingUrl('ROUTING_OSRM_CAR_URL');
+  const motorcycleUrl = routingUrl('ROUTING_OSRM_MOTORCYCLE_URL');
+  const osrmUrl = routingUrl('ROUTING_OSRM_URL') || null;
 
   if (carUrl || motorcycleUrl) {
     assembledVehicleRoutes = assembledVehicleRoutes || {};
@@ -286,12 +277,30 @@ export function validateConfig(env = process.env) {
 
   const allowSingleEndpoint = parseBoolean(env.ROUTING_ALLOW_SINGLE_ENDPOINT, !isProduction);
 
-  // No routing service is a supported state. The rule only guards a shared endpoint that was actually set.
-  if (isProduction && (env.ROUTING_OSRM_URL || '').trim() && !assembledVehicleRoutes && !allowSingleEndpoint) {
-    const hasNonCar = Object.keys(profiles).some(v => v !== 'car');
-    if (hasNonCar) {
-      warnings.push('Only a car road graph is configured, so non-car routes are refused until ROUTING_OSRM_MOTORCYCLE_URL (or ROUTING_OSRM_VEHICLES_JSON) is set, or ROUTING_ALLOW_SINGLE_ENDPOINT=true.');
+  // Graph entries the router would reject at startup are dropped here with a warning instead, so a typo in routing
+  // settings switches off that vehicle's routes rather than the whole server.
+  const ROUTED_VEHICLES = ['motorcycle', 'car', 'van', 'bicycle', 'tricycle', 'pickup', 'truck'];
+  if (assembledVehicleRoutes) {
+    const sameAddress = (a, b) => { try { return new URL(a).toString() === new URL(b).toString(); } catch { return false; } };
+    for (const [vehicle, entry] of Object.entries(assembledVehicleRoutes)) {
+      let usable = false;
+      try { usable = ROUTED_VEHICLES.includes(vehicle) && entry && typeof entry.endpoint === 'string' && /^[a-zA-Z0-9_-]{1,32}$/.test(entry.profile ?? '') && ['http:', 'https:'].includes(new URL(entry.endpoint).protocol); } catch { usable = false; }
+      if (!usable) { warnings.push(`Road graph setting for "${vehicle}" is not usable, so that vehicle has no routes.`); delete assembledVehicleRoutes[vehicle]; }
     }
+    const car = assembledVehicleRoutes.car;
+    if (car) for (const [vehicle, entry] of Object.entries(assembledVehicleRoutes)) {
+      if (vehicle !== 'car' && sameAddress(entry.endpoint, car.endpoint)) {
+        warnings.push(`The ${vehicle} road graph points at the car graph, so ${vehicle} routes are refused until it has its own graph.`);
+        delete assembledVehicleRoutes[vehicle];
+      }
+    }
+    if (!Object.keys(assembledVehicleRoutes).length) assembledVehicleRoutes = null;
+  }
+  // No routing service is a supported state. One shared graph serves cars only, unless sharing is explicitly allowed:
+  // a motorbike priced on car roads would quote the wrong route.
+  if (isProduction && osrmUrl && !assembledVehicleRoutes && !allowSingleEndpoint && Object.keys(profiles).some(v => v !== 'car')) {
+    warnings.push('Only a car road graph is configured, so non-car routes are refused until ROUTING_OSRM_MOTORCYCLE_URL (or ROUTING_OSRM_VEHICLES_JSON) is set, or ROUTING_ALLOW_SINGLE_ENDPOINT=true.');
+    profiles = profiles.car ? {car: profiles.car} : {};
   }
 
   // Customer ETA only. Fares, dispatch ranking and delivery deadlines use raw road times.

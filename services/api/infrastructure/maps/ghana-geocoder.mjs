@@ -665,6 +665,8 @@ export async function ghanaSearchPostGIS(db, query, {limit = 10} = {}) {
 
   const rawWords = clean.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 0 && !STOP_WORDS.has(w));
   const searchPattern = rawWords.join(' ');
+  // Only filler words ("at the") would match every row and scan both tables, so there is nothing to look up.
+  if (searchPattern.length < 2) return [];
 
   const res = await db.query(`
     SELECT id, name, category, subcategory, locality, city, region,
@@ -676,8 +678,7 @@ export async function ghanaSearchPostGIS(db, query, {limit = 10} = {}) {
        OR name % $1
        OR search_name ILIKE '%' || $1 || '%'
     ORDER BY (
-      CASE WHEN name ILIKE 'KAAF University (Main Campus%' AND $1 ILIKE '%kaaf%' THEN 60
-           WHEN lower(name) = lower($1) THEN 50
+      CASE WHEN lower(name) = lower($1) THEN 50
            WHEN lower(name) LIKE lower($1) || '%' THEN 30
            ELSE 0 END +
       similarity(name, $1) * 50 +
@@ -752,10 +753,16 @@ export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800} = {}
   const local = ghanaSearch(query, {limit});
   if (!db) return local;
   let stored = [];
+  // The database stops the query itself after timeoutMs, so a slow search frees its connection instead of holding one
+  // while bookings wait. The race is a second guard for a database that does not answer at all.
+  const lookup = typeof db.tx === 'function'
+    ? db.tx(async c => { await c.query(`SET LOCAL statement_timeout = ${Math.max(50, Math.min(5000, Math.round(timeoutMs)))}`); return ghanaSearchPostGIS(c, query, {limit}); })
+    : ghanaSearchPostGIS(db, query, {limit});
   let timer;
   try {
-    stored = await Promise.race([ghanaSearchPostGIS(db, query, {limit}), new Promise(resolve => { timer = setTimeout(resolve, timeoutMs, []); })]) || [];
+    stored = await Promise.race([lookup, new Promise(resolve => { timer = setTimeout(resolve, timeoutMs + 200, []); })]) || [];
   } catch { stored = []; } finally { clearTimeout(timer); }
+  lookup.catch?.(() => {});
   const sameSpot = (a, b) => String(a.name).trim().toLowerCase() === String(b.name).trim().toLowerCase()
     && haversine({latitude: Number(a.latitude), longitude: Number(a.longitude)}, {latitude: Number(b.latitude), longitude: Number(b.longitude)}) < 150;
   const compact = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');

@@ -32,14 +32,19 @@ test('database uses validated TLS and preserves CA despite URL SSL overrides',as
  try{assert.deepEqual(db.pool.options.ssl,{rejectUnauthorized:true,ca:'fixture-ca'});assert.equal(new URL(db.pool.options.connectionString).searchParams.has('sslmode'),false);}finally{await db.close();}
 });
 
-test('production rejects malformed optional origin overrides and invalid routing URLs',()=>{
+test('production rejects malformed origin overrides; a bad routing URL only switches routing off',()=>{
  const r1=validateConfig({...base,HUBTEL_CALLBACK_BASE_URL:'http://insecure.test'});
  assert.equal(r1.ok,false);
  assert.ok(r1.errors.some(e=>e.includes('HUBTEL_CALLBACK_BASE_URL must use HTTPS')));
 
  const r2=validateConfig({...base,ROUTING_OSRM_URL:'not-a-valid-url'});
- assert.equal(r2.ok,false);
- assert.ok(r2.errors.some(e=>e.includes('ROUTING_OSRM_URL must be a valid URL')));
+ assert.equal(r2.errors.some(e=>e.includes('ROUTING_OSRM_URL')),false);
+ assert.ok(r2.warnings.some(e=>e.includes('ROUTING_OSRM_URL is not a valid URL')));
+});
+
+test('a motorbike graph pointing at the car graph is dropped with a warning instead of crashing startup',()=>{
+ const r=validateConfig({...base,ROUTING_OSRM_CAR_URL:'http://osrm:5000',ROUTING_OSRM_MOTORCYCLE_URL:'http://osrm:5000'});
+ assert.ok(r.warnings.some(e=>e.includes('motorcycle road graph points at the car graph')));
 });
 
 test('generic SMS gateway configuration validates required fields and is wired into compose files',()=>{

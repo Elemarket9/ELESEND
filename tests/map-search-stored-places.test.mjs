@@ -15,3 +15,11 @@ test('a place in both lists is shown once',async()=>{
  const r=await searchPlaces({query:async()=>({rows:[{...row,name:'Kotoka International Airport',latitude:'5.60519',longitude:'-0.16679'}]})},'Kotoka International Airport');
  assert.equal(r.filter(x=>x.name==='Kotoka International Airport').length,1);
 });
+test('a search of only filler words does not query the database',async()=>{
+ let asked=false;await searchPlaces({query:async()=>{asked=true;return {rows:[]};}},'at the');assert.equal(asked,false);
+});
+test('the database search runs under its own statement timeout',async()=>{
+ const seen=[];const client={query:async sql=>{seen.push(String(sql));return {rows:[]};}};
+ await searchPlaces({tx:async fn=>fn(client)},'Kasoa market',{timeoutMs:600});
+ assert.match(seen[0],/SET LOCAL statement_timeout = 600/);assert.match(seen[1],/searchable_landmarks_v9/);
+});
