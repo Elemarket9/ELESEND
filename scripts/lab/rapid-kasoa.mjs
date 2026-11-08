@@ -85,9 +85,9 @@ try{
  const gps=async p=>api(rider.token,'POST','/api/v1/rider/location',{latitude:p.latitude,longitude:p.longitude,accuracyMeters:8,observedAt:new Date().toISOString(),sentAt:new Date().toISOString()});
  out('online',(await api(rider.token,'POST','/api/v1/rider/availability',{online:true})).status,'gps',JSON.stringify((await gps(at(pickup,0.002,0.001))).data).slice(0,160));
  let offer=null;
- for(let i=0;i<40&&!offer;i++){await sleep(3000);const o=await api(rider.token,'GET','/api/v1/rider/offers');offer=(o.data||[]).find(x=>x.shipmentId===sid||x.shipment_id===sid);}
+ for(let i=0;i<40&&!offer;i++){await sleep(3000);if(i%3===0)await gps(at(pickup,0.002,0.001));const o=await api(rider.token,'GET','/api/v1/rider/offers');offer=(Array.isArray(o.data)?o.data:[]).find(x=>x.id===sid);if(i===0||offer)out('offers poll',o.status,JSON.stringify(o.data).slice(0,300));}
  out('offer after dispatch:',JSON.stringify(offer).slice(0,500));if(!offer)throw Error('no offer reached the rider');
- const acc=await api(rider.token,'POST',`/api/v1/shipments/${sid}/accept`,{offerId:offer.offerId??offer.id});out('accept',acc.status,JSON.stringify(acc.data).slice(0,200));
+ const acc=await api(rider.token,'POST',`/api/v1/shipments/${sid}/accept`,{offerId:offer.offerId});out('accept',acc.status,JSON.stringify(acc.data).slice(0,200));
 
  out('\n== 5. Navigation to pickup and SMS-free pickup');
  const nav1=await api(rider.token,'POST','/api/v1/rider/navigation',{shipmentId:sid,...at(pickup,0.002,0.001)});
