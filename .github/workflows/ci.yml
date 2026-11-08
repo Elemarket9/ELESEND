@@ -36,6 +36,10 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Check production dependencies for known vulnerabilities
         run: npm audit --omit=dev --audit-level=high
+      - name: Report mobile production dependency advisories (non-blocking)
+        run: |
+          npm audit --prefix apps/mobile --omit=dev --json > mobile-dependency-audit.json || true
+          node scripts/ci/report-mobile-audit.mjs mobile-dependency-audit.json
       - name: Check for committed secrets
         run: node scripts/secret-scan.mjs
       - name: Run database migrations
