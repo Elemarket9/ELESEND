@@ -19,8 +19,19 @@ if(!(Test-Path -LiteralPath $taskSource)){throw 'Download Ghana data with script
 $taskMetadata=Get-Content -LiteralPath (Join-Path $taskDirectory 'ghana-source.json') -Raw | ConvertFrom-Json
 if((Get-FileHash -LiteralPath $taskSource -Algorithm SHA256).Hash.ToLowerInvariant() -ne $taskMetadata.sha256){throw 'Ghana source hash mismatch'}
 $taskOutput=Join-Path $taskDirectory 'ghana.mbtiles'
-if(Test-Path -LiteralPath $taskOutput){throw 'Preserve the existing tiles under a dated filename before rebuilding'}
+$taskValidator=Join-Path $PSScriptRoot 'map-artifact-integrity.mjs'
+if(Test-Path -LiteralPath $taskOutput){
+  & node $taskValidator verify-tiles $taskOutput
+  if($LASTEXITCODE -ne 0){throw 'Existing Ghana MBTiles failed integrity checks'}
+  Write-Output 'Existing vector tiles verified; preserve or move aside before rebuilding'
+  exit 0
+}
+$taskPartial=$taskOutput+'.partial'
+if(Test-Path -LiteralPath $taskPartial){throw 'Interrupted tile generation (.partial) exists; preserve or remove before rebuilding'}
 $taskSchema=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../deploy/maps/ghana-schema.yml'))
-& java -Xmx3g -jar $taskJar generate-custom "--schema=$taskSchema" "--osm-local-path=$taskSource" "--output=$taskOutput" "--tmpdir=$(Join-Path $taskDirectory 'tile-temp')" --threads=2 --nodemap-storage=ram --bounds=-3.4,4.5,1.4,11.4
+& java -Xmx3g -jar $taskJar generate-custom "--schema=$taskSchema" "--osm-local-path=$taskSource" "--output=$taskPartial" "--tmpdir=$(Join-Path $taskDirectory 'tile-temp')" --threads=2 --nodemap-storage=ram --bounds=-3.4,4.5,1.4,11.4
 if($LASTEXITCODE -ne 0){throw 'Ghana vector tile generation failed'}
+& node $taskValidator verify-tiles $taskPartial
+if($LASTEXITCODE -ne 0){throw 'Generated MBTiles failed structural verification; partial output preserved'}
+Move-Item -LiteralPath $taskPartial -Destination $taskOutput
 Get-FileHash -LiteralPath $taskOutput -Algorithm SHA256
