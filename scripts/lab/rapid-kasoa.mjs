@@ -40,7 +40,7 @@ try{
  const customer=await account('customer');
  out('\n== 1. Customer searches in ELESEND');
  const searches={};
- for(const q of ['Rapid Courier','RAPID Courier Airport','Domestic Terminal','GTBank Kasoa','GT Bank Kasoa','Kasoa new market']){
+ for(const q of ['Rapid Courier','RAPID Courier Airport','Rapid Courier Accra Airport','Kotoka Airport','Domestic Terminal','GTBank Kasoa','GT Bank Kasoa','GTBank Kasoa branch','Kasoa new market']){
   const r=await api(customer.token,'GET','/api/v1/maps/search?q='+encodeURIComponent(q));searches[q]=r.data;out(JSON.stringify(q),r.status,r.ms+'ms',JSON.stringify(fmt(r.data)));
  }
  const near=(a,b)=>Math.hypot((a.latitude-b.latitude)*111000,(a.longitude-b.longitude)*111000*Math.cos(a.latitude*Math.PI/180));
@@ -51,8 +51,18 @@ try{
   out(`${label}: NOT found by ELESEND search; customer drops a pin at the OSM position`);
   return {address:truth.name,latitude:truth.latitude,longitude:truth.longitude};
  };
- const pickup=pick('Pickup (RAPID Courier)',searches['Rapid Courier'],osm.rapidCourier);
- const destination=pick('Drop-off (GTBank Kasoa)',searches['GTBank Kasoa'],osm.gtbankKasoa);
+ // Pickup is RAPID Courier at Accra Airport (their listing: Domestic Terminal, Kotoka). Only an OSM RAPID office
+ // within 3 km of the airport counts; otherwise the domestic terminal itself is the pickup point.
+ const kotoka={latitude:5.6052,longitude:-0.1668};
+ const rapidAirport=(osm.allRapid||[]).find(p=>near(p,kotoka)<3000);
+ const pickupTruth=rapidAirport||osm.domesticTerminal||{...kotoka,name:'Kotoka International Airport'};
+ out('Pickup reference point:',rapidAirport?'OSM RAPID Courier office at the airport':osm.domesticTerminal?'OSM Kotoka domestic terminal (RAPID Courier not mapped in OSM)':'Kotoka airport (neither mapped in OSM)',JSON.stringify(pickupTruth));
+ if(!rapidAirport)problems.push('RAPID Courier Accra Airport is not mapped in OpenStreetMap; pickup uses '+(osm.domesticTerminal?'the domestic terminal':'the airport'));
+ const pickup=pick('Pickup (RAPID Courier, Accra Airport)',[...(searches['RAPID Courier Airport']||[]),...(searches['Rapid Courier']||[]),...(searches['Domestic Terminal']||[])],pickupTruth);
+ // Drop-off is the GTBank Kasoa branch, on the new Kasoa market road.
+ const kasoaMarket={latitude:5.5367,longitude:-0.4215,name:'Kasoa new market road (approximate, GTBank branch not mapped in OSM)'};
+ if(!osm.gtbankKasoa)problems.push('GTBank Kasoa is not mapped in OpenStreetMap; drop-off approximated at the Kasoa new market');
+ const destination=pick('Drop-off (GTBank Kasoa branch)',[...(searches['GTBank Kasoa']||[]),...(searches['GT Bank Kasoa']||[])],osm.gtbankKasoa||kasoaMarket);
  for(const [k,p] of [['pickup',pickup],['destination',destination]]){const r=await api(customer.token,'GET',`/api/v1/maps/reverse?lat=${p.latitude}&lon=${p.longitude}`);out(`reverse ${k}:`,r.status,JSON.stringify(r.data).slice(0,240));}
 
  out('\n== 2. Quotes (real OSRM road routes)');
