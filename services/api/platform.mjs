@@ -820,7 +820,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  // The customer may correct a recipient number before pickup. Invalidate any historical unused legacy SMS challenges.
  async correctRecipient(actor,sid,input){const v=z.object({recipientPhone:z.string().max(30)}).strict().parse(input);const p=phone(v.recipientPhone);
   return db.tx(async c=>{const s=await locked(c,sid);check(s.customer_id===actor.id,404,'Shipment not found');
-   check(['AWAITING_PAYMENT','AWAITING_ASSIGNMENT','RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state),409,'The recipient can no longer be changed for this delivery');
+   check(['AWAITING_PAYMENT','AWAITING_ASSIGNMENT','RIDER_ASSIGNED'].includes(s.state),409,'The recipient can no longer be changed after parcel pickup');
    if(s.recipient_phone===p)return {shipmentId:sid,recipientPhone:p,changed:false};
    await limit(c,'recipient:'+sid,3,86400);
    await c.query("SELECT set_config('elesend.recipient_correction',$1,true)",[sid]);
