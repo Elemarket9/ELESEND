@@ -715,6 +715,29 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     assert.equal((await db.query('SELECT count(*)::int AS n FROM shipment_receipt_confirmations WHERE shipment_id=$1',[shipmentId])).rows[0].n,1);
     assert.equal((await db.query('SELECT count(*)::int AS n FROM financial_entries WHERE shipment_id=$1',[shipmentId])).rows[0].n,1,'optional confirmation never posts money');
     assert.equal(texts.length,messagesBefore,'optional customer acknowledgement uses no SMS');
+    // Controlled fixture assignment tests COD financial guards without relying on unrelated offer timing.
+    const cashQuote=await api(c.token,'POST','/api/v1/quotes',trip({paymentMethod:'CASH'}));
+    assert.equal(cashQuote.status,200,JSON.stringify(cashQuote.data));
+    const cashBooked=await api(c.token,'POST','/api/v1/shipments',{quoteId:cashQuote.data.id},{'Idempotency-Key':'cod-no-sms-'+randomInt(1e9)});
+    assert.equal(cashBooked.status,200,JSON.stringify(cashBooked.data));
+    const cashId=cashBooked.data.id;
+    await db.query("UPDATE shipments SET rider_id=$2,state='RIDER_ASSIGNED' WHERE id=$1",[cashId,r.id]);
+    const cashPickup=await api(r.token,'POST','/api/v1/shipments/'+cashId+'/handover',{kind:'pickup',confirmed:true});
+    assert.equal(cashPickup.status,200,JSON.stringify(cashPickup.data));
+    const cashEarly=await api(r.token,'POST','/api/v1/shipments/'+cashId+'/handover',{kind:'delivery',confirmed:true});
+    assert.equal(cashEarly.status,409,'cash delivery cannot complete without full cash report');
+    const cashAmount=Number(cashBooked.data.amount_minor);
+    const cashReported=await api(r.token,'POST','/api/v1/rider/cash-report',{shipmentId:cashId,reportedMinor:cashAmount,cashPayer:'recipient',idempotencyKey:'cash-reported-'+randomInt(1e9)});
+    assert.equal(cashReported.status,200,JSON.stringify(cashReported.data));
+    const cashDone=await api(r.token,'POST','/api/v1/shipments/'+cashId+'/handover',{kind:'delivery',confirmed:true});
+    assert.equal(cashDone.status,200,JSON.stringify(cashDone.data));
+    const cashRepeated=await api(r.token,'POST','/api/v1/shipments/'+cashId+'/handover',{kind:'delivery',confirmed:true});
+    assert.equal(cashRepeated.status,200);
+    assert.equal(cashRepeated.data.duplicate,true);
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM financial_entries WHERE shipment_id=$1',[cashId])).rows[0].n,1);
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM finance_journals WHERE shipment_id=$1 AND kind='cash_commission'",[cashId])).rows[0].n,1,'COD commission is charged only once');
+    assert.equal(texts.length,messagesBefore,'neither COD handover nor receipt uses SMS');
+
 
    }finally{
     smsWorks=true;
