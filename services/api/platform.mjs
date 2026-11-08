@@ -218,7 +218,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await audit(c,actor.id,purpose+(source==='otp'?'.verified':'.rider_confirmed'),sid);await event(c,sid,purpose==='delivery'?'completed':'pickup_verified');return {ok:true,...(waitingFee?{waitingFee}:{})};
  }
  async function handover(actor,sid,input){
-  const v=z.object({kind:z.enum(['pickup','delivery','return']),confirmed:z.literal(true)}).strict().parse(input);
+  const v=z.object({kind:z.enum(['pickup','delivery']),confirmed:z.literal(true)}).strict().parse(input);
   return db.tx(async c=>{
    await rider(c,actor);
    const s=await locked(c,sid);
@@ -229,10 +229,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     const prior=(await c.query('SELECT 1 FROM shipment_handover_events WHERE shipment_id=$1 AND rider_id=$2 AND kind=$3',[sid,actor.id,v.kind])).rowCount;
     if(prior)return {ok:true,duplicate:true,state:finishedState};
    }
-   const eligible={pickup:['RIDER_ASSIGNED'],delivery:['PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'],return:['RETURN_REQUESTED']};
+   const eligible={pickup:['RIDER_ASSIGNED'],delivery:['PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP']};
    check(eligible[v.kind].includes(s.state),409,'Shipment not eligible for this handover');
    const manifest=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
-   if(v.kind!=='return'&&manifest?.stops?.length){
+   if(manifest?.stops?.length){
     const next=await nextOpenStop(c,manifest.stops);
     check(next?.shipmentId===sid&&next?.kind===(v.kind==='pickup'?'pickup':'dropoff'),409,'Complete the next route stop first');
    }
