@@ -26,7 +26,7 @@ if(Test-Path -LiteralPath $taskOutput){
   Write-Output 'Existing vector tiles verified; preserve or move aside before rebuilding'
   exit 0
 }
-$taskPartial=$taskOutput+'.partial'
+$taskPartial=(Join-Path $taskDirectory 'ghana.partial.mbtiles')
 if(Test-Path -LiteralPath $taskPartial){throw 'Interrupted tile generation (.partial) exists; preserve or remove before rebuilding'}
 $taskSchema=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../deploy/maps/ghana-schema.yml'))
 & java -Xmx3g -jar $taskJar generate-custom "--schema=$taskSchema" "--osm-local-path=$taskSource" "--output=$taskPartial" "--tmpdir=$(Join-Path $taskDirectory 'tile-temp')" --threads=2 --nodemap-storage=ram --bounds=-3.4,4.5,1.4,11.4
