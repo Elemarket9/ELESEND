@@ -1,0 +1,14 @@
+name: npm audit (temporary)
+on: push
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: API packages
+        run: npm audit --json --package-lock-only > api.json || true; node -e "const a=require('./api.json');for(const [n,v] of Object.entries(a.vulnerabilities||{}))console.log('API',n,v.severity,v.range,JSON.stringify((v.via||[]).filter(x=>typeof x==='object').map(x=>[x.source,x.title,x.url,x.range])),'fix:',JSON.stringify(v.fixAvailable))"
+      - name: Mobile packages
+        working-directory: apps/mobile
+        run: npm audit --json --package-lock-only > m.json || true; node -e "const a=require('./m.json');for(const [n,v] of Object.entries(a.vulnerabilities||{}))console.log('MOBILE',n,v.severity,v.range,JSON.stringify((v.via||[]).filter(x=>typeof x==='object').map(x=>[x.source,x.title,x.url,x.range])),'fix:',JSON.stringify(v.fixAvailable))"; node -e "console.log('SUMMARY',JSON.stringify(require('./m.json').metadata))"
