@@ -28,7 +28,6 @@ const CLOSED_ATTEMPT_FIELDS=`submission_token=NULL,
 
 export function checkoutService(db,options={}){
  const {provider=null,sms=undefined,dispatch=undefined,routing=undefined,verifyTimeoutMs=10000,concurrency=4,leaseSeconds=120,submissionLeaseSeconds=60,checkoutExpirySeconds=3600,maxVerifyBackoffSeconds=21600}=options;
- const enforceSmsCapability=process.env.NODE_ENV==='production'||'sms' in options;
  const enforceDispatchCapability=process.env.NODE_ENV==='production'||'dispatch' in options;
  const enforceRoutingCapability=process.env.NODE_ENV==='production'||'routing' in options;
  const cap=method=>!!provider&&DIGITAL_METHODS.includes(method)&&provider.methods?.includes(method)&&typeof provider.createCheckout==='function'&&typeof provider.verifyPayment==='function';
@@ -178,7 +177,6 @@ export function checkoutService(db,options={}){
       return {...old,wasExisting:true};
      }
      check(!s.paid&&s.state==='AWAITING_PAYMENT',409,'Shipment no longer awaits payment');
-     if(enforceSmsCapability)check(sms&&typeof sms.send==='function',503,'Payment initiation paused: custody-verification SMS unavailable');
      if(enforceDispatchCapability)check(Boolean(dispatch),503,'Payment initiation paused: dispatch engine unavailable');
      if(enforceRoutingCapability)check(routing&&typeof routing.route==='function',503,'Payment initiation paused: road routing service unavailable');
      check(cap(s.payment_method),503,'Authorized payment channel unavailable');
