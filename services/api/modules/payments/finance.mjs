@@ -189,6 +189,7 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
    return db.tx(async c=>{
     const s=(await c.query('SELECT * FROM shipments WHERE id=$1 FOR UPDATE',[sid])).rows[0];check(s,404,'Shipment missing');
     check(s.rider_id===actor.id&&s.payment_method==='CASH',403,'Only assigned cash collector may report cash');
+    check(!actor.custodyOnly || (s.cash_payer==='recipient' && ['PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state)),403,'Suspended rider may only report cash for an already collected parcel');
     check(s.cash_payer===v.cashPayer&&v.reportedMinor<=s.amount_minor,400,'Collection does not match booking');
     const old=(await c.query('SELECT * FROM cash_collections WHERE shipment_id=$1',[sid])).rows[0];
     if(old){check(Number(old.reported_minor)===v.reportedMinor&&old.cash_payer===v.cashPayer,409,'Cash report already recorded; open a dispute to correct');return {status:old.reported_status,reportedMinor:Number(old.reported_minor),duplicate:true};}
