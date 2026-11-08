@@ -74,6 +74,12 @@ test('riders are paid only to their SMS-verified number',async()=>{
  assert.equal((await check('0241234567')).verified,true);
  assert.equal((await check('0551234567')).verified,false);
  await assert.rejects(p.createBeneficiary({phone:'0241234567',network:'OTHER'}),/Unsupported/);
+ // Malformed/multi-number strings must never be silently truncated to a payout destination.
+ for(const phone of ['abc0241234567','9990241234567','0241234567 ext 123','+233241234567000','024 1234567 extra']){
+  await assert.rejects(p.createBeneficiary({phone,network:'MTN'}),/Valid mobile money number required/,phone);
+ }
+ const invalid=await check('9990241234567');
+ assert.equal(invalid.verified,false,'a different/malformed phone cannot verify a payout destination');
 });
 
 test('a payout keeps one reference, uses the private key, and survives a repeat',async()=>{
