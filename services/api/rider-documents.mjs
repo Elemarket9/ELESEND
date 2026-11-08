@@ -11,6 +11,7 @@ import {identityConfigured} from './identity-verification.mjs';
 import {riderDataKey} from './rider-licence.mjs';
 
 const KINDS=['profile_photo','licence_photo','ghana_card_photo','insurance','roadworthiness'];
+const IDENTITY_KINDS=['profile_photo','licence_photo','ghana_card_photo'];
 const EXPIRING=['insurance','roadworthiness'];
 const MAX_BYTES=2*1024*1024;
 const today=()=>new Date().toISOString().slice(0,10);
@@ -39,7 +40,9 @@ const uploadSchema=z.object({
  expiresOn:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
  imageBase64:z.string().min(100).max(3*1024*1024)
 }).strict();
-export async function uploadRiderDocument(db,input){
+// holdIdentityReview comes from the orders side and refuses while the rider has a delivery. A rider under review
+// cannot see or accept offers, because both require an approved rider.
+export async function uploadRiderDocument(db,input,{holdIdentityReview=null}={}){
  const v=uploadSchema.parse(input);
  const link=(await db.query('SELECT rider_id FROM rider_document_links WHERE token_hash=$1 AND expires_at>now()',[hashToken(v.token)])).rows[0];
  check(link,403,'This link has expired. Open it again from the rider app');
@@ -47,11 +50,19 @@ export async function uploadRiderDocument(db,input){
  check(image.length<=MAX_BYTES,413,'This photo is too large');
  check(image[0]===0xff&&image[1]===0xd8&&image[2]===0xff,400,'Please upload a photo');
  if(EXPIRING.includes(v.kind))check(v.expiresOn&&!Number.isNaN(Date.parse(v.expiresOn))&&v.expiresOn>=today(),400,'Enter a valid expiry date for this document');
+ // A checked face or ID photo cannot be swapped quietly, which would let someone else ride on this account. Replacing
+ // one sends an approved rider back for review (by ELESEND, or their company) before they can take jobs again.
+ const reviewAgain=IDENTITY_KINDS.includes(v.kind)&&(await db.query("SELECT 1 FROM riders r JOIN rider_documents d ON d.rider_id=r.id AND d.kind=$2 AND d.status='approved' WHERE r.id=$1 AND r.status='approved'",[link.rider_id,v.kind])).rowCount>0;
+ if(reviewAgain){
+  check(holdIdentityReview,503,'Photo changes are unavailable right now');
+  await holdIdentityReview(link.rider_id);
+  await db.query("UPDATE riders SET status='pending',online=false WHERE id=$1 AND status='approved'",[link.rider_id]);
+ }
  await db.query(`INSERT INTO rider_documents(rider_id,kind,data_encrypted,byte_size,expires_on) VALUES($1,$2,$3,$4,$5)
    ON CONFLICT(rider_id,kind) DO UPDATE SET data_encrypted=excluded.data_encrypted,byte_size=excluded.byte_size,expires_on=excluded.expires_on,status='pending',rejection_reason=NULL,valid_until=NULL,reviewed_by=NULL,reviewed_at=NULL,uploaded_at=now()`,
   [link.rider_id,v.kind,encryptImage(image,link.rider_id,v.kind),image.length,EXPIRING.includes(v.kind)?v.expiresOn:null]);
  await db.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$1)',[link.rider_id,'rider.document_uploaded:'+v.kind]);
- return {status:'pending',kind:v.kind};
+ return {status:'pending',kind:v.kind,...(reviewAgain?{accountUnderReview:true}:{})};
 }
 /** Which photos the upload page should ask this rider for. */
 export async function requiredDocumentsForLink(db,input){

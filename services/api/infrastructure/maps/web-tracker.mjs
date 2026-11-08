@@ -1,4 +1,4 @@
-import {createHmac,timingSafeEqual} from 'node:crypto';
+import {createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
 
 export function escapeHtml(str) {
  if (str == null) return '';
@@ -27,15 +27,25 @@ export function statusToLabel(state){
  }
 }
 
+// With no key configured (local development), links are signed with a random key that lives only as long as the
+// process, never a key written in the code, which anyone could read and use to forge links.
+const EPHEMERAL_TRACKING_KEY=randomBytes(32);
 function resolveSigningKey(secretOverride){
- const envKey=secretOverride||process.env.TRACKING_TOKEN_SECRET||process.env.OTP_KEY||process.env.JWT_SECRET;
- if(!envKey&&process.env.NODE_ENV==='production'){
+ if(secretOverride)return Buffer.from(String(secretOverride),'utf8');
+ const dedicated=(process.env.TRACKING_TOKEN_SECRET||'').trim();
+ if(dedicated){
+  if(dedicated.length<32){const err=new Error('TRACKING_TOKEN_SECRET must be at least 32 characters');err.status=500;throw err;}
+  return Buffer.from(dedicated,'utf8');
+ }
+ // Otherwise a separate key is derived from OTP_KEY, so a tracking link never shares a key with SMS codes.
+ const otp=(process.env.OTP_KEY||'').trim();
+ if(/^[0-9a-f]{64}$/i.test(otp))return createHmac('sha256',Buffer.from(otp,'hex')).update('elesend:public-tracking-link:v1').digest();
+ if(String(process.env.NODE_ENV||'').trim().toLowerCase()==='production'){
   const err=new Error('TRACKING_TOKEN_SECRET or OTP_KEY is required in production');
   err.status=500;
   throw err;
  }
- const raw=envKey||'elesend-dev-tracking-key-0123456789abcdef';
- return Buffer.from(String(raw),'utf8');
+ return EPHEMERAL_TRACKING_KEY;
 }
 
 export function createPublicTrackingToken(shipmentId,{expiresInSeconds=48*3600,secret=null}={}){

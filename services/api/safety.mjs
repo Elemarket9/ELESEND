@@ -2,7 +2,7 @@ import {requirePermission} from './permissions.mjs';
 /** Emergency alerts, trusted contacts, live location links and two-way delivery ratings. */
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {check,phone} from './security.mjs';
+import {check,phone,hash,recordAttempt} from './security.mjs';
 import {createPublicTrackingToken} from './infrastructure/maps/web-tracker.mjs';
 
 const uuid=z.string().uuid();
@@ -16,6 +16,8 @@ const requireVerifier=(c,actor)=>requirePermission(c,actor,'verification:write')
 export async function saveTrustedContact(db,actor,input){
  const v=z.object({name:z.string().trim().min(2).max(80),phone:z.string().trim().min(9).max(16)}).strict().parse(input);
  const normalized=phone(v.phone);
+ // Alerts go out in this account's name, so its own number must be confirmed first.
+ check((await db.query('SELECT phone_verified_at FROM users WHERE id=$1',[actor.id])).rows[0]?.phone_verified_at,403,'Verify your phone number before adding a trusted contact');
  await db.query('INSERT INTO trusted_contacts(user_id,name,phone) VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET name=excluded.name,phone=excluded.phone,updated_at=now()',[actor.id,v.name,normalized]);
  return {name:v.name,phone:normalized};
 }
@@ -35,14 +37,17 @@ export async function raiseEmergency(db,actor,input,{sms=null,dutyPhone=process.
  const emergencyNumber=process.env.EMERGENCY_NUMBER||'112';
  if(recent&&(recent.notified_count>0||!sms))return {id:recent.id,notified:recent.notified_count,duplicate:true,emergencyNumber};
  const id=recent?.id||randomUUID();
- const user=(await db.query('SELECT phone,kind FROM users WHERE id=$1',[actor.id])).rows[0];
+ const user=(await db.query('SELECT phone,kind,phone_verified_at FROM users WHERE id=$1',[actor.id])).rows[0];
  if(!recent){
   await db.query('INSERT INTO safety_alerts(id,user_id,shipment_id,latitude,longitude) VALUES($1,$2,$3,$4,$5)',[id,actor.id,v.shipmentId??null,v.latitude??null,v.longitude??null]);
   await db.query("INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,'safety.emergency_raised',$1)",[actor.id]);
   await db.query("INSERT INTO operational_risk_signals(rider_id,shipment_id,signal_code,severity,evidence) VALUES($1,$2,'EMERGENCY_ALERT','high',$3)",[user?.kind==='rider'?actor.id:null,v.shipmentId??null,JSON.stringify({alertId:id})]);
  }
  const place=v.latitude!==undefined&&v.longitude!==undefined?` Location: https://maps.google.com/?q=${v.latitude},${v.longitude}`:' Location unavailable.';
- const contact=await getTrustedContact(db,actor);
+ // The duty phone always hears about it. The trusted contact is texted only from a confirmed number, and at most
+ // three times a day across all accounts, so the button cannot be used to send frightening texts to anyone.
+ let contact=user?.phone_verified_at?await getTrustedContact(db,actor):null;
+ if(contact&&await recordAttempt(db,'emergency-contact:'+hash(contact.phone),86400)>3)contact=null;
  const targets=[[dutyPhone,`ELESEND EMERGENCY: ${user?.kind||'user'} ${user?.phone||''} pressed the emergency button.${place}`],[contact?.phone,`ELESEND safety alert: ${user?.phone||'Your contact'} pressed the emergency button and named you as a trusted contact.${place}`]].filter(([to])=>to);
  const results=await Promise.allSettled(targets.map(async([to,message],i)=>{
   check(typeof sms?.sendNotification==='function',503,'SMS unavailable');

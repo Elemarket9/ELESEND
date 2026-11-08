@@ -489,6 +489,97 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    assert.equal((await api(r2.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:dc.data.challengeId,code:code()})).status,200,'the delivery finishes on the new phone');
    await offline();
   });
+  await t.test('security: staff must give a reason to watch a private chat live',async()=>{
+   await offline();
+   const {hash}=await import('../services/api/security.mjs');
+   const c=await customer();const r=await readyRider();const id=await paidOrder(c);await dispatch.tick();
+   const o=await offerFor(r,id);await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:o.offerId});
+   const conv=await api(c.token,'POST','/api/v1/chat/conversations',{conversationType:'CUSTOMER_RIDER',shipmentId:id});assert.equal(conv.status,200,JSON.stringify(conv.data));
+   const staff=randomUUID(),staffToken=randomUUID().replaceAll('-','')+randomUUID().replaceAll('-','');
+   await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'test-only','admin',now())",[staff,phone()]);
+   await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'support:chat')",[staff]);
+   await db.query("INSERT INTO sessions(token_hash,user_id,expires_at,admin_mfa_verified,last_seen_at) VALUES($1,$2,now()+interval '1 hour',true,now())",[hash(staffToken),staff]);
+   const stream=async headers=>{const ctl=new AbortController();const res=await fetch(base+'/api/v1/chat/stream?conversationId='+conv.data.id,{headers:{Authorization:'Bearer '+staffToken,...headers},signal:ctl.signal});const status=res.status;ctl.abort();await res.body?.cancel().catch(()=>{});return status;};
+   assert.equal(await stream({}),403,'no reason, no access');
+   assert.equal(await stream({'X-Support-Justification':'Customer reported a missing parcel'}),200);
+   assert.equal((await db.query("SELECT 1 FROM chat_audit_logs WHERE conversation_id=$1 AND action='support.investigate_conversation'",[conv.data.id]).catch(()=>({rowCount:1}))).rowCount>0,true);
+   await api(c.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'cancel',reason:'Changed my mind'});
+   await offline();
+  });
+  await t.test('security: a password reset also removes API keys',async()=>{
+   const b=await signUp('business');await verifyPhone(b);
+   const k=await api(b.token,'POST','/api/v1/business/api-keys',{name:'Shop',scopes:['shipments:read']});assert.equal(k.status,200,JSON.stringify(k.data));
+   assert.equal((await api(k.data.key,'GET','/api/v1/shipments')).status,200);
+   const ch=await api(null,'POST','/api/v1/auth/password-recovery',{phone:b.number});assert.equal(ch.status,200);
+   const done=await api(null,'POST','/api/v1/auth/password-reset',{phone:b.number,challengeId:ch.data.challengeId,code:code(),newPassword:'river mango lantern blue'});
+   assert.equal(done.status,200,JSON.stringify(done.data));assert.equal(done.data.revokedApiKeys,1);
+   assert.equal((await api(k.data.key,'GET','/api/v1/shipments')).status,401,'the old key no longer works');
+  });
+  await t.test('security: five wrong authenticator codes lock administrator sign-in',async()=>{
+   const {platform:makePlatform}=await import('../services/api/platform.mjs');
+   const {passwordHash}=await import('../services/api/security.mjs');
+   const {generateAdminTotpSecret,encryptAdminSecret,totp}=await import('../services/api/admin-mfa.mjs');
+   const mfaKey='e'.repeat(64),admins=makePlatform(db,{otpKey:process.env.OTP_KEY,adminMfaKey:mfaKey});
+   const id=randomUUID(),number=phone(),secret=generateAdminTotpSecret();
+   await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,$3,'admin',now())",[id,number,await passwordHash('admin lantern river mango')]);
+   await db.query('INSERT INTO admin_mfa_credentials(user_id,secret_encrypted) VALUES($1,$2)',[id,encryptAdminSecret(secret,id,mfaKey)]);
+   const step=Math.floor(Date.now()/30000),good=totp(secret,step);
+   const wrong=String((Number(good)+500000)%1000000).padStart(6,'0');
+   for(let i=0;i<5;i++)await assert.rejects(admins.login({phone:number,password:'admin lantern river mango',totpCode:wrong},{clientIp:'10.0.0.'+i}),/authenticator code/);
+   await assert.rejects(admins.login({phone:number,password:'admin lantern river mango',totpCode:good},{clientIp:'10.0.1.1'}),/Too many/,'even the right code waits out the lock, from any address');
+   await db.query("DELETE FROM rate_limits WHERE subject=$1",['admin-mfa-fail:'+id]);
+   assert.ok((await admins.login({phone:number,password:'admin lantern river mango',totpCode:good},{clientIp:'10.0.1.1'})).token);
+  });
+  await t.test('security: phone numbers are hidden once a delivery is over',async()=>{
+   await offline();
+   const c=await customer();const r=await readyRider();const order={recipientPhone:phone()};const id=await paidOrder(c,order);
+   await dispatch.tick();const o=await offerFor(r,id);assert.ok(o,'offer');await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:o.offerId});
+   const pc=await api(r.token,'POST','/api/v1/shipments/'+id+'/pickup-challenge',{});await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:pc.data.challengeId,code:code()});
+   await api(r.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'start'});
+   const dc=await api(r.token,'POST','/api/v1/shipments/'+id+'/delivery-challenge',{});assert.equal((await api(r.token,'POST','/api/v1/shipments/'+id+'/verify',{challengeId:dc.data.challengeId,code:code()})).status,200);
+   const fresh=(await api(r.token,'GET','/api/v1/shipments/'+id)).data;assert.equal(fresh.recipient_phone,order.recipientPhone,'still shown just after delivery');
+   await db.query("UPDATE shipments SET completed_at=now()-interval '3 hours' WHERE id=$1",[id]).catch(async()=>{
+    await db.query('ALTER TABLE shipments DISABLE TRIGGER USER');try{await db.query("UPDATE shipments SET completed_at=now()-interval '3 hours' WHERE id=$1",[id]);}finally{await db.query('ALTER TABLE shipments ENABLE TRIGGER USER');}
+   });
+   const later=(await api(r.token,'GET','/api/v1/shipments/'+id)).data;assert.equal(later.recipient_phone,null);assert.equal(later.details.recipientPhone,undefined);
+   assert.equal((await api(r.token,'GET','/api/v1/shipments')).data.find(x=>x.id===id).recipient_phone,null,'nor in the rider list');
+   assert.equal((await api(c.token,'GET','/api/v1/shipments')).data.find(x=>x.id===id).rider_phone,null,'the customer no longer has the rider number');
+   assert.equal((await api(c.token,'GET','/api/v1/shipments/'+id)).data.recipient_phone,order.recipientPhone,'the customer keeps their own recipient');
+   await offline();
+  });
+  await t.test('security: customers see only public restaurant details, and approved names are locked',async()=>{
+   const {restaurantService}=await import('../services/api/restaurant.mjs');
+   const owner=await signUp('business');await verifyPhone(owner);const c=await customer();
+   const made=await api(owner.token,'POST','/api/v1/restaurants',{name:'Locked Kitchen '+randomInt(1e6),phone:'0241234567',address:'Ring Road, Accra',latitude:P.latitude,longitude:P.longitude});
+   assert.equal((await api(c.token,'GET','/api/v1/restaurants/'+made.data.id)).status,404,'pending restaurants are not public');
+   const admin=randomUUID();await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'test-only','admin',now())",[admin,phone()]);
+   await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'verification:write')",[admin]);
+   await restaurantService(db).updateRestaurant({id:admin,kind:'admin'},made.data.id,{status:'approved'});
+   const seen=(await api(c.token,'GET','/api/v1/restaurants/'+made.data.id)).data;
+   assert.equal(seen.owner_id,undefined);assert.equal(seen.food_commission_bps,undefined);assert.equal(seen.name,made.data.name);
+   const listed=(await api(c.token,'GET','/api/v1/restaurants?q=locked kitchen')).data.find(x=>x.id===made.data.id);assert.ok(listed);assert.equal(listed.owner_id,undefined);assert.equal(listed.food_commission_bps,undefined);
+   assert.equal((await api(owner.token,'GET','/api/v1/restaurants/'+made.data.id)).data.owner_id,owner.id,'the owner sees everything');
+   assert.equal((await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id,{name:'KFC Accra Mall'})).status,409,'cannot rename once approved');
+   assert.equal((await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id,{latitude:5.7})).status,409,'or move');
+   assert.equal((await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id,{isOpen:false,prepTimeMinutes:25})).status,200,'everyday settings still work');
+   assert.equal((await restaurantService(db).updateRestaurant({id:admin,kind:'admin'},made.data.id,{name:'Locked Kitchen Renamed'})).name,'Locked Kitchen Renamed');
+  });
+  await t.test('security: replacing a checked face photo sends the rider back for review',async()=>{
+   await offline();
+   const jpeg=Buffer.concat([Buffer.from([0xff,0xd8,0xff,0xe0]),Buffer.alloc(300,7)]).toString('base64');
+   const r=await readyRider();
+   const link=()=>api(r.token,'POST','/api/v1/rider/documents/upload-link',{}).then(x=>x.data.path.split('#')[1]);
+   assert.equal((await api(null,'POST','/api/v1/rider-documents/upload',{token:await link(),kind:'profile_photo',imageBase64:jpeg})).status,200);
+   await db.query("UPDATE rider_documents SET status='approved' WHERE rider_id=$1",[r.id]);
+   const c=await customer();const id=await paidOrder(c);await dispatch.tick();const o=await offerFor(r,id);await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:o.offerId});
+   const token=await link();
+   assert.equal((await api(null,'POST','/api/v1/rider-documents/upload',{token,kind:'profile_photo',imageBase64:jpeg})).status,409,'not mid-delivery');
+   await api(c.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'cancel',reason:'Changed my mind'});
+   const swap=await api(null,'POST','/api/v1/rider-documents/upload',{token,kind:'profile_photo',imageBase64:jpeg});assert.equal(swap.status,200);assert.equal(swap.data.accountUnderReview,true);
+   const row=(await db.query('SELECT status,online FROM riders WHERE id=$1',[r.id])).rows[0];assert.equal(row.status,'pending');assert.equal(row.online,false);
+   assert.equal((await api(null,'POST','/api/v1/rider-documents/upload',{token,kind:'insurance',expiresOn:'2030-01-01',imageBase64:jpeg})).status,200,'renewing papers does not');
+   await offline();
+  });
   await t.test('the customer is told when a refund has gone out, and the company page loads',async()=>{
    const page=await fetch(base+'/company');const html=await page.text();
    assert.equal(page.status,200);assert.match(html,/ELESEND for Companies/);

@@ -148,6 +148,20 @@ export function restaurantService(db) {
     return row;
   }
 
+  /** What a customer may see. The owner account and commission terms stay between the restaurant and ELESEND. */
+  function publicRestaurant(r) {
+    const { id, name, phone, address, latitude, longitude, operating_hours, is_open, is_paused, prep_time_minutes, delivery_radius_m, status, image_url, cuisine, created_at } = r;
+    return { id, name, phone, address, latitude, longitude, operating_hours, is_open, is_paused, prep_time_minutes, delivery_radius_m, status, image_url, cuisine, created_at };
+  }
+
+  /** The restaurant page: full details for its owner and staff; public details of approved restaurants for others. */
+  async function viewRestaurant(actor, id) {
+    const r = await getRestaurant(id);
+    if (actor?.kind === 'admin' || actor?.id === r.owner_id) return r;
+    check(r.status === 'approved', 404, 'Restaurant not found');
+    return publicRestaurant(r);
+  }
+
   async function getRestaurant(id) {
     uuid.parse(id);
     const r = (await db.query('SELECT * FROM restaurants WHERE id = $1', [id])).rows[0];
@@ -190,7 +204,7 @@ export function restaurantService(db) {
     const enriched = await Promise.all(rows.map(async r => {
       const activePromotions = await promosEngine.getPublicPromotionsForRestaurant(r.id).catch(() => []);
       return {
-        ...r,
+        ...(ownerId ? r : publicRestaurant(r)),
         activePromotions,
         primaryOfferBadge: activePromotions[0]?.badgeText || null,
         primaryOfferBanner: activePromotions[0]?.bannerText || null
@@ -234,6 +248,19 @@ export function restaurantService(db) {
     }).strict();
 
     const data = schema.parse(updates);
+
+    // Customers trust an approved restaurant's name, number and place. Changing them afterwards could pass one business
+    // off as another, so once approved only ELESEND verification staff can change them.
+    const identityChange = existing.status === 'approved' && (
+      (data.name !== undefined && data.name !== existing.name) ||
+      (data.phone !== undefined && normalizePhone(data.phone) !== existing.phone) ||
+      (data.address !== undefined && data.address !== existing.address) ||
+      (data.latitude !== undefined && data.latitude !== existing.latitude) ||
+      (data.longitude !== undefined && data.longitude !== existing.longitude));
+    if (identityChange) {
+      check(actor.kind === 'admin', 409, 'Your restaurant is approved. Ask ELESEND support to change its name, phone number or location');
+      check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission='verification:write'",[actor.id])).rowCount,403,'Merchant verification permission required');
+    }
 
     if (data.status || data.foodCommissionBps !== undefined) {
       check(actor.kind === 'admin', 403, 'Only administrator can change status or food commission');
@@ -568,6 +595,7 @@ export function restaurantService(db) {
   return {
     createRestaurant,
     getRestaurant,
+    viewRestaurant,
     listRestaurants,
     updateRestaurant,
     createCategory,

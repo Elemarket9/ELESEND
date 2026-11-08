@@ -167,7 +167,9 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   }
   if(method==='POST'&&['/api/v1/payments/webhook','/api/v1/payments/checkout-webhook','/api/v1/payments/commission-webhook'].includes(path)&&paymentsWebhook){send(200,await paymentsWebhook(rawBody,req.headers));return;}
   if(method==='POST'&&path==='/api/v1/rider-documents/required'){await limit(db,'document-required-ip:'+ipKey,60,3600);send(200,await requiredDocumentsForLink(db,body));return;}
-  if(method==='POST'&&path==='/api/v1/rider-documents/upload'){await limit(db,'document-upload-ip:'+ipKey,30,3600);send(200,await uploadRiderDocument(db,body));return;}
+  if(method==='POST'&&path==='/api/v1/rider-documents/upload'){await limit(db,'document-upload-ip:'+ipKey,30,3600);send(200,await uploadRiderDocument(db,body,{holdIdentityReview:async riderId=>{
+   check(!(await db.query("SELECT 1 FROM shipments WHERE rider_id=$1 AND state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP','FAILED','RETURN_REQUESTED') LIMIT 1",[riderId])).rowCount,409,'Finish your current delivery before changing this photo');
+  }}));return;}
   // Public, because the map must load before sign-in.
   if(method==='GET'&&path==='/api/v1/maps/style.json'){const config=publicMapConfig();check(config.tileUrl,503,'Map not configured');send(200,privateMapStyle(config.tileUrl,{glyphsUrl:config.glyphsUrl}));return;}
   if(method==='GET'&&path==='/api/v1/maps/config'){send(200,{renderer:'private',routing:'osrm',ghanaPostGpsLookup:Boolean(ghanaPostGps),...publicMapConfig()});return;}
@@ -684,10 +686,11 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    else if(method==='GET'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/promotions\/analytics$/.test(path))result=await promos.getRestaurantPromotionAnalytics(actor,path.split('/')[4]);
    else if(method==='GET'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/offers$/.test(path))result=await promos.getPublicPromotionsForRestaurant(path.split('/')[4]);
    // Order-Scoped Real-Time Chat & Messaging Endpoints
+   // Staff opening someone else's chat must type a reason, which is audited; none is ever filled in for them.
    else if(method==='GET'&&path==='/api/v1/chat/stream'){
      const u=new URL(req.url,'http://localhost').searchParams;
      const convId=u.get('conversationId');
-     if(convId)await chat.authorizeConversationAccess(db,actor,convId,{supportJustification:u.get('justification')||'SSE stream'});
+     if(convId)await chat.authorizeConversationAccess(db,actor,convId,{supportJustification:u.get('justification')||req.headers['x-support-justification']||null});
      res.writeHead(200,{'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-cache, no-transform','Connection':'keep-alive'});
      const expiresAt=actor?.expires_at?new Date(actor.expires_at).getTime():(actor?.expiresAt?new Date(actor.expiresAt).getTime():null);const conn={expiresAt,
        sessionToken:token||null,
@@ -745,7 +748,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
       ownerId: isMine ? actor.id : null
     });
   }
-  else if(method==='GET'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+$/.test(path))result=await restaurants.getRestaurant(path.split('/')[4]);
+  else if(method==='GET'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+$/.test(path))result=await restaurants.viewRestaurant(actor,path.split('/')[4]);
   else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+$/.test(path))result=await restaurants.updateRestaurant(actor,path.split('/')[4],body);
   else if(method==='GET'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/menu$/.test(path))result=await restaurants.getMenu(path.split('/')[4]);
   else if(method==='POST'&&/^\/api\/v1\/restaurants\/[0-9a-f-]+\/categories$/.test(path))result=await restaurants.createCategory(actor,path.split('/')[4],body);
@@ -814,6 +817,10 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
     try{
       const u=new URL(req.url,'http://localhost');
       if(u.pathname!=='/api/v1/chat/ws'){socket.write('HTTP/1.1 404 Not Found\r\n\r\n');socket.destroy();return;}
+      // Upgrades skip the request handler, so they get the same per-address limits here.
+      const wsIp=rateLimitKey(clientIp(req));
+      floodGuard.hit('http:'+wsIp,ipLimit.httpPerMinute,60);
+      floodGuard.hit('chat-ws:'+wsIp,ipLimit.chatConnectionsPerMinute,60);
       // Credentials are header-only: URLs end up in proxy logs and browser history.
       const token=req.headers.authorization?.replace(/^Bearer /,'');
       if(!token){socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');socket.destroy();return;}
@@ -822,7 +829,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
       const actor=await app.authenticate(token);
       const initialConvId=u.searchParams.get('conversationId');
       if(initialConvId){
-        await chat.authorizeConversationAccess(db,actor,initialConvId,{supportJustification:u.searchParams.get('justification')||'WebSocket subscription'});
+        await chat.authorizeConversationAccess(db,actor,initialConvId,{supportJustification:u.searchParams.get('justification')||req.headers['x-support-justification']||null});
       }
       const expiresAt=actor?.expires_at?new Date(actor.expires_at).getTime():(actor?.expiresAt?new Date(actor.expiresAt).getTime():null);upgradeToChatWebSocket(req,socket,head,{expiresAt,
         actor,
@@ -841,7 +848,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
           const convId=msg?.conversationId||initialConvId;
           if(action==='subscribe'){
             check(convId,400,'conversationId required');
-            await chat.authorizeConversationAccess(db,liveActor,convId,{supportJustification:msg.justification||'WebSocket subscribe'});
+            await chat.authorizeConversationAccess(db,liveActor,convId,{supportJustification:typeof msg.justification==='string'?msg.justification:null});
             conn.conversationIds.add(convId);
             conn.send('subscribed',{conversationId:convId});
           }else if(action==='send'){
@@ -867,7 +874,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
         }
       });
     }catch(err){
-      const code=err?.status===403?'403 Forbidden':err?.status===404?'404 Not Found':'401 Unauthorized';
+      const code=err?.status===429?'429 Too Many Requests':err?.status===403?'403 Forbidden':err?.status===404?'404 Not Found':'401 Unauthorized';
       try{socket.write(`HTTP/1.1 ${code}\r\n\r\n`);socket.destroy();}catch{}
     }
   });

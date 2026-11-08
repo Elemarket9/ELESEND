@@ -171,7 +171,7 @@ test('logins are capped across all sources for one account',async()=>{
  await assert.rejects(attempt('source-final'),e=>e.status===429);
 });
 
-test('a password reset leaves API keys working',async()=>{
+test('a password reset removes API keys and the webhook, in case someone else made them',async()=>{
  const userId='00000000-0000-4000-8000-000000000006',challengeId='00000000-0000-4000-8000-000000000007',phone='+233241234567';
  const digest=mac(OTP_KEY,['account-recovery-v1',challengeId,userId,phone,'123456']);
  const db=permissive(sql=>{
@@ -182,7 +182,8 @@ test('a password reset leaves API keys working',async()=>{
  });
  const result=await platform(db,{otpKey:OTP_KEY}).resetPassword({phone,challengeId,code:'123456',newPassword:'a-new-strong-password'});
  assert.equal(result.ok,true);
- assert.equal(db.calls.some(c=>c.sql.includes('api_clients')),false);
+ assert.equal(db.calls.some(c=>c.sql.startsWith('UPDATE api_clients SET revoked_at')),true);
+ assert.equal(db.calls.some(c=>c.sql.startsWith('DELETE FROM api_webhooks')),true);
 });
 
 test('rate limit identity groups an IPv6 /64 and leaves IPv4 alone',()=>{
@@ -233,4 +234,34 @@ test('many users on one shared address can log in, but failures from it are capp
   assert.equal(await login('wrong'),429);
   assert.equal(await login('right'),429);
  }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});
+
+test('live chat connections are limited per address like other requests',async()=>{
+ const before=process.env.IP_LIMIT_MULTIPLIER;process.env.IP_LIMIT_MULTIPLIER='0.1';
+ try{
+  await withServer(permissive(),async port=>{
+   const limit=ipLimits().chatConnectionsPerMinute;assert.equal(limit,60);
+   const statuses=[];for(let i=0;i<=limit;i++)statuses.push(await upgradeStatus(port,'/api/v1/chat/ws'));
+   assert.equal(statuses.slice(0,limit).every(s=>s===401),true,'refused for no token, as before');
+   assert.equal(statuses.at(-1),429,'then refused before any sign-in check');
+  });
+ }finally{if(before===undefined)delete process.env.IP_LIMIT_MULTIPLIER;else process.env.IP_LIMIT_MULTIPLIER=before;}
+});
+
+test('tracking links cannot be forged with a key from the code, and do not reuse the SMS code key',async()=>{
+ const {createHmac}=await import('node:crypto');
+ const {createPublicTrackingToken,verifyPublicTrackingToken}=await import('../services/api/infrastructure/maps/web-tracker.mjs');
+ const id='11111111-2222-4333-8444-555555555555',exp=Math.floor(Date.now()/1000)+3600;
+ const forge=key=>`${id}.${exp}.${createHmac('sha256',Buffer.from(key,'utf8')).update(`${id}.${exp}`).digest('hex').slice(0,32)}`;
+ const saved={NODE_ENV:process.env.NODE_ENV,OTP_KEY:process.env.OTP_KEY,TRACKING_TOKEN_SECRET:process.env.TRACKING_TOKEN_SECRET};
+ try{
+  delete process.env.TRACKING_TOKEN_SECRET;delete process.env.OTP_KEY;process.env.NODE_ENV='staging';
+  assert.equal(verifyPublicTrackingToken(forge('elesend-dev-tracking-key-0123456789abcdef')).valid,false,'the old published key no longer signs links');
+  assert.equal(verifyPublicTrackingToken(createPublicTrackingToken(id)).valid,true,'links still work on this server');
+  process.env.NODE_ENV='production';process.env.OTP_KEY='c'.repeat(64);
+  assert.equal(verifyPublicTrackingToken(forge('c'.repeat(64))).valid,false,'the SMS code key alone does not sign links');
+  assert.equal(verifyPublicTrackingToken(createPublicTrackingToken(id)).valid,true);
+  delete process.env.OTP_KEY;
+  assert.throws(()=>createPublicTrackingToken(id),/required in production/);
+ }finally{for(const [k,v] of Object.entries(saved)){if(v===undefined)delete process.env[k];else process.env[k]=v;}}
 });

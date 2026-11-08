@@ -14,7 +14,7 @@ import {randomUUID} from 'node:crypto';
 import {MARKET_CURRENCY,MARKET_TIME_ZONE} from './market.mjs';
 import {decryptAdminSecret,verifyAdminTotp} from './admin-mfa.mjs';
 import {z} from 'zod';
-import {assertAcceptablePassword,passwordNeedsUpgrade,UNKNOWN_ACCOUNT_HASH,check,phone,hash,passwordHash,passwordMatches,newToken,newCode,mac,equal,limit} from './security.mjs';
+import {assertAcceptablePassword,passwordNeedsUpgrade,UNKNOWN_ACCOUNT_HASH,check,phone,hash,passwordHash,passwordMatches,newToken,newCode,mac,equal,limit,recordAttempt,assertUnderLimit,securityEvent} from './security.mjs';
 import {carRegistration,registerVehicleInTx} from './vehicle.mjs';
 import {removeStop,removeShipment} from './multi-parcel.mjs';
 import {settleCompletedDelivery,debtState,companyDebtMinor} from './modules/payments/index.mjs';
@@ -32,6 +32,17 @@ import {promotionEngine} from './promotion-engine.mjs';
 import {disconnectRealtimeUser} from './chat-engine.mjs';
 const id=()=>randomUUID();
 const uuid=z.string().uuid();
+// Phone numbers are shared for the delivery, not kept: riders lose the customer's and recipient's numbers, and
+// customers the rider's, two hours after delivery (as the shared tracking link does), or at once if it was
+// cancelled or returned. Staff keep access. Later contact goes through support.
+const CONTACT_WINDOW_MS=2*3600*1000;
+const contactOpen=s=>s.state==='COMPLETED'?Boolean(s.completed_at)&&Date.now()-new Date(s.completed_at).getTime()<CONTACT_WINDOW_MS:!['CANCELLED','RETURNED'].includes(s.state);
+export function hideEndedContacts(actor,s){
+ if(!s||actor?.kind==='admin'||contactOpen(s))return s;
+ if(actor?.id===s.customer_id)return {...s,rider_phone:s.rider_phone===undefined?undefined:null};
+ const strip=d=>d&&typeof d==='object'?{...d,recipientPhone:undefined,pickupPhone:undefined}:d;
+ return {...s,recipient_phone:null,details:strip(s.details),rider_phone:s.rider_phone===undefined?undefined:null};
+}
 const registration=z.object({phone:z.string().max(30),termsVersion:z.string().trim().min(1).max(40).optional(),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
 const address=z.object({address:z.string().min(5).max(400),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict();
 const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(['motorcycle','car','van']).optional(),recipientPhone:z.string().max(30),pickupPhone:z.string().max(30).optional(),weightG:z.number().int().min(1).max(10000000),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
@@ -253,9 +264,12 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await c.query('UPDATE users SET password_hash=$2,phone_verified_at=COALESCE(phone_verified_at,now()) WHERE id=$1',[u.id,pw]);
    const revoked=await c.query('DELETE FROM sessions WHERE user_id=$1',[u.id]);
    await c.query('UPDATE user_push_tokens SET active=false,session_token_hash=NULL,updated_at=now() WHERE user_id=$1 AND active=true',[u.id]);
+   // Whoever had the old password may have made API keys or a webhook to keep access, so those go too.
+   const revokedKeys=await c.query('UPDATE api_clients SET revoked_at=now() WHERE owner_id=$1 AND revoked_at IS NULL',[u.id]);
+   await c.query('DELETE FROM api_webhooks WHERE owner_id=$1',[u.id]);
    disconnectRealtimeUser(u.id,'password_reset');
    await audit(c,u.id,'auth.password_reset_completed',u.id);
-   return {ok:true,revokedSessions:revoked.rowCount};
+   return {ok:true,revokedSessions:revoked.rowCount,revokedApiKeys:revokedKeys.rowCount};
   });
   check(!result.invalid,400,'Incorrect or expired recovery code');
   return result;
@@ -362,7 +376,11 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const ok=await passwordMatches(v.password,u?.password_hash??UNKNOWN_ACCOUNT_HASH);check(u&&ok,401,'Invalid credentials');
   const upgradedHash=passwordNeedsUpgrade(u.password_hash)?await passwordHash(v.password):null;
   const token=newToken();
-  return db.tx(async c=>{
+  // Five wrong authenticator codes lock administrator sign-in for 15 minutes, from any address, so the
+  // six-digit code cannot be worked through by someone who already has the password.
+  const mfaFailures='admin-mfa-fail:'+u.id;
+  if(u.kind==='admin')await assertUnderLimit(db,mfaFailures,5);
+  try{return await db.tx(async c=>{
    const current=(await c.query('SELECT * FROM users WHERE phone=$1 FOR UPDATE',[p])).rows[0];
    // The password was checked above and this confirms it has not changed since, without holding a database connection through the slow check.
    check(current&&current.id===u.id&&current.password_hash===u.password_hash,401,'Invalid credentials');
@@ -374,7 +392,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     check(factor,403,'Administrator MFA provisioning required');
     const secret=decryptAdminSecret(factor.secret_encrypted,current.id,adminMfaKey);
     const step=verifyAdminTotp(secret,v.totpCode,{lastUsedStep:factor.last_used_step});
-    check(step!==null,401,'Invalid or reused authenticator code');
+    if(step===null)throw Object.assign(Error('Invalid or reused authenticator code'),{status:401,adminMfaFailed:true});
     await c.query('UPDATE admin_mfa_credentials SET last_used_step=$2 WHERE user_id=$1',[current.id,step]);
     await c.query("INSERT INTO sessions(token_hash,user_id,expires_at,admin_mfa_verified) VALUES($1,$2,now()+interval '4 hours',true)",[hash(token),current.id]);
     await audit(c,current.id,'auth.admin_mfa_login',current.id);
@@ -383,7 +401,11 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await c.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '30 days')",[hash(token),current.id]);
    const review=current.kind==='rider'?(await c.query('SELECT status,company_id FROM riders WHERE id=$1',[current.id])).rows[0]:current.kind==='company'?(await c.query('SELECT status FROM companies WHERE owner_id=$1',[current.id])).rows[0]:null;
    return {token,user:{id:current.id,kind:current.kind,...(review?.status==='pending'?{awaitingApproval:true}:{})}};
-  });
+  });}catch(e){
+   // Counted outside the sign-in transaction, which the failure rolls back.
+   if(e.adminMfaFailed){await recordAttempt(db,mfaFailures,900);securityEvent('admin_mfa_failed',{userId:u.id});}
+   throw e;
+  }
  },
  async authenticate(token,{allowPending=false}={}){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const tokenHash=hash(token);const u=(await db.query("SELECT u.id,u.kind,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR (s.admin_mfa_verified=true AND s.last_seen_at>now()-interval '30 minutes'))",[tokenHash])).rows[0];check(u,401,'Session expired or administrator MFA required');if(u.kind==='admin')await db.query("UPDATE sessions SET last_seen_at=now() WHERE token_hash=$1 AND last_seen_at<now()-interval '1 minute'",[tokenHash]);
   // Anyone using the app stays signed in. The session ends after 30 days without use.
@@ -607,12 +629,12 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  },
  async offers(actor){check(dispatch,503,'Dispatch engine unavailable');return dispatch.offers(actor);},
  async accept(actor,sid,offerId){check(dispatch,503,'Dispatch engine unavailable');return dispatch.accept(actor,sid,offerId);},
- async get(actor,sid){uuid.parse(sid);const s=(await db.query('SELECT * FROM shipments WHERE id=$1',[sid])).rows[0];check(s,404);await access(db,actor,s);const q=(await db.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];const waiting=(await db.query('SELECT stop,waited_seconds,fee_minor,collection FROM shipment_waiting_charges WHERE shipment_id=$1',[sid])).rows;return {...s,details:q.request,waitingCharges:waiting};},
+ async get(actor,sid){uuid.parse(sid);const s=(await db.query('SELECT * FROM shipments WHERE id=$1',[sid])).rows[0];check(s,404);await access(db,actor,s);const q=(await db.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];const waiting=(await db.query('SELECT stop,waited_seconds,fee_minor,collection FROM shipment_waiting_charges WHERE shipment_id=$1',[sid])).rows;return hideEndedContacts(actor,{...s,details:q.request,waitingCharges:waiting});},
  async list(actor,{asClient=Boolean(actor.api_client_id)}={}){
   const baseQuery=`SELECT s.*, (SELECT id FROM food_orders WHERE shipment_id=s.id) AS food_order_id, (SELECT phone FROM users WHERE id=s.rider_id) AS rider_phone, q.request AS details, q.request->'pickup' AS pickup, q.request->'destination' AS destination FROM shipments s JOIN quotes q ON q.id=s.quote_id`;
-  if(['customer','business'].includes(actor.kind)||(actor.kind==='company'&&asClient))return (await db.query(`${baseQuery} WHERE s.customer_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
-  if(actor.kind==='rider')return (await db.query(`${baseQuery} WHERE s.rider_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
-  if(actor.kind==='company')return (await db.query(`${baseQuery} JOIN companies c ON c.id=s.company_id WHERE c.owner_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows;
+  if(['customer','business'].includes(actor.kind)||(actor.kind==='company'&&asClient))return (await db.query(`${baseQuery} WHERE s.customer_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows.map(r=>hideEndedContacts(actor,r));
+  if(actor.kind==='rider')return (await db.query(`${baseQuery} WHERE s.rider_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows.map(r=>hideEndedContacts(actor,r));
+  if(actor.kind==='company')return (await db.query(`${baseQuery} JOIN companies c ON c.id=s.company_id WHERE c.owner_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows.map(r=>hideEndedContacts(actor,r));
   await permission(db,actor,'shipments:read');return (await db.query(`${baseQuery} ORDER BY s.created_at DESC LIMIT 100`)).rows;
  },
  async challenge(actor,sid,purpose){check(['pickup','delivery','return'].includes(purpose),400);check(sms,503,'SMS adapter unavailable');

@@ -510,6 +510,16 @@ export function restaurantOrderService(db, options = {}) {
     });
   }
 
+  // Restaurants and riders see the customer's number for the order, not afterwards: it is hidden two hours after
+  // delivery, or at once if the order was cancelled or rejected. The customer and staff always see it.
+  function hideEndedCustomerPhone(actor, order) {
+    if (!order || actor?.kind === 'admin' || actor?.id === order.customer_id) return order;
+    const ended = ['DELIVERED', 'COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.state);
+    const finishedAt = order.completed_at || order.updated_at;
+    if (!ended || (['DELIVERED', 'COMPLETED'].includes(order.state) && finishedAt && Date.now() - new Date(finishedAt).getTime() < 2 * 3600 * 1000)) return order;
+    return { ...order, customer_phone: null, recipient_phone: order.recipient_phone === undefined ? undefined : null };
+  }
+
   async function getFoodOrder(actor, orderId) {
     uuid.parse(orderId);
     const order = (await db.query('SELECT * FROM food_orders WHERE id = $1', [orderId])).rows[0];
@@ -533,7 +543,7 @@ export function restaurantOrderService(db, options = {}) {
       [orderId]
     )).rows;
 
-    return {
+    return hideEndedCustomerPhone(actor, {
       ...order,
       shipment_state: sh?.state ?? null,
       rider_id: sh?.rider_id ?? null,
@@ -546,7 +556,7 @@ export function restaurantOrderService(db, options = {}) {
         longitude: restaurant.longitude
       },
       items
-    };
+    });
   }
 
   async function listFoodOrders(actor, {restaurantId = null, state = null, limit = 50} = {}) {
@@ -606,7 +616,7 @@ export function restaurantOrderService(db, options = {}) {
       });
       itemsByOrder.set(item.order_id, list);
     }
-    return rows.map(r => ({
+    return rows.map(r => hideEndedCustomerPhone(actor, {
       ...r,
       items: itemsByOrder.get(r.id) || []
     }));

@@ -445,6 +445,13 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   assert.equal(alert.notified,2);assert.equal(texts.length,2);assert.match(texts[0].message,/maps\.google/);
   assert.equal((await raiseEmergency(db,safetyActor,{},{sms:smsFake,dutyPhone:'+233201234567'})).duplicate,true);assert.equal(texts.length,2);
   await assert.rejects(raiseEmergency(db,{id:await user('customer'),kind:'customer'},{shipmentId:held},{sms:smsFake}),/not yours/);
+  // An unconfirmed number cannot name a trusted contact, and one contact number gets at most three alerts a day.
+  const unverified=await user('customer');await db.query('UPDATE users SET phone_verified_at=NULL WHERE id=$1',[unverified]);
+  await assert.rejects(saveTrustedContact(db,{id:unverified,kind:'customer'},{name:'Kofi',phone:'0241113333'}),/Verify your phone/);
+  const sent=[];const counting={sendNotification:async x=>{sent.push(x);return {sent:true};}};
+  for(let i=0;i<5;i++){const a=await user('customer');await saveTrustedContact(db,{id:a,kind:'customer'},{name:'Target',phone:'0241114444'});await raiseEmergency(db,{id:a,kind:'customer'},{},{sms:counting,dutyPhone:'+233201234567'});}
+  assert.equal(sent.filter(x=>x.phone==='+233241114444').length,3,'the contact number is capped');
+  assert.equal(sent.filter(x=>x.phone==='+233201234567').length,5,'the duty phone always hears');
   const investigatorActor={id:investigator,kind:'admin'};
   assert.ok((await listSafetyAlerts(db,investigatorActor)).some(a=>a.id===alert.id));
   await assert.rejects(listSafetyAlerts(db,customerActor),/Permission/);

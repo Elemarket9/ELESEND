@@ -5,6 +5,8 @@ import {check} from './security.mjs';
 const BASE_IP_LIMITS={
  httpPerMinute:12000,
  publicTrackPerMinute:3000,
+ // Live chat connections from one address; each one costs a database sign-in check.
+ chatConnectionsPerMinute:600,
  registrationsPerHour:300,
  loginAttemptsPer15Min:3000,
  loginFailuresPer15Min:300,
