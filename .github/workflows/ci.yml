@@ -42,6 +42,8 @@ jobs:
         run: npm run migrate
       - name: Run backend, geospatial, security, and mobile logic tests
         run: npm test
+      - name: Report duplicated code windows (8 lines)
+        run: node scripts/find-duplicates.mjs 8
       - name: Verify mobile modules syntax and release manifest security
         run: |
           node --check apps/mobile/src/config.js
