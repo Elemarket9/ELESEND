@@ -469,7 +469,7 @@ export function dispatchEngine(db,{routing}={}){
    const plan=(await c.query('SELECT * FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
    const active=(await c.query('SELECT s.id,s.state,q.request FROM shipments s JOIN quotes q ON q.id=s.quote_id WHERE s.rider_id=$1 AND s.state=ANY($2::text[])',[actor.id,activeStates])).rows;
    check(active.length===o.expected_active&&Number(plan?.revision??0)===Number(o.plan_revision),409,'Manifest changed: fresh offer required');
-   check(!(await c.query("SELECT 1 FROM challenges ch JOIN shipments sh ON sh.id=ch.shipment_id WHERE sh.rider_id=$1 AND ch.consumed_at IS NULL AND ch.expires_at>now()",[actor.id])).rowCount,409,'Active OTP handover must finish before new route is accepted');
+   check(!(await c.query("SELECT 1 FROM challenges ch JOIN shipments sh ON sh.id=ch.shipment_id WHERE sh.rider_id=$1 AND ch.consumed_at IS NULL AND ch.expires_at>now()",[actor.id])).rowCount,409,'Active legacy handover challenge must finish before new route is accepted');
    check(active.length<p.max_active_parcels&&!active.some(s=>['FAILED','RETURN_REQUESTED'].includes(s.state)),409,'Unresolved custody or parcel limit');
    check(active.length===0||(p.multi_stop_enabled&&r.multi_stop_opt_in&&await features.enabled('multi_parcel_vrp')&&await features.enabled('dynamic_pickup_insertion')),409,'Multi-parcel approval required');
    const proposed=o.proposed_stops;
@@ -496,7 +496,7 @@ export function dispatchEngine(db,{routing}={}){
    await c.query("UPDATE shipments SET rider_id=$2,company_id=$3,state='RIDER_ASSIGNED',no_rider_since=NULL,watchdog_last_inspected_at=NULL,watchdog_next_review_at=NULL WHERE id=$1",[sid,r.id,r.company_id]);
    await c.query(`INSERT INTO rider_dispatch_plans(rider_id,revision,stops) VALUES($1,1,$2)
       ON CONFLICT(rider_id) DO UPDATE SET revision=rider_dispatch_plans.revision+1,stops=$2,updated_at=now()`,[r.id,JSON.stringify(o.proposed_stops)]);
-   // Food must reach OTP handover within 30 minutes of the actual/estimated ready time.
+   // Food must reach physical handover within 30 minutes of the actual/estimated ready time.
    // Reject a route that cannot satisfy this bound instead of silently promising a later delivery.
    const foodDeadline=(await c.query('SELECT ready_at FROM food_orders WHERE shipment_id=$1',[sid])).rows[0];
    if(foodDeadline){
@@ -538,7 +538,7 @@ export function dispatchEngine(db,{routing}={}){
    if(pre.company_id)await c.query('SELECT id FROM companies WHERE id=$1 FOR UPDATE',[pre.company_id]);
    const r=(await c.query('SELECT * FROM riders WHERE id=$1 FOR UPDATE',[actor.id])).rows[0];check(r,403,'Rider required');
    const s=(await c.query('SELECT * FROM shipments WHERE id=$1 FOR UPDATE',[sid])).rows[0];check(s,404,'Shipment unavailable');check(s.rider_id===actor.id,403,'Assigned rider required');check(['RIDER_ASSIGNED','FAILED'].includes(s.state),409,'Pickup custody started or assignment no longer releasable');
-   check(!(await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[sid])).rowCount,409,'Parcel already collected');
+   check(!(await c.query("SELECT 1 FROM shipment_handover_events WHERE shipment_id=$1 AND kind='pickup' UNION SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[sid])).rowCount,409,'Parcel already collected');
    check(!await cashAlreadyReported(c,sid),409,'Cash already reported: manual reassignment and reconciliation required');
    await c.query('UPDATE challenges SET expires_at=now() WHERE shipment_id=$1 AND consumed_at IS NULL',[sid]);
    await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE shipment_id=$1 AND status IN ('offered','accepted')",[sid]);
@@ -659,7 +659,7 @@ export function dispatchEngine(db,{routing}={}){
      const dc=(await c.query('SELECT promised_delivery_before FROM dispatch_commitments WHERE shipment_id=$1 AND rider_id=$2',[s.id,s.rider_id])).rows[0];
      const accOffer=(await c.query("SELECT id,accepted_at,pickup_eta_seconds FROM dispatch_offers WHERE shipment_id=$1 AND rider_id=$2 AND status='accepted' ORDER BY accepted_at DESC LIMIT 1",[s.id,s.rider_id])).rows[0];
      const pickedUp=s.state!=='RIDER_ASSIGNED'||
-      Boolean((await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount)||
+      Boolean((await c.query("SELECT 1 FROM shipment_handover_events WHERE shipment_id=$1 AND kind='pickup' UNION SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount)||
       await cashAlreadyReported(c,s.id)||
       f?.state==='IN_TRANSIT';
      const {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,latestGpsMs,nowMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f?.ready_at,offer:accOffer,deliveryDeadlineMs:dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():NaN});
