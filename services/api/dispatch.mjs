@@ -22,7 +22,18 @@ import {featureService} from './algorithms/features.mjs';
 import {getRedisClient} from './infrastructure/cache/redis.mjs';
 import {chatEngine} from './chat-engine.mjs';
 const uuid=z.string().uuid();
-const sampleSchema=z.object({latitude:z.number().finite().min(-90).max(90),longitude:z.number().finite().min(-180).max(180),accuracyMeters:z.number().finite().min(0).max(1000),observedAt:z.string().datetime({offset:true}),headingDegrees:z.number().finite().min(0).max(359.999).optional(),speedMps:z.number().finite().min(0).max(80).optional()}).strict();
+// Many phones have their clock set by hand and run minutes fast or slow. The app sends the time on its own clock as
+// it sends (sentAt); the difference from the server's clock is that phone's error, and the GPS time is corrected by
+// it. Without this, a rider whose phone is three minutes off has every location refused and looks offline.
+// Older app versions send no sentAt and are judged by their own clock, as before.
+export function correctPhoneClock(v,now=Date.now()){
+ if(!v.sentAt)return v;
+ const errorMs=now-Date.parse(v.sentAt);
+ if(!Number.isFinite(errorMs)||Math.abs(errorMs)>86400000)return v;
+ const {sentAt,...rest}=v;
+ return {...rest,observedAt:new Date(Date.parse(v.observedAt)+errorMs).toISOString()};
+}
+const sampleSchema=z.object({latitude:z.number().finite().min(-90).max(90),longitude:z.number().finite().min(-180).max(180),accuracyMeters:z.number().finite().min(0).max(1000),observedAt:z.string().datetime({offset:true}),sentAt:z.string().datetime({offset:true}).optional(),headingDegrees:z.number().finite().min(0).max(359.999).optional(),speedMps:z.number().finite().min(0).max(80).optional()}).strict();
 const point=r=>({latitude:Number(r.latitude),longitude:Number(r.longitude)});
 const audit=(c,who,action,sid)=>c.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[who,action,sid]);
 const change=(c,sid,type)=>c.query('INSERT INTO outbox(shipment_id,kind,payload) VALUES($1,$2,$3)',[sid,type,JSON.stringify({shipmentId:sid,kind:type})]);
@@ -94,7 +105,7 @@ export function dispatchEngine(db,{routing}={}){
  async function setVehiclePolicy(actor,input){await getPolicy(actor);const v=z.object({vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']),maxParcelSize:z.enum(['small','medium','large']),allowedCategories:z.array(z.enum(['general','documents','fragile','food'])).min(1).max(4),enabled:z.boolean()}).strict().parse(input);
   return db.tx(async c=>{await c.query('UPDATE vehicle_capabilities SET max_parcel_size=$2,allowed_categories=$3,enabled=$4 WHERE vehicle=$1',[v.vehicle,v.maxParcelSize,[...new Set(v.allowedCategories)],v.enabled]);await audit(c,actor.id,'dispatch.vehicle_policy_changed',null);return {ok:true};});
  }
- async function riderPosition(actor,input){check(actor?.kind==='rider',403,'Rider credentials required');const v=sampleSchema.parse(input),p=await policy(db);
+ async function riderPosition(actor,input){check(actor?.kind==='rider',403,'Rider credentials required');const v=correctPhoneClock(sampleSchema.parse(input)),p=await policy(db);
   const age=(Date.now()-Date.parse(v.observedAt))/1000;
   check(Number.isFinite(age)&&age>=-15&&age<=p.max_sample_age_seconds,400,'Location observation timestamp unavailable or stale');
   check(v.accuracyMeters<=p.max_accuracy_m,422,'GPS accuracy insufficient');check(v.speedMps===undefined||v.speedMps<=p.max_speed_mps,422,'Implausible GPS speed');

@@ -5,8 +5,9 @@ import {check} from './security.mjs';
 const BASE_IP_LIMITS={
  httpPerMinute:12000,
  publicTrackPerMinute:3000,
- // Live chat connections from one address; each one costs a database sign-in check.
- chatConnectionsPerMinute:600,
+ // Live chat connections from one address; each one costs a database sign-in check. Set for a mobile network's shared
+ // address, where every phone behind it reconnects at once after a server restart.
+ chatConnectionsPerMinute:3000,
  registrationsPerHour:300,
  loginAttemptsPer15Min:3000,
  loginFailuresPer15Min:300,

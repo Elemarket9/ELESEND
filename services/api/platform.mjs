@@ -618,6 +618,14 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   return db.tx(async c=>{if(process.env.NODE_ENV==='production')await requireVerifiedPhone(c,actor);await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[actor.id+key]);
    const old=(await c.query('SELECT * FROM shipments WHERE customer_id=$1 AND idempotency_key=$2',[actor.id,key])).rows[0];if(old){check(old.quote_id===v.quoteId,409,'Idempotency key reused with different request');return old;}
    const q=(await c.query('SELECT * FROM quotes WHERE id=$1 AND customer_id=$2 AND expires_at>now() FOR UPDATE',[v.quoteId,actor.id])).rows[0];check(q,409,'Quote unavailable or expired');
+   // Cash jobs cost the sender nothing until the rider arrives, so one account could book many fake pickups and send
+   // riders across town for nothing. Open cash bookings are capped per account (businesses get more).
+   if(q.payment_method==='CASH'){
+    await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',['cash-bookings:'+actor.id]);
+    const cap=actor.kind==='customer'?Number(process.env.MAX_OPEN_CASH_BOOKINGS)||3:Number(process.env.MAX_OPEN_CASH_BOOKINGS_BUSINESS)||20;
+    const open=(await c.query("SELECT count(*)::int AS n FROM shipments WHERE customer_id=$1 AND payment_method='CASH' AND state IN ('AWAITING_ASSIGNMENT','RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP')",[actor.id])).rows[0].n;
+    check(open<cap,429,`You have ${open} cash deliveries in progress. Pay by mobile money or card, or wait for one to finish`);
+   }
    const sid=id();const result=await c.query("INSERT INTO shipments(id,customer_id,quote_id,idempotency_key,state,recipient_phone,amount_minor,commission_minor,payment_method,cash_payer) VALUES($1,$2,$3,$4,$8,$5,$6,$7,$9,$10) RETURNING *",[sid,actor.id,q.id,key,q.request.recipientPhone,q.amount_minor,q.commission_minor,q.payment_method==='CASH'?'AWAITING_ASSIGNMENT':'AWAITING_PAYMENT',q.payment_method,q.payment_method==='CASH'?(q.request.cashPayer??'recipient'):null]);await audit(c,actor.id,'shipment.booked',sid);await event(c,sid,'booked');return result.rows[0];
   });
  },

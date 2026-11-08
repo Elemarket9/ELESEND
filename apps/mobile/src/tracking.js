@@ -140,7 +140,7 @@ export function notifyBackgroundOfferListeners(offers=[],meta={}){
 
 export function sample(location){const p=location?.coords;
  if(!p||!Number.isFinite(p.latitude)||!Number.isFinite(p.longitude)||location?.mocked===true||p?.isMocked===true)return null;
- return {latitude:p.latitude,longitude:p.longitude,accuracyMeters:Math.min(Math.max(p.accuracy??999,0),1000),observedAt:new Date(location.timestamp??Date.now()).toISOString(),...(p.heading>=0?{headingDegrees:p.heading}:{}),...(p.speed>=0?{speedMps:p.speed}:{})};
+ return {latitude:p.latitude,longitude:p.longitude,accuracyMeters:Math.min(Math.max(p.accuracy??999,0),1000),observedAt:new Date(location.timestamp??Date.now()).toISOString(),sentAt:new Date().toISOString(),...(p.heading>=0?{headingDegrees:p.heading}:{}),...(p.speed>=0?{speedMps:p.speed}:{})};
 }
 
 export async function runBackgroundLocationTask({data,error}={},deps={}){

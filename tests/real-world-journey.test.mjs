@@ -607,6 +607,29 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    const big=await api(c.token,'POST','/api/v1/food-orders/quote',order(50));assert.equal(big.status,400);assert.match(big.data.error,/too large/);
    assert.equal((await api(c.token,'POST','/api/v1/food-orders/quote',order(2))).status,200);
   });
+  await t.test('a rider whose phone clock is wrong can still share location',async()=>{
+   await offline();
+   const r=await readyRider();
+   const fast=Date.now()+3*60*1000+20000;
+   const sendFrom=(skewedNow,extra={})=>api(r.token,'POST','/api/v1/rider/location',{latitude:P.latitude,longitude:P.longitude,accuracyMeters:15,observedAt:new Date(skewedNow).toISOString(),...extra});
+   assert.equal((await sendFrom(fast)).status,400,'an old app on a fast phone is refused, as before');
+   const ok=await sendFrom(fast,{sentAt:new Date(fast).toISOString()});assert.equal(ok.status,200,JSON.stringify(ok.data));
+   const stored=(await db.query('SELECT position_at FROM riders WHERE id=$1',[r.id])).rows[0].position_at;
+   assert.ok(Math.abs(new Date(stored).getTime()-Date.now())<15000,'the time is corrected to the server clock');
+   const slow=Date.now()-5*60*1000;
+   assert.equal((await sendFrom(slow+1000,{sentAt:new Date(slow+1000).toISOString()})).status,200,'a slow phone works too');
+   await offline();
+  });
+  await t.test('one account cannot flood riders with fake cash pickups',async()=>{
+   const c=await customer();
+   const cash=async()=>{const q=await api(c.token,'POST','/api/v1/quotes',trip({paymentMethod:'CASH'}));assert.equal(q.status,200,JSON.stringify(q.data));return api(c.token,'POST','/api/v1/shipments',{quoteId:q.data.id},{'Idempotency-Key':'cash-'+randomInt(1e9)});};
+   for(let i=0;i<3;i++)assert.equal((await cash()).status,200);
+   const fourth=await cash();assert.equal(fourth.status,429);assert.match(fourth.data.error,/cash deliveries in progress/);
+   const q=await api(c.token,'POST','/api/v1/quotes',trip());
+   assert.equal((await api(c.token,'POST','/api/v1/shipments',{quoteId:q.data.id},{'Idempotency-Key':'momo-'+randomInt(1e9)})).status,200,'paying by mobile money still works');
+   const ids=(await db.query("SELECT id FROM shipments WHERE customer_id=$1 AND payment_method='CASH'",[c.id])).rows.map(r=>r.id);
+   for(const id of ids)await api(c.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'cancel',reason:'Test finished'});
+  });
   await t.test('the customer is told when a refund has gone out, and the company page loads',async()=>{
    const page=await fetch(base+'/company');const html=await page.text();
    assert.equal(page.status,200);assert.match(html,/ELESEND for Companies/);

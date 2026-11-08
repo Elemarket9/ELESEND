@@ -240,7 +240,7 @@ test('live chat connections are limited per address like other requests',async()
  const before=process.env.IP_LIMIT_MULTIPLIER;process.env.IP_LIMIT_MULTIPLIER='0.1';
  try{
   await withServer(permissive(),async port=>{
-   const limit=ipLimits().chatConnectionsPerMinute;assert.equal(limit,60);
+   const limit=ipLimits().chatConnectionsPerMinute;assert.equal(limit,300);
    const statuses=[];for(let i=0;i<=limit;i++)statuses.push(await upgradeStatus(port,'/api/v1/chat/ws'));
    assert.equal(statuses.slice(0,limit).every(s=>s===401),true,'refused for no token, as before');
    assert.equal(statuses.at(-1),429,'then refused before any sign-in check');

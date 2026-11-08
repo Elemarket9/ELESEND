@@ -18,7 +18,7 @@ export async function saveTrustedContact(db,actor,input){
  const normalized=phone(v.phone);
  // Alerts go out in this account's name, so its own number must be confirmed first.
  check((await db.query('SELECT phone_verified_at FROM users WHERE id=$1',[actor.id])).rows[0]?.phone_verified_at,403,'Verify your phone number before adding a trusted contact');
- await db.query('INSERT INTO trusted_contacts(user_id,name,phone) VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET name=excluded.name,phone=excluded.phone,updated_at=now()',[actor.id,v.name,normalized]);
+ await db.query('INSERT INTO trusted_contacts(user_id,name,phone) VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET name=excluded.name,phone=excluded.phone,updated_at=CASE WHEN trusted_contacts.phone=excluded.phone THEN trusted_contacts.updated_at ELSE now() END',[actor.id,v.name,normalized]);
  return {name:v.name,phone:normalized};
 }
 export async function getTrustedContact(db,actor){
@@ -44,10 +44,12 @@ export async function raiseEmergency(db,actor,input,{sms=null,dutyPhone=process.
   await db.query("INSERT INTO operational_risk_signals(rider_id,shipment_id,signal_code,severity,evidence) VALUES($1,$2,'EMERGENCY_ALERT','high',$3)",[user?.kind==='rider'?actor.id:null,v.shipmentId??null,JSON.stringify({alertId:id})]);
  }
  const place=v.latitude!==undefined&&v.longitude!==undefined?` Location: https://maps.google.com/?q=${v.latitude},${v.longitude}`:' Location unavailable.';
- // The duty phone always hears about it. The trusted contact is texted only from a confirmed number, and at most
- // three times a day across all accounts, so the button cannot be used to send frightening texts to anyone.
- let contact=user?.phone_verified_at?await getTrustedContact(db,actor):null;
- if(contact&&await recordAttempt(db,'emergency-contact:'+hash(contact.phone),86400)>3)contact=null;
+ // The duty phone always hears about it. The trusted contact is texted only from a confirmed number. A contact named in
+ // the last three days gets at most three alerts a day across all accounts, so the button cannot be used to send
+ // frightening texts to anyone; one the person has had for longer always gets the alert, so nobody can use up that
+ // allowance to silence someone's real emergency.
+ let contact=user?.phone_verified_at?(await db.query("SELECT name,phone,updated_at<now()-interval '3 days' AS established FROM trusted_contacts WHERE user_id=$1",[actor.id])).rows[0]??null:null;
+ if(contact&&!contact.established&&await recordAttempt(db,'emergency-contact:'+hash(contact.phone),86400)>3)contact=null;
  const targets=[[dutyPhone,`ELESEND EMERGENCY: ${user?.kind||'user'} ${user?.phone||''} pressed the emergency button.${place}`],[contact?.phone,`ELESEND safety alert: ${user?.phone||'Your contact'} pressed the emergency button and named you as a trusted contact.${place}`]].filter(([to])=>to);
  const results=await Promise.allSettled(targets.map(async([to,message],i)=>{
   check(typeof sms?.sendNotification==='function',503,'SMS unavailable');

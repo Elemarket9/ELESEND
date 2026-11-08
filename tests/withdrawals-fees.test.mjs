@@ -452,6 +452,12 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   for(let i=0;i<5;i++){const a=await user('customer');await saveTrustedContact(db,{id:a,kind:'customer'},{name:'Target',phone:'0241114444'});await raiseEmergency(db,{id:a,kind:'customer'},{},{sms:counting,dutyPhone:'+233201234567'});}
   assert.equal(sent.filter(x=>x.phone==='+233241114444').length,3,'the contact number is capped');
   assert.equal(sent.filter(x=>x.phone==='+233201234567').length,5,'the duty phone always hears');
+  // A contact the person has had for days always gets the alert, even after strangers used up the daily allowance.
+  const longTime=await user('customer');await saveTrustedContact(db,{id:longTime,kind:'customer'},{name:'Mum',phone:'0241114444'});
+  await db.query("UPDATE trusted_contacts SET updated_at=now()-interval '10 days' WHERE user_id=$1",[longTime]);
+  await saveTrustedContact(db,{id:longTime,kind:'customer'},{name:'Mother',phone:'0241114444'});
+  await raiseEmergency(db,{id:longTime,kind:'customer'},{},{sms:counting,dutyPhone:'+233201234567'});
+  assert.equal(sent.filter(x=>x.phone==='+233241114444').length,4,'the real emergency still reaches the established contact');
   const investigatorActor={id:investigator,kind:'admin'};
   assert.ok((await listSafetyAlerts(db,investigatorActor)).some(a=>a.id===alert.id));
   await assert.rejects(listSafetyAlerts(db,customerActor),/Permission/);
