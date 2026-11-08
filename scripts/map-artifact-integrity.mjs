@@ -20,7 +20,7 @@ async function digest(filename){
 const required=['.osrm','.osrm.partition','.osrm.cells'];
 function graphFiles(directory,base){
  const prefix=base+'.osrm';
- const entries=readdirSync(directory).filter(name=>name===prefix||name.startsWith(prefix+'.'));
+ const entries=readdirSync(directory).filter(name=>name===prefix||(name.startsWith(prefix+'.')&&!name.endsWith('.build.json')));
  const valid=entries.filter(name=>statSync(join(directory,name)).isFile()&&statSync(join(directory,name)).size>0);
  for(const suffix of required)if(!valid.includes(base+suffix))fail('Incomplete OSRM MLD graph: missing/empty '+base+suffix);
  if(valid.length<4)fail('Incomplete OSRM MLD graph: insufficient sidecar files');
