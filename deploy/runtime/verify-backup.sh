@@ -7,8 +7,18 @@
 set -euo pipefail
 
 : "${GPG_PASSPHRASE_FILE:?Specify passphrase file}"
-: "${BACKUP_FILE:?Specify .pgdump.gpg backup file to verify}"
 : "${ELESEND_ENV_FILE:=.env.runtime}"
+cd "$(dirname "$0")/../.."
+# With no BACKUP_FILE, the newest offsite dump is downloaded and checked (the weekly restore drill).
+if [[ -z "${BACKUP_FILE:-}" ]]; then
+  : "${OFFSITE_RCLONE_REMOTE:?Set BACKUP_FILE or OFFSITE_RCLONE_REMOTE}"
+  latest=$(rclone lsf "${OFFSITE_RCLONE_REMOTE%/}" --files-only --max-depth 1 --include 'elesend-*.pgdump.gpg' | sort | tail -1)
+  [[ -n "$latest" ]] || { echo 'No offsite backup found' >&2; exit 1; }
+  BACKUP_FILE="$(mktemp -d)/$latest"
+  rclone copyto "${OFFSITE_RCLONE_REMOTE%/}/$latest" "$BACKUP_FILE"
+  echo "Checking newest offsite backup: $latest"
+fi
+trap 'curl -fsS -m 10 "${VERIFY_HEARTBEAT_URL%/}/fail" >/dev/null 2>&1 || true' ERR
 
 [[ -f "$GPG_PASSPHRASE_FILE" ]] || { echo 'Missing passphrase file' >&2; exit 1; }
 [[ -f "$BACKUP_FILE" ]] || { echo 'Missing backup file' >&2; exit 1; }
@@ -52,7 +62,9 @@ dump_size=$(wc -c < "$work/test.pgdump" | tr -d ' ')
 echo "2. Backup successfully decrypted. File size: ${dump_size} bytes."
 
 echo "3. Verifying archive table of contents with pg_restore..."
-toc=$(pg_restore -l "$work/test.pgdump")
+# Listed with the database's own pg_restore, so the version always matches the dump.
+if [[ -n "${VERIFY_PG_SUPER_URL:-}" ]]; then toc=$(pg_restore -l "$work/test.pgdump")
+else toc=$(docker compose -f deploy/runtime/compose.yaml --env-file "$ELESEND_ENV_FILE" exec -T db pg_restore -l < "$work/test.pgdump"); fi
 echo "$toc" | grep -E "schema_migrations" >/dev/null
 echo "$toc" | grep -E "shipments" >/dev/null
 
@@ -79,7 +91,7 @@ missing_tables=$(run_psql_verify "
   SELECT count(*)::int
   FROM unnest(ARRAY[
     'schema_migrations','users','shipments','quotes','food_orders',
-    'restaurants','journal_entries','ledger_lines',
+    'restaurants','finance_journals','finance_lines',
     'checkout_accounting_journals','checkout_accounting_lines'
   ]) AS required_table
   WHERE to_regclass('public.' || required_table) IS NULL;
@@ -92,9 +104,9 @@ fi
 unbalanced_journals=$(run_psql_verify "
   SELECT (
     (SELECT count(*) FROM (
-      SELECT entry_id
-      FROM ledger_lines
-      GROUP BY entry_id
+      SELECT journal_id
+      FROM finance_lines
+      GROUP BY journal_id
       HAVING coalesce(sum(CASE WHEN side = 'debit' THEN amount_minor ELSE 0 END), 0)
           <> coalesce(sum(CASE WHEN side = 'credit' THEN amount_minor ELSE 0 END), 0)
     ) AS u1)
@@ -115,7 +127,7 @@ fi
 
 orphan_lines=$(run_psql_verify "
   SELECT (
-    (SELECT count(*) FROM journal_entries j WHERE NOT EXISTS (SELECT 1 FROM ledger_lines l WHERE l.entry_id = j.id))
+    (SELECT count(*) FROM finance_journals j WHERE NOT EXISTS (SELECT 1 FROM finance_lines l WHERE l.journal_id = j.id))
     +
     (SELECT count(*) FROM checkout_accounting_journals j WHERE NOT EXISTS (SELECT 1 FROM checkout_accounting_lines l WHERE l.journal_id = j.id))
   )::int;
@@ -125,4 +137,5 @@ if [[ "${orphan_lines:-1}" -ne 0 ]]; then
   exit 1
 fi
 
+[[ -n "${VERIFY_HEARTBEAT_URL:-}" ]] && curl -fsS -m 10 --retry 3 "$VERIFY_HEARTBEAT_URL" >/dev/null || true
 echo "Backup verification PASSED: Restored ${migration_count} migrations into isolated database ${verify_db}; all critical tables and financial ledger invariants verified."

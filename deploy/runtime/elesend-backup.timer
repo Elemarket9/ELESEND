@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily ELESEND logical backup, offsite (daily)
+
+[Timer]
+OnCalendar=*-*-* 03:43
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

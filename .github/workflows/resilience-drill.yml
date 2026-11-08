@@ -1,0 +1,52 @@
+name: resilience drill (temporary)
+on:
+  push:
+    branches: ['resilience/**']
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      ELESEND_ENV_FILE: .env.runtime
+      OFFSITE_RCLONE_REMOTE: /tmp/offsite
+      GPG_PASSPHRASE_FILE: /tmp/backup.passphrase
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Tools and settings
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq rclone >/dev/null
+          npm ci --ignore-scripts --no-audit --no-fund
+          head -c 48 /dev/urandom | base64 > /tmp/backup.passphrase && chmod 600 /tmp/backup.passphrase
+          mkdir -p /tmp/offsite
+          k(){ head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+          cat > .env.runtime <<ENV
+          POSTGRES_PASSWORD=drillpassword123
+          DOCKER_DATABASE_URL=postgres://elesend:drillpassword123@db:5432/elesend
+          OTP_KEY=$(k)
+          ADMIN_MFA_ENCRYPTION_KEY=$(k)
+          JWT_SECRET=$(k)
+          ADMIN_MASTER_KEY=$(k)
+          AUDIT_LOG_SECRET=$(k)
+          ELESEND_DOMAIN=drill.example.test
+          ENV
+          sed -i 's/^ *//' .env.runtime
+      - name: Start the production database setup
+        run: |
+          docker compose -f deploy/runtime/compose.yaml --env-file .env.runtime up -d db
+          for i in $(seq 60); do docker compose -f deploy/runtime/compose.yaml --env-file .env.runtime exec -T db pg_isready -h /var/run/postgresql && break; sleep 2; done
+          q(){ docker compose -f deploy/runtime/compose.yaml --env-file .env.runtime exec -T db psql -U elesend -d elesend -Atqc "$1"; }
+          echo "SETTING archive_mode=$(q 'SHOW archive_mode') archive_timeout=$(q 'SHOW archive_timeout') max_connections=$(q 'SHOW max_connections') statement_timeout=$(q 'SHOW statement_timeout')"
+          q "CREATE DATABASE elesend_test" || true
+      - name: Migrate inside the database network
+        run: |
+          db=$(docker compose -f deploy/runtime/compose.yaml --env-file .env.runtime ps -q db)
+          docker run --rm --network container:$db -v "$PWD":/app -w /app -e DATABASE_URL=postgres://elesend:drillpassword123@127.0.0.1:5432/elesend node:22 node scripts/migrate.mjs
+      - name: Load test against the production settings
+        run: |
+          db=$(docker compose -f deploy/runtime/compose.yaml --env-file .env.runtime ps -q db)
+          docker run --rm --network container:$db -v "$PWD":/app -w /app -e NODE_ENV=test -e TEST_DATABASE_URL=postgres://elesend:drillpassword123@127.0.0.1:5432/elesend_test node:22 node scripts/prelaunch-load.mjs 2>&1 | grep -E '^\{"simulatedRiders' | sed 's/^/LOAD /'
+          docker stats --no-stream --format 'DBSTATS {{.Name}} mem={{.MemUsage}} cpu={{.CPUPerc}}' $db
+      - name: Disaster drill
+        run: bash scripts/ci/resilience-drill.sh

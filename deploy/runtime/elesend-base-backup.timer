@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly ELESEND base backup, offsite (nightly)
+
+[Timer]
+OnCalendar=*-*-* 01:17
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily ELESEND logical backup, offsite
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/elesend/backup.env
+ExecStart=/usr/bin/env bash -c '"${ELESEND_ROOT:?Set ELESEND_ROOT in /etc/elesend/backup.env}/deploy/runtime/backup-offsite.sh"'
+Nice=10
+IOSchedulingClass=best-effort

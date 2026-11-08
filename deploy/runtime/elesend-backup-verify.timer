@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly ELESEND restore drill of the newest backup (weekly)
+
+[Timer]
+OnCalendar=Wed 04:29
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

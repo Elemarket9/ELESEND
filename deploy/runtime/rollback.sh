@@ -14,6 +14,15 @@ if [ "${1:-}" = "--restore-database" ]; then
   RESTORE=true
   [ "${ELESEND_ALLOW_DATABASE_RESTORE:-}" = "YES" ] || { echo 'Explicit ELESEND_ALLOW_DATABASE_RESTORE=YES is required'; exit 1; }
   [ -s "${SNAPSHOT_FILE}" ] || { echo 'Readable, non-empty recovery snapshot required'; exit 1; }
+  # The snapshot is from the last deploy. Restoring it erases everything recorded since, so say how much that is,
+  # and refuse a snapshot older than a day unless that loss is confirmed too. For anything else, use
+  # restore-point-in-time.sh, which can go back to a chosen minute.
+  SNAPSHOT_AGE_HOURS=$(( ($(date +%s) - $(stat -c %Y "${SNAPSHOT_FILE}")) / 3600 ))
+  echo "The snapshot is ${SNAPSHOT_AGE_HOURS} hour(s) old. Every order, payment and account change since then will be removed (a safety copy is taken first)."
+  if [ "${SNAPSHOT_AGE_HOURS}" -ge 24 ] && [ "${ELESEND_ALLOW_OLD_SNAPSHOT:-}" != "YES" ]; then
+    echo "Refusing: that would erase about $(( SNAPSHOT_AGE_HOURS / 24 )) day(s) of records. Use restore-point-in-time.sh, or set ELESEND_ALLOW_OLD_SNAPSHOT=YES if you really mean it."
+    exit 1
+  fi
 elif [ "$#" -ne 0 ]; then
   echo 'Usage: rollback.sh [--restore-database]'; exit 1
 fi
