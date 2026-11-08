@@ -621,7 +621,7 @@ test('SMS Adapters, Notification Worker Receipt Integrity & Mobile Push Channel 
     assert.match(verifyScript, /CREATE DATABASE \\"\$\{verify_db\}\\"/, 'verify-backup.sh must create an isolated verification database');
     assert.match(verifyScript, /pg_restore\s+--exit-on-error/, 'verify-backup.sh must run pg_restore with --exit-on-error');
     assert.match(verifyScript, /FROM schema_migrations/, 'verify-backup.sh must verify restored schema_migrations');
-    assert.match(verifyScript, /FROM ledger_lines[\s\S]*FROM checkout_accounting_lines/, 'verify-backup.sh must verify double-entry ledger balance invariants');
+    assert.match(verifyScript, /FROM finance_lines[\s\S]*FROM checkout_accounting_lines/, 'verify-backup.sh must verify double-entry ledger balance invariants');
     assert.match(verifyScript, /DROP DATABASE IF EXISTS \\"\$\{verify_db\}\\"/, 'verify-backup.sh must drop the isolated verification database in cleanup');
   });
 
