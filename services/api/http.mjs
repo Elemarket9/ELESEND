@@ -785,7 +785,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    }
   }
   else {
-   const m=path.match(/^\/api\/v1\/shipments\/([^/]+)(?:\/(accept|handover|pickup-challenge|delivery-challenge|return-challenge|verify|transition|location|tracking|dispatch|disputes|cancel-terms|recipient|rider-photo))?$/);check(m,404,'Endpoint not found');const [,sid,action]=m;
+   const m=path.match(/^\/api\/v1\/shipments\/([^/]+)(?:\/(accept|handover|receipt|pickup-challenge|delivery-challenge|return-challenge|verify|transition|location|tracking|dispatch|disputes|cancel-terms|recipient|rider-photo))?$/);check(m,404,'Endpoint not found');const [,sid,action]=m;
    if(method==='GET'&&!action)result=forCustomer(actor,await app.get(actor,sid));
    else if(method==='GET'&&action==='cancel-terms')result=await app.cancelTerms(actor,sid);
    else if(method==='GET'&&action==='tracking')result=await app.tracking(actor,sid);
@@ -797,6 +797,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    else if(method==='GET'&&action==='dispatch'){const shipment=await app.get(actor,sid);result={shipmentId:sid,state:shipment.state,confirmedRider:!!shipment.rider_id,guaranteed:!!shipment.rider_id,attempts:shipment.dispatch_attempts,dispatchStatus:shipment.state==='AWAITING_ASSIGNMENT'?(shipment.no_rider_since?'no_rider_yet':'searching_or_awaiting_offer'):shipment.state};}
    else if(method==='POST'&&action==='accept')result=await app.accept(actor,sid,body.offerId);
    else if(method==='POST'&&action==='handover')result=await app.handover(actor,sid,body);
+   else if(method==='POST'&&action==='receipt')result=await app.confirmReceipt(actor,sid,body);
    else if(method==='POST'&&action==='pickup-challenge')result=await app.challenge(actor,sid,'pickup');
    else if(method==='POST'&&action==='delivery-challenge')result=await app.challenge(actor,sid,'delivery');
    else if(method==='POST'&&action==='return-challenge')result=await app.challenge(actor,sid,'return');
