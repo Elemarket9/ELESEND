@@ -1227,7 +1227,7 @@
             <span>🛵 Courier Handover: ${escapeHtml(o.shipment_state || 'Awaiting')}</span>
           </div>
           <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">
-            Verify courier identity before release. Challenge OTP applies at recipient handover.
+            Confirm the assigned courier before releasing food. Delivery handover is rider-declared; no SMS code is needed.
           </div>
           <div style="display: flex; gap: 6px; margin-top: 8px;">
             <button class="btn btn-secondary" style="flex: 1; padding: 6px; font-size: 11px;" onclick="openOrderChat('${o.id}', '${o.shipment_id || ''}', 'CUSTOMER_RESTAURANT')">💬 Customer</button>
