@@ -453,7 +453,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    assert.equal(track.rider.firstName,'Ama');assert.equal(track.rider.plate,'M-22-GR 4471');assert.equal(track.rider.verifiedBy,'company');assert.equal(track.rider.companyName,'Kasoa Dispatch');assert.equal(track.rider.hasPhoto,true);
    assert.equal((await api(c.token,'GET','/api/v1/shipments/'+id+'/rider-photo')).data.imageBase64,jpeg,'the customer sees the photo');
    assert.ok([403,404].includes((await api((await customer()).token,'GET','/api/v1/shipments/'+id+'/rider-photo')).status),'nobody else does');
-   const cancelled=await api(c.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'cancel'});assert.equal(cancelled.status,200,JSON.stringify(cancelled.data));
+   const cancelled=await api(c.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'cancel',reason:'Changed my mind'});assert.equal(cancelled.status,200,JSON.stringify(cancelled.data));
    const left=await api(r.token,'POST','/api/v1/rider/company/leave',{});assert.equal(left.status,200,JSON.stringify(left.data));
    const after=(await db.query('SELECT status,verified_by_company_id,company_id FROM riders WHERE id=$1',[r.id])).rows[0];
    assert.equal(after.status,'pending');assert.equal(after.verified_by_company_id,null,'leaving the company ends its check');
