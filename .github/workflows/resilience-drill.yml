@@ -1,7 +1,10 @@
-name: resilience drill (temporary)
+# Starts the production database setup, loads it, then destroys it and recovers from the offsite copies.
+# Runs whenever backup, deploy or database files change, and on demand.
+name: Backup and restore drill
 on:
+  workflow_dispatch:
   push:
-    branches: ['resilience/**']
+    paths: ['deploy/runtime/**', 'database/migrations/**', 'scripts/migrate.mjs', 'scripts/prelaunch-*.mjs', 'scripts/ci/resilience-drill.sh', '.github/workflows/resilience-drill.yml']
 jobs:
   drill:
     runs-on: ubuntu-latest
