@@ -41,10 +41,14 @@ jobs:
           q(){ docker compose -f deploy/runtime/compose.yaml --env-file .env.runtime exec -T db psql -U elesend -d elesend -Atqc "$1"; }
           echo "SETTING archive_mode=$(q 'SHOW archive_mode') archive_timeout=$(q 'SHOW archive_timeout') max_connections=$(q 'SHOW max_connections') statement_timeout=$(q 'SHOW statement_timeout')"
           q "CREATE DATABASE elesend_test"
-      - name: Migrate inside the database network
+      - name: Migrate inside the database network, creating the API's limited login
         run: |
           db=$(docker compose -f deploy/runtime/compose.yaml --env-file .env.runtime ps -q db)
-          docker run --rm --network container:$db -v "$PWD":/app -w /app -e DATABASE_URL=postgres://elesend:drillpassword123@127.0.0.1:5432/elesend node:22 node scripts/migrate.mjs
+          docker run --rm --network container:$db -v "$PWD":/app -w /app -e DATABASE_URL=postgres://elesend:drillpassword123@127.0.0.1:5432/elesend -e ELESEND_APP_DB_PASSWORD=apppassword456 node:22 node scripts/migrate.mjs
+      - name: The API works under its limited login
+        run: |
+          db=$(docker compose -f deploy/runtime/compose.yaml --env-file .env.runtime ps -q db)
+          docker run --rm --network container:$db -v "$PWD":/app -w /app -e NODE_ENV=test -e APP_DATABASE_URL=postgres://elesend_app:apppassword456@127.0.0.1:5432/elesend -e OWNER_DATABASE_URL=postgres://elesend:drillpassword123@127.0.0.1:5432/elesend node:22 node scripts/ci/limited-login-check.mjs
       - name: Load test against the production settings
         run: |
           db=$(docker compose -f deploy/runtime/compose.yaml --env-file .env.runtime ps -q db)

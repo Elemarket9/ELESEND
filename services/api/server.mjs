@@ -1,5 +1,5 @@
 import {createPaymentProvider,paymentWebhook} from './modules/payments/index.mjs';
-import {assertRequiredSchema,assertPaymentOperations} from './startup-guards.mjs';
+import {assertRequiredSchema,assertPaymentOperations,assertLimitedDatabaseLogin} from './startup-guards.mjs';
 import {moneyOperations} from './modules/payments/index.mjs';
 import {database} from './db.mjs';
 import {platform} from './platform.mjs';
@@ -30,6 +30,7 @@ const config = loadConfig(process.env);
 const db = database(config.database.url, config.database.ssl);
 await db.query('SELECT 1');
 await assertRequiredSchema(db);
+await assertLimitedDatabaseLogin(db,{production:process.env.NODE_ENV==='production'});
 await reconcileAndEnforceWeeklyRestrictions(db).catch(e=>process.stderr.write(JSON.stringify({level:'warn',component:'weekly_settlement_boot',code:e.code??'internal'})+'\n'));
 
 // Only self-hosted OSRM is registered; paid routing keys cannot become a fallback.

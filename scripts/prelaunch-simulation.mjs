@@ -45,24 +45,27 @@ export async function bootSimulation(db,{port=0}={}){
   close:()=>new Promise(resolve=>{server.closeAllConnections?.();server.close(()=>resolve());})};
 }
 
-/** One delivery from booking to a rider offer, through the real API. */
+/** One delivery from booking to a rider offer, through the real API, on a fresh throwaway database. */
 export async function runLocalSimulation(){
- return withSimulationDatabase(async db=>{
-  const sim=await bootSimulation(db);
-  try{
-   const customer=await sim.participant('customer'),rider=await sim.participant('rider');
-   await db.query("UPDATE riders SET status='approved' WHERE id=$1",[rider.id]);
-   await db.query("UPDATE checkout_method_policies SET enabled=true WHERE method='MOMO'");
-   await sim.api('/api/v1/rider/availability',{token:rider.token,method:'POST',body:{online:true}});
-   await sim.api('/api/v1/rider/location',{token:rider.token,method:'POST',body:{latitude:5.6,longitude:-0.18,accuracyMeters:5,observedAt:new Date().toISOString()}});
-   const quote=await sim.api('/api/v1/quotes',{token:customer.token,method:'POST',body:{pickup:{address:'Simulated pickup, Accra',latitude:5.6,longitude:-0.18},destination:{address:'Simulated drop-off, Accra',latitude:5.61,longitude:-0.19},vehicle:'motorcycle',recipientPhone:simulationPhone(),weightG:1000,description:'SIMULATION ONLY parcel',paymentMethod:'MOMO'}});
-   const shipment=await sim.api('/api/v1/shipments',{token:customer.token,method:'POST',headers:{'Idempotency-Key':'sim-'+randomInt(1e9)},body:{quoteId:quote.id}});
-   const intent=await sim.api(`/api/v1/shipments/${shipment.id}/checkout`,{token:customer.token,method:'POST',body:{idempotencyKey:'sim-'+randomInt(1e9)}});
-   sim.boundary.paid(intent.reference);const signed=sim.boundary.callback(intent.reference);
-   await sim.api('/api/v1/payments/webhook',{method:'POST',headers:{'x-simulation-signature':signed.signature},body:signed.body});
-   await sim.dispatch.tick();
-   const offers=await sim.api('/api/v1/rider/offers',{token:rider.token});
-   return {SIMULATED_ONLY:true,shipmentId:shipment.id,amountMinor:quote.amount_minor??quote.amountMinor,paid:(await db.query('SELECT paid FROM shipments WHERE id=$1',[shipment.id])).rows[0].paid,riderOffers:offers.length};
-  }finally{await sim.close();}
- });
+ return withSimulationDatabase(simulateOneDelivery);
+}
+
+/** The same delivery on a database you provide (used to prove the API works under its limited database login). */
+export async function simulateOneDelivery(db){
+ const sim=await bootSimulation(db);
+ try{
+  const customer=await sim.participant('customer'),rider=await sim.participant('rider');
+  await db.query("UPDATE riders SET status='approved' WHERE id=$1",[rider.id]);
+  await db.query("UPDATE checkout_method_policies SET enabled=true WHERE method='MOMO'");
+  await sim.api('/api/v1/rider/availability',{token:rider.token,method:'POST',body:{online:true}});
+  await sim.api('/api/v1/rider/location',{token:rider.token,method:'POST',body:{latitude:5.6,longitude:-0.18,accuracyMeters:5,observedAt:new Date().toISOString()}});
+  const quote=await sim.api('/api/v1/quotes',{token:customer.token,method:'POST',body:{pickup:{address:'Simulated pickup, Accra',latitude:5.6,longitude:-0.18},destination:{address:'Simulated drop-off, Accra',latitude:5.61,longitude:-0.19},vehicle:'motorcycle',recipientPhone:simulationPhone(),weightG:1000,description:'SIMULATION ONLY parcel',paymentMethod:'MOMO'}});
+  const shipment=await sim.api('/api/v1/shipments',{token:customer.token,method:'POST',headers:{'Idempotency-Key':'sim-'+randomInt(1e9)},body:{quoteId:quote.id}});
+  const intent=await sim.api(`/api/v1/shipments/${shipment.id}/checkout`,{token:customer.token,method:'POST',body:{idempotencyKey:'sim-'+randomInt(1e9)}});
+  sim.boundary.paid(intent.reference);const signed=sim.boundary.callback(intent.reference);
+  await sim.api('/api/v1/payments/webhook',{method:'POST',headers:{'x-simulation-signature':signed.signature},body:signed.body});
+  await sim.dispatch.tick();
+  const offers=await sim.api('/api/v1/rider/offers',{token:rider.token});
+  return {SIMULATED_ONLY:true,shipmentId:shipment.id,amountMinor:quote.amount_minor??quote.amountMinor,paid:(await db.query('SELECT paid FROM shipments WHERE id=$1',[shipment.id])).rows[0].paid,riderOffers:offers.length};
+ }finally{await sim.close();}
 }
