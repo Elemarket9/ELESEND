@@ -18,7 +18,7 @@ async function evidenceFor(c,shipmentId){
     sender.phone AS sender_phone,rider.phone AS rider_phone,r.vehicle,v.registration_plate,v.make,v.model,v.color,
     l.legal_name,l.document_type,l.licence_class,l.expires_on::text AS document_expires_on,
     q.request->'pickup' AS pickup,q.request->'destination' AS destination,q.request->>'description' AS description,
-    (SELECT consumed_at FROM challenges ch WHERE ch.shipment_id=s.id AND ch.rider_id=s.rider_id AND ch.purpose='pickup' AND ch.consumed_at IS NOT NULL ORDER BY ch.consumed_at DESC LIMIT 1) AS picked_up_at,
+    COALESCE((SELECT confirmed_at FROM shipment_handover_events h WHERE h.shipment_id=s.id AND h.rider_id=s.rider_id AND h.kind='pickup' ORDER BY confirmed_at DESC LIMIT 1), (SELECT consumed_at FROM challenges ch WHERE ch.shipment_id=s.id AND ch.rider_id=s.rider_id AND ch.purpose='pickup' AND ch.consumed_at IS NOT NULL ORDER BY ch.consumed_at DESC LIMIT 1)) AS picked_up_at,
     ST_Y(r.current_position::geometry) AS last_latitude,ST_X(r.current_position::geometry) AS last_longitude,r.position_at AS last_position_at
    FROM shipments s JOIN users sender ON sender.id=s.customer_id JOIN users rider ON rider.id=s.rider_id JOIN riders r ON r.id=s.rider_id
    JOIN quotes q ON q.id=s.quote_id LEFT JOIN rider_vehicle_registrations v ON v.rider_id=s.rider_id LEFT JOIN rider_licences l ON l.rider_id=s.rider_id
@@ -30,7 +30,7 @@ export async function flagOverdueParcels(db,{limit=50,limitHours=custodyLimitHou
    WHERE s.state=ANY($1::text[]) AND s.rider_id IS NOT NULL
      AND NOT EXISTS(SELECT 1 FROM food_orders f WHERE f.shipment_id=s.id)
      AND NOT EXISTS(SELECT 1 FROM parcel_custody_incidents i WHERE i.shipment_id=s.id)
-     AND EXISTS(SELECT 1 FROM challenges ch WHERE ch.shipment_id=s.id AND ch.rider_id=s.rider_id AND ch.purpose='pickup' AND ch.consumed_at<now()-make_interval(hours=>$2))
+     AND (EXISTS(SELECT 1 FROM shipment_handover_events h WHERE h.shipment_id=s.id AND h.rider_id=s.rider_id AND h.kind='pickup' AND h.confirmed_at<now()-make_interval(hours=>$2)) OR EXISTS(SELECT 1 FROM challenges ch WHERE ch.shipment_id=s.id AND ch.rider_id=s.rider_id AND ch.purpose='pickup' AND ch.consumed_at<now()-make_interval(hours=>$2)))
    ORDER BY s.created_at LIMIT $3`,[IN_CUSTODY,limitHours,limit])).rows;
  const flagged=[];
  for(const {id:shipmentId} of due){
