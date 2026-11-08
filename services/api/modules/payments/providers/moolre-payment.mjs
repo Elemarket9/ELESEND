@@ -1,5 +1,5 @@
 import {timingSafeEqual} from 'node:crypto';
-import {check} from '../../../security.mjs';
+import {check,phone as canonicalGhanaPhone} from '../../../security.mjs';
 import {validatedCheckoutUrl} from '../checkout-policy.mjs';
 
 /**
@@ -12,7 +12,7 @@ const CHANNELS={MTN:'1',TELECEL:'6',AT:'7'};
 // Ghana's number prefixes. Refunds only: a ported number fails safely and goes to staff.
 const PREFIX_CHANNELS={'024':'1','025':'1','053':'1','054':'1','055':'1','059':'1','020':'6','050':'6','026':'7','027':'7','056':'7','057':'7'};
 const NOT_FOUND='SS07';
-const local=value=>{const digits=String(value??'').replace(/\D/g,'').slice(-9);return digits.length===9?'0'+digits:null;};
+const local=value=>{try{return '0'+canonicalGhanaPhone(value).slice(4);}catch{return null;}};
 const decimal=minor=>{check(Number.isSafeInteger(minor)&&minor>0,400,'Invalid amount');return `${Math.floor(minor/100)}.${String(minor%100).padStart(2,'0')}`;};
 /** Whole pesewas from provider text, without passing through floating point. */
 function pesewas(value){
