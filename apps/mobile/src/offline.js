@@ -59,30 +59,42 @@ export function createOfflineCache(store = nativeStore) {
       return true;
     },
     async readCachedJobs(actorId, now = Date.now()) {
-      const raw = await s.getItemAsync(`${KEY}.meta`);
-      if (!raw) return null;
-      const meta = JSON.parse(raw);
-      if (meta.actorId !== actorId || now - meta.savedAt > MAX_AGE_MS || meta.count < 1 || meta.count > MAX_SEGMENTS) return null;
-      let text = '';
-      for (let i = 0; i < meta.count; i++) {
-        const part = await s.getItemAsync(`${KEY}.${i}`);
-        if (!part) return null;
-        text += part;
+      try {
+        const raw = await s.getItemAsync(`${KEY}.meta`);
+        if (!raw) return null;
+        const meta = JSON.parse(raw);
+        if (!meta || typeof meta !== 'object' || meta.actorId !== actorId ||
+            !Number.isFinite(meta.savedAt) || !Number.isFinite(now) ||
+            meta.savedAt > now || now - meta.savedAt > MAX_AGE_MS ||
+            !Number.isInteger(meta.count) || meta.count < 1 || meta.count > MAX_SEGMENTS) return null;
+        let text = '';
+        for (let i = 0; i < meta.count; i++) {
+          const part = await s.getItemAsync(`${KEY}.${i}`);
+          if (typeof part !== 'string' || !part.length || part.length > SEGMENT_CHARS) return null;
+          text += part;
+        }
+        const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed !== 'object' ||
+            !Array.isArray(parsed.shipments) || !Array.isArray(parsed.stops)) return null;
+        const byId = new Map(parsed.shipments.map(sm => [sm.id, sm]));
+        const stops = parsed.stops.map(st => {
+          const sh = byId.get(st.shipmentId);
+          return {
+            ...st,
+            id: st.id || st.shipmentId,
+            state: st.state || sh?.state || 'RIDER_ASSIGNED',
+            payment_method: st.payment_method || sh?.payment_method || 'CASH',
+            pickup: st.pickup || (sh?.details?.pickup ? { address: sh.details.pickup } : undefined),
+            destination: st.destination || (sh?.details?.destination ? { address: sh.details.destination } : undefined)
+          };
+        });
+        return { ...parsed, stops, cachedAt: new Date(meta.savedAt).toISOString(), readOnly: true };
+      } catch {
+        // Damaged or unavailable secure storage must never crash the rider's offline screen.
+        // The cache is read-only; the server remains authoritative for assignments and money.
+        return null;
       }
-      const parsed = JSON.parse(text);
-      const byId = new Map((parsed.shipments || []).map(sm => [sm.id, sm]));
-      const stops = (parsed.stops || []).map(st => {
-        const sh = byId.get(st.shipmentId);
-        return {
-          ...st,
-          id: st.id || st.shipmentId,
-          state: st.state || sh?.state || 'RIDER_ASSIGNED',
-          payment_method: st.payment_method || sh?.payment_method || 'CASH',
-          pickup: st.pickup || (sh?.details?.pickup ? { address: sh.details.pickup } : undefined),
-          destination: st.destination || (sh?.details?.destination ? { address: sh.details.destination } : undefined)
-        };
-      });
-      return { ...parsed, stops, cachedAt: new Date(meta.savedAt).toISOString(), readOnly: true };
+
     }
   };
 }
@@ -103,8 +115,13 @@ export async function readCachedJobs(actorId, store, now) {
 
 // Only call after finding a locally saved session; this grants no network authority.
 export async function readLastCachedJobs() {
-  const raw=await nativeStore.getItemAsync(`${KEY}.meta`);
-  if(!raw)return null;
-  const meta=JSON.parse(raw);
-  return defaultCache.readCachedJobs(meta.actorId);
+  try {
+    const raw=await nativeStore.getItemAsync(`${KEY}.meta`);
+    if(!raw)return null;
+    const meta=JSON.parse(raw);
+    if(typeof meta?.actorId!=='string'||!meta.actorId)return null;
+    return await defaultCache.readCachedJobs(meta.actorId);
+  } catch {
+    return null;
+  }
 }
