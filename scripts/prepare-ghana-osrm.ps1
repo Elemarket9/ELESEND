@@ -14,9 +14,16 @@ if($LASTEXITCODE -ne 0){throw "Docker image $image is not available; pull it fir
 
 function Build-Graph([string]$ProfileLua, [string]$GraphBase) {
   $targetFile=Join-Path $data "$GraphBase.osrm"
-  if(Test-Path -LiteralPath $targetFile){
-    Write-Output "Graph $targetFile exists. Skipping rebuild."
+  $marker=Join-Path $data "$GraphBase.osrm.build.json"
+  $profileKind=if($GraphBase -eq 'ghana-latest'){'car'}else{'motorcycle'}
+  $validator=Join-Path $PSScriptRoot 'map-artifact-integrity.mjs'
+  if(Test-Path -LiteralPath $marker){
+    & node $validator verify-osrm $data $GraphBase $profileKind
+    if($LASTEXITCODE -ne 0){throw "Existing $GraphBase OSRM graph failed validation"}
     return
+  }
+  if((Test-Path -LiteralPath $targetFile) -or (Test-Path -LiteralPath ($targetFile+'.partition'))){
+    throw "Incomplete/unverified $GraphBase graph: preserve and remove old .osrm* files before rebuilding"
   }
   Write-Output "Extracting $GraphBase with $ProfileLua..."
   # OSRM names its output after the input, so extract from a copy to keep other graphs intact.
@@ -28,7 +35,9 @@ function Build-Graph([string]$ProfileLua, [string]$GraphBase) {
   if($LASTEXITCODE -ne 0){throw "OSRM partition for $GraphBase failed"}
   & docker.exe run --rm --network none --mount $mount $image osrm-customize "/data/$GraphBase.osrm"
   if($LASTEXITCODE -ne 0){throw "OSRM customization for $GraphBase failed"}
-  Write-Output "Graph $GraphBase successfully generated."
+  & node $validator record-osrm $data $GraphBase $profileKind
+  if($LASTEXITCODE -ne 0){throw "Generated $GraphBase graph could not be validated"}
+  Write-Output "Graph $GraphBase generated and structurally verified."
 }
 
 if($Vehicle -eq 'all' -or $Vehicle -eq 'car'){
