@@ -811,7 +811,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   });check(false,503,'We could not send the code by SMS. Try again in a minute. ELESEND support has been alerted.');}
   return {challengeId:cid,expiresInSeconds:300};
  },
- // The customer fixes a mistyped recipient number before handover. Any unused delivery code is cancelled so it cannot reach the old number.
+ // The customer may correct a recipient number before pickup. Invalidate any historical unused legacy SMS challenges.
  async correctRecipient(actor,sid,input){const v=z.object({recipientPhone:z.string().max(30)}).strict().parse(input);const p=phone(v.recipientPhone);
   return db.tx(async c=>{const s=await locked(c,sid);check(s.customer_id===actor.id,404,'Shipment not found');
    check(['AWAITING_PAYMENT','AWAITING_ASSIGNMENT','RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state),409,'The recipient can no longer be changed for this delivery');
@@ -966,7 +966,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   await this.get(actor,sid);
   return db.tx(async c=>{
    await locked(c,sid);
-   // Delivery confirmed by SMS, or a failed delivery the sender pays for, is never refunded.
+   // Finished deliveries are subject to the existing refund policy; a rider report is not recipient proof.
    const refundClaim=['lost','damaged','missing_items','quality','payment'].includes(v.category)||v.items?.length||v.requestedRefundMinor;
    const finished=(await c.query("SELECT state,EXISTS(SELECT 1 FROM food_orders f WHERE f.shipment_id=s.id) AS food FROM shipments s WHERE s.id=$1 AND s.state IN ('COMPLETED','FAILED','RETURN_REQUESTED','RETURNED')",[sid])).rows[0];
    if(refundClaim&&finished?.food&&finished.state==='COMPLETED')check(false,409,'Delivered food orders are handled by the restaurant. Please chat with the restaurant from your order');
