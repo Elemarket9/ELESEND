@@ -7,11 +7,14 @@ test -f "$task_data/ghana-latest.osm.pbf"
 test -f "$task_data/ghana-source.json"
 node --input-type=module -e '
 import fs from "node:fs";
+import {createReadStream} from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 const directory=process.argv[1];
 const metadata=JSON.parse(fs.readFileSync(path.join(directory,"ghana-source.json")));
-const hash=crypto.createHash("sha256").update(fs.readFileSync(path.join(directory,"ghana-latest.osm.pbf"))).digest("hex");
+const sha=crypto.createHash("sha256");
+for await(const chunk of createReadStream(path.join(directory,"ghana-latest.osm.pbf")))sha.update(chunk);
+const hash=sha.digest("hex");
 if(hash!==metadata.sha256)throw Error("Ghana source checksum mismatch");
 ' "$task_data"
 
