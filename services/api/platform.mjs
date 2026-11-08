@@ -51,7 +51,7 @@ export function hideEndedContacts(actor,s){
 const registration=z.object({phone:z.string().max(30),termsVersion:z.string().trim().min(1).max(40).optional(),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
 const address=z.object({address:z.string().min(5).max(400),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict();
 const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(['motorcycle','car','van']).optional(),recipientPhone:z.string().max(30),pickupPhone:z.string().max(30).optional(),weightG:z.number().int().min(1).max(10000000),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
-const allowLegacySmsHandover=process.env.NODE_ENV==='test'||process.env.HANDOVER_SMS_LEGACY_ENABLED==='true';
+const allowLegacySmsHandover=()=>process.env.HANDOVER_SMS_LEGACY_ENABLED==='true'||process.env.NODE_ENV==='test';
 const ACCOUNT_SMS_PER_NUMBER=5,ACCOUNT_SMS_BLOCK_SECONDS=900;
 /** Allows 5 account SMS per number per 15 minutes; the 6th attempt starts a full 15-minute block.
  * Call outside a transaction, so a failed request cannot roll the count back. */
@@ -742,7 +742,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   if(actor.kind==='company')return (await db.query(`${baseQuery} JOIN companies c ON c.id=s.company_id WHERE c.owner_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows.map(r=>hideEndedContacts(actor,r));
   await permission(db,actor,'shipments:read');return (await db.query(`${baseQuery} ORDER BY s.created_at DESC LIMIT 100`)).rows;
  },
- async challenge(actor,sid,purpose){check(allowLegacySmsHandover,410,'SMS handover verification is disabled; update the rider app');check(['pickup','delivery','return'].includes(purpose),400);check(sms,503,'SMS adapter unavailable');
+ async challenge(actor,sid,purpose){check(allowLegacySmsHandover(),410,'SMS handover verification is disabled; update the rider app');check(['pickup','delivery','return'].includes(purpose),400);check(sms,503,'SMS adapter unavailable');
   const code=newCode(),cid=id();
   const resolveChallengeRecipient=async c=>{
    const s=await locked(c,sid);
