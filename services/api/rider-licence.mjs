@@ -1,6 +1,7 @@
 /**
- * No rider is approved without identity on file: a driver's licence for motor vehicles, or a Ghana Card for
- * bicycles. The document number is encrypted, with a keyed hash so one licence cannot back two accounts.
+ * No independent rider is approved without identity on file: a Ghana Card for everyone, plus a driver's licence
+ * for motor vehicles. Numbers are encrypted, with keyed hashes so one card or licence cannot back two accounts.
+ * Riders who work for a rider supply company are checked by that company instead (see company.mjs).
  */
 import {createHmac,hkdfSync} from 'node:crypto';
 import {requirePermission} from './permissions.mjs';
@@ -25,10 +26,21 @@ const numberHash=number=>createHmac('sha256',secretKey()).update('elesend:rider-
 const numberContext=riderId=>'elesend:rider-licence:v1:'+riderId;
 const encryptNumber=(number,riderId)=>seal(secretKey(),numberContext(riderId),number);
 const decryptNumber=(value,riderId)=>unseal(secretKey(),numberContext(riderId),value).toString('utf8');
+// Ghana Card personal ID number: GHA-123456789-0. Spaces and missing hyphens are accepted and tidied.
+export function normalizeGhanaCard(value){
+ const compact=String(value??'').toUpperCase().replace(/[\s-]/g,'');
+ check(/^GHA\d{10}$/.test(compact),400,'Enter your Ghana Card number as shown on the card, like GHA-123456789-0');
+ return `GHA-${compact.slice(3,12)}-${compact.slice(12)}`;
+}
+const cardHash=card=>createHmac('sha256',secretKey()).update('elesend:ghana-card:'+card).digest('hex');
+const cardContext=riderId=>'elesend:ghana-card:v1:'+riderId;
+const encryptCard=(card,riderId)=>seal(secretKey(),cardContext(riderId),card);
+const decryptCard=(value,riderId)=>unseal(secretKey(),cardContext(riderId),value).toString('utf8');
 const ghanaToday=()=>new Date().toISOString().slice(0,10);
 const schema=z.object({
  legalName:z.string().trim().min(3).max(120),
- licenceNumber:z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9 /-]{3,39}$/),
+ ghanaCardNumber:z.string().trim().min(10).max(20),
+ licenceNumber:z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9 /-]{3,39}$/).optional(),
  licenceClass:z.string().trim().regex(/^[A-Za-z0-9]{1,4}$/).optional(),
  expiresOn:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
  vehiclePlate:z.string().trim().min(3).max(20).optional()
@@ -37,9 +49,12 @@ const schema=z.object({
 export async function riderLicenceStatus(db,actor){
  check(actor?.kind==='rider',403,'Rider account required');
  if(identityConfigured())await syncIdentityCheck(db,actor.id).catch(()=>{});
- const row=(await db.query('SELECT document_type,legal_name,licence_class,expires_on::text AS expires_on,status,rejection_reason,valid_until::text AS valid_until,identity_status,identity_reason FROM rider_licences WHERE rider_id=$1',[actor.id])).rows[0];
+ const company=(await db.query('SELECT c.name FROM riders r JOIN companies c ON c.id=r.company_id WHERE r.id=$1',[actor.id])).rows[0];
+ const row=(await db.query('SELECT document_type,legal_name,licence_class,expires_on::text AS expires_on,status,rejection_reason,valid_until::text AS valid_until,identity_status,identity_reason,ghana_card_hash IS NOT NULL AS ghana_card_on_file FROM rider_licences WHERE rider_id=$1',[actor.id])).rows[0];
+ // Company riders are checked by their company, so ELESEND does not ask them for a Ghana Card or licence.
+ if(company&&!row)return {status:'not_required',companyName:company.name,identityAvailable:false};
  if(!row)return {status:'missing',identityAvailable:identityConfigured()};
- return {status:row.status,identityAvailable:identityConfigured(),identityStatus:row.identity_status,identityReason:row.identity_reason,documentType:row.document_type,legalName:row.legal_name,licenceClass:row.licence_class,expiresOn:row.expires_on,vehiclePlate:await vehiclePlateFor(db,actor.id),rejectionReason:row.rejection_reason,validUntil:row.valid_until};
+ return {status:row.status,companyName:company?.name??null,ghanaCardOnFile:row.ghana_card_on_file,identityAvailable:identityConfigured(),identityStatus:row.identity_status,identityReason:row.identity_reason,documentType:row.document_type,legalName:row.legal_name,licenceClass:row.licence_class,expiresOn:row.expires_on,vehiclePlate:await vehiclePlateFor(db,actor.id),rejectionReason:row.rejection_reason,validUntil:row.valid_until};
 }
 export async function submitRiderLicence(db,actor,input){
  check(actor?.kind==='rider',403,'Rider account required');
@@ -49,27 +64,53 @@ export async function submitRiderLicence(db,actor,input){
   const rider=(await c.query('SELECT vehicle FROM riders WHERE id=$1 FOR UPDATE',[actor.id])).rows[0];
   check(rider,403,'Rider account required');
   const bicycle=rider.vehicle==='bicycle';
+  const card=normalizeGhanaCard(v.ghanaCardNumber);
   if(!bicycle){
+   check(v.licenceNumber,400,'Driver\'s licence number required');
    check(v.licenceClass,400,'Licence class required');
    // The plate lives only in the vehicle record, so a rider who already gave it is not asked again.
    if(v.vehiclePlate)await saveVehiclePlate(c,actor.id,rider.vehicle,v.vehiclePlate);
    check(await vehiclePlateFor(c,actor.id),400,'Vehicle plate number required');
   }
-  const hash=numberHash(v.licenceNumber);
+  // Bicycle riders need no licence, so their Ghana Card is the main document.
+  const number=bicycle?card:v.licenceNumber;
+  const hash=numberHash(number),ghanaHash=cardHash(card);
   check(!(await c.query('SELECT 1 FROM rider_licences WHERE number_hash=$1 AND rider_id<>$2',[hash,actor.id])).rowCount,409,'This document is already linked to another rider');
-  await c.query(`INSERT INTO rider_licences(rider_id,document_type,legal_name,number_encrypted,number_hash,licence_class,expires_on)
-    VALUES($1,$2,$3,$4,$5,$6,$7)
-    ON CONFLICT(rider_id) DO UPDATE SET document_type=excluded.document_type,legal_name=excluded.legal_name,number_encrypted=excluded.number_encrypted,number_hash=excluded.number_hash,
+  check(!(await c.query('SELECT 1 FROM rider_licences WHERE ghana_card_hash=$1 AND rider_id<>$2',[ghanaHash,actor.id])).rowCount,409,'This Ghana Card is already linked to another rider');
+  await c.query(`INSERT INTO rider_licences(rider_id,document_type,legal_name,number_encrypted,number_hash,licence_class,expires_on,ghana_card_encrypted,ghana_card_hash)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    ON CONFLICT(rider_id) DO UPDATE SET document_type=excluded.document_type,legal_name=excluded.legal_name,number_encrypted=excluded.number_encrypted,number_hash=excluded.number_hash,ghana_card_encrypted=excluded.ghana_card_encrypted,ghana_card_hash=excluded.ghana_card_hash,
      licence_class=excluded.licence_class,expires_on=excluded.expires_on,status='pending',rejection_reason=NULL,reviewed_by=NULL,reviewed_at=NULL,submitted_at=now(),identity_session_id=NULL,identity_status='not_started',identity_reason=NULL,identity_checked_at=NULL`,
-   [actor.id,bicycle?'ghana_card':'drivers_licence',v.legalName,encryptNumber(v.licenceNumber,actor.id),hash,v.licenceClass??null,v.expiresOn]);
+   [actor.id,bicycle?'ghana_card':'drivers_licence',v.legalName,encryptNumber(number,actor.id),hash,bicycle?null:v.licenceClass??null,v.expiresOn,encryptCard(card,actor.id),ghanaHash]);
   await c.query("INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,'rider.licence_submitted',$1)",[actor.id]);
   return {status:'pending'};
  });
 }
+const profileSchema=z.object({displayName:z.string().trim().min(2).max(60).optional(),vehiclePlate:z.string().trim().min(3).max(20).optional()}).strict();
+/** Name customers see and the plate they check at the door. A plate is fixed once approved, so it cannot be swapped quietly. */
+export async function saveRiderProfile(db,actor,input){
+ check(actor?.kind==='rider',403,'Rider account required');
+ const v=profileSchema.parse(input);
+ return db.tx(async c=>{
+  const rider=(await c.query('SELECT vehicle,status FROM riders WHERE id=$1 FOR UPDATE',[actor.id])).rows[0];
+  check(rider,403,'Rider account required');
+  if(v.displayName)await c.query('UPDATE riders SET display_name=$2 WHERE id=$1',[actor.id,v.displayName]);
+  if(v.vehiclePlate){
+   check(rider.vehicle!=='bicycle',400,'Bicycles have no number plate');
+   const current=await vehiclePlateFor(c,actor.id),next=v.vehiclePlate.toUpperCase().replace(/\s+/g,' ').trim();
+   check(rider.status!=='approved'||current===next,409,'Your plate is already approved. Ask ELESEND support or your company to change it');
+   await saveVehiclePlate(c,actor.id,rider.vehicle,v.vehiclePlate);
+  }
+  await c.query("INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,'rider.profile_saved',$1)",[actor.id]);
+  const row=(await c.query('SELECT display_name FROM riders WHERE id=$1',[actor.id])).rows[0];
+  return {displayName:row.display_name,vehiclePlate:await vehiclePlateFor(c,actor.id)};
+ });
+}
 /** Called inside rider approval: the approval fails unless a current document is on file. */
 export async function approveRiderLicence(c,riderId,reviewerId){
- const row=(await c.query('SELECT status,expires_on::text AS expires_on,identity_status FROM rider_licences WHERE rider_id=$1 FOR UPDATE',[riderId])).rows[0];
+ const row=(await c.query('SELECT status,expires_on::text AS expires_on,identity_status,ghana_card_hash FROM rider_licences WHERE rider_id=$1 FOR UPDATE',[riderId])).rows[0];
  check(row,409,'This rider has not submitted a licence');
+ check(row.ghana_card_hash,409,'This rider has not given their Ghana Card number');
  check(row.status!=='rejected',409,'This rider\'s licence was rejected. They must submit it again');
  check(row.expires_on>=ghanaToday(),409,'This rider\'s licence has expired');
  // Without a provider, staff check the licence photo uploaded with the rider's documents.
@@ -99,14 +140,14 @@ export async function suspendExpiredLicences(db){
 export async function attachLicences(db,actor,rows,idField='id'){
  const ids=rows.map(r=>r[idField]).filter(Boolean);
  if(!ids.length)return rows;
- const licences=(await db.query('SELECT l.rider_id,l.document_type,l.legal_name,l.number_encrypted,l.licence_class,l.expires_on::text AS expires_on,v.registration_plate AS vehicle_plate,l.status,l.rejection_reason,l.identity_status,l.identity_reason FROM rider_licences l LEFT JOIN rider_vehicle_registrations v ON v.rider_id=l.rider_id WHERE l.rider_id=ANY($1::uuid[])',[ids])).rows;
+ const licences=(await db.query('SELECT l.rider_id,l.document_type,l.legal_name,l.number_encrypted,l.ghana_card_encrypted,l.licence_class,l.expires_on::text AS expires_on,v.registration_plate AS vehicle_plate,l.status,l.rejection_reason,l.identity_status,l.identity_reason FROM rider_licences l LEFT JOIN rider_vehicle_registrations v ON v.rider_id=l.rider_id WHERE l.rider_id=ANY($1::uuid[])',[ids])).rows;
  const byRider=new Map(licences.map(l=>[l.rider_id,l]));
  await db.query("INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,'rider.licence_numbers_viewed',$1)",[actor.id]);
  return rows.map(r=>{
   const l=byRider.get(r[idField]);
   if(!l)return {...r,licence:null};
-  const {number_encrypted,...visible}=l;
-  return {...r,licence:{...visible,number:decryptNumber(number_encrypted,l.rider_id)}};
+  const {number_encrypted,ghana_card_encrypted,...visible}=l;
+  return {...r,licence:{...visible,number:decryptNumber(number_encrypted,l.rider_id),ghanaCard:ghana_card_encrypted?decryptCard(ghana_card_encrypted,l.rider_id):null}};
  });
 }
 

@@ -3,6 +3,8 @@ import {z} from 'zod';
 import {check,hash,newToken,phone as normalPhone} from './security.mjs';
 import {companyBalance} from './modules/payments/index.mjs';
 import {queueNotification} from './notifications.mjs';
+import {approveRiderDocuments,riderPhotoFor} from './rider-documents.mjs';
+import {approveVehicleRecord,vehiclePlateFor} from './vehicle.mjs';
 
 const uuid=z.string().uuid();
 const SERVICES=['delivery','riders'];
@@ -49,7 +51,7 @@ export function companyService(db){return {
   const phone=normalPhone(v.phone);
   await db.tx(async c=>{
    const co=await approvedFor(c,actor,'riders');
-   const rider=(await c.query("SELECT r.id FROM riders r JOIN users u ON u.id=r.id WHERE u.phone=$1 AND r.status='approved' AND r.company_id IS NULL FOR UPDATE OF r",[phone])).rows[0];
+   const rider=(await c.query("SELECT r.id FROM riders r JOIN users u ON u.id=r.id WHERE u.phone=$1 AND r.status IN ('approved','pending') AND r.company_id IS NULL FOR UPDATE OF r",[phone])).rows[0];
    if(!rider)return;
    const open=(await c.query("UPDATE rider_invitations SET expires_at=now()+interval '48 hours' WHERE company_id=$1 AND rider_id=$2 AND status='pending' RETURNING id",[co.id,rider.id])).rows[0];
    if(open)return;
@@ -59,7 +61,7 @@ export function companyService(db){return {
    await audit(c,actor,'company.rider_invited',rider.id);
    await queueNotification(c,{id:`company-invite:${id}`,recipientId:rider.id,kind:'company_invitation',payload:{invitationId:id,message:`${co.name} has invited you to ride for them. Open the Rider app to answer.`}});
   });
-  return {ok:true,message:'If this number belongs to an approved independent rider, they will see your invitation in their app for 48 hours.'};
+  return {ok:true,message:'If this number has an ELESEND rider account, they will see your invitation in their app for 48 hours. New riders can sign up first, then accept.'};
  },
  async invitations(actor){
   const co=await approvedFor(db,actor,'riders');
@@ -74,6 +76,37 @@ export function companyService(db){return {
    await audit(c,actor,'company.invitation_revoked',id);
    return {ok:true};
   });
+ },
+ /**
+  * The company vouches for its own rider: no Ghana Card or licence check by ELESEND. The rider still needs a
+  * clear profile photo and, for motor vehicles, a plate, because customers check both at the door.
+  */
+ async approveRider(actor,riderId){
+  uuid.parse(riderId);
+  return db.tx(async c=>{
+   const co=await approvedFor(c,actor,'riders');
+   const r=(await c.query('SELECT r.id,r.status,r.vehicle,r.display_name FROM riders r WHERE r.id=$1 AND r.company_id=$2 FOR UPDATE',[riderId,co.id])).rows[0];
+   check(r,404,'Company rider not found');
+   check(r.status==='pending',409,r.status==='approved'?'This rider is already approved':'ELESEND has stopped this rider. Contact ELESEND support');
+   check(r.display_name,409,'This rider has not added their name');
+   if(r.vehicle!=='bicycle')check(await vehiclePlateFor(c,r.id),409,'This rider has not added their number plate');
+   await approveRiderDocuments(c,r.id,actor.id,{companyRider:true});
+   await approveVehicleRecord(c,r.id,actor.id);
+   await c.query("UPDATE riders SET status='approved',verified_by_company_id=$2 WHERE id=$1",[r.id,co.id]);
+   await audit(c,actor,'company.rider_approved',r.id);
+   await queueNotification(c,{id:`company-approved:${r.id}:${Date.now()}`,recipientId:r.id,kind:'account_approved',payload:{message:`${co.name} has approved you. You can go online in the Rider app.`}});
+   return {status:'approved'};
+  });
+ },
+ /** The company compares the photo with the person before approving them. */
+ async riderPhoto(actor,riderId){
+  uuid.parse(riderId);
+  const co=await approvedFor(db,actor,'riders');
+  check((await db.query('SELECT 1 FROM riders WHERE id=$1 AND company_id=$2',[riderId,co.id])).rowCount,404,'Company rider not found');
+  const imageBase64=await riderPhotoFor(db,riderId,{approvedOnly:false});
+  check(imageBase64,404,'This rider has not uploaded a profile photo');
+  await audit(db,actor,'company.rider_photo_viewed',riderId);
+  return {imageBase64};
  },
  async riderInvitations(actor){
   check(actor.kind==='rider',403);

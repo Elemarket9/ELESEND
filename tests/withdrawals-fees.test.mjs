@@ -342,15 +342,21 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const reviewer={id:investigator,kind:'admin'},applicantActor={id:applicant,kind:'rider'};
   await assert.rejects(app.approve(reviewer,'riders',applicant,'approved'),/not submitted a licence/);
   const nextYear=`${new Date().getUTCFullYear()+1}-01-31`;
-  const licenceForm={legalName:'Kofi Mensah',licenceNumber:'GH-12345678',licenceClass:'A',expiresOn:nextYear,vehiclePlate:'GR 1234-26'};
+  const licenceForm={legalName:'Kofi Mensah',ghanaCardNumber:'GHA-123456789-0',licenceNumber:'GH-12345678',licenceClass:'A',expiresOn:nextYear,vehiclePlate:'GR 1234-26'};
+  // Independent riders need a Ghana Card in the right format, and one card cannot back two accounts.
+  await assert.rejects(submitRiderLicence(db,applicantActor,{...licenceForm,ghanaCardNumber:undefined}));
+  await assert.rejects(submitRiderLicence(db,applicantActor,{...licenceForm,ghanaCardNumber:'123456789'}),/Ghana Card number/);
   await assert.rejects(submitRiderLicence(db,applicantActor,{...licenceForm,expiresOn:'2020-01-01'}),/expired/);
   await assert.rejects(submitRiderLicence(db,applicantActor,{...licenceForm,vehiclePlate:undefined}),/plate/);
   assert.equal((await submitRiderLicence(db,applicantActor,licenceForm)).status,'pending');
-  await assert.rejects(submitRiderLicence(db,{id:other_applicant,kind:'rider'},{...licenceForm,licenceNumber:'gh 12345678'}),/another rider/);
+  await assert.rejects(submitRiderLicence(db,{id:other_applicant,kind:'rider'},{...licenceForm,licenceNumber:'gh 12345678',ghanaCardNumber:'GHA-111111111-1'}),/another rider/);
+  await assert.rejects(submitRiderLicence(db,{id:other_applicant,kind:'rider'},{...licenceForm,licenceNumber:'GH-55555555',ghanaCardNumber:'gha 123456789 0'}),/Ghana Card is already linked/);
   const stored=(await db.query('SELECT number_encrypted FROM rider_licences WHERE rider_id=$1',[applicant])).rows[0];
   assert.ok(!stored.number_encrypted.includes('12345678'));
   const shown=await attachLicences(db,reviewer,[{id:applicant}]);
   assert.equal(shown[0].licence.number,'GH-12345678');assert.equal(shown[0].licence.number_encrypted,undefined);
+  assert.equal(shown[0].licence.ghanaCard,'GHA-123456789-0');assert.equal(shown[0].licence.ghana_card_encrypted,undefined);
+  assert.ok(!(await db.query('SELECT ghana_card_encrypted FROM rider_licences WHERE rider_id=$1',[applicant])).rows[0].ghana_card_encrypted.includes('123456789'));
   assert.equal((await rejectRiderLicence(db,reviewer,applicant,{reason:'Number is not readable'})).status,'rejected');
   await assert.rejects(app.approve(reviewer,'riders',applicant,'approved'),/rejected/);
   await submitRiderLicence(db,applicantActor,licenceForm);
@@ -361,6 +367,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
    const token=(await createDocumentUploadLink(db,{id:rider,kind:'rider'})).path.split('#')[1];
    await uploadRiderDocument(db,{token,kind:'profile_photo',imageBase64:jpeg});
    await uploadRiderDocument(db,{token,kind:'licence_photo',imageBase64:jpeg});
+   await uploadRiderDocument(db,{token,kind:'ghana_card_photo',imageBase64:jpeg});
    await uploadRiderDocument(db,{token,kind:'insurance',imageBase64:jpeg,expiresOn:nextYear});
    await uploadRiderDocument(db,{token,kind:'roadworthiness',imageBase64:jpeg,expiresOn:nextYear});
    return token;
@@ -371,7 +378,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await assert.rejects(uploadRiderDocument(db,{token:uploadToken,kind:'profile_photo',imageBase64:Buffer.alloc(200,65).toString('base64')}),/upload a photo/);
   await assert.rejects(uploadRiderDocument(db,{token:uploadToken,kind:'insurance',imageBase64:jpeg,expiresOn:'2020-01-01'}),/expiry/);
   await uploadAll(applicant);
-  assert.equal((await riderDocumentStatus(db,applicantActor)).documents.length,4);
+  assert.deepEqual((await riderDocumentStatus(db,applicantActor)).documents.map(d=>d.kind),['profile_photo','licence_photo','ghana_card_photo','insurance','roadworthiness']);
   assert.ok(!(await db.query("SELECT data_encrypted FROM rider_documents WHERE rider_id=$1 AND kind='insurance'",[applicant])).rows[0].data_encrypted.includes(jpeg.slice(0,40)));
   assert.equal((await viewRiderDocument(db,reviewer,applicant,'insurance')).imageBase64,jpeg);
   await assert.rejects(viewRiderDocument(db,{id:customer,kind:'customer'},applicant,'insurance'),/Permission/);
@@ -403,7 +410,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   let decisionBody;
   const didit=diditProvider({apiKey:'k',workflowId:'w',webhookSecret:'whsec',fetchImpl:async(url,options)=>({ok:true,status:200,json:async()=>options.method==='POST'?{session_id:sessionId,url:'https://verify.didit.me/session/x'}:decisionBody})});
   const decisionOf=(number,over={})=>({session_id:sessionId,vendor_data:selfie,status:'Approved',id_verifications:[{status:'Approved',document_type:"Driver's License",document_number:number,expiration_date:nextYear}],liveness_checks:[{status:'Approved'}],face_matches:[{status:'Approved'}],...over});
-  await submitRiderLicence(db,{id:selfie,kind:'rider'},{...licenceForm,licenceNumber:'GH-99999999'});
+  await submitRiderLicence(db,{id:selfie,kind:'rider'},{...licenceForm,licenceNumber:'GH-99999999',ghanaCardNumber:'GHA-999999999-9'});
   for(const [k,v] of [['DIDIT_API_KEY','k'],['DIDIT_WORKFLOW_ID','w'],['DIDIT_WEBHOOK_SECRET','whsec']])process.env[k]=v;
   try{
    await assert.rejects(app.approve(reviewer,'riders',selfie,'approved'),/photo and selfie/);

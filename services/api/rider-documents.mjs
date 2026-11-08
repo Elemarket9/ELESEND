@@ -10,7 +10,7 @@ import {check} from './security.mjs';
 import {identityConfigured} from './identity-verification.mjs';
 import {riderDataKey} from './rider-licence.mjs';
 
-const KINDS=['profile_photo','licence_photo','insurance','roadworthiness'];
+const KINDS=['profile_photo','licence_photo','ghana_card_photo','insurance','roadworthiness'];
 const EXPIRING=['insurance','roadworthiness'];
 const MAX_BYTES=2*1024*1024;
 const today=()=>new Date().toISOString().slice(0,10);
@@ -20,8 +20,10 @@ const imageContext=(riderId,kind)=>`elesend:rider-document:v1:${riderId}:${kind}
 const encryptImage=(image,riderId,kind)=>seal(key(),imageContext(riderId,kind),image);
 const decryptImage=(value,riderId,kind)=>unseal(key(),imageContext(riderId,kind),value);
 const requireVerifier=(c,actor)=>requirePermission(c,actor,'verification:write');
-// The identity provider photographs the licence when it is on. Otherwise staff review a photo here.
-const requiredKinds=vehicle=>KINDS.filter(kind=>(!EXPIRING.includes(kind)||vehicle!=='bicycle')&&(kind!=='licence_photo'||!identityConfigured()));
+// Every rider needs a profile photo, because customers see it. Company riders need only that: their company
+// checks the rest. Independent riders add their Ghana Card, and motor vehicle riders their licence and papers.
+// The identity provider photographs the licence when it is on; otherwise staff review a photo here.
+export const requiredKinds=(vehicle,{companyRider=false}={})=>companyRider?['profile_photo']:KINDS.filter(kind=>(!EXPIRING.includes(kind)||vehicle!=='bicycle')&&(kind!=='licence_photo'||(vehicle!=='bicycle'&&!identityConfigured())));
 
 export async function createDocumentUploadLink(db,actor){
  check(actor?.kind==='rider',403,'Rider account required');
@@ -51,25 +53,48 @@ export async function uploadRiderDocument(db,input){
  await db.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$1)',[link.rider_id,'rider.document_uploaded:'+v.kind]);
  return {status:'pending',kind:v.kind};
 }
+/** Which photos the upload page should ask this rider for. */
+export async function requiredDocumentsForLink(db,input){
+ const {token}=z.object({token:z.string().regex(/^[0-9a-f]{64}$/)}).strict().parse(input);
+ const rider=(await db.query('SELECT r.vehicle,r.company_id FROM rider_document_links l JOIN riders r ON r.id=l.rider_id WHERE l.token_hash=$1 AND l.expires_at>now()',[hashToken(token)])).rows[0];
+ check(rider,403,'This link has expired. Open it again from the rider app');
+ return {kinds:requiredKinds(rider.vehicle,{companyRider:!!rider.company_id})};
+}
 export async function riderDocumentStatus(db,actor){
  check(actor?.kind==='rider',403,'Rider account required');
- const rider=(await db.query('SELECT vehicle FROM riders WHERE id=$1',[actor.id])).rows[0];
+ const rider=(await db.query('SELECT r.vehicle,r.company_id,r.display_name,c.name AS company_name,vr.registration_plate FROM riders r LEFT JOIN companies c ON c.id=r.company_id LEFT JOIN rider_vehicle_registrations vr ON vr.rider_id=r.id WHERE r.id=$1',[actor.id])).rows[0];
  check(rider,403,'Rider account required');
  const rows=(await db.query('SELECT kind,status,expires_on::text AS expires_on,rejection_reason FROM rider_documents WHERE rider_id=$1',[actor.id])).rows;
- return {documents:requiredKinds(rider.vehicle).map(kind=>{const d=rows.find(r=>r.kind===kind);return {kind,status:d?.status??'missing',expiresOn:d?.expires_on??null,rejectionReason:d?.rejection_reason??null};})};
+ return {companyName:rider.company_name??null,displayName:rider.display_name,vehicle:rider.vehicle,vehiclePlate:rider.registration_plate,documents:requiredKinds(rider.vehicle,{companyRider:!!rider.company_id}).map(kind=>{const d=rows.find(r=>r.kind===kind);return {kind,status:d?.status??'missing',expiresOn:d?.expires_on??null,rejectionReason:d?.rejection_reason??null};})};
 }
-/** Called inside rider approval, alongside the licence check. */
-export async function approveRiderDocuments(c,riderId,reviewerId){
+/** Called inside rider approval, alongside the licence check. Company approval checks only the profile photo. */
+export async function approveRiderDocuments(c,riderId,reviewerId,{companyRider=false}={}){
  const rider=(await c.query('SELECT vehicle FROM riders WHERE id=$1',[riderId])).rows[0];
  check(rider,404,'Rider not found');
  const rows=(await c.query('SELECT kind,status,expires_on::text AS expires_on FROM rider_documents WHERE rider_id=$1 FOR UPDATE',[riderId])).rows;
- for(const kind of requiredKinds(rider.vehicle)){
-  const d=rows.find(r=>r.kind===kind),label=kind.replace('_',' ');
+ const kinds=requiredKinds(rider.vehicle,{companyRider});
+ for(const kind of kinds){
+  const d=rows.find(r=>r.kind===kind),label=kind.replaceAll('_',' ');
   check(d,409,`This rider has not uploaded their ${label}`);
   check(d.status!=='rejected',409,`This rider's ${label} was rejected. They must upload it again`);
   check(!d.expires_on||d.expires_on>=today(),409,`This rider's ${label} has expired`);
  }
- await c.query("UPDATE rider_documents SET status='approved',valid_until=expires_on,reviewed_by=$2,reviewed_at=now() WHERE rider_id=$1",[riderId,reviewerId]);
+ await c.query("UPDATE rider_documents SET status='approved',valid_until=expires_on,reviewed_by=$2,reviewed_at=now() WHERE rider_id=$1 AND kind=ANY($3::text[])",[riderId,reviewerId,kinds]);
+}
+const firstName=name=>String(name||'').trim().split(/\s+/)[0]||null;
+/** What a customer checks at the door, as ride apps show it: first name, plate, vehicle, and who checked the rider. */
+export async function riderCard(db,riderId){
+ const r=(await db.query(`SELECT r.vehicle,r.display_name,l.legal_name,v.registration_plate,v.make,v.model,v.color,c.name AS company_name,
+   EXISTS(SELECT 1 FROM rider_documents d WHERE d.rider_id=r.id AND d.kind='profile_photo' AND d.status='approved') AS has_photo
+   FROM riders r LEFT JOIN rider_licences l ON l.rider_id=r.id LEFT JOIN rider_vehicle_registrations v ON v.rider_id=r.id LEFT JOIN companies c ON c.id=r.verified_by_company_id WHERE r.id=$1`,[riderId])).rows[0];
+ if(!r)return null;
+ return {firstName:firstName(r.display_name)||firstName(r.legal_name),vehicle:r.vehicle||'motorcycle',plate:r.registration_plate||null,make:r.make||null,model:r.model||null,color:r.color||null,
+  hasPhoto:r.has_photo,verifiedBy:r.company_name?'company':'elesend',companyName:r.company_name||null};
+}
+/** The approved profile photo, for the customer whose delivery this rider is carrying. */
+export async function riderPhotoFor(db,riderId,{approvedOnly=true}={}){
+ const d=(await db.query(`SELECT data_encrypted FROM rider_documents WHERE rider_id=$1 AND kind='profile_photo'${approvedOnly?" AND status='approved'":" AND status<>'rejected'"}`,[riderId])).rows[0];
+ return d?decryptImage(d.data_encrypted,riderId,'profile_photo').toString('base64'):null;
 }
 export async function rejectRiderDocument(db,actor,riderId,kind,input){
  z.string().uuid().parse(riderId);z.enum(KINDS).parse(kind);
@@ -111,14 +136,15 @@ export function renderDocumentUploadPage({includeLicencePhoto=!identityConfigure
 <h1>Rider documents</h1><p>Take clear photos where all the writing can be read.</p><div id="forms"></div>
 <script>
 var token=location.hash.slice(1);history.replaceState(null,'',location.pathname);
-var docs=[['profile_photo','Profile photo','user',false],${includeLicencePhoto?"['licence_photo','Licence or Ghana Card photo','environment',false],":''}['insurance','Insurance certificate','environment',true],['roadworthiness','Roadworthiness certificate','environment',true]];
+var docs=[['profile_photo','Profile photo (customers see this, so show your face clearly)','user',false],['ghana_card_photo','Ghana Card, front side','environment',false],${includeLicencePhoto?"['licence_photo','Driver\\'s licence','environment',false],":''}['insurance','Insurance certificate','environment',true],['roadworthiness','Roadworthiness certificate','environment',true]];
 function shrink(file){return new Promise(function(ok,no){var r=new FileReader();r.onerror=no;r.onload=function(){var i=new Image();i.onerror=no;i.onload=function(){var s=Math.min(1,1600/Math.max(i.width,i.height));var c=document.createElement('canvas');c.width=Math.round(i.width*s);c.height=Math.round(i.height*s);c.getContext('2d').drawImage(i,0,0,c.width,c.height);ok(c.toDataURL('image/jpeg',0.8).split(',')[1]);};i.src=r.result;};r.readAsDataURL(file);});}
-docs.forEach(function(d){var f=document.createElement('section');var h=document.createElement('h2');h.textContent=d[1];f.appendChild(h);
+function build(d){var f=document.createElement('section');var h=document.createElement('h2');h.textContent=d[1];f.appendChild(h);
 var inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.setAttribute('capture',d[2]);f.appendChild(inp);var date;
 if(d[3]){var l=document.createElement('label');l.textContent='Expiry date';f.appendChild(l);date=document.createElement('input');date.type='date';f.appendChild(date);}
 var b=document.createElement('button');b.type='button';b.textContent='Upload';f.appendChild(b);var s=document.createElement('p');s.className='s';f.appendChild(s);
 b.onclick=function(){if(!inp.files[0]){s.textContent='Choose a photo first.';return;}if(d[3]&&!date.value){s.textContent='Enter the expiry date.';return;}b.disabled=true;s.textContent='Uploading...';
 shrink(inp.files[0]).then(function(image){var body={token:token,kind:d[0],imageBase64:image};if(d[3])body.expiresOn=date.value;return fetch('/api/v1/rider-documents/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}).then(function(res){return res.json().then(function(j){s.textContent=res.ok?'Uploaded. Waiting for review.':(j.error||j.message||'Upload failed.');});}).catch(function(){s.textContent='Upload failed. Check your connection and try again.';}).finally(function(){b.disabled=false;});};
-document.getElementById('forms').appendChild(f);});
+document.getElementById('forms').appendChild(f);}
+fetch('/api/v1/rider-documents/required',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token})}).then(function(res){return res.ok?res.json():null;}).then(function(j){var need=j&&j.kinds;docs.filter(function(d){return !need||need.indexOf(d[0])>=0;}).forEach(build);}).catch(function(){docs.forEach(build);});
 </script></body></html>`;
 }

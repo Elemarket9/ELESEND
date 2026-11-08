@@ -16,13 +16,15 @@ export async function registerVehicleInTx(c,riderId,{vehicle,maxWeightG,car}){
  [riderId,type,v?.plateNumber.toUpperCase().replace(/\s+/g,' ').trim()??null,v?.make??null,v?.model??null,v?.color??null]);
 }
 const normalizePlate=plate=>plate.toUpperCase().replace(/\s+/g,' ').trim();
+// Ghana plates mix letters and digits, like GR 1234-26 or M-22-GR 1234. Customers check it at the door.
+export function validPlate(plate){const p=normalizePlate(String(plate??''));check(/^[A-Z0-9][A-Z0-9 -]{2,18}[A-Z0-9]$/.test(p)&&/[A-Z]/.test(p)&&/\d/.test(p),400,'Enter the number plate exactly as it appears on the vehicle');return p;}
 export async function vehiclePlateFor(c,riderId){
  return (await c.query('SELECT registration_plate FROM rider_vehicle_registrations WHERE rider_id=$1',[riderId])).rows[0]?.registration_plate??null;
 }
 /** A changed plate needs a fresh review. */
 export async function saveVehiclePlate(c,riderId,vehicle,plate){
  await c.query(`INSERT INTO rider_vehicle_registrations(rider_id,vehicle,registration_plate) VALUES($1,$2,$3)
-   ON CONFLICT(rider_id) DO UPDATE SET verification_status=CASE WHEN rider_vehicle_registrations.registration_plate IS DISTINCT FROM excluded.registration_plate THEN 'pending' ELSE rider_vehicle_registrations.verification_status END,registration_plate=excluded.registration_plate`,[riderId,vehicle,normalizePlate(plate)]);
+   ON CONFLICT(rider_id) DO UPDATE SET verification_status=CASE WHEN rider_vehicle_registrations.registration_plate IS DISTINCT FROM excluded.registration_plate THEN 'pending' ELSE rider_vehicle_registrations.verification_status END,registration_plate=excluded.registration_plate`,[riderId,vehicle,validPlate(plate)]);
 }
 /** Approving a rider also approves their vehicle, so staff review once. */
 export async function approveVehicleRecord(c,riderId,reviewerId){

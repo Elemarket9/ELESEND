@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, RefreshControl, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Linking, Modal, RefreshControl, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { BASE, call, ghc } from '../api';
 
 const page = { flex: 1, backgroundColor: '#F8FAFC' };
@@ -81,6 +81,18 @@ export default function CompanyHome({ onSignOut, onDeleteAccount }) {
     { text: 'Keep', style: 'cancel' },
     { text: 'Remove', style: 'destructive', onPress: () => run(async () => { await call('POST', `/api/v1/company/riders/${rider.id}/remove`, {}); await load(); }) }
   ]);
+  // The company checks the photo against the person in front of them before vouching for the rider.
+  const [review, setReview] = useState(null);
+  const openReview = rider => run(async () => {
+    const photo = await call('GET', `/api/v1/company/riders/${rider.id}/photo`).catch(e => ({ error: e.message }));
+    setReview({ rider, photo: photo?.imageBase64 ? `data:image/jpeg;base64,${photo.imageBase64}` : null, problem: photo?.error || null });
+  });
+  const approveRider = () => run(async () => {
+    await call('POST', `/api/v1/company/riders/${review.rider.id}/approve`, {});
+    setReview(null);
+    setMessage('Rider approved. They can now go online.');
+    await load();
+  });
   const cancelInvite = id => run(async () => { await call('POST', `/api/v1/company/invitations/${id}/revoke`, {}); await load(); });
 
   if (!profile) {
@@ -121,18 +133,37 @@ export default function CompanyHome({ onSignOut, onDeleteAccount }) {
       {hasRiders && approved && (
         <View style={card}>
           <Text style={heading}>Riders</Text>
-          <Text style={body}>Riders must be approved by ELESEND first. They accept your invitation in this app.</Text>
+          <Text style={body}>Invite your riders by phone number. New riders sign up in this app first. You check and approve them yourself: ELESEND does not ask your riders for a Ghana Card. If a rider leaves you, ELESEND reviews them before they ride again.</Text>
           <TextInput style={input} placeholder="Rider phone number" placeholderTextColor="#94A3B8" keyboardType="phone-pad" value={phone} onChangeText={setPhone} />
           <TouchableOpacity accessibilityRole="button" style={button} disabled={busy || !phone.trim()} onPress={invite}><Text style={buttonText}>Send invitation</Text></TouchableOpacity>
           {riders.map(rider => (
             <View key={rider.id} style={row}>
               <View style={{ flex: 1 }}>
-                <Text style={strong}>{rider.phone}</Text>
-                <Text style={body}>{rider.vehicle} · {rider.online ? 'Online' : 'Offline'} · {rider.completed_jobs} completed</Text>
+                <Text style={strong}>{rider.display_name || rider.phone}</Text>
+                <Text style={body}>{rider.phone}{rider.registration_plate ? ` · ${rider.registration_plate}` : ''}</Text>
+                <Text style={body}>{rider.status === 'pending' ? 'Waiting for your approval' : `${rider.vehicle} · ${rider.online ? 'Online' : 'Offline'} · ${rider.completed_jobs} completed`}</Text>
               </View>
-              <TouchableOpacity accessibilityRole="button" onPress={() => removeRider(rider)}><Text style={{ color: '#B91C1C', fontWeight: '700' }}>Remove</Text></TouchableOpacity>
+              {rider.status === 'pending' && (
+                <TouchableOpacity accessibilityRole="button" style={{ minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 }} onPress={() => openReview(rider)}><Text style={{ color: '#0F766E', fontWeight: '800' }}>Check</Text></TouchableOpacity>
+              )}
+              <TouchableOpacity accessibilityRole="button" style={{ minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 }} onPress={() => removeRider(rider)}><Text style={{ color: '#B91C1C', fontWeight: '700' }}>Remove</Text></TouchableOpacity>
             </View>
           ))}
+          <Modal visible={Boolean(review)} transparent animationType="fade" onRequestClose={() => setReview(null)}>
+            <View style={{ flex: 1, backgroundColor: 'rgba(15,23,42,0.5)', justifyContent: 'center', padding: 20 }}>
+              <View style={{ backgroundColor: '#FFFFFF', borderRadius: 16, padding: 18 }}>
+                <Text style={heading}>Approve {review?.rider.display_name || 'this rider'}?</Text>
+                {review?.photo
+                  ? <Image source={{ uri: review.photo }} accessibilityLabel="Rider profile photo" style={{ width: 160, height: 160, borderRadius: 80, alignSelf: 'center', marginVertical: 12, backgroundColor: '#E2E8F0' }} />
+                  : <Text style={[body, { color: '#B91C1C' }]}>{review?.problem || 'No profile photo yet.'}</Text>}
+                <Text style={body}>Phone: {review?.rider.phone}</Text>
+                {review?.rider.vehicle !== 'bicycle' && <Text style={body}>Plate: {review?.rider.registration_plate || 'not added yet'}</Text>}
+                <Text style={[body, { marginTop: 10 }]}>Approve only someone you have checked yourself. Customers see this photo, their first name and plate, and your company name as the one who checked them.</Text>
+                <TouchableOpacity accessibilityRole="button" style={button} disabled={busy || !review?.photo} onPress={approveRider}><Text style={buttonText}>Approve rider</Text></TouchableOpacity>
+                <TouchableOpacity accessibilityRole="button" style={plain} onPress={() => setReview(null)}><Text style={strong}>Not now</Text></TouchableOpacity>
+              </View>
+            </View>
+          </Modal>
           {waiting.map(item => (
             <View key={item.id} style={row}>
               <Text style={body}>Waiting: number ending {item.rider_phone_ending}</Text>

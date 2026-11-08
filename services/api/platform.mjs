@@ -344,7 +344,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   await db.tx(async c=>{await c.query('INSERT INTO users(id,phone,password_hash,kind) VALUES($1,$2,$3,$4)',[uid,p,pw,v.kind]);
    if(v.kind==='rider'){
     const type=v.vehicle??'motorcycle';check(type!=='car'||v.car,400,'Car registration details required');
-    await c.query('INSERT INTO riders(id,vehicle,max_weight_g) VALUES($1,$2,$3)',[uid,type,v.maxWeightG??20000]);
+    await c.query('INSERT INTO riders(id,vehicle,max_weight_g,display_name) VALUES($1,$2,$3,$4)',[uid,type,v.maxWeightG??20000,v.name?v.name.trim().slice(0,60):null]);
     await ensureCommissionAccount(c,uid);
     if(type==='car')await registerVehicleInTx(c,uid,{vehicle:type,maxWeightG:v.maxWeightG??20000,car:v.car});
    }
@@ -382,13 +382,13 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    }
    await c.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '30 days')",[hash(token),current.id]);
    const review=current.kind==='rider'?(await c.query('SELECT status,company_id FROM riders WHERE id=$1',[current.id])).rows[0]:current.kind==='company'?(await c.query('SELECT status FROM companies WHERE owner_id=$1',[current.id])).rows[0]:null;
-   return {token,user:{id:current.id,kind:current.kind,...(review?.status==='pending'&&!review.company_id?{awaitingApproval:true}:{})}};
+   return {token,user:{id:current.id,kind:current.kind,...(review?.status==='pending'?{awaitingApproval:true}:{})}};
   });
  },
  async authenticate(token,{allowPending=false}={}){check(token&&typeof token==='string'&&token.length===64,401,'Authentication required');const tokenHash=hash(token);const u=(await db.query("SELECT u.id,u.kind,s.expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND (u.kind<>'admin' OR (s.admin_mfa_verified=true AND s.last_seen_at>now()-interval '30 minutes'))",[tokenHash])).rows[0];check(u,401,'Session expired or administrator MFA required');if(u.kind==='admin')await db.query("UPDATE sessions SET last_seen_at=now() WHERE token_hash=$1 AND last_seen_at<now()-interval '1 minute'",[tokenHash]);
   // Anyone using the app stays signed in. The session ends after 30 days without use.
   else await db.query("UPDATE sessions SET last_seen_at=now(),expires_at=now()+interval '30 days' WHERE token_hash=$1 AND last_seen_at<now()-interval '1 hour'",[tokenHash]);
-  let awaitingApproval=false,custodyOnly=false;if(u.kind==='rider'){const r=(await db.query("SELECT r.status, c.status AS company_status, r.company_id FROM riders r LEFT JOIN companies c ON c.id=r.company_id WHERE r.id=$1",[u.id])).rows[0];awaitingApproval=allowPending&&r?.status==='pending'&&!r.company_id;if(!awaitingApproval&&!(r&&r.status==='approved'&&(!r.company_id||r.company_status==='approved'))){
+  let awaitingApproval=false,custodyOnly=false;if(u.kind==='rider'){const r=(await db.query("SELECT r.status, c.status AS company_status, r.company_id FROM riders r LEFT JOIN companies c ON c.id=r.company_id WHERE r.id=$1",[u.id])).rows[0];awaitingApproval=allowPending&&r?.status==='pending';if(!awaitingApproval&&!(r&&r.status==='approved'&&(!r.company_id||r.company_status==='approved'))){
     // A rider stopped while carrying a parcel can still finish that delivery, and take no new work.
     custodyOnly=allowPending&&Boolean(r)&&(await db.query("SELECT 1 FROM shipments WHERE rider_id=$1 AND state IN ('PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP','FAILED','RETURN_REQUESTED') LIMIT 1",[u.id])).rowCount>0;
     check(custodyOnly,403,'Rider account suspended or not approved');
@@ -509,7 +509,8 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async approve(actor,type,target,status){check(['riders','companies'].includes(type),400);uuid.parse(target);check(['approved','suspended','rejected'].includes(status),400);
   return db.tx(async c=>{await permission(c,actor,'verification:write');
    if(type==='riders'){
-    if(status==='approved'){await approveRiderLicence(c,target,actor.id);await approveRiderDocuments(c,target,actor.id);await approveVehicleRecord(c,target,actor.id);}
+    // ELESEND's own approval is the full check, so it replaces any earlier company check.
+    if(status==='approved'){await approveRiderLicence(c,target,actor.id);await approveRiderDocuments(c,target,actor.id);await approveVehicleRecord(c,target,actor.id);await c.query('UPDATE riders SET verified_by_company_id=NULL WHERE id=$1',[target]);}
     const result=await c.query('UPDATE riders SET status=$2,online=CASE WHEN $2=\'approved\' THEN online ELSE false END WHERE id=$1 RETURNING id',[target,status]);check(result.rowCount,404);
     if(status!=='approved'){
      await c.query('DELETE FROM sessions WHERE user_id = $1',[target]);disconnectRealtimeUser(target,'account_'+status);await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[target]);

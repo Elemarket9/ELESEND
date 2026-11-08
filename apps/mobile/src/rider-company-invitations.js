@@ -10,7 +10,7 @@ const yes = { flex: 1, backgroundColor: '#0F172A', borderRadius: 8, padding: 11,
 const no = { flex: 1, borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 8, padding: 11, alignItems: 'center' };
 
 /** Only appears when a company has invited this rider. Joining sends their company earnings to that company. */
-export function CompanyInvitations() {
+export function CompanyInvitations({ onChange } = {}) {
   const [invitations, setInvitations] = useState([]);
   const load = useCallback(() => call('GET', '/api/v1/rider/invitations').then(setInvitations).catch(() => {}), []);
   useEffect(() => {
@@ -25,10 +25,11 @@ export function CompanyInvitations() {
       Alert.alert('Could not update invitation', e.message);
     }
     load();
+    onChange?.();
   };
   const accept = invitation => Alert.alert(
     `Join ${invitation.company_name}?`,
-    'Earnings from jobs you complete while in this company are paid to the company, not to your own wallet. You will go offline when you join.',
+    'Earnings from jobs you complete while in this company are paid to the company, not to your own wallet. You will go offline when you join. If you are new, the company checks and approves you.',
     [
       { text: 'Not now', style: 'cancel' },
       { text: 'Join', onPress: () => answer('/api/v1/rider/invitations/accept', { invitationId: invitation.id }) }

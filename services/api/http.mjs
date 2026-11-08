@@ -8,8 +8,8 @@ import {baselineFactorFor} from './eta/baseline-factors.mjs';
 import {cityBucket,timeBucket} from './eta/stage-eta.mjs';
 import {saveTrustedContact,getTrustedContact,raiseEmergency,listSafetyAlerts,resolveSafetyAlert,createShareLink,rateDelivery,myRating,pendingRatings} from './safety.mjs';
 import {riderEarningsGoals,setEarningsGoals,demandAreas,referralSummary,applyReferralCode,riderCampaigns,createRewardCampaign} from './rider-tools.mjs';
-import {createDocumentUploadLink,uploadRiderDocument,riderDocumentStatus,rejectRiderDocument,viewRiderDocument,attachDocumentStatuses,renderDocumentUploadPage} from './rider-documents.mjs';
-import {riderLicenceStatus,submitRiderLicence,rejectRiderLicence,attachLicences,startIdentityCheck,identityWebhook} from './rider-licence.mjs';
+import {createDocumentUploadLink,uploadRiderDocument,requiredDocumentsForLink,riderPhotoFor,riderCard,riderDocumentStatus,rejectRiderDocument,viewRiderDocument,attachDocumentStatuses,renderDocumentUploadPage} from './rider-documents.mjs';
+import {riderLicenceStatus,submitRiderLicence,saveRiderProfile,rejectRiderLicence,attachLicences,startIdentityCheck,identityWebhook} from './rider-licence.mjs';
 import {listCustodyIncidents,resolveCustodyIncident} from './custody-incidents.mjs';
 import {createServer} from 'node:http';
 import {randomUUID} from 'node:crypto';
@@ -64,7 +64,8 @@ function forCustomer(actor,value){
 const CUSTODY_ROUTES=new Set(['GET /api/v1/me','GET /api/v1/me/phone','POST /api/v1/auth/logout','GET /api/v1/rider/manifest','POST /api/v1/rider/navigation']);
 const CUSTODY_SHIPMENT_ROUTE=/^(GET \/api\/v1\/shipments\/[0-9a-f-]{36}(\/tracking)?|POST \/api\/v1\/shipments\/[0-9a-f-]{36}\/(delivery-challenge|return-challenge|verify|transition|location))$/;
 const AWAITING_APPROVAL_ROUTES=new Set(['GET /api/v1/me','GET /api/v1/me/phone','POST /api/v1/me/phone-challenge','POST /api/v1/me/phone-verify','POST /api/v1/auth/logout','POST /api/v1/me/delete-account',
- 'GET /api/v1/rider/licence','POST /api/v1/rider/licence','POST /api/v1/rider/licence/identity-check','GET /api/v1/rider/documents','POST /api/v1/rider/documents/upload-link',
+ 'GET /api/v1/rider/licence','POST /api/v1/rider/licence','POST /api/v1/rider/licence/identity-check','GET /api/v1/rider/documents','POST /api/v1/rider/documents/upload-link','POST /api/v1/rider/profile',
+ 'GET /api/v1/rider/invitations','POST /api/v1/rider/invitations/accept','POST /api/v1/rider/company/leave',
  'GET /api/v1/company/profile','PUT /api/v1/company/services']);
 export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null,readinessToken=null,etaBaselineFactors={}}={}){
   const companies=companyService(db),webhooks=webhookService(db);const net=network(db),vehicles=vehicleService(db),markets=marketService(db);
@@ -118,7 +119,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   if(method==='GET'&&/^\/track\/[0-9a-f.-]{36,100}$/i.test(path)){
    floodGuard.hit('public-track:'+ipKey,ipLimit.publicTrackPerMinute,60);
    const rawTok=path.split('/')[2];
-   const data=await getPublicTracking(db,rawTok,{eta});
+   const data=await getPublicTracking(db,rawTok,{eta,riderCard});
    if(!data){res.writeHead(404,{'Content-Type':'text/html'});res.end('<!DOCTYPE html><html><body style="background:#0c1324;color:#fff;font-family:sans-serif;padding:30px;text-align:center;"><h2>Tracking link not found or expired</h2></body></html>');return;}
    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end(renderTrackingHtml(data,rawTok));return;
   }
@@ -128,7 +129,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    const bearer=req.headers.authorization?.replace(/^Bearer /,'');
    let optActor=null;
    if(bearer){try{optActor=bearer.startsWith('es_live_')?await net.authenticateKey(bearer):await app.authenticate(bearer);}catch{}}
-   const data=await getPublicTracking(db,rawTok,{actor:optActor,eta});
+   const data=await getPublicTracking(db,rawTok,{actor:optActor,eta,riderCard});
    if(!data){send(404,{error:'Tracking not found'});return;}
    send(200,data);return;
   }
@@ -165,6 +166,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    rawBody=Buffer.concat(parts);try{body=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(rawBody)||'{}');}catch{check(false,400,'Invalid JSON');}
   }
   if(method==='POST'&&['/api/v1/payments/webhook','/api/v1/payments/checkout-webhook','/api/v1/payments/commission-webhook'].includes(path)&&paymentsWebhook){send(200,await paymentsWebhook(rawBody,req.headers));return;}
+  if(method==='POST'&&path==='/api/v1/rider-documents/required'){await limit(db,'document-required-ip:'+ipKey,60,3600);send(200,await requiredDocumentsForLink(db,body));return;}
   if(method==='POST'&&path==='/api/v1/rider-documents/upload'){await limit(db,'document-upload-ip:'+ipKey,30,3600);send(200,await uploadRiderDocument(db,body));return;}
   // Public, because the map must load before sign-in.
   if(method==='GET'&&path==='/api/v1/maps/style.json'){const config=publicMapConfig();check(config.tileUrl,503,'Map not configured');send(200,privateMapStyle(config.tileUrl,{glyphsUrl:config.glyphsUrl}));return;}
@@ -192,7 +194,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   if(method==='POST'&&path==='/api/v1/auth/password-reset'){await limit(db,'pw-reset-ip:'+ipKey,ipLimit.resetPer15Min,900);send(200,await app.resetPassword(body));return;}
   const token=req.headers.authorization?.replace(/^Bearer /,'');const actor=token?.startsWith('es_live_')?await net.authenticateKey(token):await app.authenticate(token,{allowPending:true});
   // New riders and companies can finish setting up and see their status, and nothing else, until approved.
-  if(actor.awaitingApproval)check(AWAITING_APPROVAL_ROUTES.has(method+' '+path),403,'Your account is waiting for ELESEND approval');
+  if(actor.awaitingApproval)check(AWAITING_APPROVAL_ROUTES.has(method+' '+path)||(method==='POST'&&/^\/api\/v1\/rider\/invitations\/[0-9a-f-]{36}\/decline$/.test(path)),403,'Your account is waiting for approval');
   if(actor.custodyOnly)check(CUSTODY_ROUTES.has(method+' '+path)||CUSTODY_SHIPMENT_ROUTE.test(method+' '+path),403,'Your account is suspended. You can only finish the parcel you are carrying.');
   net.authorizeKey(actor,method,path);
   if(actor.api_client_id)await limit(db,'api-key:'+actor.api_client_id,300,60);
@@ -488,6 +490,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/rider/referral'){await limit(db,'referral:'+actor.id,10,3600);result=await applyReferralCode(db,actor,body);}
   else if(method==='GET'&&path==='/api/v1/rider/campaigns')result=await riderCampaigns(db,actor);
   else if(method==='GET'&&path==='/api/v1/rider/licence')result=await riderLicenceStatus(db,actor);
+  else if(method==='POST'&&path==='/api/v1/rider/profile'){await limit(db,'rider-profile:'+actor.id,20,3600);result=await saveRiderProfile(db,actor,body);}
   else if(method==='POST'&&path==='/api/v1/rider/licence'){await limit(db,'licence:'+actor.id,10,3600);result=await submitRiderLicence(db,actor,body);}
   else if(method==='GET'&&path==='/api/v1/rider/vehicle')result=await vehicles.profile(actor);
   else if(method==='POST'&&path==='/api/v1/rider/vehicle')result=await vehicles.submit(actor,body);
@@ -631,6 +634,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/rider/company/leave')result=await net.leaveCompany(actor);
   else if(method==='POST'&&path==='/api/v1/rider/invitations/accept')result=await net.acceptInvitation(actor,body);
   else if(method==='POST'&&/^\/api\/v1\/company\/riders\/[^/]+\/remove$/.test(path))result=await net.removeRider(actor,path.split('/')[5]);
+  else if(method==='POST'&&/^\/api\/v1\/company\/riders\/[^/]+\/approve$/.test(path))result=await companies.approveRider(actor,path.split('/')[5]);
+  else if(method==='GET'&&/^\/api\/v1\/company\/riders\/[^/]+\/photo$/.test(path))result=await companies.riderPhoto(actor,path.split('/')[5]);
   else if(method==='GET'&&path==='/api/v1/business/api-keys')result=await net.listKeys(actor);
   else if(method==='POST'&&path==='/api/v1/business/api-keys')result=await net.createKey(actor,body);
   else if(path==='/api/v1/business/webhook'&&['GET','PUT','DELETE'].includes(method)){
@@ -775,10 +780,15 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    }
   }
   else {
-   const m=path.match(/^\/api\/v1\/shipments\/([^/]+)(?:\/(accept|pickup-challenge|delivery-challenge|return-challenge|verify|transition|location|tracking|dispatch|disputes|cancel-terms|recipient))?$/);check(m,404,'Endpoint not found');const [,sid,action]=m;
+   const m=path.match(/^\/api\/v1\/shipments\/([^/]+)(?:\/(accept|pickup-challenge|delivery-challenge|return-challenge|verify|transition|location|tracking|dispatch|disputes|cancel-terms|recipient|rider-photo))?$/);check(m,404,'Endpoint not found');const [,sid,action]=m;
    if(method==='GET'&&!action)result=forCustomer(actor,await app.get(actor,sid));
    else if(method==='GET'&&action==='cancel-terms')result=await app.cancelTerms(actor,sid);
    else if(method==='GET'&&action==='tracking')result=await app.tracking(actor,sid);
+   else if(method==='GET'&&action==='rider-photo'){
+    // Only the person who booked sees the photo, and only while that rider has the delivery.
+    const s=await app.get(actor,sid);check(s.customer_id===actor.id&&s.rider_id&&['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state),404,'No rider photo for this delivery');
+    const imageBase64=await riderPhotoFor(db,s.rider_id);check(imageBase64,404,'No rider photo for this delivery');result={imageBase64};
+   }
    else if(method==='GET'&&action==='dispatch'){const shipment=await app.get(actor,sid);result={shipmentId:sid,state:shipment.state,confirmedRider:!!shipment.rider_id,guaranteed:!!shipment.rider_id,attempts:shipment.dispatch_attempts,dispatchStatus:shipment.state==='AWAITING_ASSIGNMENT'?(shipment.no_rider_since?'no_rider_yet':'searching_or_awaiting_offer'):shipment.state};}
    else if(method==='POST'&&action==='accept')result=await app.accept(actor,sid,body.offerId);
    else if(method==='POST'&&action==='pickup-challenge')result=await app.challenge(actor,sid,'pickup');

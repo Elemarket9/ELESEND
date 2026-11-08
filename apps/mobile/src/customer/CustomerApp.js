@@ -49,6 +49,7 @@ import { colors, typography, spacing, radii, shadows } from '../theme';
 import { customerStatus, paymentLabel } from '../status-labels';
 import FareSummary from './FareSummary';
 import RecipientPhoneModal from './RecipientPhoneModal';
+import RiderCard from './RiderCard';
 import { VoiceNoteBubble, VoiceNoteRecorder } from '../chat/VoiceNote';
 import {
   GHANA_REGIONS,
@@ -118,6 +119,8 @@ export default function CustomerApp() {
   const [myShipments, setMyShipments] = useState([]);
   const [trackingShipment, setTrackingShipment] = useState(null);
   const [liveCourier, setLiveCourier] = useState(null);
+  const [liveRider, setLiveRider] = useState(null);
+  const [courierLastSeen, setCourierLastSeen] = useState(null);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [vehicleTariffs, setVehicleTariffs] = useState([]);
   // Starting prices come from the live tariff, and are hidden until it loads.
@@ -326,6 +329,8 @@ export default function CustomerApp() {
   useEffect(() => {
     if (!trackingShipment?.id) {
       setLiveCourier(null);
+      setLiveRider(null);
+      setCourierLastSeen(null);
       setDeliveryEta(null);
       setShareToken(null);
       return;
@@ -336,6 +341,8 @@ export default function CustomerApp() {
         const trk = await call('GET', `/api/v1/public-track/${trackingShipment.id}`);
         if (!cancelled) {
           setLiveCourier(trk?.courier || null);
+          setLiveRider(trk?.rider || null);
+          setCourierLastSeen(trk?.lastSeen || null);
           setDeliveryEta(trk?.deliveryEta || null);
           setShareToken(trk?.trackingToken || null);
           if (trk?.riderPhone && !trackingShipment.rider_phone) {
@@ -1929,11 +1936,13 @@ export default function CustomerApp() {
                 )}
 
                 {/* Handover OTP Display Banner */}
+                {/* The code is never stored readable, so the app cannot show it: it goes by SMS to the recipient. */}
                 {s.state === 'AWAITING_DELIVERY_OTP' && (
                   <View style={styles.otpSecurityBanner}>
-                    <Text style={styles.otpSecurityHeader}>🔑 Handover Security OTP</Text>
-                    <Text style={styles.otpSecurityDigits}>{s.delivery_otp || '••••••'}</Text>
-                    <Text style={styles.otpSecurityCaption}>Read this 6-digit code to the courier upon parcel arrival.</Text>
+                    <Text style={styles.otpSecurityHeader}>🔑 Handover code sent by SMS</Text>
+                    <Text style={styles.otpSecurityCaption}>
+                      The rider is at the drop-off. A 6-digit code went by SMS to the recipient{s.recipient_phone ? ` (number ending ${String(s.recipient_phone).slice(-4)})` : ''}. They read it to the rider to receive the parcel.
+                    </Text>
                   </View>
                 )}
 
@@ -2662,6 +2671,13 @@ export default function CustomerApp() {
             <View style={{ width: 40 }} />
           </View>
 
+          <RiderCard
+            shipmentId={trackingShipment?.id}
+            rider={liveRider}
+            lastSeen={courierLastSeen}
+            onSupport={() => openOrderChat({ conversationType: 'CUSTOMER_SUPPORT', shipmentId: trackingShipment.id })}
+          />
+
           {/* Call Courier Bar */}
           {['RIDER_ASSIGNED', 'PICKUP_VERIFIED', 'IN_TRANSIT'].includes(trackingShipment?.state) && Boolean(trackingShipment?.rider_phone || trackingShipment?.riderPhone || trackingShipment?.details?.rider_phone) && (
             <View style={{ paddingHorizontal: 16, paddingBottom: 10, flexDirection: 'row', gap: 8 }}>
@@ -2715,6 +2731,13 @@ export default function CustomerApp() {
                   heading={(liveCourier || trackingShipment.courier).heading || 0}
                   vehicle={(liveCourier || trackingShipment.courier).vehicle || trackingShipment?.vehicle || 'motorcycle'}
                   title="Courier"
+                />
+              )}
+              {!liveCourier && courierLastSeen && (
+                <Marker
+                  coordinate={{ latitude: courierLastSeen.latitude, longitude: courierLastSeen.longitude }}
+                  pinColor="#64748B"
+                  title={`Rider last seen ${courierLastSeen.minutesAgo} min ago`}
                 />
               )}
               {(liveCourier || trackingShipment?.courier) && trackingShipment?.destination && (
@@ -3281,8 +3304,7 @@ const styles = StyleSheet.create({
   orderFareText: { fontSize: 13, color: '#64748B', marginTop: 4 },
   otpSecurityBanner: { backgroundColor: '#FEF3C7', borderRadius: 12, padding: 12, marginTop: 12, alignItems: 'center', borderWidth: 1, borderColor: '#FDE68A' },
   otpSecurityHeader: { fontSize: 11, fontWeight: '800', color: '#92400E', textTransform: 'uppercase' },
-  otpSecurityDigits: { fontSize: 28, fontWeight: '900', color: '#92400E', letterSpacing: 6, marginVertical: 4 },
-  otpSecurityCaption: { fontSize: 11, color: '#B45309', textAlign: 'center' },
+  otpSecurityCaption: { fontSize: 13, color: '#78350F', textAlign: 'center', lineHeight: 19, marginTop: 4 },
   callCourierButton: { marginTop: 10, backgroundColor: '#F1F5F9', borderRadius: 12, padding: 10, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
   callCourierText: { fontSize: 13, fontWeight: '700', color: '#0F172A' },
   activeOrderActionsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },

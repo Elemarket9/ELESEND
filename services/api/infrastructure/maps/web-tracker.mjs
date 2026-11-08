@@ -69,7 +69,8 @@ export function verifyPublicTrackingToken(token,{secret=null}={}){
  return {valid:false,shipmentId:null,signed:false};
 }
 
-export async function getPublicTracking(db, token, {actor=null, secret=null, eta=null}={}){
+// riderCard comes from the riders module, which owns rider names, plates and photos.
+export async function getPublicTracking(db, token, {actor=null, secret=null, eta=null, riderCard=null}={}){
  const parsed=verifyPublicTrackingToken(token,{secret});
  if(!parsed.valid||!parsed.shipmentId)return null;
 
@@ -150,6 +151,16 @@ export async function getPublicTracking(db, token, {actor=null, secret=null, eta
   } : null,
   courier,
   courierStale: Boolean(isCourierActive && (!row.courier_time || !isCourierFresh)),
+  // When the rider's phone stops reporting (flat battery, no network), show where they were last seen and when,
+  // rather than nothing. Older than six hours is not useful.
+  lastSeen: isCourierActive && !isCourierFresh && Number.isFinite(row.courier_lat) && Number.isFinite(row.courier_lon) && courierAgeMs <= 6 * 3600_000 ? {
+   latitude: row.courier_lat,
+   longitude: row.courier_lon,
+   updatedAt: row.courier_time,
+   minutesAgo: Math.max(1, Math.round(courierAgeMs / 60_000))
+  } : null,
+  // What the customer checks at the door, as ride apps show it: photo, first name, plate and vehicle.
+  rider: isCourierActive && row.rider_id && riderCard ? await riderCard(db, row.rider_id) : null,
   // Raw riderPhone PII is only exposed to authenticated shipment participants or verified signed tracking tokens
   riderPhone: isCourierActive ? (row.rider_phone || null) : null,
   eta:null,
@@ -259,6 +270,8 @@ export function renderTrackingHtml(data, trackingTokenOverride = null){
     </div>
    </div>
 
+   ${data.rider ? `<div class="eta-card"><div class="status-subtitle">Your rider: ${escapeHtml(data.rider.firstName || 'ELESEND rider')}${data.rider.plate ? ` · Plate <strong>${escapeHtml(data.rider.plate)}</strong>` : ''}${[data.rider.color, data.rider.make, data.rider.model].filter(Boolean).length ? ` · ${escapeHtml([data.rider.color, data.rider.make, data.rider.model].filter(Boolean).join(' '))}` : ''}. Check the plate before you hand over or accept anything.</div></div>` : ''}
+   ${data.lastSeen ? `<div class="eta-card"><div class="status-subtitle">The rider's phone stopped sharing location ${escapeHtml(String(data.lastSeen.minutesAgo))} min ago. ELESEND support is following up.</div></div>` : ''}
    <div class="eta-card" id="eta-box" style="${data.deliveryEta?.message?'':'display:none;'}">
     <div class="status-subtitle" id="eta-message">${escapeHtml(data.deliveryEta?.message||'')}</div>
    </div>

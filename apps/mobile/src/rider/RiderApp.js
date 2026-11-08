@@ -115,7 +115,9 @@ export default function RiderApp() {
   const [licence, setLicence] = useState(null);
   const [licenceModal, setLicenceModal] = useState(false);
   const [riderDocuments, setRiderDocuments] = useState([]);
-  const [licenceForm, setLicenceForm] = useState({ legalName: '', licenceNumber: '', licenceClass: '', expiresOn: '', vehiclePlate: '' });
+  const [riderProfile, setRiderProfile] = useState(null);
+  const [profileForm, setProfileForm] = useState({ displayName: '', vehiclePlate: '' });
+  const [licenceForm, setLicenceForm] = useState({ legalName: '', ghanaCardNumber: '', licenceNumber: '', licenceClass: '', expiresOn: '', vehiclePlate: '' });
   const [payoutName, setPayoutName] = useState('');
 
   // Active Handover & OTP State
@@ -367,10 +369,12 @@ export default function RiderApp() {
       return;
     }
 
+    if (credentials.name.trim().length < 2) throw Error('Enter your name. Customers see your first name');
     const body = {
       phone: normPhone,
       password: credentials.password,
       kind: 'rider',
+      name: credentials.name.trim().slice(0, 60),
       vehicle: credentials.vehicle,
       maxWeightG: Number(credentials.maxWeightG) || 20000
     };
@@ -393,6 +397,8 @@ export default function RiderApp() {
     setLicence(await call('GET', '/api/v1/rider/licence'));
     const docs = await call('GET', '/api/v1/rider/documents').catch(() => null);
     setRiderDocuments(docs?.documents || []);
+    setRiderProfile(docs || null);
+    setProfileForm(f => ({ displayName: f.displayName || docs?.displayName || '', vehiclePlate: f.vehiclePlate || docs?.vehiclePlate || '' }));
     setLicenceModal(true);
   }
 
@@ -727,15 +733,26 @@ export default function RiderApp() {
 
   async function submitLicence() {
     const form = licenceForm;
+    const bicycle = riderProfile?.vehicle === 'bicycle';
     await call('POST', '/api/v1/rider/licence', {
       legalName: form.legalName.trim(),
-      licenceNumber: form.licenceNumber.trim(),
+      ghanaCardNumber: form.ghanaCardNumber.trim(),
+      ...(!bicycle && form.licenceNumber.trim() ? { licenceNumber: form.licenceNumber.trim() } : {}),
       expiresOn: form.expiresOn.trim(),
-      ...(form.licenceClass.trim() ? { licenceClass: form.licenceClass.trim() } : {}),
+      ...(!bicycle && form.licenceClass.trim() ? { licenceClass: form.licenceClass.trim() } : {}),
       ...(form.vehiclePlate.trim() ? { vehiclePlate: form.vehiclePlate.trim() } : {})
     });
     setLicence(await call('GET', '/api/v1/rider/licence'));
     setError('Details saved. Now add your photos.');
+  }
+
+  async function saveCompanyRiderProfile() {
+    const saved = await call('POST', '/api/v1/rider/profile', {
+      displayName: profileForm.displayName.trim(),
+      ...(riderProfile?.vehicle !== 'bicycle' && profileForm.vehiclePlate.trim() ? { vehiclePlate: profileForm.vehiclePlate.trim() } : {})
+    });
+    setRiderProfile(p => ({ ...(p || {}), ...saved }));
+    setError(`Saved. Add your profile photo, then ask ${riderProfile?.companyName || 'your company'} to approve you.`);
   }
 
   async function openDocumentUpload() {
@@ -906,6 +923,15 @@ export default function RiderApp() {
 
             {isSignup && credentials.accountType === 'rider' && (
               <View style={{ marginTop: 6 }}>
+                <Text style={styles.inputLabel}>Your name</Text>
+                <TextInput
+                  placeholder="As customers should see it, like Kwame Asante"
+                  placeholderTextColor={colors.textMuted}
+                  maxLength={60}
+                  style={[styles.input, { marginBottom: 14 }]}
+                  value={credentials.name}
+                  onChangeText={v => edit('name', v)}
+                />
                 <Text style={styles.inputLabel}>Vehicle Class</Text>
                 <View style={styles.vehicleRow}>
                   {[
@@ -1115,27 +1141,77 @@ export default function RiderApp() {
     );
   }
 
+  const companyRider = licence?.status === 'not_required';
+  const bicycleRider = riderProfile?.vehicle === 'bicycle';
+  const documentLabel = kind => ({ profile_photo: 'Profile photo', ghana_card_photo: 'Ghana Card photo', licence_photo: "Driver's licence photo", insurance: 'Insurance', roadworthiness: 'Roadworthiness' }[kind] || kind.replaceAll('_', ' '));
+  const documentList = (
+    <>
+      {riderDocuments.map(d => (
+        <Text key={d.kind} style={[styles.momoSub, { marginTop: 6 }]}>
+          {documentLabel(d.kind)}: {d.status}{d.rejectionReason ? ` (${d.rejectionReason})` : ''}
+        </Text>
+      ))}
+      <TouchableOpacity disabled={busy} onPress={() => execute(openDocumentUpload)} style={[styles.secondaryBtn, { marginTop: 10 }]}>
+        <Text style={styles.secondaryBtnText}>{companyRider ? 'Upload Profile Photo' : 'Upload Photos & Certificates'}</Text>
+      </TouchableOpacity>
+    </>
+  );
   const licenceDocumentsModal = (
             <Modal visible={licenceModal} animationType="fade" transparent>
               <ScrollView style={{ flex: 1, backgroundColor: '#000000AA' }} contentContainerStyle={styles.modalScrollBody} keyboardShouldPersistTaps="handled">
+                {companyRider ? (
+                  <View style={styles.momoCard}>
+                    <Text style={styles.momoTitle}>Your rider profile</Text>
+                    <Text style={styles.momoSub}>
+                      {licence.companyName} checks your identity, so ELESEND does not need your Ghana Card. Add your name{bicycleRider ? '' : ', number plate'} and a clear photo of your face, then ask {licence.companyName} to approve you. Customers see your photo, first name{bicycleRider ? '' : ' and plate'}.
+                    </Text>
+                    <Text style={[styles.inputLabel, { marginTop: 10 }]}>Your name</Text>
+                    <TextInput placeholderTextColor={colors.textMuted} style={styles.input} maxLength={60} value={profileForm.displayName} onChangeText={value => setProfileForm(f => ({ ...f, displayName: value }))} />
+                    {!bicycleRider && (
+                      <>
+                        <Text style={[styles.inputLabel, { marginTop: 10 }]}>Number plate, exactly as on the vehicle</Text>
+                        <TextInput placeholder="M-22-GR 1234" placeholderTextColor={colors.textMuted} style={styles.input} maxLength={20} autoCapitalize="characters" value={profileForm.vehiclePlate} onChangeText={value => setProfileForm(f => ({ ...f, vehiclePlate: value }))} />
+                      </>
+                    )}
+                    {documentList}
+                    <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
+                      <TouchableOpacity onPress={() => setLicenceModal(false)} style={[styles.secondaryBtn, { flex: 1 }]}>
+                        <Text style={styles.secondaryBtnText}>Close</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity disabled={busy} onPress={() => execute(saveCompanyRiderProfile)} style={[styles.primaryBtn, { flex: 2 }]}>
+                        <Text style={styles.primaryBtnText}>Save</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ) : (
                 <View style={styles.momoCard}>
-                  <Text style={styles.momoTitle}>Driver's Licence</Text>
+                  <Text style={styles.momoTitle}>{bicycleRider ? 'Ghana Card' : "Ghana Card & Driver's Licence"}</Text>
                   <Text style={styles.momoSub}>
                     {licence?.status === 'approved' ? `Approved, valid until ${licence.validUntil}.`
                       : licence?.status === 'pending' ? 'Waiting for review. You can start deliveries once it is approved.'
                         : licence?.status === 'rejected' ? `Rejected: ${licence.rejectionReason}. Please correct it and submit again.`
-                          : 'Required before you can take deliveries. Bicycle riders enter their Ghana Card instead.'}
+                          : bicycleRider ? 'Required before you can take deliveries.' : 'Both are required before you can take deliveries.'}
                   </Text>
-                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Full Legal Name</Text>
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Full name, as on your Ghana Card</Text>
                   <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.legalName} onChangeText={value => setLicenceForm(f => ({ ...f, legalName: value }))} />
-                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Licence Number</Text>
-                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceNumber} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceNumber: value }))} />
-                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Licence Class</Text>
-                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceClass} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceClass: value }))} />
-                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Expiry date (year-month-day, like 2028-06-30)</Text>
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Ghana Card number</Text>
+                  <TextInput placeholder={licence?.ghanaCardOnFile ? 'On file. Enter again to change' : 'GHA-123456789-0'} placeholderTextColor={colors.textMuted} style={styles.input} maxLength={20} value={licenceForm.ghanaCardNumber} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, ghanaCardNumber: value }))} />
+                  {!bicycleRider && (
+                    <>
+                      <Text style={[styles.inputLabel, { marginTop: 10 }]}>Driver's licence number</Text>
+                      <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceNumber} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceNumber: value }))} />
+                      <Text style={[styles.inputLabel, { marginTop: 10 }]}>Licence class</Text>
+                      <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.licenceClass} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, licenceClass: value }))} />
+                    </>
+                  )}
+                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>{bicycleRider ? 'Ghana Card expiry date' : 'Licence expiry date'} (year-month-day, like 2028-06-30)</Text>
                   <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.expiresOn} onChangeText={value => setLicenceForm(f => ({ ...f, expiresOn: value }))} />
-                  <Text style={[styles.inputLabel, { marginTop: 10 }]}>Vehicle Plate Number</Text>
-                  <TextInput placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.vehiclePlate} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, vehiclePlate: value }))} />
+                  {!bicycleRider && (
+                    <>
+                      <Text style={[styles.inputLabel, { marginTop: 10 }]}>Number plate, exactly as on the vehicle</Text>
+                      <TextInput placeholder="M-22-GR 1234" placeholderTextColor={colors.textMuted} style={styles.input} value={licenceForm.vehiclePlate} autoCapitalize="characters" onChangeText={value => setLicenceForm(f => ({ ...f, vehiclePlate: value }))} />
+                    </>
+                  )}
                   {licence && licence.status !== 'missing' && licence.identityAvailable && (
                     <Text style={[styles.momoSub, { marginTop: 10 }]}>
                       Photo check: {licence.identityStatus === 'approved' ? 'passed'
@@ -1148,14 +1224,7 @@ export default function RiderApp() {
                       <Text style={styles.primaryBtnText}>Take Licence Photo and Selfie</Text>
                     </TouchableOpacity>
                   )}
-                  {riderDocuments.map(d => (
-                    <Text key={d.kind} style={[styles.momoSub, { marginTop: 6 }]}>
-                      {d.kind.replace('_', ' ')}: {d.status}{d.rejectionReason ? ` (${d.rejectionReason})` : ''}
-                    </Text>
-                  ))}
-                  <TouchableOpacity disabled={busy} onPress={() => execute(openDocumentUpload)} style={[styles.secondaryBtn, { marginTop: 10 }]}>
-                    <Text style={styles.secondaryBtnText}>Upload Photo & Certificates</Text>
-                  </TouchableOpacity>
+                  {documentList}
                   <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
                     <TouchableOpacity onPress={() => setLicenceModal(false)} style={[styles.secondaryBtn, { flex: 1 }]}>
                       <Text style={styles.secondaryBtnText}>Close</Text>
@@ -1165,6 +1234,7 @@ export default function RiderApp() {
                     </TouchableOpacity>
                   </View>
                 </View>
+                )}
               </ScrollView>
             </Modal>
   );
@@ -1176,12 +1246,13 @@ export default function RiderApp() {
         <ScrollView contentContainerStyle={styles.authScroll}>
           <View style={styles.authHeader}>
             <BrandRow tagline="ACCOUNT UNDER REVIEW" />
-            <Text style={styles.authSubtitle}>Submit your licence and documents. Your jobs screen opens automatically once ELESEND approves them.</Text>
+            <Text style={styles.authSubtitle}>Add your Ghana Card, licence and photos. Your jobs screen opens automatically once you are approved. Riding for a company? Ask them to invite your phone number, then accept below.</Text>
           </View>
           <View style={styles.authCard}>
             {!!error && <Text style={styles.errorText}>⚠️ {error}</Text>}
+            <CompanyInvitations onChange={() => execute(openLicenceAndDocuments)} />
             <TouchableOpacity accessibilityRole="button" style={styles.primaryBtn} disabled={busy} onPress={() => execute(openLicenceAndDocuments)}>
-              <Text style={styles.primaryBtnText}>Licence & Documents</Text>
+              <Text style={styles.primaryBtnText}>My Profile & Documents</Text>
             </TouchableOpacity>
             <TouchableOpacity accessibilityRole="button" onPress={() => execute(logout)} style={styles.switchAuthBtn}>
               <Text style={styles.switchAuthText}>Sign Out</Text>
