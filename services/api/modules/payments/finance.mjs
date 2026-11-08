@@ -192,7 +192,7 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
     check(s.cash_payer===v.cashPayer&&v.reportedMinor<=s.amount_minor,400,'Collection does not match booking');
     const old=(await c.query('SELECT * FROM cash_collections WHERE shipment_id=$1',[sid])).rows[0];
     if(old){check(Number(old.reported_minor)===v.reportedMinor&&old.cash_payer===v.cashPayer,409,'Cash report already recorded; open a dispute to correct');return {status:old.reported_status,reportedMinor:Number(old.reported_minor),duplicate:true};}
-    check(s.cash_payer==='sender' ? s.state==='RIDER_ASSIGNED' : ['IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state),409,'Cash report must occur at payer handover');
+    check(s.cash_payer==='sender' ? s.state==='RIDER_ASSIGNED' : ['PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state),409,'Cash report must occur at payer handover');
     const status=v.reportedMinor===0?'uncollected':v.reportedMinor===s.amount_minor?'reported_full':'reported_partial';
     await c.query('INSERT INTO cash_collections(shipment_id,rider_id,cash_payer,reported_minor,reported_status,report_idempotency_key) VALUES($1,$2,$3,$4,$5,$6)',[sid,actor.id,v.cashPayer,v.reportedMinor,status,v.idempotencyKey]);
     await c.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[actor.id,'cash.rider_reported',sid]);
