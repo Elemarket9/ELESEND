@@ -176,8 +176,14 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    }
    if(purpose==='pickup'){
     if(s.payment_method==='CASH'&&s.cash_payer==='sender')check(await senderCashCollectedInFull(c,sid,s.amount_minor),409,'Full sender cash collection required before normal pickup; report shortfall and use dispute/exception flow');
+    // Being assigned a rider is not permission to remove food while a kitchen is still preparing it.
+    const foodAtPickup=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[sid])).rows[0];
+    if(foodAtPickup){
+      check(foodAtPickup.state==='READY_FOR_PICKUP',409,'Restaurant has not marked the order ready for rider pickup');
+      await requireFoodPayment(c,foodAtPickup);
+    }
     await c.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[sid]);
-    await c.query("UPDATE food_orders SET state='IN_TRANSIT', updated_at=now() WHERE shipment_id=$1 AND state IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')",[sid]);
+    await c.query("UPDATE food_orders SET state='IN_TRANSIT', updated_at=now() WHERE shipment_id=$1 AND state='READY_FOR_PICKUP'",[sid]);
     await c.query(
      `INSERT INTO locations(shipment_id,rider_id,latitude,longitude,updated_at)
       SELECT $1,$2,ST_Y(r.current_position::geometry),ST_X(r.current_position::geometry),r.position_at
