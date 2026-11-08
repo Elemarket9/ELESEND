@@ -5,7 +5,7 @@
  * - Online / Offline shift toggle with battery-conscious background GPS tracking
  * - Realtime broadcast delivery offers with atomic first-valid-accept
  * - Turn-by-turn navigation guidance to pickup and destination
- * - Pickup confirmation & recipient OTP handover verification
+ * - Rider-confirmed physical pickup and delivery handovers
  * - In-person cash collection reporting
  * - Weekly Cash Commission Settlement & automated restriction monitoring
  * - Daily earnings overview & authorized Mobile Money withdrawal requests
@@ -121,9 +121,6 @@ export default function RiderApp() {
   const [payoutName, setPayoutName] = useState('');
 
   // Active Handover & OTP State
-  const [activeParcel, setActiveParcel] = useState(null);
-  const [challenge, setChallenge] = useState(null);
-  const [otp, setOtp] = useState('');
   const [reportedCash, setReportedCash] = useState({});
 
   // Order-Scoped Real-Time Chat State (Customer & Restaurant)
@@ -519,80 +516,66 @@ export default function RiderApp() {
     setOffers(prev => prev.filter(x => x.offerId !== offer.offerId));
   }
 
-  // --- Handover & OTP Verification Actions ---
+  // The rider declares that the physical handover happened. This is not an SMS recipient proof.
+  // Server-side authorization, stop order, cash collection, prepaid food and ledger checks remain mandatory.
+  async function confirmPhysicalHandover(shipment, kind) {
+    if (!isStationary(speed)) throw Error('Stop safely before confirming a handover');
+    const response = await call('POST', `/api/v1/shipments/${shipment.id}/handover`, {
+      kind, confirmed: true
+    });
+    if (response?.waitingFee?.collection === 'collect_cash') {
+      Alert.alert('Waiting fee', `You waited ${Math.round(response.waitingFee.waitedSeconds / 60)} min here. Collect ${ghc(response.waitingFee.feeMinor)} waiting fee in cash. You keep all of it.`);
+    }
+    const m = await call('GET', '/api/v1/rider/manifest').catch(() => null);
+    setManifest(m);
+    setError(kind === 'pickup' ? 'Pickup recorded.'
+      : kind === 'return' ? 'Parcel return recorded; settlement updated.'
+      : 'Delivery marked complete. The recipient can dispute a missing parcel.');
+  }
+
+  function askPhysicalHandover(shipment,kind) {
+    const title = kind === 'pickup' ? 'Confirm parcel collected'
+      : kind === 'return' ? 'Confirm parcel returned' : 'Confirm parcel handed over';
+    const explanation = kind === 'pickup'
+      ? 'Only confirm after you physically receive the parcel from the sender or restaurant.'
+      : kind === 'return'
+        ? 'Only confirm after physically returning the parcel to its sender.'
+        : 'Only confirm after physically handing the parcel to its recipient. This is your declaration, not customer-verified delivery proof.';
+    Alert.alert(title,explanation,[
+      {text:'Cancel',style:'cancel'},
+      {text:'I Confirm Handover',onPress:()=>execute(()=>confirmPhysicalHandover(shipment,kind))}
+    ]);
+  }
+
   async function initiatePickupVerification(shipment) {
-    if (!isStationary(speed)) throw Error('Stop safely before initiating pickup verification');
-    const c = await call('POST', `/api/v1/shipments/${shipment.id}/pickup-challenge`, {});
-    setActiveParcel({ ...shipment, kind: 'pickup' });
-    setChallenge(c);
-    setOtp('');
+    askPhysicalHandover(shipment,'pickup');
   }
 
   async function initiateDeliveryVerification(shipment) {
-    if (!isStationary(speed)) throw Error('Stop safely before initiating delivery verification');
-    
-    // For cash deliveries, require cash report confirmation first
+    if (!isStationary(speed)) throw Error('Stop safely before confirming delivery');
     if (shipment.payment_method === 'CASH' && !reportedCash[shipment.id] && shipment.cash_payer === 'recipient') {
       Alert.alert(
         'Confirm Cash Collection',
-        `Collect ${ghc(shipment.amount_minor)} in cash from the recipient before verifying OTP.`,
+        `Collect ${ghc(shipment.amount_minor)} in cash from the recipient before confirming delivery.`,
         [
-          { text: 'Cancel' },
-          {
-            text: 'I Collected Full Cash',
-            onPress: () => execute(async () => {
-              await call('POST', '/api/v1/rider/cash-report', {
-                shipmentId: shipment.id,
-                reportedMinor: shipment.amount_minor,
-                cashPayer: shipment.cash_payer || 'recipient',
-                idempotencyKey: Crypto.randomUUID()
-              });
-              setReportedCash(r => ({ ...r, [shipment.id]: true }));
-              const c = await call('POST', `/api/v1/shipments/${shipment.id}/delivery-challenge`, {});
-              setActiveParcel({ ...shipment, kind: 'delivery' });
-              setChallenge(c);
-              setOtp('');
-            })
-          }
+          {text:'Cancel',style:'cancel'},
+          {text:'I Collected Full Cash',onPress:()=>execute(async()=>{
+            await call('POST','/api/v1/rider/cash-report',{
+              shipmentId:shipment.id,reportedMinor:shipment.amount_minor,
+              cashPayer:shipment.cash_payer||'recipient',idempotencyKey:Crypto.randomUUID()
+            });
+            setReportedCash(r=>({...r,[shipment.id]:true}));
+            askPhysicalHandover(shipment,'delivery');
+          })}
         ]
       );
       return;
     }
-
-    const c = await call('POST', `/api/v1/shipments/${shipment.id}/delivery-challenge`, {});
-    setActiveParcel({ ...shipment, kind: 'delivery' });
-    setChallenge(c);
-    setOtp('');
+    askPhysicalHandover(shipment,'delivery');
   }
 
   async function initiateReturnVerification(shipment) {
-    const c = await call('POST', `/api/v1/shipments/${shipment.id}/return-challenge`, {});
-    setActiveParcel({ ...shipment, kind: 'return' });
-    setChallenge(c);
-    setOtp('');
-  }
-
-  async function submitOtpVerification() {
-    if (!activeParcel || !challenge) return;
-    if (otp.trim().length !== 6) throw Error('Enter the 6-digit code');
-    const verifiedKind = activeParcel.kind;
-
-    const verified = await call('POST', `/api/v1/shipments/${activeParcel.id}/verify`, {
-      challengeId: challenge.challengeId,
-      code: otp.trim()
-    });
-    if (verified?.waitingFee?.collection === 'collect_cash') {
-      Alert.alert('Waiting fee', `You waited ${Math.round(verified.waitingFee.waitedSeconds / 60)} min here. Collect ${ghc(verified.waitingFee.feeMinor)} waiting fee in cash. You keep all of it.`);
-    }
-
-    setChallenge(null);
-    setActiveParcel(null);
-    setOtp('');
-    const m = await call('GET', '/api/v1/rider/manifest').catch(() => null);
-    setManifest(m);
-    setError(verifiedKind === 'return'
-      ? 'Return confirmed by the sender. Your earnings have been recorded.'
-      : 'Delivery verified and completed! Earnings credited to your wallet.');
+    askPhysicalHandover(shipment,'return');
   }
 
   async function releaseAssignment(shipmentId, reason = 'Unable to complete pickup before custody') {
@@ -1587,7 +1570,7 @@ export default function RiderApp() {
                           <View style={styles.codWarningBanner}>
                             <Text style={styles.codWarningTitle}>⚠️ CASH ON DELIVERY REQUIRED</Text>
                             <Text style={styles.codWarningSub}>
-                              Collect {ghc(s.amount_minor)} in cash from the recipient BEFORE requesting the OTP. Do not release package without full cash.
+                              Collect {ghc(s.amount_minor)} in cash from the recipient BEFORE confirming delivery. Do not release the parcel without full cash.
                             </Text>
                           </View>
                         )}
@@ -1606,7 +1589,7 @@ export default function RiderApp() {
                           style={[styles.primaryBtn, { marginTop: 10, minHeight: 56 }]}>
                           <Text style={styles.primaryBtnText}>
                             {s.payment_method === 'CASH' && !reportedCash[s.id]
-                              ? `Collect ${ghc(s.amount_minor)} cash, then enter code`
+                              ? `Collect ${ghc(s.amount_minor)} cash, then confirm`
                               : "Enter recipient's code"}
                           </Text>
                         </TouchableOpacity>
@@ -1670,55 +1653,6 @@ export default function RiderApp() {
                 <TouchableOpacity accessibilityRole="button" onPress={() => setMapReportShipment(null)}><Text>Cancel</Text></TouchableOpacity>
               </View>
             </Modal>
-            <Modal visible={Boolean(activeParcel && challenge)} animationType="fade" transparent>
-              <View style={styles.modalOverlay}>
-                <View style={styles.otpCard}>
-                  <Text style={styles.otpCardTitle}>🔑 Enter the code</Text>
-                  <Text style={styles.otpCardSub}>
-                    {activeParcel?.kind === 'pickup'
-                      ? 'Ask the sender or restaurant merchant for their 6-digit pickup code.'
-                      : 'Ask the recipient for their 6-digit delivery confirmation code.'}
-                  </Text>
-
-                  {activeParcel?.payment_method === 'CASH' && activeParcel?.kind !== 'pickup' && (
-                    <View style={styles.modalCodAlert}>
-                      <Text style={styles.modalCodAlertTitle}>💵 Collect the cash first</Text>
-                      <Text style={styles.modalCodAlertText}>
-                        Ensure you have received the full amount of {ghc(activeParcel.amount_minor)} in cash before finalizing this verification.
-                      </Text>
-                    </View>
-                  )}
-
-                  <TextInput
-                    placeholder="000 000"
-                    placeholderTextColor={colors.textMuted}
-                    keyboardType="number-pad"
-                    maxLength={6}
-                    style={styles.otpInput}
-                    value={otp}
-                    onChangeText={setOtp}
-                  />
-
-                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
-                    <TouchableOpacity
-                      accessibilityRole="button"
-                      onPress={() => { setActiveParcel(null); setChallenge(null); setOtp(''); }}
-                      style={[styles.secondaryBtn, { flex: 1, minHeight: 56 }]}>
-                      <Text style={styles.secondaryBtnText}>Cancel</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      accessibilityRole="button"
-                      accessibilityLabel="Verify and Complete Order"
-                      onPress={() => execute(submitOtpVerification)}
-                      style={[styles.primaryBtn, { flex: 2, minHeight: 56 }]}
-                      disabled={otp.length !== 6}>
-                      <Text style={styles.primaryBtnText}>Verify & Complete</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-            </Modal>
-
             {/* Rider Order-Scoped Real-Time Chat Modal */}
             <Modal visible={riderChatModal} animationType="slide" onRequestClose={() => setRiderChatModal(false)}>
               <View style={[styles.screen, { paddingTop: 48, paddingHorizontal: 16, paddingBottom: 16 }]}>
