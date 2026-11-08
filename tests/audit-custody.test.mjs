@@ -282,5 +282,5 @@ test('rider app collects sender cash before pickup and recipient cash before del
  assert.equal(cashToCollect({...s,payment_method:'MOMO',cash_payer:'recipient'},'delivery',{}),null);
  assert.deepEqual(cashToCollect({...s,cash_payer:undefined},'delivery',{}),{payer:'recipient',amountMinor:2500},'old bookings default to recipient');
  const rider=read('apps/mobile/src/rider/RiderApp.js');
- assert.match(rider,/cashToCollect\(shipment, 'pickup'/);assert.match(rider,/cashToCollect\(shipment, 'delivery'/);
+ assert.match(rider,/cashToCollect\(shipment,\s*kind,\s*reportedCash\)/,'cash policy helper is shared by both handover kinds');assert.match(rider,/collectAndConfirm\(shipment,'pickup'\)/);assert.match(rider,/collectAndConfirm\(shipment,'delivery'\)/);
 });
