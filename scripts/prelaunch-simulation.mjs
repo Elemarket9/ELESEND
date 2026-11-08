@@ -55,7 +55,7 @@ export async function runLocalSimulation(){
    await db.query("UPDATE checkout_method_policies SET enabled=true WHERE method='MOMO'");
    await sim.api('/api/v1/rider/availability',{token:rider.token,method:'POST',body:{online:true}});
    await sim.api('/api/v1/rider/location',{token:rider.token,method:'POST',body:{latitude:5.6,longitude:-0.18,accuracyMeters:5,observedAt:new Date().toISOString()}});
-   const quote=await sim.api('/api/v1/quotes',{token:customer.token,method:'POST',body:{pickup:{address:'Simulated pickup, Accra',latitude:5.6,longitude:-0.18},destination:{address:'Simulated drop-off, Accra',latitude:5.61,longitude:-0.19},vehicle:'motorcycle',recipientPhone:simulationPhone(),weightG:1000,description:'SIMULATION ONLY parcel'}});
+   const quote=await sim.api('/api/v1/quotes',{token:customer.token,method:'POST',body:{pickup:{address:'Simulated pickup, Accra',latitude:5.6,longitude:-0.18},destination:{address:'Simulated drop-off, Accra',latitude:5.61,longitude:-0.19},vehicle:'motorcycle',recipientPhone:simulationPhone(),weightG:1000,description:'SIMULATION ONLY parcel',paymentMethod:'MOMO'}});
    const shipment=await sim.api('/api/v1/shipments',{token:customer.token,method:'POST',headers:{'Idempotency-Key':'sim-'+randomInt(1e9)},body:{quoteId:quote.id}});
    const intent=await sim.api(`/api/v1/shipments/${shipment.id}/checkout`,{token:customer.token,method:'POST',body:{idempotencyKey:'sim-'+randomInt(1e9)}});
    sim.boundary.paid(intent.reference);const signed=sim.boundary.callback(intent.reference);

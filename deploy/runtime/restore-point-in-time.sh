@@ -53,8 +53,11 @@ for ((i=0;i<600;i++)); do
   sleep 2
 done
 [[ "$state" == "f" ]] || { echo 'Recovery did not finish; check: docker compose logs db' >&2; exit 1; }
-dc exec -T db psql -U "${POSTGRES_USER:-elesend}" -d "${POSTGRES_DB:-elesend}" -v ON_ERROR_STOP=1 -qc \
-  "ALTER SYSTEM RESET restore_command; ALTER SYSTEM RESET recovery_target_action; ALTER SYSTEM RESET recovery_target_time; SELECT pg_reload_conf();" >/dev/null
+# ALTER SYSTEM cannot share a transaction, so each runs on its own.
+for setting in restore_command recovery_target_action recovery_target_time; do
+  dc exec -T db psql -U "${POSTGRES_USER:-elesend}" -d "${POSTGRES_DB:-elesend}" -v ON_ERROR_STOP=1 -qc "ALTER SYSTEM RESET $setting" >/dev/null
+done
+dc exec -T db psql -U "${POSTGRES_USER:-elesend}" -d "${POSTGRES_DB:-elesend}" -qAtc "SELECT pg_reload_conf()" >/dev/null
 last=$(dc exec -T db psql -U "${POSTGRES_USER:-elesend}" -d "${POSTGRES_DB:-elesend}" -Atqc "SELECT max(created_at) FROM shipments")
 dc exec -T db rm -rf /var/lib/postgresql/restore-wal
 echo "5. Restored. Newest delivery in the database: ${last:-none}."
