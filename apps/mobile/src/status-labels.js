@@ -6,7 +6,7 @@ const CUSTOMER = {
   RIDER_ASSIGNED: 'Courier assigned',
   PICKUP_VERIFIED: 'Picked up',
   IN_TRANSIT: 'On the way',
-  AWAITING_DELIVERY_OTP: 'Give the courier your code',
+  AWAITING_DELIVERY_OTP: 'Handover in progress',
   COMPLETED: 'Delivered',
   DELIVERED: 'Delivered',
   FAILED: 'Delivery failed',
@@ -25,7 +25,7 @@ const RIDER = {
   AWAITING_ASSIGNMENT: 'Waiting for a rider',
   RIDER_ASSIGNED: 'Go to pickup',
   IN_TRANSIT: 'Delivering',
-  AWAITING_DELIVERY_OTP: 'Ask for the code',
+  AWAITING_DELIVERY_OTP: 'Confirm physical handover',
   RETURN_REQUESTED: 'Return to sender'
 };
 
