@@ -47,7 +47,7 @@ export async function runLocalLoad(){return withSimulationDatabase(async db=>{
      if(response.status!==200)throw Object.assign(Error(response.body.error||'GPS failed'),{status:response.status});
     };job.operation='gps';return job;});
     if(!round){
-     for(let i=0;i<Math.ceil(fleet/25);i++)const quoteJob=async()=>{
+     for(let i=0;i<Math.ceil(fleet/25);i++){const quoteJob=async()=>{
       const headers={'x-forwarded-for':`10.89.${Math.floor(i/250)}.${i%250+1}`};
       const q=await sim.api('/api/v1/quotes',{token:customer.token,method:'POST',headers,body:quoteInput});
       if(i%4===0){
@@ -57,6 +57,7 @@ export async function runLocalLoad(){return withSimulationDatabase(async db=>{
        await sim.api('/api/v1/payments/webhook',{method:'POST',headers:{...headers,'x-simulation-signature':signed.signature},body:signed.body});
       }
      };quoteJob.operation='quote_checkout';jobs.push(quoteJob);
+     }
     }
     await execute(jobs);
    }
