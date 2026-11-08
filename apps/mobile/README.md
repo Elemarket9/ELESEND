@@ -25,7 +25,7 @@ The development Android emulator can use `http://10.0.2.2:3145/tiles/{z}/{x}/{y}
 
 ### Driver / rider
 
-Motorcycle or car registration; cars require plate, make, model and cargo declarations and separate manual verification before dispatch. Online shifts with explicit foreground/background GPS consent and Android ongoing foreground-service notification. Driver sees delivery fees, commission, earning, cash payer, expiry and ETA before accepting. Multi-parcel pilot is feature-gated behind admin approval AND rider opt-in. App shows route manifest, pickup/recipient OTP actions per parcel, receiver cash report, commission debt/credit and initiate PSP repayment action (fails closed with no provider).
+Motorcycle or car registration; cars require plate, make, model and cargo declarations and separate manual verification before dispatch. Online shifts with explicit foreground/background GPS consent and Android ongoing foreground-service notification. Driver sees delivery fees, commission, earning, cash payer, expiry and ETA before accepting. Multi-parcel pilot is feature-gated behind admin approval AND rider opt-in. App shows route manifest, rider-confirmed physical pickup/delivery per parcel without SMS OTP, recipient cash report, commission debt/credit and initiate PSP repayment action (fails closed with no provider). A booked customer's receipt acknowledgement is optional; a rider completion report is not independent recipient proof.
 
 ### Operations
 
@@ -33,11 +33,11 @@ Native admin panels allow **authorized** admins to review cars/riders, edit boun
 
 ### Offline
 
-Encrypted limited read-only delivery and manifest snapshot in OS secure storage. Offline or unreliably connected app must **not** locally declare OTP handover, payment settled or commission received. A real device synchronization, GPS buffering/permissions and reconnect campaign remains untested.
+Encrypted limited read-only delivery and manifest snapshot in OS secure storage. Offline or unreliably connected app must **not** locally declare physical handover complete, payment settled or commission received. All handover declarations require an authenticated server transaction. A real device synchronization, GPS buffering/permissions and reconnect campaign remains untested.
 
 ### Release gaps
 
-- Delivery OTP SMS adapter, actual PSP MoMo collection, refund/reconciliation and push notification workers missing.
+- Live PSP MoMo collection, refund/reconciliation and push delivery require deployment-specific provider verification; SMS delivery OTP is intentionally not required. Account security/recovery SMS remains separate.
 - The OSRM car profile and self-hosted Ghana road graph need a runtime validation; motorcycles and other vehicle profiles are not verified.
 - Production-grade proof-of-person/vehicle, PIN/MFA for finance admins, device GPS anti-spoof evidence, COD merchandise remittances and live cash dispute processing not implemented.
 - Build native APK/IPA and validate on real low-end Ghana Android devices, mobile background tracking and iOS permissions before public launch.
