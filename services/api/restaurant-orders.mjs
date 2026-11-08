@@ -30,16 +30,11 @@ export function restaurantOrderService(db, options = {}) {
   const promos = promotionEngine(db);
   const commissions = commissionEngine(db);
   const chat = chatEngine(db);
-  const hasSmsOption = 'sms' in options || (platform && 'sms' in platform);
   const hasDispatcherOption = ('dispatcher' in options && options.dispatcher === null) || ('dispatch' in options && options.dispatch === null) || (platform && 'dispatch' in platform && platform.dispatch === null);
-  const effectiveSms = sms !== undefined ? sms : platform?.sms;
   const effectiveDispatcher = dispatcher ?? options.dispatch ?? platform?.dispatch ?? null;
 
   function assertDeliveryCapabilities() {
     check(routing && typeof routing.route === 'function', 503, 'Road routing service required for delivery quotation');
-    if (process.env.NODE_ENV === 'production' || hasSmsOption) {
-      check(effectiveSms && typeof effectiveSms.send === 'function', 503, 'Food ordering paused: custody-verification SMS unavailable');
-    }
     if (process.env.NODE_ENV === 'production' || hasDispatcherOption) {
       check(Boolean(effectiveDispatcher), 503, 'Food ordering paused: dispatch engine unavailable');
     }
@@ -869,7 +864,7 @@ export function restaurantOrderService(db, options = {}) {
       const isOwner = Boolean(actor && restaurant && restaurant.owner_id === actor.id);
       const isRider = Boolean(actor && shipment.rider_id && shipment.rider_id === actor.id);
       const isCustomer = Boolean(actor && order.customer_id === actor.id);
-      const pickedUp = Boolean((await c.query("SELECT 1 FROM challenges WHERE shipment_id = $1 AND purpose = 'pickup' AND consumed_at IS NOT NULL", [shipment.id])).rowCount) ||
+      const pickedUp = Boolean((await c.query("SELECT 1 FROM shipment_handover_events WHERE shipment_id=$1 AND kind='pickup' UNION SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[shipment.id])).rowCount) ||
         ['PICKUP_VERIFIED', 'IN_TRANSIT', 'AWAITING_DELIVERY_OTP', 'RETURN_REQUESTED', 'RETURNED'].includes(shipment.state) ||
         order.state === 'IN_TRANSIT';
 
@@ -1003,7 +998,7 @@ export function restaurantOrderService(db, options = {}) {
           const dc=(await c.query('SELECT promised_delivery_before FROM dispatch_commitments WHERE shipment_id=$1 AND rider_id=$2',[s.id,s.rider_id])).rows[0];
           const accOffer=(await c.query("SELECT id,accepted_at,pickup_eta_seconds FROM dispatch_offers WHERE shipment_id=$1 AND rider_id=$2 AND status='accepted' ORDER BY accepted_at DESC LIMIT 1",[s.id,s.rider_id])).rows[0];
           const pickedUp=s.state!=='RIDER_ASSIGNED'||f.state==='IN_TRANSIT'||
-            Boolean((await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount);
+            Boolean((await c.query("SELECT 1 FROM shipment_handover_events WHERE shipment_id=$1 AND kind='pickup' UNION SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount);
           const {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,latestGpsMs,nowMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f.ready_at,offer:accOffer,deliveryDeadlineMs:Math.min(dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():Infinity,new Date(f.ready_at||f.accepted_at||f.created_at).getTime()+30*60*1000)});
           if(!reasons.length)return null;
           const oldRiderId=s.rider_id;

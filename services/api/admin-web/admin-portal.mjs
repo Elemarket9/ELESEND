@@ -366,7 +366,7 @@ export function renderAdminPortalHtml() {
         </div>
         <div class="card">
           <div class="card-title"><span>Orders Needing Attention</span></div>
-          <div class="card-subtitle">Orders with no rider, handover codes that could not be sent, and riders who became unresponsive.</div>
+          <div class="card-subtitle">Orders needing attention: no available rider, earlier SMS handover failures, and unresponsive riders. Delivery confirmation no longer needs SMS.</div>
           <div class="table-container">
             <table>
               <thead><tr><th>Time</th><th>Problem</th><th>Order state</th><th>Customer</th><th>Rider</th></tr></thead>

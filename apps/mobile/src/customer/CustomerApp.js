@@ -9,7 +9,7 @@
  * - Modern Homepage with service cards (Delivery, Cargo, Food), "Where to?" pill & Ghanaian promos (Aboboyaa)
  * - Professional Customer Profile with quick actions (Orders, Support, Addresses, Settings)
  * - Full preservation of authoritative backend contracts, 10% food commission, 0-100% delivery tariffs,
- *   double-entry ledgers, OTP handover security, and offline resilience.
+ *   double-entry ledgers, rider-declared handover records, and offline resilience.
  */
 
 import { runGuarded, useSignInState, signInWithPassword } from '../account-actions';
@@ -1909,7 +1909,7 @@ export default function CustomerApp() {
         )}
 
         {/* -------------------------------------------------------------------
-            TAB 5: ACTIVITY & DELIVERIES (Live Tracking, OTP Handover, History)
+            TAB 5: ACTIVITY & DELIVERIES (Live Tracking, Physical Handover, History)
         --------------------------------------------------------------------- */}
         {tab === 'Activity' && (
           <ScrollView contentContainerStyle={styles.activityScroll} showsVerticalScrollIndicator={false}>
@@ -1935,13 +1935,13 @@ export default function CustomerApp() {
                   </TouchableOpacity>
                 )}
 
-                {/* Handover OTP Display Banner */}
-                {/* The code is never stored readable, so the app cannot show it: it goes by SMS to the recipient. */}
+                {/* Rider reports physical delivery. This is not independently recipient-verified proof. */}
                 {s.state === 'AWAITING_DELIVERY_OTP' && (
                   <View style={styles.otpSecurityBanner}>
-                    <Text style={styles.otpSecurityHeader}>🔑 Handover code sent by SMS</Text>
+                    <Text style={styles.otpSecurityHeader}>Delivery handover in progress</Text>
                     <Text style={styles.otpSecurityCaption}>
-                      The rider is at the drop-off. A 6-digit code went by SMS to the recipient{s.recipient_phone ? ` (number ending ${String(s.recipient_phone).slice(-4)})` : ''}. They read it to the rider to receive the parcel.
+                      The rider is preparing to confirm physical handover. No SMS delivery code is required.
+                      Contact the rider if the parcel has not reached you.
                     </Text>
                   </View>
                 )}
@@ -2063,7 +2063,27 @@ export default function CustomerApp() {
               <View key={s.id} style={styles.pastOrderRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.orderIdText} numberOfLines={1}>{s.destination?.address ? `To ${s.destination.address}` : `Parcel #${s.id.slice(0, 8)}`}</Text>
-                  <Text style={styles.orderFareText}>{customerStatus(s.state)}, {ghc(s.amount_minor)}</Text>
+                  <Text style={styles.orderFareText}>{s.state === 'COMPLETED' ? 'Rider reported delivered' : customerStatus(s.state)}, {ghc(s.amount_minor)}</Text>
+                  {s.state === 'COMPLETED' && (
+                    <Text style={styles.orderFareText}>
+                      {s.receipt_confirmed_at ? 'You acknowledged receipt' : 'Receipt not confirmed by the booking customer'}
+                    </Text>
+                  )}
+                  {s.state === 'COMPLETED' && !s.receipt_confirmed_at && (
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      accessibilityLabel="Confirm you received this delivery"
+                      style={{ marginTop: 10, padding: 10, minHeight: 44, backgroundColor: '#E0F2FE', borderRadius: 8, alignItems: 'center', justifyContent: 'center' }}
+                      onPress={() => Alert.alert('Confirm Received', 'Only confirm if you personally received this delivery. This is optional and does not change the rider\'s report.', [
+                        {text: 'Cancel', style: 'cancel'},
+                        {text: 'Yes, I received it', onPress: () => execute(async () => {
+                          await call('POST', `/api/v1/shipments/${s.id}/receipt`, {received:true});
+                          await refreshActivity();
+                        })}
+                      ])}>
+                      <Text style={{ color: '#0369A1', fontWeight: '700' }}>Confirm Received (Optional)</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               </View>
             ))}
@@ -2987,7 +3007,7 @@ export default function CustomerApp() {
 
           <View style={{ backgroundColor: '#EFF6FF', paddingHorizontal: 14, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#BFDBFE' }}>
             <Text style={{ fontSize: 11, color: '#1E40AF', fontWeight: '600' }}>
-              🔒 Security Notice: Never share your 6-digit delivery OTP in chat before the courier arrives in person. Chat messages cannot alter paid delivery addresses.
+              🔒 Safety Notice: Check your parcel at handover. Rider confirmation is not customer-verified proof. Report missing items promptly. Chat cannot alter paid delivery addresses.
             </Text>
           </View>
 

@@ -36,12 +36,23 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Check production dependencies for known vulnerabilities
         run: npm audit --omit=dev --audit-level=high
+      - name: Report mobile production dependency advisories (non-blocking)
+        run: |
+          npm audit --prefix apps/mobile --omit=dev --json > mobile-dependency-audit.json || true
+          node scripts/ci/report-mobile-audit.mjs mobile-dependency-audit.json
       - name: Check for committed secrets
         run: node scripts/secret-scan.mjs
       - name: Run database migrations
         run: npm run migrate
       - name: Run backend, geospatial, security, and mobile logic tests
         run: npm test
+      - name: Check load and resilience script syntax
+        run: |
+          node --check scripts/prelaunch-load.mjs
+          node --check scripts/prelaunch-simulation.mjs
+          node --check scripts/local-delivery-simulator.mjs
+      - name: Report duplicated code windows (8 lines)
+        run: node scripts/find-duplicates.mjs 8
       - name: Verify mobile modules syntax and release manifest security
         run: |
           node --check apps/mobile/src/config.js

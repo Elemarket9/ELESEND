@@ -51,6 +51,8 @@ export function hideEndedContacts(actor,s){
 const registration=z.object({phone:z.string().max(30),termsVersion:z.string().trim().min(1).max(40).optional(),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
 const address=z.object({address:z.string().min(5).max(400),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict();
 const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(['motorcycle','car','van']).optional(),recipientPhone:z.string().max(30),pickupPhone:z.string().max(30).optional(),weightG:z.number().int().min(1).max(10000000),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
+// Legacy SMS handovers are disabled by default in production. Test/development fixtures remain compatible.
+const allowLegacySmsHandover=()=>process.env.NODE_ENV!=='production'||process.env.HANDOVER_SMS_LEGACY_ENABLED==='true';
 const ACCOUNT_SMS_PER_NUMBER=5,ACCOUNT_SMS_BLOCK_SECONDS=900;
 /** Allows 5 account SMS per number per 15 minutes; the 6th attempt starts a full 15-minute block.
  * Call outside a transaction, so a failed request cannot roll the count back. */
@@ -91,8 +93,8 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   if(process.env.WAITING_CHARGES_ENABLED!=='true'||!['pickup','delivery'].includes(stop))return null;
   if(s.payment_method==='CASH'&&(stop==='pickup')!==(s.cash_payer==='sender'))return null;
   if((await c.query('SELECT 1 FROM food_orders WHERE shipment_id=$1',[s.id])).rowCount)return null;
-  const span=(await c.query(`SELECT m.occurred_at AS arrived_at,ch.first_at AS ended_at
-    FROM delivery_milestones m,LATERAL (SELECT min(created_at) AS first_at FROM challenges WHERE shipment_id=$1 AND rider_id=$2 AND purpose=$4) ch
+  const span=(await c.query(`SELECT m.occurred_at AS arrived_at,coalesce(ch.first_at,h.confirmed_at) AS ended_at
+    FROM delivery_milestones m,LATERAL (SELECT min(created_at) AS first_at FROM challenges WHERE shipment_id=$1 AND rider_id=$2 AND purpose=$4) ch,LATERAL (SELECT min(confirmed_at) AS confirmed_at FROM shipment_handover_events WHERE shipment_id=$1 AND rider_id=$2 AND kind=$4) h
     WHERE m.shipment_id=$1 AND m.rider_id=$2 AND m.milestone=$3 ORDER BY m.occurred_at LIMIT 1`,[s.id,s.rider_id,stop==='pickup'?'arrived_pickup':'arrived_customer',stop])).rows[0];
   if(!span?.ended_at)return null;
   // The terms the customer saw at quote time.
@@ -153,6 +155,97 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const r=(await c.query('SELECT phone_verified_at FROM users WHERE id=$1',[actor.id])).rows[0];
   check(r?.phone_verified_at,403,'Verify your registered phone number before using delivery services');
  }
+ // Both legacy OTP and rider-confirmed handovers share one atomic settlement and custody path.
+ // No financial release, restaurant settlement, or cash guard is skipped.
+ async function applyHandover(c,actor,s,sid,purpose,source){
+   if(purpose==='return'){
+    await c.query("UPDATE shipments SET state='RETURNED' WHERE id=$1",[sid]);
+    const returning=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
+    if(returning)await c.query('UPDATE rider_dispatch_plans SET stops=$2,revision=revision+1,updated_at=now() WHERE rider_id=$1',[actor.id,JSON.stringify(removeShipment(returning.stops,sid))]);
+    await c.query('DELETE FROM dispatch_commitments WHERE shipment_id=$1',[sid]);
+    await c.query('DELETE FROM locations WHERE shipment_id=$1',[sid]);
+    await settleReturnedParcel(c,s);
+    await audit(c,actor.id,'return.verified',sid);await event(c,sid,'RETURNED');
+    return {ok:true};
+   }
+   // Every parcel requires a separate, auditable physical custody event. Advancing one stop never advances another.
+   const plan=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
+   if(plan){const updated=removeStop(plan.stops,sid,purpose==='pickup'?'pickup':'dropoff');
+    check(updated.length===plan.stops.length-1,409,'Route manifest stop missing');
+    await c.query('UPDATE rider_dispatch_plans SET stops=$2,revision=revision+1,updated_at=now() WHERE rider_id=$1',[actor.id,JSON.stringify(updated)]);
+   }
+   if(purpose==='pickup'){
+    if(s.payment_method==='CASH'&&s.cash_payer==='sender')check(await senderCashCollectedInFull(c,sid,s.amount_minor),409,'Full sender cash collection required before normal pickup; report shortfall and use dispute/exception flow');
+    await c.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[sid]);
+    await c.query("UPDATE food_orders SET state='IN_TRANSIT', updated_at=now() WHERE shipment_id=$1 AND state IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')",[sid]);
+    await c.query(
+     `INSERT INTO locations(shipment_id,rider_id,latitude,longitude,updated_at)
+      SELECT $1,$2,ST_Y(current_position::geometry),ST_X(current_position::geometry),COALESCE(position_at,now())
+      FROM riders WHERE id=$2 AND current_position IS NOT NULL
+      ON CONFLICT(shipment_id) DO UPDATE SET rider_id=EXCLUDED.rider_id,latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,updated_at=EXCLUDED.updated_at`,
+     [sid,actor.id]
+    );
+   }
+   else {
+    if(s.payment_method==='CASH'){
+     const collection=await cashCollectionFor(c,sid,actor.id);
+     check(collection&&collection.reported_status==='reported_full'&&Number(collection.reported_minor)===Number(s.amount_minor),409,'Full cash collection report required for normal handover. Open a payment dispute or exception/return flow for unpaid or partial cash.');
+    }else check(s.paid,409,'Digital payment must be verified');
+    await c.query("UPDATE shipments SET state='COMPLETED',completed_at=now() WHERE id=$1",[sid]);
+    await c.query('DELETE FROM locations WHERE shipment_id=$1',[sid]);
+    const fo=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[sid])).rows[0];
+    if(fo){
+     const food=fo;
+     await requireFoodPayment(c,food);
+     await c.query("UPDATE food_orders SET state='DELIVERED', payment_status='PAID', completed_at=now(), updated_at=now() WHERE id=$1",[fo.id]);
+     const grossSales=Number(fo.subtotal_minor);
+     const commBps=Number(fo.food_commission_bps);
+     const commMinor=Number(fo.food_commission_minor);
+     const restDiscount=Math.min(Number(fo.restaurant_funded_discount_minor||0),Math.max(0,grossSales-commMinor));
+     const elesendSubsidy=Number(fo.elesend_funded_discount_minor||0);
+     const netPayable=Math.max(0,grossSales-restDiscount-commMinor);
+     const commBasis=fo.commission_calculation_basis||'gross_subtotal';
+     const commBase=Number(fo.commission_base_minor??grossSales);
+     await accrueRestaurantSettlement(c,{orderId:fo.id,restaurantId:fo.restaurant_id,grossSales,restDiscount,elesendSubsidy,commBps,commMinor,netPayable,commBasis,commBase,commissionSnapshot:fo.commission_snapshot,promotionSnapshot:fo.promotion_snapshot});
+     await promotionEngine(db).finalizeOrderPromotions(c,fo.id);
+    }
+    await recordFinancialEntry(c,{shipment:{...s,id:sid},beneficiaryId:s.company_id??actor.id});
+    // One settlement path: exactly-once commission/earnings posting plus automatic debt recovery,
+    // in the same locked, auditable completion transaction.
+    await settleCompletedDelivery(c,s);
+   }
+   const waitingFee=await chargeWaiting(c,s,purpose);
+   await audit(c,actor.id,purpose+(source==='otp'?'.verified':'.rider_confirmed'),sid);await event(c,sid,purpose==='delivery'?'completed':'pickup_verified');return {ok:true,...(waitingFee?{waitingFee}:{})};
+ }
+ async function handover(actor,sid,input){
+  const v=z.object({kind:z.enum(['pickup','delivery']),confirmed:z.literal(true)}).strict().parse(input);
+  return db.tx(async c=>{
+   await rider(c,actor);
+   const s=await locked(c,sid);
+   check(s.rider_id===actor.id,403,'Only the assigned rider may confirm a handover');
+   check(s.verification_authority==='elesend',409,'External verification not enabled');
+   const finishedState={pickup:'PICKUP_VERIFIED',delivery:'COMPLETED',return:'RETURNED'}[v.kind];
+   if(s.state===finishedState){
+    const prior=(await c.query('SELECT 1 FROM shipment_handover_events WHERE shipment_id=$1 AND rider_id=$2 AND kind=$3',[sid,actor.id,v.kind])).rowCount;
+    if(prior)return {ok:true,duplicate:true,state:finishedState};
+   }
+   const eligible={pickup:['RIDER_ASSIGNED'],delivery:['PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP']};
+   check(eligible[v.kind].includes(s.state),409,'Shipment not eligible for this handover');
+   const manifest=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
+   if(manifest?.stops?.length){
+    const next=await nextOpenStop(c,manifest.stops);
+    check(next?.shipmentId===sid&&next?.kind===(v.kind==='pickup'?'pickup':'dropoff'),409,'Complete the next route stop first');
+   }
+   if(v.kind==='delivery'&&s.state==='PICKUP_VERIFIED')await c.query("UPDATE shipments SET state='IN_TRANSIT' WHERE id=$1",[sid]);
+   // Capture actual server time and the rider's most recent observed position without inventing GPS.
+   await c.query(`INSERT INTO shipment_handover_events(shipment_id,rider_id,kind,confirmed_at,position,position_at,accuracy_m)
+    SELECT $1,r.id,$2,now(),r.current_position,r.position_at,r.position_accuracy_m FROM riders r WHERE r.id=$3
+    ON CONFLICT(shipment_id,kind) DO NOTHING`,[sid,v.kind,actor.id]);
+   check((await c.query('SELECT 1 FROM shipment_handover_events WHERE shipment_id=$1 AND rider_id=$2 AND kind=$3',[sid,actor.id,v.kind])).rowCount,409,'Handover evidence mismatch');
+   return applyHandover(c,actor,s,sid,v.kind,'rider_reported');
+  });
+ }
+
  return {
  async phoneStatus(actor){const u=(await db.query('SELECT phone,phone_verified_at FROM users WHERE id=$1',[actor.id])).rows[0];check(u,401);return {phone:u.phone,verified:!!u.phone_verified_at};},
  async phoneChallenge(actor){check(sms&&typeof sms.send==='function',503,'Phone SMS verification unavailable');
@@ -570,7 +663,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async quote(actor,input){check(['customer','business','company'].includes(actor.kind),403);await assertCompanyDelivery(db,actor);
   // Do not accept live bookings when an essential custody-verification provider is absent.
   if(process.env.NODE_ENV==='production'){
-   check(sms&&typeof sms.send==='function'&&dispatch,503,'Delivery booking paused: dispatch or SMS verification unavailable');
+   check(dispatch,503,'Delivery booking paused: dispatch unavailable');
    await requireVerifiedPhone(db,actor);
   }
   await marketService(db).assertGhanaOperating();const v=quoteSchema.parse(input);v.recipientPhone=phone(v.recipientPhone);
@@ -614,7 +707,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEvidence:evidence,fareBreakdown,etaMinutes:quotedEtaMinutes(route.durationSeconds,trafficFactor,{riderSeconds:capacity.nearestRiderSeconds,source:adjustment.source}),surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
  },
  async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business','company'].includes(actor.kind),403);await assertCompanyDelivery(db,actor);
-  if(process.env.NODE_ENV==='production')check(sms&&typeof sms.send==='function'&&dispatch,503,'Delivery booking paused: dispatch or SMS verification unavailable');
+  if(process.env.NODE_ENV==='production')check(dispatch,503,'Delivery booking paused: dispatch unavailable');
   return db.tx(async c=>{if(process.env.NODE_ENV==='production')await requireVerifiedPhone(c,actor);await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[actor.id+key]);
    const old=(await c.query('SELECT * FROM shipments WHERE customer_id=$1 AND idempotency_key=$2',[actor.id,key])).rows[0];if(old){check(old.quote_id===v.quoteId,409,'Idempotency key reused with different request');return old;}
    const q=(await c.query('SELECT * FROM quotes WHERE id=$1 AND customer_id=$2 AND expires_at>now() FOR UPDATE',[v.quoteId,actor.id])).rows[0];check(q,409,'Quote unavailable or expired');
@@ -642,15 +735,31 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  },
  async offers(actor){check(dispatch,503,'Dispatch engine unavailable');return dispatch.offers(actor);},
  async accept(actor,sid,offerId){check(dispatch,503,'Dispatch engine unavailable');return dispatch.accept(actor,sid,offerId);},
- async get(actor,sid){uuid.parse(sid);const s=(await db.query('SELECT * FROM shipments WHERE id=$1',[sid])).rows[0];check(s,404);await access(db,actor,s);const q=(await db.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];const waiting=(await db.query('SELECT stop,waited_seconds,fee_minor,collection FROM shipment_waiting_charges WHERE shipment_id=$1',[sid])).rows;return hideEndedContacts(actor,{...s,details:q.request,waitingCharges:waiting});},
+ async get(actor,sid){uuid.parse(sid);const s=(await db.query(`SELECT sh.*,(SELECT confirmed_at FROM shipment_receipt_confirmations WHERE shipment_id=sh.id) AS receipt_confirmed_at,(SELECT confirmed_at FROM shipment_handover_events WHERE shipment_id=sh.id AND kind='delivery') AS rider_reported_at FROM shipments sh WHERE sh.id=$1`,[sid])).rows[0];check(s,404);await access(db,actor,s);const q=(await db.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0];const waiting=(await db.query('SELECT stop,waited_seconds,fee_minor,collection FROM shipment_waiting_charges WHERE shipment_id=$1',[sid])).rows;return hideEndedContacts(actor,{...s,details:q.request,waitingCharges:waiting});},
  async list(actor,{asClient=Boolean(actor.api_client_id)}={}){
-  const baseQuery=`SELECT s.*, (SELECT id FROM food_orders WHERE shipment_id=s.id) AS food_order_id, (SELECT phone FROM users WHERE id=s.rider_id) AS rider_phone, q.request AS details, q.request->'pickup' AS pickup, q.request->'destination' AS destination FROM shipments s JOIN quotes q ON q.id=s.quote_id`;
+  const baseQuery=`SELECT s.*, (SELECT confirmed_at FROM shipment_receipt_confirmations WHERE shipment_id=s.id) AS receipt_confirmed_at, (SELECT confirmed_at FROM shipment_handover_events WHERE shipment_id=s.id AND kind='delivery') AS rider_reported_at, (SELECT id FROM food_orders WHERE shipment_id=s.id) AS food_order_id, (SELECT phone FROM users WHERE id=s.rider_id) AS rider_phone, q.request AS details, q.request->'pickup' AS pickup, q.request->'destination' AS destination FROM shipments s JOIN quotes q ON q.id=s.quote_id`;
   if(['customer','business'].includes(actor.kind)||(actor.kind==='company'&&asClient))return (await db.query(`${baseQuery} WHERE s.customer_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows.map(r=>hideEndedContacts(actor,r));
   if(actor.kind==='rider')return (await db.query(`${baseQuery} WHERE s.rider_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows.map(r=>hideEndedContacts(actor,r));
   if(actor.kind==='company')return (await db.query(`${baseQuery} JOIN companies c ON c.id=s.company_id WHERE c.owner_id=$1 ORDER BY s.created_at DESC LIMIT 100`,[actor.id])).rows.map(r=>hideEndedContacts(actor,r));
   await permission(db,actor,'shipments:read');return (await db.query(`${baseQuery} ORDER BY s.created_at DESC LIMIT 100`)).rows;
  },
- async challenge(actor,sid,purpose){check(['pickup','delivery','return'].includes(purpose),400);check(sms,503,'SMS adapter unavailable');
+ async confirmReceipt(actor,sid,input){
+  z.object({received:z.literal(true)}).strict().parse(input);
+  check(['customer','business','company'].includes(actor?.kind)&&!actor?.api_client_id,403,'Booking customer required');
+  return db.tx(async c=>{
+   const shipment=await locked(c,sid);
+   check(shipment.customer_id===actor.id,403,'Only the booking customer can acknowledge receipt');
+   check(shipment.state==='COMPLETED',409,'Delivery must be reported complete before receipt acknowledgement');
+   const inserted=await c.query('INSERT INTO shipment_receipt_confirmations(shipment_id,customer_id) VALUES($1,$2) ON CONFLICT(shipment_id) DO NOTHING RETURNING confirmed_at',[sid,actor.id]);
+   if(inserted.rowCount){
+    await audit(c,actor.id,'shipment.customer_receipt_acknowledged',sid);
+   }
+   const row=inserted.rows[0]||(await c.query('SELECT confirmed_at FROM shipment_receipt_confirmations WHERE shipment_id=$1 AND customer_id=$2',[sid,actor.id])).rows[0];
+   check(row,409,'Receipt acknowledgement belongs to another account');
+   return {received:true,duplicate:!inserted.rowCount,confirmedAt:row.confirmed_at};
+  });
+ },
+ async challenge(actor,sid,purpose){check(allowLegacySmsHandover(),410,'SMS handover verification is disabled; update the rider app');check(['pickup','delivery','return'].includes(purpose),400);check(sms,503,'SMS adapter unavailable');
   const code=newCode(),cid=id();
   const resolveChallengeRecipient=async c=>{
    const s=await locked(c,sid);
@@ -705,6 +814,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    return {shipmentId:sid,recipientPhone:p,changed:true,deliveryCodeCancelled:cancelled>0};
   });
  },
+ async handover(actor,sid,input){return handover(actor,sid,input);},
  async verify(actor,sid,input){const v=z.object({challengeId:uuid.optional(),code:z.string().regex(/^\d{6}$/)}).strict().parse(input);
   const result=await db.tx(async c=>{await rider(c,actor);const s=await locked(c,sid);check(s.rider_id===actor.id,403,'Assigned rider required');
    const ch=(v.challengeId?await c.query('SELECT *,expires_at>now() AS live FROM challenges WHERE id=$1 AND shipment_id=$2 AND rider_id=$3 FOR UPDATE',[v.challengeId,sid,actor.id]):await c.query('SELECT *,expires_at>now() AS live FROM challenges WHERE shipment_id=$1 AND rider_id=$2 AND sent=true AND consumed_at IS NULL AND expires_at>now() AND attempts<5 ORDER BY created_at DESC LIMIT 1 FOR UPDATE',[sid,actor.id])).rows[0];
@@ -725,64 +835,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
      for(const risk of signals.signals)await c.query('INSERT INTO operational_risk_signals(rider_id,shipment_id,signal_code,severity,evidence) VALUES($1,$2,$3,$4,$5)',[actor.id,sid,risk.code,risk.severity,JSON.stringify({challengeId:ch.id,attempts:ch.attempts+1})]);
     }return {invalid:true};}
    await c.query('UPDATE challenges SET consumed_at=now() WHERE id=$1',[ch.id]);
-   if(ch.purpose==='return'){
-    await c.query("UPDATE shipments SET state='RETURNED' WHERE id=$1",[sid]);
-    const returning=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
-    if(returning)await c.query('UPDATE rider_dispatch_plans SET stops=$2,revision=revision+1,updated_at=now() WHERE rider_id=$1',[actor.id,JSON.stringify(removeShipment(returning.stops,sid))]);
-    await c.query('DELETE FROM dispatch_commitments WHERE shipment_id=$1',[sid]);
-    await c.query('DELETE FROM locations WHERE shipment_id=$1',[sid]);
-    await settleReturnedParcel(c,s);
-    await audit(c,actor.id,'return.verified',sid);await event(c,sid,'RETURNED');
-    return {ok:true};
-   }
-   // Each parcel has its own custody and recipient OTP. Advancing one stop never advances another.
-   const plan=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
-   if(plan){const updated=removeStop(plan.stops,sid,ch.purpose==='pickup'?'pickup':'dropoff');
-    check(updated.length===plan.stops.length-1,409,'Route manifest stop missing');
-    await c.query('UPDATE rider_dispatch_plans SET stops=$2,revision=revision+1,updated_at=now() WHERE rider_id=$1',[actor.id,JSON.stringify(updated)]);
-   }
-   if(ch.purpose==='pickup'){
-    if(s.payment_method==='CASH'&&s.cash_payer==='sender')check(await senderCashCollectedInFull(c,sid,s.amount_minor),409,'Full sender cash collection required before normal pickup; report shortfall and use dispute/exception flow');
-    await c.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[sid]);
-    await c.query("UPDATE food_orders SET state='IN_TRANSIT', updated_at=now() WHERE shipment_id=$1 AND state IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')",[sid]);
-    await c.query(
-     `INSERT INTO locations(shipment_id,rider_id,latitude,longitude,updated_at)
-      SELECT $1,$2,ST_Y(current_position::geometry),ST_X(current_position::geometry),COALESCE(position_at,now())
-      FROM riders WHERE id=$2 AND current_position IS NOT NULL
-      ON CONFLICT(shipment_id) DO UPDATE SET rider_id=EXCLUDED.rider_id,latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,updated_at=EXCLUDED.updated_at`,
-     [sid,actor.id]
-    );
-   }
-   else {
-    if(s.payment_method==='CASH'){
-     const collection=await cashCollectionFor(c,sid,actor.id);
-     check(collection&&collection.reported_status==='reported_full'&&Number(collection.reported_minor)===Number(s.amount_minor),409,'Full cash collection report required for normal handover. Open a payment dispute or exception/return flow for unpaid or partial cash.');
-    }else check(s.paid,409,'Digital payment must be verified');
-    await c.query("UPDATE shipments SET state='COMPLETED',completed_at=now() WHERE id=$1",[sid]);
-    await c.query('DELETE FROM locations WHERE shipment_id=$1',[sid]);
-    const fo=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1 FOR UPDATE',[sid])).rows[0];
-    if(fo){
-     const food=fo;
-     await requireFoodPayment(c,food);
-     await c.query("UPDATE food_orders SET state='DELIVERED', payment_status='PAID', completed_at=now(), updated_at=now() WHERE id=$1",[fo.id]);
-     const grossSales=Number(fo.subtotal_minor);
-     const commBps=Number(fo.food_commission_bps);
-     const commMinor=Number(fo.food_commission_minor);
-     const restDiscount=Math.min(Number(fo.restaurant_funded_discount_minor||0),Math.max(0,grossSales-commMinor));
-     const elesendSubsidy=Number(fo.elesend_funded_discount_minor||0);
-     const netPayable=Math.max(0,grossSales-restDiscount-commMinor);
-     const commBasis=fo.commission_calculation_basis||'gross_subtotal';
-     const commBase=Number(fo.commission_base_minor??grossSales);
-     await accrueRestaurantSettlement(c,{orderId:fo.id,restaurantId:fo.restaurant_id,grossSales,restDiscount,elesendSubsidy,commBps,commMinor,netPayable,commBasis,commBase,commissionSnapshot:fo.commission_snapshot,promotionSnapshot:fo.promotion_snapshot});
-     await promotionEngine(db).finalizeOrderPromotions(c,fo.id);
-    }
-    await recordFinancialEntry(c,{shipment:{...s,id:sid},beneficiaryId:s.company_id??actor.id});
-    // One settlement path: exactly-once commission/earnings posting plus automatic debt recovery,
-    // inside this same OTP-verified completion transaction.
-    await settleCompletedDelivery(c,s);
-   }
-   const waitingFee=await chargeWaiting(c,s,ch.purpose);
-   await audit(c,actor.id,ch.purpose+'.verified',sid);await event(c,sid,ch.purpose==='delivery'?'completed':'pickup_verified');return {ok:true,...(waitingFee?{waitingFee}:{})};
+   return applyHandover(c,actor,s,sid,ch.purpose,'otp');
   });check(!result.invalid,400,'Incorrect code');return result;
  },
  /** What cancelling costs right now, so the customer sees it before deciding. */
@@ -813,14 +866,14 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     foOwnerReturned=Boolean(foOwner);
     if(foOwner)check(actor?.kind==='admin'||foOwner.owner_id===actor?.id,403,'Only restaurant owner or administrator may confirm physical return');
     else{
-     check(actor?.kind==='admin',409,'The sender must confirm the return with their SMS code');
+     check(actor?.kind==='admin',409,'Only the sender or administrator may confirm this return');
      // A rider under a missing-parcel incident is paid only if it was cleared as a false alarm.
      check(!(await c.query("SELECT 1 FROM parcel_custody_incidents WHERE shipment_id=$1 AND outcome IS DISTINCT FROM 'false_alarm'",[sid])).rowCount,409,'This parcel has a missing-parcel incident');
     }
    }else{
     check(s.rider_id===actor.id,403,'Assigned rider required');
     // Before pickup nothing was carried, so the job is released rather than charged as a failed delivery.
-    if(v.action==='return'&&!(await c.query('SELECT 1 FROM food_orders WHERE shipment_id=$1',[sid])).rowCount)check((await c.query("SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[sid])).rowCount,409,'This parcel was never picked up. Release the job instead');
+    if(v.action==='return'&&!(await c.query('SELECT 1 FROM food_orders WHERE shipment_id=$1',[sid])).rowCount)check((await c.query("SELECT 1 FROM shipment_handover_events WHERE shipment_id=$1 AND kind='pickup' UNION SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[sid])).rowCount,409,'This parcel was never picked up. Release the job instead');
    }
    if(v.action!=='start')check(v.reason,400,'Reason required');
    // Without a fee the rider is released from the order. With one, they stay on it so the fee reaches them.

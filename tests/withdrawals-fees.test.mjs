@@ -298,7 +298,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await db.query("UPDATE shipments SET state='PICKUP_VERIFIED' WHERE id=$1",[failed_parcel]);
   await app.transition(returning,failed_parcel,{action:'fail',reason:'Recipient unreachable'});
   await app.transition(returning,failed_parcel,{action:'return',reason:'Returning to sender'});
-  await assert.rejects(app.transition(returning,failed_parcel,{action:'returned',reason:'Rider alone says so'}),/SMS code/);
+  await assert.rejects(app.transition(returning,failed_parcel,{action:'returned',reason:'Rider alone says so'}),/sender or administrator/);
   await assert.rejects(app.dispute({id:customer,kind:'customer'},failed_parcel,{category:'lost',detail:'Please refund this order',requestedRefundMinor:1000}),/not refunded/);
   const returnChallenge=await app.challenge(returning,failed_parcel,'return');
   assert.equal(outbox.at(-1).phone,(await db.query('SELECT phone FROM users WHERE id=$1',[customer])).rows[0].phone);

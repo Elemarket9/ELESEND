@@ -625,7 +625,7 @@ test('SMS Adapters, Notification Worker Receipt Integrity & Mobile Push Channel 
     assert.match(verifyScript, /DROP DATABASE IF EXISTS \\"\$\{verify_db\}\\"/, 'verify-backup.sh must drop the isolated verification database in cleanup');
   });
 
-  await t.test('8. Food ordering & checkout initiation require custody-verification SMS, while preserving history and refunds during SMS outages', async () => {
+  await t.test('8. Food ordering and checkout no longer depend on custody SMS, while history survives SMS outages', async () => {
     const customer = { id: '00000000-0000-4000-8000-0000000000c1', kind: 'customer', phone: '+233240000111' };
     const restId = '00000000-0000-4000-8000-0000000000d1';
     const itemId = '00000000-0000-4000-8000-0000000000e1';
@@ -662,8 +662,8 @@ test('SMS Adapters, Notification Worker Receipt Integrity & Mobile Push Channel 
           deliveryLongitude: -0.18,
           customerPhone: '0241234567'
         }),
-      err => err?.status === 503 && /custody-verification SMS unavailable/i.test(err.message),
-      'quoteFoodOrder must reject with 503 when custody-verification SMS is unconfigured'
+      err => !/custody-verification SMS unavailable/i.test(String(err?.message)),
+      'quoteFoodOrder must not be blocked solely because delivery SMS is unavailable'
     );
 
     await assert.rejects(
@@ -680,8 +680,8 @@ test('SMS Adapters, Notification Worker Receipt Integrity & Mobile Push Channel 
           },
           { paymentMethod: 'MOMO', idempotencyKey: 'food-no-sms-key-1' }
         ),
-      err => err?.status === 503 && /custody-verification SMS unavailable/i.test(err.message),
-      'createFoodOrder must reject with 503 when custody-verification SMS is unconfigured'
+      err => !/custody-verification SMS unavailable/i.test(String(err?.message)),
+      'createFoodOrder must not be blocked solely because delivery SMS is unavailable'
     );
 
     const checkoutWithoutSms = checkoutService(mockDb, {
@@ -698,8 +698,8 @@ test('SMS Adapters, Notification Worker Receipt Integrity & Mobile Push Channel 
     });
     await assert.rejects(
       () => checkoutWithoutSms.initiate(customer, shipmentId, { idempotencyKey: 'pay-no-sms-key-1' }),
-      err => err?.status === 503 && /custody-verification SMS unavailable/i.test(err.message),
-      'checkout.initiate must reject with 503 when custody-verification SMS is unconfigured'
+      err => !/custody-verification SMS unavailable/i.test(String(err?.message)),
+      'checkout.initiate must not be blocked solely because delivery SMS is unavailable'
     );
 
     // History access remains available during SMS outages
