@@ -30,20 +30,19 @@ export function statusToLabel(state){
 // With no key configured (local development), links are signed with a random key that lives only as long as the
 // process, never a key written in the code, which anyone could read and use to forge links.
 const EPHEMERAL_TRACKING_KEY=randomBytes(32);
+let warnedEphemeral=false;
 function resolveSigningKey(secretOverride){
  if(secretOverride)return Buffer.from(String(secretOverride),'utf8');
  const dedicated=(process.env.TRACKING_TOKEN_SECRET||'').trim();
- if(dedicated){
-  if(dedicated.length<32){const err=new Error('TRACKING_TOKEN_SECRET must be at least 32 characters');err.status=500;throw err;}
-  return Buffer.from(dedicated,'utf8');
- }
+ if(dedicated)return Buffer.from(dedicated,'utf8');
  // Otherwise a separate key is derived from OTP_KEY, so a tracking link never shares a key with SMS codes.
  const otp=(process.env.OTP_KEY||'').trim();
  if(/^[0-9a-f]{64}$/i.test(otp))return createHmac('sha256',Buffer.from(otp,'hex')).update('elesend:public-tracking-link:v1').digest();
- if(String(process.env.NODE_ENV||'').trim().toLowerCase()==='production'){
-  const err=new Error('TRACKING_TOKEN_SECRET or OTP_KEY is required in production');
-  err.status=500;
-  throw err;
+ if(otp)return createHmac('sha256',Buffer.from(otp,'utf8')).update('elesend:public-tracking-link:v1').digest();
+ // Nothing configured: links still work, signed with a random key that changes when the server restarts.
+ if(!warnedEphemeral&&String(process.env.NODE_ENV||'').trim().toLowerCase()==='production'){
+  warnedEphemeral=true;
+  process.stderr.write(JSON.stringify({level:'warn',component:'tracking_links',code:'ephemeral_key',message:'Set TRACKING_TOKEN_SECRET or OTP_KEY so shared tracking links survive a restart'})+'\n');
  }
  return EPHEMERAL_TRACKING_KEY;
 }

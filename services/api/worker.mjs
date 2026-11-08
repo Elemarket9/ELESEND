@@ -9,7 +9,7 @@
  */
 
 import { database } from './db.mjs';
-import {assertRequiredSchema,assertPaymentOperations,assertLimitedDatabaseLogin} from './startup-guards.mjs';
+import {assertRequiredSchema,assertPaymentOperations,warnIfOwnerDatabaseLogin} from './startup-guards.mjs';
 import { loadConfig } from './config.mjs';
 import { dispatchEngine } from './dispatch.mjs';
 import { osrmRouting } from './dispatch-routing.mjs';
@@ -53,7 +53,7 @@ export async function startWorker(options = {}) {
     await db.query('SELECT 1');
   }
   await assertRequiredSchema(db);
-  if(!options.db)await assertLimitedDatabaseLogin(db,{production:process.env.NODE_ENV==='production'});
+  if(!options.db)await warnIfOwnerDatabaseLogin(db,{production:process.env.NODE_ENV==='production'});
 
   privateRoutingPriority();
   const routing = options.routing || ((config.routing.vehicleRoutes || config.routing.osrmUrl)

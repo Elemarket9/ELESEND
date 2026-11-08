@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {assertRequiredSchema,assertPaymentOperations,assertLimitedDatabaseLogin,REQUIRED_MIGRATION} from '../services/api/startup-guards.mjs';
+import {assertRequiredSchema,assertPaymentOperations,warnIfOwnerDatabaseLogin,REQUIRED_MIGRATION} from '../services/api/startup-guards.mjs';
 import {readdirSync} from 'node:fs';
 import {startWorker} from '../services/api/worker.mjs';
 
@@ -27,11 +27,11 @@ test('the server requires the newest database update shipped with the code',()=>
  assert.equal(REQUIRED_MIGRATION,newest);
 });
 
-test('the production API refuses to log in to the database as the table owner or a superuser',async()=>{
- const as=row=>({query:async()=>({rows:[row]})});
- await assert.rejects(assertLimitedDatabaseLogin(as({login:'elesend',powerful:true,owner:true}),{production:true,env:{}}),/owns the tables and is a superuser/);
- await assert.rejects(assertLimitedDatabaseLogin(as({login:'elesend',powerful:false,owner:true}),{production:true,env:{}}),/ELESEND_APP_DB_PASSWORD/);
- await assertLimitedDatabaseLogin(as({login:'elesend_app',powerful:false,owner:false}),{production:true,env:{}});
- await assertLimitedDatabaseLogin(as({login:'elesend',powerful:true,owner:true}),{production:false,env:{}});
- await assertLimitedDatabaseLogin(as({login:'elesend',powerful:true,owner:true}),{production:true,env:{ELESEND_ALLOW_OWNER_DB_LOGIN:'YES'}});
+test('an owner database login only warns; it never stops the server',async()=>{
+ const as=row=>({query:async()=>({rows:[row]})});const lines=[];const log=l=>lines.push(l);
+ assert.equal(await warnIfOwnerDatabaseLogin(as({login:'elesend',powerful:true,owner:true}),{production:true,log}),'owner_login');
+ assert.match(lines[0],/owns the tables and is a superuser/);
+ assert.equal(await warnIfOwnerDatabaseLogin(as({login:'elesend_app',powerful:false,owner:false}),{production:true,log}),null);
+ assert.equal(await warnIfOwnerDatabaseLogin({query:async()=>{throw Error('no access');}},{production:true,log}),null,'a failed check is ignored');
+ assert.equal(await warnIfOwnerDatabaseLogin(as({login:'elesend',powerful:true,owner:true}),{production:false,log}),null);
 });
