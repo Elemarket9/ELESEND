@@ -22,8 +22,10 @@ export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://ap
   check(/^[A-Za-z0-9._=-]{8,90}$/.test(reference),400,'Invalid PSP reference');
   const d=await remote('/transaction/verify/'+encodeURIComponent(reference));
   const id=d?.id;
+  check(d?.reference===reference,409,'Provider returned a different payment reference');
+  if(d?.status==='success')check(Number.isSafeInteger(Number(d?.amount)),502,'Provider amount is not an integer minor unit');
   if(production)check(d?.domain==='live',409,'Production payment is not live');
-  return {reference:d?.reference,status:d?.status,amountMinor:Number(d?.amount),currency:d?.currency,channel:d?.channel,
+  return {reference,status:d?.status,amountMinor:Number(d?.amount),currency:d?.currency,channel:d?.channel,
    eventId:(typeof id==='number'||typeof id==='string')?'psp-transaction:'+String(id):'',
    environment:d?.domain,transactionId:id};
  }
@@ -50,6 +52,7 @@ export function paystackCheckout({secretKey,fetchImpl=fetch,endpoint='https://ap
  }
  return {
   name:'paystack',methods,processingFeeBps,requiresVerifiedPhone:true,
+  secretsConfigured:true,integerMinorAmounts:true,confirmsByReference:true,webhookSignatureEnforced:true,callbackAuthenticatedByStatusQuery:true,
   /** Creates a mobile money recipient for a phone number ELESEND has already verified by SMS. */
   async createBeneficiary({phone,network,accountName}){
    const code=NETWORK_CODES[network];

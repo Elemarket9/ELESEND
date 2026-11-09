@@ -1,5 +1,20 @@
-import {check} from '../../../security.mjs';
+import {check,phone as canonicalGhanaPhone} from '../../../security.mjs';
 import {validatedCheckoutUrl} from '../checkout-policy.mjs';
+const STATUS_HOST='https://api-txnstatus.hubtel.com';
+const REFUND_HOST='https://refund-api.hubtel.com';
+const PAYOUT_HOST='https://smp.hubtel.com';
+const PAYOUT_STATUS_HOST='https://smrsc.hubtel.com';
+const CHANNELS={MTN:'mtn-gh',TELECEL:'vodafone-gh',AT:'tigo-gh'};
+/** Whole pesewas from a cedis amount, without binary floating point. */
+function pesewas(value){
+ const m=/^(\d{1,9})(?:\.(\d{1,2}))?$/.exec(String(value??'').trim());
+ return m?Number(m[1])*100+Number((m[2]??'').padEnd(2,'0')):NaN;
+}
+function cedisAmount(minor){
+ check(Number.isSafeInteger(minor)&&minor>0,400,'Invalid amount');
+ return JSON.parse(`${Math.floor(minor/100)}.${String(minor%100).padStart(2,'0')}`);
+}
+const localMsisdn=value=>{try{return canonicalGhanaPhone(value).slice(1);}catch{return null;}};
 
 /**
  * Hubtel Merchant Payment & Online Checkout Adapter
@@ -14,6 +29,7 @@ export function hubtelCheckout({
  clientId,
  clientSecret,
  merchantAccountNumber,
+ disbursementAccountNumber,
  fetchImpl = fetch,
  endpoint = process.env.HUBTEL_PAYMENT_ENDPOINT || 'https://payproxyapi.hubtel.com',
  allowedHost = 'payproxyapi.hubtel.com',
@@ -25,7 +41,10 @@ export function hubtelCheckout({
 } = {}) {
  check(typeof clientId === 'string' && clientId.trim().length > 0, 503, 'Hubtel ClientId required');
  check(typeof clientSecret === 'string' && clientSecret.trim().length > 0, 503, 'Hubtel ClientSecret required');
- check(merchantAccountNumber != null && String(merchantAccountNumber).trim().length > 0, 503, 'Hubtel Merchant Account Number required');
+ check(merchantAccountNumber != null && String(merchantAccountNumber).trim().length > 0, 503, 'Collection account number required');
+ check(disbursementAccountNumber != null && String(disbursementAccountNumber).trim().length > 0, 503, 'Disbursement account number required');
+ const collectionAccount=String(merchantAccountNumber).trim();
+ const disbursementAccount=String(disbursementAccountNumber).trim();
  const base=new URL(endpoint);
  check(base.protocol==='https:'&&base.hostname===allowedHost&&!base.username&&!base.password&&!base.search&&!base.hash&&!base.port,500,'Unapproved payment API endpoint');
  endpoint=base.toString().replace(/\/$/,'');
@@ -63,46 +82,79 @@ export function hubtelCheckout({
   }
  }
 
+ async function ask(url, options={}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+   const response = await fetchImpl(url, {
+    ...options,
+    headers: {Authorization: `Basic ${basicAuth}`, Accept: 'application/json', 'Content-Type': 'application/json', ...options.headers},
+    signal: controller.signal,
+    redirect: 'error'
+   });
+   let raw = null;
+   try { raw = await response.json(); } catch { raw = null; }
+   return {ok: response.ok, status: response.status, raw};
+  } finally { clearTimeout(timer); }
+ }
+ function channelOf(data) {
+  const rawChannel = String(data?.paymentMethod || data?.PaymentDetails?.Channel || data?.PaymentType || data?.channel || data?.Channel || '').toLowerCase();
+  if (rawChannel.includes('card') || rawChannel.includes('visa') || rawChannel.includes('mastercard')) return 'card';
+  if (rawChannel.includes('qr')) return 'qr';
+  return 'mobile_money';
+ }
+ async function collectionStatus(reference) {
+  const url = `${STATUS_HOST}/transactions/${encodeURIComponent(collectionAccount)}/status?clientReference=${encodeURIComponent(reference)}`;
+  const {ok, status, raw} = await ask(url, {method: 'GET'});
+  if (status === 404) return {state: 'not_found'};
+  check(ok && raw && typeof raw === 'object', 502, 'Payment status lookup failed');
+  const data = raw.data || raw.Data;
+  if (!data || typeof data !== 'object') return {state: 'pending'};
+  const returned = data.clientReference ?? data.ClientReference;
+  check(returned === reference, 409, 'Provider returned a different payment reference');
+  const amountMinor = pesewas(data.amount ?? data.Amount);
+  const statusName = String(data.status ?? data.Status ?? '').toLowerCase();
+  const state = statusName === 'paid' ? 'success' : statusName === 'refunded' ? 'refunded' : 'pending';
+  if (state === 'success' || state === 'refunded') check(Number.isSafeInteger(amountMinor), 502, 'Provider amount is not an integer minor unit');
+  const statedCurrency = data.currencyCode || data.CurrencyCode;
+  if (statedCurrency) check(statedCurrency === 'GHS', 409, 'Provider currency is not GHS');
+  return {state, amountMinor, currency: 'GHS', transactionId: String(data.transactionId || data.TransactionId || ''), channel: channelOf(data), environment: production ? 'live' : 'test'};
+ }
  async function verifyPayment(reference) {
   check(typeof reference === 'string' && /^[A-Za-z0-9._=-]{8,90}$/.test(reference), 400, 'Invalid payment reference');
+  const found = await collectionStatus(reference);
+  if (found.state === 'not_found') return {reference, status: 'pending', currency: 'GHS', channel: 'mobile_money', amountMinor: 0, eventId: '', environment: production ? 'live' : 'test'};
+  return {reference, status: found.state === 'refunded' ? 'refunded' : found.state, amountMinor: found.amountMinor, currency: 'GHS', channel: found.channel, transactionId: found.transactionId, eventId: found.transactionId ? `hubtel-transaction:${found.transactionId}` : '', environment: found.environment};
+ }
 
-  // Query Hubtel transaction status endpoint
-  const data = await remote('/transaction/status', {
-   method: 'POST',
-   body: JSON.stringify({
-    ClientReference: reference
-   })
-  });
-
-  const rawStatus = (data?.Status || data?.status || '').toLowerCase();
-  const isPaid = rawStatus === 'success';
-
-  // Normalize channel: mtn-gh, telecel-gh, tigo-gh, mobilemoney -> mobile_money
-  const rawChannel = (data?.PaymentDetails?.Channel || data?.PaymentType || data?.channel || 'mobile_money').toLowerCase();
-  const channel = rawChannel.includes('card') || rawChannel.includes('visa') || rawChannel.includes('mastercard')
-   ? 'card'
-   : rawChannel.includes('qr')
-   ? 'qr'
-   : 'mobile_money';
-
-  const amountGhs = Number(data?.Amount || data?.amount || data?.AmountCharged || 0);
-  const amountMinor = Math.round(amountGhs * 100);
-  const transactionId = data?.TransactionId || data?.ExternalTransactionId || data?.transactionId || '';
-
-  return {
-   reference: data?.ClientReference || reference,
-   status: isPaid ? 'success' : rawStatus || 'pending',
-   amountMinor,
-   currency: 'GHS',
-   channel,
-   eventId: transactionId ? `hubtel-transaction:${transactionId}` : '',
-   environment: production ? 'live' : 'test'
-  };
+ const payoutReference = requestId => requestId.replaceAll('-', '');
+ const parseRecipient = value => {
+  const m = /^hubtel:(mtn-gh|vodafone-gh|tigo-gh):(233\d{9})$/.exec(String(value ?? ''));
+  return m && {channel: m[1], msisdn: m[2]};
+ };
+ async function payoutStatus(reference) {
+  const url = `${PAYOUT_STATUS_HOST}/api/merchants/${encodeURIComponent(disbursementAccount)}/transactions/status?clientReference=${encodeURIComponent(reference)}`;
+  const {ok, status, raw} = await ask(url, {method: 'GET'});
+  if (status === 404) return {state: 'not_found'};
+  check(ok && raw && typeof raw === 'object', 502, 'Payout status lookup failed');
+  const data = raw.Data || raw.data;
+  if (!data || typeof data !== 'object') return {state: 'pending'};
+  check((data.ClientReference ?? data.clientReference) === reference, 409, 'Provider returned a different payment reference');
+  const amountMinor = pesewas(data.Amount ?? data.amount);
+  const statusName = String(data.transactionStatus ?? data.TransactionStatus ?? '').toLowerCase();
+  const state = statusName === 'success' ? 'success' : ['failed', 'rejected'].includes(statusName) ? 'failed' : 'pending';
+  if (state === 'success') check(Number.isSafeInteger(amountMinor), 502, 'Provider amount is not an integer minor unit');
+  return {state, amountMinor, transactionId: String(data.TransactionId || data.transactionId || '')};
  }
 
  return {
   name: 'hubtel',
   payerFields: [],
+  secretsConfigured: true,
+  integerMinorAmounts: true,
+  confirmsByReference: true,
+  webhookSignatureEnforced: false,
+  callbackAuthenticatedByStatusQuery: true,
   commissionIntentId(record){const ref=typeof record==='string'?record:record?.reference||'';const m=/^escomm_([0-9a-f]{32})$/.exec(ref);if(!m)return null;const h=m[1];return [h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');},
   methods,
   allowedCheckoutHosts: ['checkout.hubtel.com', 'payproxyapi.hubtel.com'],
@@ -112,7 +164,7 @@ export function hubtelCheckout({
    check(currency === 'GHS' && Number.isSafeInteger(amountMinor) && amountMinor > 0, 400, 'Invalid GHS checkout amount');
    check(/^[A-Za-z0-9._=-]{8,90}$/.test(reference), 400, 'Invalid checkout reference');
 
-   const amountGhs = Number((amountMinor / 100).toFixed(2));
+   const amountGhs = cedisAmount(amountMinor);
    check(safeCallbackBase && safeReturnBase, 500, 'Hubtel checkout requires callback and return URLs');
    const callbackUrl = `${safeCallbackBase}/api/v1/payments/webhook`;
    const returnUrl = `${safeReturnBase}/checkout/complete?ref=${encodeURIComponent(reference)}`;
@@ -123,7 +175,7 @@ export function hubtelCheckout({
     description: `ELESEND Delivery Booking ${reference}`,
     callbackUrl,
     returnUrl,
-    merchantAccountNumber: String(merchantAccountNumber),
+    merchantAccountNumber: collectionAccount,
     cancellationUrl,
     clientReference: reference
    };
@@ -149,7 +201,7 @@ export function hubtelCheckout({
    check(currency === 'GHS' && Number.isSafeInteger(amountMinor) && amountMinor > 0, 400, 'Invalid GHS amount');
 
    const reference = 'escomm_' + intentId.replaceAll('-', '');
-   const amountGhs = Number((amountMinor / 100).toFixed(2));
+   const amountGhs = cedisAmount(amountMinor);
    check(safeCallbackBase && safeReturnBase, 500, 'Hubtel settlement requires callback and return URLs');
    const callbackUrl = `${safeCallbackBase}/api/v1/payments/webhook`;
 
@@ -158,7 +210,7 @@ export function hubtelCheckout({
     description: `ELESEND Commission Settlement ${reference}`,
     callbackUrl,
     returnUrl: `${safeReturnBase}/settlement/complete?ref=${encodeURIComponent(reference)}`,
-    merchantAccountNumber: String(merchantAccountNumber),
+    merchantAccountNumber: collectionAccount,
     cancellationUrl: `${safeCancelBase || safeReturnBase}/settlement/cancelled?ref=${encodeURIComponent(reference)}`,
     clientReference: reference
    };
@@ -202,17 +254,73 @@ export function hubtelCheckout({
    try {
     incoming = JSON.parse(rawBody.toString('utf8'));
    } catch {
-    check(false, 400, 'Invalid JSON in Hubtel webhook');
+    check(false, 400, 'Invalid JSON in payment callback');
    }
-
-   // Extract reference from Hubtel callback structure
-   const ref = incoming?.Data?.ClientReference || incoming?.ClientReference || incoming?.Data?.clientReference;
-   check(typeof ref === 'string' && /^[A-Za-z0-9._=-]{8,90}$/.test(ref), 400, 'Invalid reference in Hubtel webhook payload');
-
-   // Security Rule: Never trust webhook payload alone; verify out-of-band with Hubtel Status API
+   // The published callback contract has no signature. Amount and status in this body are ignored.
+   // Only a checkout reference is taken, and the payment is read back by that reference.
+   const ref = incoming?.Data?.ClientReference || incoming?.data?.clientReference || incoming?.ClientReference;
+   if (typeof ref !== 'string' || !/^es(?:comm)?_[A-Za-z0-9._=-]{8,80}$/.test(ref)) return null;
    const verified = await verifyPayment(ref);
-   if (production) check(verified.environment === 'live', 409, 'Production Hubtel transaction is not live');
-   return verified;
+   if (production) check(verified.environment === 'live', 409, 'Production payment is not live');
+   return verified.status === 'success' ? verified : null;
+  },
+  async createBeneficiary({phone, network}) {
+   const channel = CHANNELS[network];
+   const msisdn = localMsisdn(phone);
+   check(channel, 400, 'Unsupported mobile money network');
+   check(msisdn, 400, 'Valid mobile money number required');
+   return {recipientReference: `hubtel:${channel}:${msisdn}`};
+  },
+  async verifyBeneficiary({beneficiaryId, recipientReference, verifiedPhone}) {
+   const recipient = parseRecipient(recipientReference);
+   const phone = localMsisdn(verifiedPhone);
+   return {verified: Boolean(recipient && phone && recipient.msisdn === phone), beneficiaryId, recipientReference};
+  },
+  async createPayout({requestId, recipientReference, amountMinor, currency}) {
+   check(safeCallbackBase, 500, 'Payout requires a callback URL');
+   check(/^[0-9a-f-]{36}$/.test(requestId), 400, 'Invalid payout request');
+   check(currency === 'GHS' && Number.isSafeInteger(amountMinor) && amountMinor > 0, 400, 'Invalid payout amount');
+   const recipient = parseRecipient(recipientReference);
+   check(recipient, 400, 'Invalid payout recipient');
+   const reference = payoutReference(requestId);
+   const url = `${PAYOUT_HOST}/api/merchants/${encodeURIComponent(disbursementAccount)}/send/mobilemoney`;
+   const {ok, raw} = await ask(url, {method: 'POST', body: JSON.stringify({
+    RecipientName: 'ELESEND payout', RecipientMsisdn: recipient.msisdn, Channel: recipient.channel,
+    Amount: cedisAmount(amountMinor), Description: 'ELESEND payout', ClientReference: reference,
+    PrimaryCallbackURL: `${safeCallbackBase}/api/v1/payments/webhook`
+   })});
+   check(ok && raw?.ResponseCode === '0001', 502, 'Payout was not accepted');
+   check(raw?.Data?.ClientReference === reference, 409, 'Provider returned a different payment reference');
+   return {providerId: raw.Data?.TransactionId ?? null};
+  },
+  async verifyPayout({requestId, recipientReference, amountMinor, currency}) {
+   check(/^[0-9a-f-]{36}$/.test(requestId), 400, 'Invalid payout request');
+   const reference = payoutReference(requestId);
+   const out = await payoutStatus(reference);
+   if (out.state === 'not_found') return {verified: false, type: 'payout', provider: 'hubtel', status: 'not_found', requestId};
+   if (out.state === 'success') check(out.amountMinor === amountMinor && currency === 'GHS', 409, 'Payout amount mismatch');
+   return {verified: true, type: 'payout', provider: 'hubtel', status: out.state === 'success' ? 'paid' : out.state, reversed: false, requestId, recipientReference,
+    providerId: out.transactionId || null, amountMinor, currency, eventId: out.transactionId ? `transfer:${out.transactionId}${out.state === 'failed' ? ':failed' : ''}` : '',
+    ...(out.state === 'failed' ? {failureReason: 'Provider reported the transfer failed'} : {})};
+  },
+  async createRefund({requestId, reference, amountMinor, currency}) {
+   check(/^[0-9a-f-]{36}$/.test(requestId), 400, 'Invalid refund request');
+   check(currency === 'GHS' && Number.isSafeInteger(amountMinor) && amountMinor > 0, 400, 'Invalid refund amount');
+   const paid = await verifyPayment(reference);
+   check(paid.status === 'success' && paid.transactionId, 409, 'Refund needs a confirmed payment');
+   check(paid.amountMinor === amountMinor, 409, 'Refund amount must match the confirmed payment');
+   const url = `${REFUND_HOST}/refund/${encodeURIComponent(collectionAccount)}/order/${encodeURIComponent(paid.transactionId)}`;
+   const {ok, status, raw} = await ask(url, {method: 'POST', body: JSON.stringify({callbackUrl: `${safeCallbackBase}/api/v1/payments/webhook`})});
+   if (status === 423 || raw?.responseCode === '4515') return {providerId: paid.transactionId};
+   check(ok && raw?.responseCode === '0001', 502, 'Refund was not accepted');
+   return {providerId: raw.data?.orderId || paid.transactionId};
+  },
+  async verifyRefund({requestId, reference, amountMinor, currency}) {
+   check(/^[0-9a-f-]{36}$/.test(requestId), 400, 'Invalid refund request');
+   const found = await collectionStatus(reference);
+   if (found.state !== 'refunded') return {verified: true, type: 'refund', provider: 'hubtel', status: 'pending', requestId, reference};
+   check(found.amountMinor === amountMinor && currency === 'GHS', 409, 'Refund amount mismatch');
+   return {verified: true, type: 'refund', provider: 'hubtel', status: 'refunded', requestId, reference, providerId: found.transactionId, amountMinor, currency, eventId: found.transactionId ? `refund:${found.transactionId}` : ''};
   }
  };
 }

@@ -16,10 +16,14 @@ test('schema guard rejects outdated workers before starting background jobs',asy
 
 test('production rejects incomplete financial adapters and accepts complete adapters',()=>{
  assert.throws(()=>assertPaymentOperations({name:'limited',createCheckout(){},verifyPayment(){}},{production:true}),/createRefund.*verifyRefund.*verifyBeneficiary.*createPayout.*verifyPayout/);
- const provider={name:'complete'};
- for(const name of ['createCheckout','verifyPayment','createRefund','verifyRefund','verifyBeneficiary','createPayout','verifyPayout'])provider[name]=async()=>{};
+ const provider={name:'complete',secretsConfigured:true,integerMinorAmounts:true,confirmsByReference:true,webhookSignatureEnforced:true};
+ for(const name of ['createCheckout','verifyPayment','createRefund','verifyRefund','verifyBeneficiary','createPayout','verifyPayout','parseVerifiedWebhook'])provider[name]=async()=>{};
  assert.doesNotThrow(()=>assertPaymentOperations(provider,{production:true}));
- assert.throws(()=>assertPaymentOperations({...provider,name:'hubtel'},{production:true}),/hubtel cannot be used in production/);
+ assert.throws(()=>assertPaymentOperations({...provider,webhookSignatureEnforced:false},{production:true}),/webhook or callback authentication is not enforced/);
+ assert.doesNotThrow(()=>assertPaymentOperations({...provider,name:'hubtel',webhookSignatureEnforced:false,callbackAuthenticatedByStatusQuery:true},{production:true}));
+ assert.throws(()=>assertPaymentOperations({...provider,integerMinorAmounts:false},{production:true}),/integer minor units/);
+ const unnamed=assertPaymentOperations.bind(null,{...provider,secretsConfigured:false},{production:true});
+ assert.throws(unnamed,/required payment secrets are not configured/);
  assert.doesNotThrow(()=>assertPaymentOperations(null,{production:true}));
  assert.doesNotThrow(()=>assertPaymentOperations({name:'limited'},{production:false}));
 });

@@ -15,12 +15,25 @@ export async function assertRequiredSchema(db){
  check(missing.length===0,503,`Apply migrations through ${REQUIRED_MIGRATION} before starting ELESEND.${missing.length?` Missing: ${listed}${missing.length>8?'…':''}`:''}`);
 }
 
+const PAYMENT_OPERATIONS=['createCheckout','verifyPayment','createRefund','verifyRefund','verifyBeneficiary','createPayout','verifyPayout','parseVerifiedWebhook'];
+
+/** What every configured payment adapter must satisfy before production boots. The gaps name the missing behaviour, not a vendor. */
+export function paymentContractGaps(provider){
+ if(!provider)return [];
+ const gaps=[];
+ for(const name of PAYMENT_OPERATIONS)if(typeof provider[name]!=='function')gaps.push(`missing operation ${name}`);
+ if(provider.secretsConfigured!==true)gaps.push('required payment secrets are not configured');
+ if(provider.integerMinorAmounts!==true)gaps.push('amounts are not integer minor units');
+ if(provider.confirmsByReference!==true)gaps.push('confirmed status is not tied to the queried reference');
+ // A provider with no publishable callback signature must ignore the callback body and confirm only by a reference-bound status query.
+ if(provider.webhookSignatureEnforced!==true&&provider.callbackAuthenticatedByStatusQuery!==true)gaps.push('webhook or callback authentication is not enforced');
+ return gaps;
+}
+
 export function assertPaymentOperations(provider,{production=false}={}){
  if(!production||!provider)return;
- check(provider.name!=='hubtel',503,'PAYMENT_PROVIDER=hubtel cannot be used in production. Choose paystack or gateway.');
- const required=['createCheckout','verifyPayment','createRefund','verifyRefund','verifyBeneficiary','createPayout','verifyPayout'];
- const missing=required.filter(name=>typeof provider[name]!=='function');
- check(!missing.length,503,`Payment adapter ${provider.name} lacks required operations: ${missing.join(', ')}. Configure a complete payment gateway adapter before production startup.`);
+ const gaps=paymentContractGaps(provider);
+ check(!gaps.length,503,`The configured payment adapter does not meet the production payment contract: ${gaps.join('; ')}.`);
 }
 
 const LIMITED_ROLE_HINT='Set ELESEND_APP_DB_PASSWORD, run migrations, and point DATABASE_URL (DOCKER_APP_DATABASE_URL in the runtime compose file) at the limited elesend_app role.';

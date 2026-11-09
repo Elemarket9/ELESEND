@@ -97,13 +97,16 @@ test('production starts with no provider settings',()=>{
  assert.deepEqual(r.errors,[]);assert.equal(r.ok,true);
 });
 
-test('production requires an admin host and refuses Hubtel payments',()=>{
+test('production requires an admin host and any named payment provider with its secrets',()=>{
  const missing=validateConfig({...base,ADMIN_HOST:''});
  assert.equal(missing.ok,false);
  assert.ok(missing.errors.some(e=>e.includes('ADMIN_HOST is required')));
- const hubtel=validateConfig({...base,PAYMENT_PROVIDER:'hubtel',HUBTEL_CLIENT_ID:'id',HUBTEL_CLIENT_SECRET:'secret',HUBTEL_MERCHANT_ACCOUNT_NUMBER:'1'});
- assert.equal(hubtel.ok,false);
- assert.ok(hubtel.errors.some(e=>e.includes('hubtel cannot be used in production')));
+ const hubtel=validateConfig({...base,PAYMENT_PROVIDER:'hubtel',HUBTEL_CLIENT_ID:'id',HUBTEL_CLIENT_SECRET:'secret',HUBTEL_MERCHANT_ACCOUNT_NUMBER:'1',HUBTEL_DISBURSEMENT_ACCOUNT_NUMBER:'2'});
+ assert.equal(hubtel.ok,true,hubtel.errors.join('; '));
+ assert.equal(hubtel.config.payment.provider,'hubtel');
+ const incomplete=validateConfig({...base,PAYMENT_PROVIDER:'hubtel',HUBTEL_CLIENT_ID:'id',HUBTEL_CLIENT_SECRET:'secret',HUBTEL_MERCHANT_ACCOUNT_NUMBER:'1'});
+ assert.equal(incomplete.ok,false);
+ assert.ok(incomplete.errors.some(e=>e.includes('HUBTEL_DISBURSEMENT_ACCOUNT_NUMBER')));
 });
 
 test('production still requires ELESEND own secrets',()=>{

@@ -99,6 +99,7 @@ export function moolreCheckout({apiUser,publicKey,privateKey,accountNumber,callb
 
  return {
   name:'moolre',methods,processingFeeBps,requiresVerifiedPhone:true,requiresRefundPhone:true,payerFields:[],allowedCheckoutHosts:checkoutHosts,
+  secretsConfigured:true,integerMinorAmounts:true,confirmsByReference:true,webhookSignatureEnforced:true,callbackAuthenticatedByStatusQuery:true,
   async createCheckout({reference,amountMinor,currency,method}){
    check(methods.includes(method),503,'Payment method not enabled on Moolre');
    check(/^[A-Za-z0-9._=-]{8,90}$/.test(reference),400,'Invalid checkout reference');
