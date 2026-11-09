@@ -283,6 +283,17 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   assert.equal(intent.amountMinor,1020);assert.equal(intent.processingFeeMinor,20);
   verification={reference:intent.reference,status:'success',amountMinor:1020,currency:'GHS',channel:'mobile_money',eventId:'evt_'+randomUUID()};
   assert.equal((await checkout.confirmVerified(verification)).status,'confirmed');
+  // A hosted page that cannot be limited to MOMO still applies a confirmed card payment. A provider that can limit the page does not.
+  const hostedCheckout=checkoutService(db,{provider:{name:'hostedfixture',methods:['MOMO'],hostedCheckoutChannelRestricted:false,collectableChannels:['mobile_money','card','qr'],payerFields:[],allowedCheckoutHosts:['checkout.test'],createCheckout:async x=>({reference:x.reference,checkoutUrl:'https://checkout.test/pay'}),verifyPayment:async()=>null,parseVerifiedWebhook:async()=>null}});
+  const cardPaid=await shipment(customer);
+  const cardIntent=await hostedCheckout.initiate({id:customer,kind:'customer'},cardPaid,{idempotencyKey:key()});
+  assert.equal((await hostedCheckout.confirmVerified({reference:cardIntent.reference,status:'success',amountMinor:cardIntent.amountMinor,currency:'GHS',channel:'card',eventId:'evt_'+randomUUID()})).status,'confirmed');
+  assert.equal((await db.query('SELECT paid FROM shipments WHERE id=$1',[cardPaid])).rows[0].paid,true);
+  const strictCheckout=checkoutService(db,{provider:{...psp,name:'strictfixture'}});
+  const mismatch=await shipment(customer);
+  const mismatchIntent=await strictCheckout.initiate({id:customer,kind:'customer'},mismatch,{idempotencyKey:key()});
+  assert.equal((await strictCheckout.confirmVerified({reference:mismatchIntent.reference,status:'success',amountMinor:mismatchIntent.amountMinor,currency:'GHS',channel:'card',eventId:'evt_'+randomUUID()})).status,'refund_review');
+  assert.equal((await db.query('SELECT paid FROM shipments WHERE id=$1',[mismatch])).rows[0].paid,false);
   const balances=async id=>Object.fromEntries((await db.query("SELECT l.account,sum(CASE WHEN l.side='credit' THEN amount_minor ELSE -amount_minor END)::bigint AS v FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id WHERE j.shipment_id=$1 GROUP BY l.account",[id])).rows.map(r=>[r.account,Number(r.v)]));
   let books=await balances(paidOrder);
   assert.equal(books.customer_delivery_liability,1000);assert.equal(books.customer_processing_fee_liability,20);assert.equal(books.provider_receivable,-1020);

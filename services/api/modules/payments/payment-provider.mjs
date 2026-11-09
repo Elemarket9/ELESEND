@@ -1,4 +1,5 @@
 import {check} from '../../security.mjs';
+import {confirmedRepaymentChannelAllowed} from './checkout-policy.mjs';
 import {hubtelCheckout} from './providers/hubtel-payment.mjs';
 import {paystackCheckout} from './paystack-checkout-adapter.mjs';
 import {paymentGateway} from './providers/payment-gateway.mjs';
@@ -55,7 +56,7 @@ export function paymentWebhook({db,provider,checkout,finance,money,moneyOperatio
   // Verified provider reversal of a commission repayment reinstates the debt (idempotent per event).
   if(reversal)return finance.reversed({providerName:provider.name,eventId:record.eventId,intentId,reason:record.failureReason||'Provider reversal'});
   const channels=(await db.query("SELECT repayment_channels FROM rider_wallet_policy WHERE id='default'")).rows?.[0]?.repayment_channels??['mobile_money'];
-  check(record.status==='success'&&channels.includes(record.channel),409,'Commission repayment not verified');
+  check(record.status==='success'&&confirmedRepaymentChannelAllowed(record.channel,{policyChannels:channels,provider}),409,'Commission repayment not verified');
   return finance.confirmed({providerName:provider.name,eventId:record.eventId,intentId,amountMinor:record.amountMinor,currency:record.currency});
  };
 }

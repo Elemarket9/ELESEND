@@ -51,6 +51,8 @@ export function hubtelCheckout({
 
  const basicAuth = Buffer.from(`${clientId.trim()}:${clientSecret.trim()}`).toString('base64');
  const methods = allowedMethods.filter(v => ['MOMO', 'CARD', 'QR'].includes(v));
+ // Online Checkout's initiate body has no channel field. The page offers mobile money, card, and QR.
+ const collectableChannels = ['mobile_money', 'card', 'qr'];
  const safeCallbackBase = (callbackBaseUrl || '').trim().replace(/\/$/, '');
  const safeReturnBase = (returnBaseUrl || '').trim().replace(/\/$/, '');
  const safeCancelBase = (cancellationBaseUrl || returnBaseUrl || '').trim().replace(/\/$/, '');
@@ -155,6 +157,8 @@ export function hubtelCheckout({
   confirmsByReference: true,
   webhookSignatureEnforced: false,
   callbackAuthenticatedByStatusQuery: true,
+  hostedCheckoutChannelRestricted: false,
+  collectableChannels,
   commissionIntentId(record){const ref=typeof record==='string'?record:record?.reference||'';const m=/^escomm_([0-9a-f]{32})$/.exec(ref);if(!m)return null;const h=m[1];return [h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');},
   methods,
   allowedCheckoutHosts: ['checkout.hubtel.com', 'payproxyapi.hubtel.com'],
@@ -170,6 +174,7 @@ export function hubtelCheckout({
    const returnUrl = `${safeReturnBase}/checkout/complete?ref=${encodeURIComponent(reference)}`;
    const cancellationUrl = `${safeCancelBase || safeReturnBase}/checkout/cancelled?ref=${encodeURIComponent(reference)}`;
 
+   // The selected method is checked above. It is not sent: Hubtel's initiate contract has no channel field.
    const payload = {
     totalAmount: amountGhs,
     description: `ELESEND Delivery Booking ${reference}`,
@@ -196,9 +201,11 @@ export function hubtelCheckout({
 
   verifyPayment,
 
-  async createPayment({intentId, amountMinor, currency, email}) {
+  async createPayment({intentId, amountMinor, currency, email, allowedChannels}) {
    check(/^[0-9a-f-]{36}$/.test(intentId), 400, 'Invalid commission intent');
    check(currency === 'GHS' && Number.isSafeInteger(amountMinor) && amountMinor > 0, 400, 'Invalid GHS amount');
+   if (allowedChannels !== undefined) check(Array.isArray(allowedChannels), 400, 'Invalid repayment channels');
+   // allowedChannels is the wallet policy. Initiate cannot apply it, so confirmation keeps any collected page tender.
 
    const reference = 'escomm_' + intentId.replaceAll('-', '');
    const amountGhs = cedisAmount(amountMinor);
@@ -231,8 +238,7 @@ export function hubtelCheckout({
 
   async verifyEvent({rawBody, headers}) {
    const v = await this.parseVerifiedWebhook(rawBody, headers);
-   // Channel admissibility is a business policy enforced by the finance service, not the adapter.
-   check(v?.status === 'success' && ['mobile_money', 'card'].includes(v.channel), 409, 'Commission settlement not verified');
+   check(v?.status === 'success' && collectableChannels.includes(v.channel), 409, 'Commission settlement not verified');
    const m = /^escomm_([0-9a-f]{32})$/.exec(v.reference);
    check(m, 403, 'Not a commission repayment event');
    const h = m[1];
