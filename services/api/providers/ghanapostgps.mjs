@@ -5,8 +5,10 @@ const GHANA={minLatitude:4.5,maxLatitude:11.4,minLongitude:-3.4,maxLongitude:1.4
 export function normalizeGhanaDigitalAddress(value){
  check(typeof value==='string'&&value.length<=32,400,'Enter a valid GhanaPostGPS digital address');
  const compact=value.trim().toUpperCase().replace(/[\s-]/g,'');
- check(/^[A-Z]{2}\d{7}$/.test(compact),400,'Enter a valid GhanaPostGPS digital address');
- return `${compact.slice(0,2)}-${compact.slice(2,5)}-${compact.slice(5)}`;
+ check(/^[A-Z]{2}\d{7,8}$/.test(compact),400,'Enter a valid GhanaPostGPS digital address');
+ return compact.length===10
+  ? `${compact.slice(0,2)}-${compact.slice(2,6)}-${compact.slice(6)}`
+  : `${compact.slice(0,2)}-${compact.slice(2,5)}-${compact.slice(5)}`;
 }
 
 function endpointUrl(value){

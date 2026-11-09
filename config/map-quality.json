@@ -9,7 +9,12 @@
     {"query": "Shop Rite", "first": "Shoprite"},
     {"query": "Accra Mall", "first": "Accra Mall"},
     {"query": "Kasoa new market", "first": "Kasoa"},
-    {"query": "Makola", "first": "Makola"}
+    {"query": "Makola", "first": "Makola"},
+    {"query": "Circle", "first": "Kwame Nkrumah Circle"},
+    {"query": "Korle Bu", "first": "Korle-Bu Teaching Hospital"},
+    {"query": "PRESEC", "first": "Presbyterian Boys"},
+    {"query": "Jorwulu", "first": "Dzorwulu"},
+    {"query": "Nkran", "first": "Accra"}
   ],
   "routes": [
     {"name": "RAPID Courier (Airport Domestic Terminal) to GTBank Kasoa", "from": [5.60712, -0.17167], "to": [5.5367, -0.4215], "vehicles": ["motorcycle", "car"], "minKm": 30, "maxKm": 40, "measured": "34.28 km by both profiles on 2026-11-08"},

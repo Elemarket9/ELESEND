@@ -243,10 +243,13 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    result=await ghanaPostGps(body.address);
   }
   else if(method==='GET'&&path==='/api/v1/maps/search'){
-   const q=new URL(req.url,'http://localhost').searchParams.get('q')??'';
+   const params=new URL(req.url,'http://localhost').searchParams;
+   const q=params.get('q')??'';
    check(q.length>=2,400,'Enter at least 2 characters to search');
    await limit(db,'maps-search:'+actor.id,60,60);
-   result=await searchPlaces(db,q);
+   const lat=Number(params.get('lat')),lon=Number(params.get('lon'));
+   const near=Number.isFinite(lat)&&Number.isFinite(lon)?{latitude:lat,longitude:lon}:null;
+   result=await searchPlaces(db,q,{near,ghanaPostGps});
   }
   else if(method==='GET'&&path==='/api/v1/maps/reverse'){
    const u=new URL(req.url,'http://localhost').searchParams;
@@ -390,7 +393,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
     const egiaQuery=typeof body?.query==='string'?body.query:'';
     check(egiaQuery.trim().length>=2&&egiaQuery.length<=150,400,'Search text must be 2-150 characters');
     const egiaLimit=Math.min(30,Math.max(1,Number.parseInt(body?.limit,10)||10));
-    result=await searchInformalLocation(egiaQuery,{db,userCoordinates:body?.coordinates,limit:egiaLimit});
+    result=await searchInformalLocation(egiaQuery,{db,userCoordinates:body?.coordinates,limit:egiaLimit,ghanaPostGps});
    }
    else if(method==='POST'&&path==='/api/v1/maps/egia/temporary-reference'){
     await limit(db,'temp-ref:'+actor.id,40,60);

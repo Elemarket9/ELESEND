@@ -574,26 +574,37 @@ export default function CustomerApp() {
     }
     setIsSearching(true);
     searchTimerRef.current = setTimeout(async () => {
+      const coords = detectedLocation?.coordinates;
+      const near = coords && Number.isFinite(Number(coords.latitude)) && Number.isFinite(Number(coords.longitude)) ? coords : null;
+      const params = new URLSearchParams({q: query.trim()});
+      if (near) {
+        params.set('lat', String(near.latitude));
+        params.set('lon', String(near.longitude));
+      }
       try {
-        // Try EGIA informal geocoder first (spatial_landmarks + mapped_restaurants with relative pattern matching)
-        const egiaRes = await call('POST', '/api/v1/maps/egia/search', {
-          query: query.trim(),
-          coordinates: detectedLocation?.coordinates || null,
-          limit: 8
-        });
-        const candidates = Array.isArray(egiaRes) ? egiaRes : egiaRes?.results || [];
-        if (candidates.length > 0) {
-          setPlacesList(candidates);
-          setIsSearching(false);
+        // Gazetteer ranking is authoritative. EGIA can add a restaurant that the gazetteer does not list,
+        // but a weak EGIA hit must not hide the ranked list.
+        const [egiaRes, gazRes] = await Promise.all([
+          call('POST', '/api/v1/maps/egia/search', {query: query.trim(), coordinates: near, limit: 8}).catch(() => []),
+          call('GET', `/api/v1/maps/search?${params.toString()}`).catch(() => [])
+        ]);
+        const egiaList = Array.isArray(egiaRes) ? egiaRes : (egiaRes?.results || []);
+        const gazList = Array.isArray(gazRes) ? gazRes : (gazRes?.results || []);
+        const digital = [...gazList, ...egiaList].find(row => row?.type === 'digital_address' && Number.isFinite(Number(row.latitude)))
+          || [...gazList, ...egiaList].find(row => row?.type === 'digital_address');
+        if (digital) {
+          setPlacesList([digital]);
           return;
         }
-      } catch {}
-
-      // Fallback to in-memory national gazetteer search
-      try {
-        const res = await call('GET', `/api/v1/maps/search?q=${encodeURIComponent(query.trim())}`);
-        // GET /api/v1/maps/search returns a bare array (ghanaSearch), not {results}.
-        setPlacesList(Array.isArray(res) ? res : (res?.results || []));
+        const seen = new Set();
+        const merged = [];
+        for (const row of [...gazList, ...egiaList]) {
+          const key = `${String(row?.name || '').toLowerCase()}|${Number(row?.latitude).toFixed(4)}|${Number(row?.longitude).toFixed(4)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push(row);
+        }
+        setPlacesList(merged.slice(0, 8));
       } catch {
         setPlacesList([]);
       } finally {
