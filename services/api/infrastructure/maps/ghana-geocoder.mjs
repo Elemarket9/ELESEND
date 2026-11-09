@@ -3,6 +3,7 @@ import {fileURLToPath} from 'node:url';
 import {dirname, join} from 'node:path';
 import {haversine} from '../../dispatch-geometry.mjs';
 import {check} from '../../security.mjs';
+import {looksLikeStreetQuery, photonSearch} from './photon-search.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -841,7 +842,7 @@ export function ghanaReverseGeocode(lat, lon) {
 }
 
 // PostgreSQL / PostGIS Direct Spatial Search
-export async function ghanaSearchPostGIS(db, query, {limit = 10} = {}) {
+export async function ghanaSearchPostGIS(db, query, {limit = 10, near = null} = {}) {
   check(db, 500, 'Database required for PostGIS search');
   check(typeof query === 'string', 400, 'Search query must be text');
   const clean = query.trim();
@@ -852,9 +853,12 @@ export async function ghanaSearchPostGIS(db, query, {limit = 10} = {}) {
   // Only filler words ("at the") would match every row and scan both tables, so there is nothing to look up.
   if (searchPattern.length < 2) return [];
 
+  const nearLat = Number.isFinite(Number(near?.latitude)) ? Number(near.latitude) : null;
+  const nearLon = Number.isFinite(Number(near?.longitude)) ? Number(near.longitude) : null;
   const res = await db.query(`
     SELECT id, name, category, subcategory, locality, city, region,
            latitude, longitude, aliases, entrance, popularity, street, coordinate_kind,
+           verification_status, source, license,
            similarity(name, $1) AS name_sim,
            similarity(search_name, $1) AS sim
     FROM searchable_landmarks_v9
@@ -867,29 +871,38 @@ export async function ghanaSearchPostGIS(db, query, {limit = 10} = {}) {
            ELSE 0 END +
       similarity(name, $1) * 50 +
       similarity(search_name, $1) * 30 +
-      popularity * 0.5
+      popularity * 0.5 +
+      CASE WHEN $3::float8 IS NULL OR $4::float8 IS NULL THEN 0
+           ELSE GREATEST(0, 80 - ST_Distance(geom, ST_SetSRID(ST_MakePoint($4::float8, $3::float8), 4326)::geography) / 800.0) END
     ) DESC
     LIMIT $2
-  `, [searchPattern, Math.max(1, Math.min(limit, 30))]);
+  `, [searchPattern, Math.max(1, Math.min(limit, 30)), nearLat, nearLon]);
 
-  return res.rows.map(r => ({
-    id: r.id,
-    name: r.name,
-    label: `${r.locality}, ${r.city}`,
-    locality: r.locality,
-    city: r.city,
-    region: r.region,
-    category: r.category,
-    subcategory: r.subcategory || 'general',
-    latitude: r.latitude,
-    longitude: r.longitude,
-    coordinate_kind: r.coordinate_kind || 'mapped_point',
-    type: 'place',
-    aliases: r.aliases || [],
-    entrance: r.entrance || null,
-    street: r.street || null,
-    score: Number((r.sim * 100).toFixed(1))
-  }));
+  return res.rows.map(r => {
+    const road = r.category === 'road' || r.coordinate_kind === 'road_midpoint';
+    return {
+      id: r.id,
+      name: r.name,
+      label: road ? `Road · ${r.name}` : `${r.locality}, ${r.city}`,
+      locality: r.locality,
+      city: r.city,
+      region: r.region,
+      category: r.category,
+      subcategory: r.subcategory || 'general',
+      latitude: r.latitude,
+      longitude: r.longitude,
+      coordinate_kind: r.coordinate_kind || 'mapped_point',
+      type: road ? 'road' : 'place',
+      housenumber: null,
+      aliases: r.aliases || [],
+      entrance: r.entrance || null,
+      street: road ? null : (r.street || null),
+      verification_status: r.verification_status || null,
+      source: r.source || null,
+      license: r.license || null,
+      score: Number((r.sim * 100).toFixed(1))
+    };
+  });
 }
 
 // PostgreSQL / PostGIS Direct Spatial Nearest Neighbor KNN Reverse Geocoding
@@ -933,7 +946,7 @@ export async function ghanaReverseGeocodePostGIS(db, lat, lon) {
  * places riders taught the map once they are approved). Those used to be saved but never offered in search.
  * If the database is slow or unavailable the built-in results are returned on their own.
  */
-export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800, near = null, ghanaPostGps = null} = {}) {
+export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800, near = null, ghanaPostGps = null, photonUrl = null, fetchImpl = fetch} = {}) {
   const digital = interpretDigitalAddress(query);
   if (digital) {
     if (typeof ghanaPostGps !== 'function') return digitalAddressUnavailable(digital);
@@ -959,13 +972,15 @@ export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800, near
     }
   }
   const local = ghanaSearch(query, {limit, near});
-  if (!db) return local;
+  let photon = [];
+  if (photonUrl && looksLikeStreetQuery(query)) photon = await photonSearch(query, {baseUrl: photonUrl, fetchImpl});
+  if (!db) return dedupePlaces([...photon, ...local], limit);
   let stored = [];
   // The database stops the query itself after timeoutMs, so a slow search frees its connection instead of holding one
   // while bookings wait. The race is a second guard for a database that does not answer at all.
   const lookup = typeof db.tx === 'function'
     ? db.tx(async c => { await c.query(`SET LOCAL statement_timeout = ${Math.max(50, Math.min(5000, Math.round(timeoutMs)))}`); return ghanaSearchPostGIS(c, query, {limit}); })
-    : ghanaSearchPostGIS(db, query, {limit});
+    : ghanaSearchPostGIS(db, query, {limit, near});
   let timer;
   try {
     stored = await Promise.race([lookup, new Promise(resolve => { timer = setTimeout(resolve, timeoutMs + 200, []); })]) || [];
@@ -980,5 +995,18 @@ export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800, near
   // A stored place whose name holds everything typed is what was asked for; anything else follows the built-in results.
   const exact = fresh.filter(s => wanted.length >= 3 && compact(s.name).includes(wanted));
   const rest = fresh.filter(s => !exact.includes(s));
-  return [...exact, ...local, ...rest].slice(0, limit);
+  return dedupePlaces([...photon, ...exact, ...local, ...rest], limit);
+}
+
+function dedupePlaces(rows, limit) {
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const key = `${String(row?.name || '').toLowerCase()}|${Number(row?.latitude).toFixed(4)}|${Number(row?.longitude).toFixed(4)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
