@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startWorker, withAdvisoryLock, LOCK_ID_PAYMENT_RECON, LOCK_ID_FOOD_MAINTENANCE } from '../services/api/worker.mjs';
+import { REQUIRED_MIGRATIONS } from '../services/api/startup-guards.mjs';
 
 test('Worker advisory lock acquires and releases cleanly', async () => {
   const calls = [];
@@ -51,6 +52,7 @@ test('Worker advisory lock skips task if lock is busy', async () => {
 test('startWorker bootstraps with mock db and cleanly stops timers', async () => {
   const mockDb = {
     query: async (sql) => {
+      if (sql.includes('schema_migrations')) return { rows: REQUIRED_MIGRATIONS.map(name => ({ name })), rowCount: REQUIRED_MIGRATIONS.length };
       if (sql.includes('SELECT 1')) return { rows: [{ count: 1 }], rowCount: 1 };
       if (sql.includes('pricing_policies')) return { rows: [], rowCount: 0 };
       if (sql.includes('checkout_method_policies')) return { rows: [], rowCount: 0 };

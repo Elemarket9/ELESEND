@@ -157,6 +157,7 @@ export default function RiderApp() {
           const user = await call('GET', '/api/v1/me');
           if (user.kind === 'rider' || user.kind === 'company') {
             const pStatus = await call('GET', '/api/v1/me/phone').catch(() => ({ phone: user.phone || '', verified: false }));
+            await call('POST', '/api/v1/me/terms', termsAcceptance()).catch(() => {});
             setPhoneState(pStatus);
             setAuth({ ...user, phone: pStatus.phone || user.phone || '' });
           } else {
@@ -336,6 +337,7 @@ export default function RiderApp() {
       if (user.kind !== 'rider' && user.kind !== 'company') throw Error('This account is registered as a customer. Please use the standard ELESEND app.');
     });
     setPhoneState(pStatus);
+    await call('POST', '/api/v1/me/terms', termsAcceptance()).catch(() => {});
     setAuth({ ...data.user, phone: pStatus.phone || normPhone });
     setCredentials(initialCreds);
     if (!pStatus.verified) {
@@ -1131,7 +1133,7 @@ export default function RiderApp() {
     );
   }
 
-  const companyRider = licence?.status === 'not_required';
+  const companyRider = false;
   const bicycleRider = riderProfile?.vehicle === 'bicycle';
   const documentLabel = kind => ({ profile_photo: 'Profile photo', ghana_card_photo: 'Ghana Card photo', licence_photo: "Driver's licence photo", insurance: 'Insurance', roadworthiness: 'Roadworthiness' }[kind] || kind.replaceAll('_', ' '));
   const documentList = (
@@ -1153,7 +1155,7 @@ export default function RiderApp() {
                   <View style={styles.momoCard}>
                     <Text style={styles.momoTitle}>Your rider profile</Text>
                     <Text style={styles.momoSub}>
-                      {licence.companyName} checks your identity, so ELESEND does not need your Ghana Card. Add your name{bicycleRider ? '' : ', number plate'} and a clear photo of your face, then ask {licence.companyName} to approve you. Customers see your photo, first name{bicycleRider ? '' : ' and plate'}.
+                      {licence.companyName} approves your account after your Ghana Card is on file. Add your name{bicycleRider ? '' : ', number plate'}, your Ghana Card and a clear photo of your face. Customers see your photo, first name{bicycleRider ? '' : ' and plate'}.
                     </Text>
                     <Text style={[styles.inputLabel, { marginTop: 10 }]}>Your name</Text>
                     <TextInput placeholderTextColor={colors.textMuted} style={styles.input} maxLength={60} value={profileForm.displayName} onChangeText={value => setProfileForm(f => ({ ...f, displayName: value }))} />
@@ -1211,7 +1213,7 @@ export default function RiderApp() {
                   )}
                   {licence && licence.status !== 'missing' && licence.identityAvailable && licence.identityStatus !== 'approved' && (
                     <TouchableOpacity disabled={busy} onPress={() => execute(startIdentityPhotos)} style={[styles.primaryBtn, { marginTop: 10 }]}>
-                      <Text style={styles.primaryBtnText}>Take Licence Photo and Selfie</Text>
+                      <Text style={styles.primaryBtnText}>Take Ghana Card Photo and Selfie</Text>
                     </TouchableOpacity>
                   )}
                   {documentList}

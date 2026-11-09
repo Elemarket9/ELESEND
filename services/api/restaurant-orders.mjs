@@ -7,6 +7,7 @@ import {requestCheckoutRefund} from './modules/payments/index.mjs';
 import {z} from 'zod';
 import {marketService} from './markets.mjs';
 import {check} from './security.mjs';
+import {requireAcceptedTerms} from './platform.mjs';
 import {haversine} from './dispatch-geometry.mjs';
 import {calculateQuote} from './pricing.mjs';
 import {evaluateRestaurantBatch} from './algorithms/restaurant-batch.mjs';
@@ -44,6 +45,7 @@ export function restaurantOrderService(db, options = {}) {
     await marketService(db).assertGhanaOperating();
     assertDeliveryCapabilities();
     check(actor && ['customer', 'business', 'admin'].includes(actor.kind), 403, 'Customer credentials required');
+    await requireAcceptedTerms(db, actor);
     const schema = z.object({
       restaurantId: z.string().uuid(),
       items: z.array(z.object({
@@ -268,6 +270,7 @@ export function restaurantOrderService(db, options = {}) {
 
   async function createFoodOrder(actor, quoteInput, {paymentMethod = 'MOMO', specialInstructions = '', idempotencyKey, promoCode = null, promoCodes = [], campaignIds = []} = {}) {
     check(actor && ['customer', 'business'].includes(actor.kind), 403, 'Customer credentials required');
+    await requireAcceptedTerms(db, actor);
     check(['MOMO', 'CARD', 'QR'].includes(paymentMethod), 400, 'Food orders require upfront payment for food and delivery; cash is not accepted');
     check(typeof idempotencyKey==='string'&&/^[a-zA-Z0-9_-]{8,128}$/.test(idempotencyKey),400,'Food order idempotency key required');
     assertDeliveryCapabilities();

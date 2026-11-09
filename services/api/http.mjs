@@ -65,7 +65,7 @@ const CUSTODY_ROUTES=new Set(['GET /api/v1/me','GET /api/v1/me/phone','POST /api
 const CUSTODY_SHIPMENT_ROUTE=/^(GET \/api\/v1\/shipments\/[0-9a-f-]{36}(\/tracking)?|POST \/api\/v1\/shipments\/[0-9a-f-]{36}\/(delivery-challenge|return-challenge|verify|transition|location))$/;
 const AWAITING_APPROVAL_ROUTES=new Set(['GET /api/v1/me','GET /api/v1/me/phone','POST /api/v1/me/phone-challenge','POST /api/v1/me/phone-verify','POST /api/v1/auth/logout','POST /api/v1/me/delete-account',
  'GET /api/v1/rider/licence','POST /api/v1/rider/licence','POST /api/v1/rider/licence/identity-check','GET /api/v1/rider/documents','POST /api/v1/rider/documents/upload-link','POST /api/v1/rider/profile',
- 'GET /api/v1/rider/invitations','POST /api/v1/rider/invitations/accept','POST /api/v1/rider/company/leave',
+ 'GET /api/v1/rider/invitations','POST /api/v1/rider/invitations/accept','POST /api/v1/rider/company/leave','POST /api/v1/me/terms',
  'GET /api/v1/company/profile','PUT /api/v1/company/services']);
 export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null,readinessToken=null,etaBaselineFactors={}}={}){
   const companies=companyService(db),webhooks=webhookService(db);const net=network(db),vehicles=vehicleService(db),markets=marketService(db);
@@ -206,6 +206,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   if(method==='POST'&&path==='/api/v1/auth/logout'){result=await app.logout(token,body,actor);disconnectRealtimeSession(token,'logged_out');}
   else if(method==='POST'&&path==='/api/v1/me/delete-account'){await limit(db,'delete-account:'+actor.id,5,900);check(!actor.api_client_id,403,'Sign in to delete your account');result=await app.deleteAccount(actor,body);disconnectRealtimeSession(token,'account_deleted');}
   else if(method==='GET'&&path==='/api/v1/me/phone')result=await app.phoneStatus(actor);
+  else if(method==='POST'&&path==='/api/v1/me/terms')result=await app.acceptTerms(actor,body);
   else if(method==='POST'&&path==='/api/v1/me/phone-challenge'){await limit(db,'account-sms-ip:'+ipKey,ipLimit.accountSmsPer15Min,900);result=await app.phoneChallenge(actor);}
   else if(method==='POST'&&path==='/api/v1/me/phone-verify')result=await app.verifyPhone(actor,body);
   else if(method==='POST'&&path==='/api/v1/me/push-token')result=await app.registerPushToken(actor,body,{sessionToken:token});

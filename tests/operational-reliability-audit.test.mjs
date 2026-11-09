@@ -1344,7 +1344,7 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
           [rider2Id, rider2Phone, 'rider']
         ]) {
           await c.query(
-            "INSERT INTO users(id, phone, password_hash, kind, phone_verified_at) VALUES($1, $2, 'test-hash', $3, now())",
+            "INSERT INTO users(id, phone, password_hash, kind, phone_verified_at, terms_version, terms_accepted_at) VALUES($1, $2, 'test-hash', $3, now(), '2026-11', now())",
             [id, phone, kind]
           );
         }
@@ -1947,7 +1947,8 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
         const reg = await platform.register({
           phone,
           password: 'OldPassword123!',
-          kind: 'customer'
+          kind: 'customer',
+          termsVersion: '2026-11'
         });
 
         // Unknown phone and administrator phone receive the exact same public response shape without sending SMS or leaking 404/403
@@ -2181,7 +2182,8 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
         const reg = await platform.register({
           phone: merchantPhone,
           password: 'MerchantPassword123!',
-          kind: 'business'
+          kind: 'business',
+          termsVersion: '2026-11'
         });
         assert.equal(reg.kind, 'business');
 
@@ -2231,7 +2233,7 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
         [riderId, 'rider']
       ]) {
         await root.query(
-          "INSERT INTO users(id, phone, password_hash, kind, phone_verified_at) VALUES($1, $2, 'test-hash', $3, now())",
+          "INSERT INTO users(id, phone, password_hash, kind, phone_verified_at, terms_version, terms_accepted_at) VALUES($1, $2, 'test-hash', $3, now(), '2026-11', now())",
           [uid, '+2332' + String(randomInt(10000000, 99999999)), kind]
         );
       }
@@ -2410,7 +2412,8 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
       const raceUser = await platform.register({
         phone: racePhone,
         password: 'OldRacePassword123!',
-        kind: 'customer'
+        kind: 'customer',
+        termsVersion: '2026-11'
       });
       smsOutbox.length = 0;
       const raceChallenge = await platform.passwordRecoveryChallenge({ phone: racePhone });

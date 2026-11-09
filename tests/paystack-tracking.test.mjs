@@ -112,6 +112,18 @@ function trackingDb(id,customer){
  return {query:async()=>({rows:[row],rowCount:1})};
 }
 
+test('a shared tracking link does not include the rider phone',async()=>{
+ const id=randomUUID(),customer=randomUUID(),rider=randomUUID();
+ const row={id,customer_id:customer,rider_id:rider,state:'IN_TRANSIT',created_at:new Date(),completed_at:null,rider_phone:'+233241110000',request:{pickup:{address:'A',latitude:5.5,longitude:-0.2},destination:{address:'B',latitude:5.6,longitude:-0.2}}};
+ const db={query:async()=>({rows:[row],rowCount:1})};
+ const token=createPublicTrackingToken(id,{secret:'s'});
+ assert.equal((await getPublicTracking(db,token,{secret:'s'})).riderPhone,null);
+ assert.equal((await getPublicTracking(db,token,{secret:'s',actor:{id:customer,kind:'customer'}})).riderPhone,'+233241110000');
+ assert.equal((await getPublicTracking(db,token,{secret:'s',actor:{id:rider,kind:'rider'}})).riderPhone,'+233241110000');
+ assert.equal((await getPublicTracking(db,token,{secret:'s',actor:{id:randomUUID(),kind:'admin'}})).riderPhone,'+233241110000');
+ assert.equal((await getPublicTracking(db,token,{secret:'s',actor:{id:randomUUID(),kind:'customer'}})).riderPhone,null);
+});
+
 test('a raw shipment ID no longer opens tracking for anyone else',async()=>{
  const id=randomUUID(),customer=randomUUID(),db=trackingDb(id,customer);
  assert.equal(await getPublicTracking(db,id,{secret:'s'}),null);

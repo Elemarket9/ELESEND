@@ -8,8 +8,8 @@ import {cashAlreadyReported,confirmedPaymentMinor,unpaidEarningsMinor,withdrawal
 import {approveVehicleRecord} from './vehicle.mjs';
 import {ACCEPTED_SERVICES,assertCompanyDelivery} from './company.mjs';
 import {ensureCommissionAccount,paymentMethodEnabled,findPaymentEvent,recordPaymentEvent,recordFinancialEntry,earningsEntriesFor,senderCashCollectedInFull,cashCollectionFor,accrueRestaurantSettlement} from './modules/payments/index.mjs';
-import {approveRiderDocuments} from './rider-documents.mjs';
-import {approveRiderLicence} from './rider-licence.mjs';
+import {approveRiderDocuments,shredRiderDocuments} from './rider-documents.mjs';
+import {approveRiderLicence,shredRiderLicence} from './rider-licence.mjs';
 import {randomUUID} from 'node:crypto';
 import {MARKET_CURRENCY,MARKET_TIME_ZONE} from './market.mjs';
 import {decryptAdminSecret,verifyAdminTotp} from './admin-mfa.mjs';
@@ -24,6 +24,14 @@ import {calculateQuote,waitingFeeMinor} from './pricing.mjs';
 import {getSurgeMultiplier,validateGhanaBoundary} from './pricing-surge.mjs';
 import {measuredSurge} from './pricing-surge.mjs';
 import {haversine} from './dispatch-geometry.mjs';
+// A rider may complete a delivery only with a server-received fix this close to the quoted drop-off.
+const DELIVERY_HANDOVER_RADIUS_M=200;
+const DELIVERY_HANDOVER_MAX_AGE_SECONDS=120;
+export async function requireAcceptedTerms(db,actor){
+ if(!actor?.id||!['customer','business','company'].includes(actor.kind))return;
+ const row=(await db.query('SELECT terms_accepted_at FROM users WHERE id=$1',[actor.id])).rows[0];
+ check(row?.terms_accepted_at,409,'Accept the current terms before booking');
+}
 import {featureService} from './algorithms/features.mjs';
 import {detectFraudSignals} from './algorithms/fraud.mjs';
 import {marketService} from './markets.mjs';
@@ -48,7 +56,7 @@ export function hideEndedContacts(actor,s){
  const strip=d=>d&&typeof d==='object'?{...d,recipientPhone:undefined,pickupPhone:undefined}:d;
  return {...s,recipient_phone:null,details:strip(s.details),rider_phone:s.rider_phone===undefined?undefined:null};
 }
-const registration=z.object({phone:z.string().max(30),termsVersion:z.string().trim().min(1).max(40).optional(),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
+const registration=z.object({phone:z.string().max(30),termsVersion:z.string().trim().min(1).max(40),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
 const address=z.object({address:z.string().min(5).max(400),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict();
 const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(['motorcycle','car','van']).optional(),recipientPhone:z.string().max(30),pickupPhone:z.string().max(30).optional(),weightG:z.number().int().min(1).max(10000000),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
 // Legacy SMS handovers are disabled by default in production. Test/development fixtures remain compatible.
@@ -217,6 +225,18 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    const waitingFee=await chargeWaiting(c,s,purpose);
    await audit(c,actor.id,purpose+(source==='otp'?'.verified':'.rider_confirmed'),sid);await event(c,sid,purpose==='delivery'?'completed':'pickup_verified');return {ok:true,...(waitingFee?{waitingFee}:{})};
  }
+ async function assertAtDropoff(c,actor,s){
+  const request=(await c.query('SELECT request FROM quotes WHERE id=$1',[s.quote_id])).rows[0]?.request;
+  const dest=request?.destination;
+  const latitude=Number(dest?.latitude),longitude=Number(dest?.longitude);
+  check(Number.isFinite(latitude)&&Number.isFinite(longitude),409,'This delivery has no drop-off point');
+  const fix=(await c.query(`SELECT ST_Y(current_position::geometry) AS latitude,ST_X(current_position::geometry) AS longitude,
+    EXTRACT(EPOCH FROM (now()-position_at)) AS age_seconds FROM riders WHERE id=$1`,[actor.id])).rows[0];
+  const age=Number(fix?.age_seconds);
+  check(fix?.latitude!=null&&fix.longitude!=null&&Number.isFinite(age)&&age>=-15&&age<=DELIVERY_HANDOVER_MAX_AGE_SECONDS,409,'Share a fresh GPS fix before completing this delivery');
+  const metres=haversine({latitude:Number(fix.latitude),longitude:Number(fix.longitude)},{latitude,longitude});
+  check(metres<=DELIVERY_HANDOVER_RADIUS_M,409,'You are too far from the drop-off to complete this delivery');
+ }
  async function handover(actor,sid,input){
   const v=z.object({kind:z.enum(['pickup','delivery']),confirmed:z.literal(true)}).strict().parse(input);
   return db.tx(async c=>{
@@ -236,6 +256,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     const next=await nextOpenStop(c,manifest.stops);
     check(next?.shipmentId===sid&&next?.kind===(v.kind==='pickup'?'pickup':'dropoff'),409,'Complete the next route stop first');
    }
+   if(v.kind==='delivery')await assertAtDropoff(c,actor,s);
    if(v.kind==='delivery'&&s.state==='PICKUP_VERIFIED')await c.query("UPDATE shipments SET state='IN_TRANSIT' WHERE id=$1",[sid]);
    // Capture actual server time and the rider's most recent observed position without inventing GPS.
    await c.query(`INSERT INTO shipment_handover_events(shipment_id,rider_id,kind,confirmed_at,position,position_at,accuracy_m)
@@ -247,6 +268,11 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  }
 
  return {
+ async acceptTerms(actor,input){const v=z.object({termsVersion:z.string().trim().min(1).max(40)}).strict().parse(input);check(actor?.id&&actor.kind!=='admin',403,'Sign in to accept the terms');
+  await db.query('UPDATE users SET terms_version=$2,terms_accepted_at=now() WHERE id=$1 AND terms_accepted_at IS NULL',[actor.id,v.termsVersion]);
+  const row=(await db.query('SELECT terms_version FROM users WHERE id=$1',[actor.id])).rows[0];
+  return {termsVersion:row?.terms_version??null,accepted:Boolean(row?.terms_version)};
+ },
  async phoneStatus(actor){const u=(await db.query('SELECT phone,phone_verified_at FROM users WHERE id=$1',[actor.id])).rows[0];check(u,401);return {phone:u.phone,verified:!!u.phone_verified_at};},
  async phoneChallenge(actor){check(sms&&typeof sms.send==='function',503,'Phone SMS verification unavailable');
   check(['customer','business','rider','company'].includes(actor.kind),403);
@@ -461,7 +487,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     if(type==='car')await registerVehicleInTx(c,uid,{vehicle:type,maxWeightG:v.maxWeightG??20000,car:v.car});
    }
    if(v.kind==='company'){check(v.name,400,'Company name required');await c.query('INSERT INTO companies(id,owner_id,name,services) VALUES($1,$2,$3,$4)',[id(),uid,v.name,[...new Set(v.services??['riders'])]]);}
-   if(v.termsVersion)await c.query('UPDATE users SET terms_version=$2,terms_accepted_at=now() WHERE id=$1',[uid,v.termsVersion]);
+   await c.query('UPDATE users SET terms_version=$2,terms_accepted_at=now() WHERE id=$1',[uid,v.termsVersion]);
    await audit(c,uid,'registered',uid);
   });return {id:uid,kind:v.kind,phone:p,phoneVerified:false};
  },
@@ -575,6 +601,8 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await c.query("UPDATE restaurants SET status='suspended' WHERE owner_id=$1",[actor.id]);
    await c.query('UPDATE api_clients SET revoked_at=now() WHERE owner_id=$1 AND revoked_at IS NULL',[actor.id]);
    await c.query('DELETE FROM api_webhooks WHERE owner_id=$1',[actor.id]);
+   await shredRiderDocuments(c,actor.id);
+   await shredRiderLicence(c,actor.id);
    await c.query('DELETE FROM sessions WHERE user_id=$1',[actor.id]);
    await c.query('DELETE FROM user_push_tokens WHERE user_id=$1',[actor.id]);
    await c.query('DELETE FROM account_phone_challenges WHERE user_id=$1',[actor.id]);
@@ -660,7 +688,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     check(!rest,409,'You have reached your driving time limit. You can go online again after your rest');
    }
     await c.query('UPDATE riders SET online=$2,shift_started_at=CASE WHEN $2 THEN COALESCE(shift_started_at,now()) ELSE shift_started_at END,last_offline_at=CASE WHEN NOT $2 THEN now() ELSE last_offline_at END WHERE id=$1',[actor.id,v.online]);if(!v.online){await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[actor.id]);getRedisClient().removeRiderLocation(actor.id).catch(()=>{});}return v;});},
- async quote(actor,input){check(['customer','business','company'].includes(actor.kind),403);await assertCompanyDelivery(db,actor);
+ async quote(actor,input){check(['customer','business','company'].includes(actor.kind),403);await requireAcceptedTerms(db,actor);await assertCompanyDelivery(db,actor);
   // Do not accept live bookings when an essential custody-verification provider is absent.
   if(process.env.NODE_ENV==='production'){
    check(dispatch,503,'Delivery booking paused: dispatch unavailable');
@@ -706,7 +734,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const fareBreakdown={...breakdown,tolls:tolls.map(({name,amountMinor})=>({name,amountMinor})),tariffId:p.id,startMinor:Number(p.base_minor),perKmMinor:Number(p.per_km_minor),perMinuteMinor:Number(p.per_minute_minor??0),pricedMinutes:Math.ceil(pricedSeconds/60),minimumMinor:Number(p.minimum_minor??0),rushHourMultiplier:surgeMultiplier,waitPerMinuteMinor:waitingEnabled?Number(p.wait_per_minute_minor):0,waitFreeMinutes:waitingTerms?.freeMinutes??0,waitMaxMinor:waitingTerms?.maxMinor??0};
   return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEvidence:evidence,fareBreakdown,etaMinutes:quotedEtaMinutes(route.durationSeconds,trafficFactor,{riderSeconds:capacity.nearestRiderSeconds,source:adjustment.source}),surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
  },
- async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business','company'].includes(actor.kind),403);await assertCompanyDelivery(db,actor);
+ async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business','company'].includes(actor.kind),403);await requireAcceptedTerms(db,actor);await assertCompanyDelivery(db,actor);
   if(process.env.NODE_ENV==='production')check(dispatch,503,'Delivery booking paused: dispatch unavailable');
   return db.tx(async c=>{if(process.env.NODE_ENV==='production')await requireVerifiedPhone(c,actor);await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[actor.id+key]);
    const old=(await c.query('SELECT * FROM shipments WHERE customer_id=$1 AND idempotency_key=$2',[actor.id,key])).rows[0];if(old){check(old.quote_id===v.quoteId,409,'Idempotency key reused with different request');return old;}

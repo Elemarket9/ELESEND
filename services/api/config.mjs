@@ -149,7 +149,9 @@ export function validateConfig(env = process.env) {
   const webPublicOrigin = (env.WEB_PUBLIC_ORIGIN || '').trim().replace(/\/$/, '');
   const adminHost = env.ADMIN_HOST ? env.ADMIN_HOST.split(':')[0].trim().toLowerCase() : null;
 
-  if (adminHost) {
+  if (isProduction && !adminHost) {
+    errors.push('ADMIN_HOST is required in production.');
+  } else if (adminHost) {
     if (adminHost.includes('/') || (adminHost.includes(':') && !/^\d+$/.test(adminHost.split(':')[1])) || /[\s<>"`\\@]/.test(adminHost)) {
       errors.push(`ADMIN_HOST "${adminHost}" is not a valid hostname.`);
     }
@@ -369,6 +371,9 @@ export function validateConfig(env = process.env) {
     }
   } else {
     errors.push(`Unknown PAYMENT_PROVIDER "${env.PAYMENT_PROVIDER}". Valid values: 'gateway', 'hubtel', 'paystack', 'moolre', 'none' (auto is development-only).`);
+  }
+  if (isProduction && paymentProviderName === 'hubtel') {
+    errors.push('PAYMENT_PROVIDER=hubtel cannot be used in production. Choose paystack or gateway.');
   }
 
   // Payment URLs & Options

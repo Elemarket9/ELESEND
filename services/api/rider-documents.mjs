@@ -21,10 +21,10 @@ const imageContext=(riderId,kind)=>`elesend:rider-document:v1:${riderId}:${kind}
 const encryptImage=(image,riderId,kind)=>seal(key(),imageContext(riderId,kind),image);
 const decryptImage=(value,riderId,kind)=>unseal(key(),imageContext(riderId,kind),value);
 const requireVerifier=(c,actor)=>requirePermission(c,actor,'verification:write');
-// Every rider needs a profile photo, because customers see it. Company riders need only that: their company
-// checks the rest. Independent riders add their Ghana Card, and motor vehicle riders their licence and papers.
-// The identity provider photographs the licence when it is on; otherwise staff review a photo here.
-export const requiredKinds=(vehicle,{companyRider=false}={})=>companyRider?['profile_photo']:KINDS.filter(kind=>(!EXPIRING.includes(kind)||vehicle!=='bicycle')&&(kind!=='licence_photo'||(vehicle!=='bicycle'&&!identityConfigured())));
+// Every rider needs a profile photo, because customers see it, and a Ghana Card photo. Company riders stop there:
+// their company checks the vehicle papers. Independent motor riders also add a licence photo unless the identity
+// provider takes that picture, plus insurance and roadworthiness.
+export const requiredKinds=(vehicle,{companyRider=false}={})=>companyRider?['profile_photo','ghana_card_photo']:KINDS.filter(kind=>(!EXPIRING.includes(kind)||vehicle!=='bicycle')&&(kind!=='licence_photo'||(vehicle!=='bicycle'&&!identityConfigured())));
 
 export async function createDocumentUploadLink(db,actor){
  check(actor?.kind==='rider',403,'Rider account required');
@@ -79,6 +79,11 @@ export async function riderDocumentStatus(db,actor){
  return {companyName:rider.company_name??null,displayName:rider.display_name,vehicle:rider.vehicle,vehiclePlate:rider.registration_plate,documents:requiredKinds(rider.vehicle,{companyRider:!!rider.company_id}).map(kind=>{const d=rows.find(r=>r.kind===kind);return {kind,status:d?.status??'missing',expiresOn:d?.expires_on??null,rejectionReason:d?.rejection_reason??null};})};
 }
 /** Called inside rider approval, alongside the licence check. Company approval checks only the profile photo. */
+/** Removes document photos and upload links for a deleted account. */
+export async function shredRiderDocuments(c,riderId){
+ await c.query('DELETE FROM rider_documents WHERE rider_id=$1',[riderId]);
+ await c.query('DELETE FROM rider_document_links WHERE rider_id=$1',[riderId]);
+}
 export async function approveRiderDocuments(c,riderId,reviewerId,{companyRider=false}={}){
  const rider=(await c.query('SELECT vehicle FROM riders WHERE id=$1',[riderId])).rows[0];
  check(rider,404,'Rider not found');

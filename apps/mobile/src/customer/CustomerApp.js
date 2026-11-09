@@ -263,6 +263,7 @@ export default function CustomerApp() {
           const user = await call('GET', '/api/v1/me');
           if (user.kind === 'customer' || user.kind === 'business') {
             const pStatus = await call('GET', '/api/v1/me/phone').catch(() => ({ phone: user.phone || '', verified: false }));
+            await call('POST', '/api/v1/me/terms', termsAcceptance()).catch(() => {});
             setPhoneState(pStatus);
             setAuth({ ...user, phone: pStatus.phone || user.phone || '', name: user.name || 'Valued Customer' });
           } else {
@@ -364,6 +365,7 @@ export default function CustomerApp() {
       if (user.kind !== 'customer' && user.kind !== 'business') throw Error('This account is registered as a courier driver. Please use the ELESEND Rider app.');
     });
     setPhoneState(pStatus);
+    await call('POST', '/api/v1/me/terms', termsAcceptance()).catch(() => {});
     setAuth({ ...data.user, phone: pStatus.phone || normPhone, name: data.user.name || credentials.name || 'Valued Customer' });
     setCredentials(initialCreds);
     if (!pStatus.verified) {

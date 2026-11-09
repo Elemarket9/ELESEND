@@ -48,7 +48,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
  const request={vehicle:'motorcycle',pickup:{address:'A',latitude:5.5,longitude:-0.2},destination:{address:'B',latitude:5.6,longitude:-0.2},recipientPhone:'+233241234567',weightG:100,description:'Test'};
  const {passwordHash}=await import('../services/api/security.mjs');
  const secret=await passwordHash('Correct-pass-1');
- async function user(kind){const id=randomUUID();await db.query('INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,$3,$4,now())',[id,phone(),secret,kind]);return id;}
+ async function user(kind){const id=randomUUID();await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at,terms_version,terms_accepted_at) VALUES($1,$2,$3,$4,now(),'2026-11',now())",[id,phone(),secret,kind]);return id;}
  async function newRider(){const id=await user('rider');await db.query("INSERT INTO riders(id,vehicle,max_weight_g,status,online) VALUES($1,'motorcycle',20000,'approved',true)",[id]);await db.query('INSERT INTO commission_accounts(rider_id) VALUES($1)',[id]);return id;}
  async function shipment(customer,state='AWAITING_PAYMENT',paid=false,amount=1000){
   const quote=randomUUID(),id=randomUUID();
@@ -421,8 +421,13 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
    decisionBody=decisionOf('GH 99999999',{face_matches:[{status:'Declined'}]});
    assert.equal((await syncIdentityCheck(db,selfie,{provider:didit})).status,'failed');
    await startIdentityCheck(db,{id:selfie,kind:'rider'},{provider:didit});
-   await uploadAll(selfie);
    decisionBody=decisionOf('GH 99999999');
+   const licenceMatch=await syncIdentityCheck(db,selfie,{provider:didit});
+   assert.equal(licenceMatch.status,'failed');
+   assert.match(licenceMatch.reason,/Ghana Card/);
+   await startIdentityCheck(db,{id:selfie,kind:'rider'},{provider:didit});
+   await uploadAll(selfie);
+   decisionBody=decisionOf('GHA-999999999-9');
    const raw=Buffer.from(JSON.stringify({session_id:sessionId,status:'Approved'}));
    const stamp=String(Math.floor(Date.now()/1000));
    await assert.rejects(identityWebhook(db,raw,{'x-timestamp':stamp,'x-signature':'0'.repeat(64)},{provider:didit}),/signature/);

@@ -59,7 +59,7 @@ test('Order-Scoped Real-Time Chat, Customer Communication, and Order Messaging E
           [rider2Id, 'rider']
         ]) {
           await c.query(
-            "INSERT INTO users(id, phone, password_hash, kind, phone_verified_at) VALUES($1, $2, 'test-hash', $3, now())",
+            "INSERT INTO users(id, phone, password_hash, kind, phone_verified_at, terms_version, terms_accepted_at) VALUES($1, $2, 'test-hash', $3, now(), '2026-11', now())",
             [id, '+2332' + String(randomInt(10000000, 99999999)), kind]
           );
         }

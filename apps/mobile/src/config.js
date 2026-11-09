@@ -81,7 +81,8 @@ export const SUPPORT_PHONE = (process.env.EXPO_PUBLIC_ELESEND_SUPPORT_PHONE || '
 export const PRIVACY_URL = (process.env.EXPO_PUBLIC_ELESEND_PRIVACY_URL || '').trim();
 export const TERMS_URL = (process.env.EXPO_PUBLIC_ELESEND_TERMS_URL || '').trim();
 // Version label of the terms shown at sign-up, stored with the account when the person agrees.
-export const TERMS_VERSION = (process.env.EXPO_PUBLIC_ELESEND_TERMS_VERSION || '').trim();
+// Built-in label of the notice shown in the app. A deployment can override it with EXPO_PUBLIC_ELESEND_TERMS_VERSION.
+export const TERMS_VERSION = (process.env.EXPO_PUBLIC_ELESEND_TERMS_VERSION || '2026-11-09').trim();
 const rawTileUrl = process.env.EXPO_PUBLIC_ELESEND_VECTOR_TILE_URL || '';
 const rawGlyphs = process.env.EXPO_PUBLIC_ELESEND_GLYPHS_URL || '';
 

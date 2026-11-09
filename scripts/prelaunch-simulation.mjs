@@ -36,7 +36,7 @@ export async function bootSimulation(db,{port=0}={}){
  /** A brand-new account made through the real sign-up, with its phone marked confirmed. */
  async function participant(kind,extra={}){
   const phone=simulationPhone(),password='simulation lantern river '+randomInt(1e6);
-  await api('/api/v1/auth/register',{method:'POST',body:{phone,password,kind,...(kind==='rider'?{vehicle:'motorcycle',maxWeightG:20000,name:'Simulated Rider'}:{}),...extra}});
+  await api('/api/v1/auth/register',{method:'POST',body:{phone,password,kind,termsVersion:'2026-11-09',...(kind==='rider'?{vehicle:'motorcycle',maxWeightG:20000,name:'Simulated Rider'}:{}),...extra}});
   const login=await api('/api/v1/auth/login',{method:'POST',body:{phone,password}});
   await db.query('UPDATE users SET phone_verified_at=now() WHERE id=$1',[login.user.id]);
   return {id:login.user.id,token:login.token,phone,password,kind};
