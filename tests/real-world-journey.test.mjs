@@ -33,7 +33,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
  const trip=(over={})=>({pickup:P,destination:D,vehicle:'motorcycle',recipientPhone:phone(),weightG:1000,description:'Documents',paymentMethod:'MOMO',...over});
  async function signUp(kind,extra={}){
   const number=phone();
-  assert.equal((await api(null,'POST','/api/v1/auth/register',{phone:number,password:'mango river lantern',kind,...extra})).status,201);
+  assert.equal((await api(null,'POST','/api/v1/auth/register',{phone:number,password:'mango river lantern',kind,termsVersion:'2026-11',...extra})).status,201);
   const login=await api(null,'POST','/api/v1/auth/login',{phone:number,password:'mango river lantern'});
   assert.equal(login.status,200);
   return {number,token:login.data.token,id:login.data.user.id,user:login.data.user};
@@ -45,6 +45,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
  const customer=async()=>{const c=await signUp('customer');await verifyPhone(c);return c;};
  const approve=id=>db.query("UPDATE riders SET status='approved' WHERE id=$1",[id]);
  const gps=(r,at=P)=>api(r.token,'POST','/api/v1/rider/location',{latitude:at.latitude,longitude:at.longitude,accuracyMeters:15,observedAt:new Date().toISOString()});
+ const placeAt=(r,at)=>db.query('UPDATE riders SET current_position=ST_SetSRID(ST_MakePoint($2,$3),4326)::geography,position_at=now(),position_accuracy_m=15 WHERE id=$1',[r.id,at.longitude,at.latitude]);
  async function readyRider(){const r=await signUp('rider',{vehicle:'motorcycle',maxWeightG:20000});await verifyPhone(r);await approve(r.id);assert.equal((await api(r.token,'POST','/api/v1/rider/availability',{online:true})).status,200);assert.equal((await gps(r)).status,200);return r;}
  const offline=()=>db.query('UPDATE riders SET online=false');
  async function paidOrder(c,over){
@@ -412,6 +413,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    assert.equal(correction.data.deliveryCodeCancelled,false,'no delivery challenge exists before pickup');
    assert.equal((await api(r.token,'POST','/api/v1/shipments/'+sid+'/handover',{kind:'pickup',confirmed:true})).status,200);
    assert.equal((await api(c.token,'POST','/api/v1/shipments/'+sid+'/recipient',{recipientPhone:phone()})).status,409,'no recipient changes after pickup');
+   await placeAt(r,D);
    const complete=await api(r.token,'POST','/api/v1/shipments/'+sid+'/handover',{kind:'delivery',confirmed:true});
    assert.equal(complete.status,200,JSON.stringify(complete.data));
    assert.equal((await api(c.token,'GET','/api/v1/shipments/'+sid)).data.recipient_phone,'+233'+fixed.slice(1));
@@ -421,9 +423,16 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
   });
   await t.test('sign-up records which terms the person accepted',async()=>{
    const number=phone();
+   assert.equal((await api(null,'POST','/api/v1/auth/register',{phone:number,password:'mango river lantern',kind:'customer'})).status,400);
    assert.equal((await api(null,'POST','/api/v1/auth/register',{phone:number,password:'mango river lantern',kind:'customer',termsVersion:'2026-11'})).status,201);
    const u=(await db.query('SELECT terms_version,terms_accepted_at FROM users WHERE phone=$1',[number])).rows[0];
    assert.equal(u.terms_version,'2026-11');assert.ok(u.terms_accepted_at);
+   const login=await api(null,'POST','/api/v1/auth/login',{phone:number,password:'mango river lantern'});
+   await db.query('UPDATE users SET terms_version=NULL,terms_accepted_at=NULL WHERE phone=$1',[number]);
+   assert.equal((await api(login.data.token,'POST','/api/v1/quotes',trip())).status,409);
+   const accepted=await api(login.data.token,'POST','/api/v1/me/terms',{termsVersion:'2026-11'});
+   assert.equal(accepted.status,200,JSON.stringify(accepted.data));
+   assert.equal((await db.query('SELECT terms_version FROM users WHERE phone=$1',[number])).rows[0].terms_version,'2026-11');
   });
   await t.test('a company checks and approves its own new rider, and customers see the photo, name and plate',async()=>{
    await offline();
@@ -437,16 +446,21 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    const inv=await api(r.token,'GET','/api/v1/rider/invitations');assert.equal(inv.status,200,JSON.stringify(inv.data));assert.equal(inv.data.length,1,'a new rider sees the invitation before approval');
    assert.equal((await api(r.token,'POST','/api/v1/rider/invitations/accept',{invitationId:inv.data[0].id})).status,200);
    const relogin=await api(null,'POST','/api/v1/auth/login',{phone:r.number,password:'mango river lantern'});assert.equal(relogin.data.user.awaitingApproval,true,'still waiting, now for the company');
-   assert.equal((await api(r.token,'GET','/api/v1/rider/licence')).data.status,'not_required','no Ghana Card asked of company riders');
+   assert.equal((await api(r.token,'GET','/api/v1/rider/licence')).data.status,'missing','a company rider still needs a Ghana Card');
    const docs=(await api(r.token,'GET','/api/v1/rider/documents')).data;
-   assert.deepEqual(docs.documents.map(d=>d.kind),['profile_photo']);assert.equal(docs.companyName,'Kasoa Dispatch');assert.equal(docs.displayName,'Ama Owusu');
+   assert.deepEqual(docs.documents.map(d=>d.kind),['profile_photo','ghana_card_photo']);assert.equal(docs.companyName,'Kasoa Dispatch');assert.equal(docs.displayName,'Ama Owusu');
    assert.equal((await api(co.token,'POST','/api/v1/company/riders/'+r.id+'/approve',{})).status,409,'no plate yet');
    assert.equal((await api(r.token,'POST','/api/v1/rider/profile',{vehiclePlate:'1234'})).status,400,'a plate needs letters and numbers');
    assert.equal((await api(r.token,'POST','/api/v1/rider/profile',{vehiclePlate:'m-22-gr 4471'})).data.vehiclePlate,'M-22-GR 4471');
+   const noCard=await api(co.token,'POST','/api/v1/company/riders/'+r.id+'/approve',{});assert.equal(noCard.status,409);assert.match(noCard.data.error||'',/licence|Ghana Card/i);
+   const next=`${new Date().getUTCFullYear()+1}-01-31`;
+   assert.equal((await api(r.token,'POST','/api/v1/rider/licence',{legalName:'Ama Owusu',ghanaCardNumber:'GHA-'+String(randomInt(1e9)).padStart(9,'0')+'-'+randomInt(10),licenceNumber:'GH-'+randomInt(1e8),licenceClass:'A',expiresOn:next,vehiclePlate:'M-22-GR 4471'})).status,200);
    const notYet=await api(co.token,'POST','/api/v1/company/riders/'+r.id+'/approve',{});assert.equal(notYet.status,409);assert.match(notYet.data.error||notYet.data.message||'',/profile photo/);
    const link=(await api(r.token,'POST','/api/v1/rider/documents/upload-link',{})).data.path.split('#')[1];
-   assert.deepEqual((await api(null,'POST','/api/v1/rider-documents/required',{token:link})).data.kinds,['profile_photo'],'the upload page asks only for the photo');
+   assert.deepEqual((await api(null,'POST','/api/v1/rider-documents/required',{token:link})).data.kinds,['profile_photo','ghana_card_photo']);
    assert.equal((await api(null,'POST','/api/v1/rider-documents/upload',{token:link,kind:'profile_photo',imageBase64:jpeg})).status,200);
+   assert.equal((await api(co.token,'POST','/api/v1/company/riders/'+r.id+'/approve',{})).status,409);
+   assert.equal((await api(null,'POST','/api/v1/rider-documents/upload',{token:link,kind:'ghana_card_photo',imageBase64:jpeg})).status,200);
    const outsider=await signUp('company',{name:'Other Fleet',services:['riders']});await db.query("UPDATE companies SET status='approved' WHERE owner_id=$1",[outsider.id]);await verifyPhone(outsider);
    assert.equal((await api(outsider.token,'GET','/api/v1/company/riders/'+r.id+'/photo')).status,404,'another company cannot see the photo');
    assert.equal((await api(outsider.token,'POST','/api/v1/company/riders/'+r.id+'/approve',{})).status,404,'or approve the rider');
@@ -468,7 +482,9 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    const left=await api(r.token,'POST','/api/v1/rider/company/leave',{});assert.equal(left.status,200,JSON.stringify(left.data));
    const after=(await db.query('SELECT status,verified_by_company_id,company_id FROM riders WHERE id=$1',[r.id])).rows[0];
    assert.equal(after.status,'pending');assert.equal(after.verified_by_company_id,null,'leaving the company ends its check');
-   assert.equal((await api(r.token,'GET','/api/v1/rider/licence')).data.status,'missing','now ELESEND needs the Ghana Card');
+   const cardStill=(await api(r.token,'GET','/api/v1/rider/licence')).data;
+   assert.equal(cardStill.ghanaCardOnFile,true,'the Ghana Card stays on file after the rider leaves the company');
+   assert.equal(cardStill.status,'approved');
    await offline();
   });
   await t.test('when the rider\'s phone dies, the customer sees where they were last seen and the rider finishes on another phone',async()=>{
@@ -697,6 +713,11 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     const duplicatePickup=await api(r.token,'POST','/api/v1/shipments/'+shipmentId+'/handover',{kind:'pickup',confirmed:true});
     assert.equal(duplicatePickup.status,200,JSON.stringify(duplicatePickup.data));
     assert.equal(duplicatePickup.data.duplicate,true);
+    const tooFar=await api(r.token,'POST','/api/v1/shipments/'+shipmentId+'/handover',{kind:'delivery',confirmed:true});
+    assert.equal(tooFar.status,409,JSON.stringify(tooFar.data));
+    assert.match(tooFar.data.error,/drop-off|GPS/);
+    assert.notEqual((await db.query('SELECT state FROM shipments WHERE id=$1',[shipmentId])).rows[0].state,'COMPLETED');
+    await placeAt(r,D);
     const delivered=await api(r.token,'POST','/api/v1/shipments/'+shipmentId+'/handover',{kind:'delivery',confirmed:true});
     assert.equal(delivered.status,200,JSON.stringify(delivered.data));
     const duplicate=await api(r.token,'POST','/api/v1/shipments/'+shipmentId+'/handover',{kind:'delivery',confirmed:true});
@@ -743,6 +764,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     const cashAmount=Number(cashBooked.data.amount_minor);
     const cashReported=await api(r.token,'POST','/api/v1/rider/cash-report',{shipmentId:cashId,reportedMinor:cashAmount,cashPayer:'recipient',idempotencyKey:'cash-reported-'+randomInt(1e9)});
     assert.equal(cashReported.status,200,JSON.stringify(cashReported.data));
+    await placeAt(r,D);
     const cashDone=await api(r.token,'POST','/api/v1/shipments/'+cashId+'/handover',{kind:'delivery',confirmed:true});
     assert.equal(cashDone.status,200,JSON.stringify(cashDone.data));
     const cashRepeated=await api(r.token,'POST','/api/v1/shipments/'+cashId+'/handover',{kind:'delivery',confirmed:true});

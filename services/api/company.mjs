@@ -4,6 +4,7 @@ import {check,hash,newToken,phone as normalPhone} from './security.mjs';
 import {companyBalance} from './modules/payments/index.mjs';
 import {queueNotification} from './notifications.mjs';
 import {approveRiderDocuments,riderPhotoFor} from './rider-documents.mjs';
+import {approveRiderLicence} from './rider-licence.mjs';
 import {approveVehicleRecord,vehiclePlateFor} from './vehicle.mjs';
 
 const uuid=z.string().uuid();
@@ -78,8 +79,8 @@ export function companyService(db){return {
   });
  },
  /**
-  * The company vouches for its own rider: no Ghana Card or licence check by ELESEND. The rider still needs a
-  * clear profile photo and, for motor vehicles, a plate, because customers check both at the door.
+  * The company approves its own rider only after the same Ghana Card record an independent rider needs.
+  * Customers still see the profile photo and, for motor vehicles, the plate.
   */
  async approveRider(actor,riderId){
   uuid.parse(riderId);
@@ -90,6 +91,7 @@ export function companyService(db){return {
    check(r.status==='pending',409,r.status==='approved'?'This rider is already approved':'ELESEND has stopped this rider. Contact ELESEND support');
    check(r.display_name,409,'This rider has not added their name');
    if(r.vehicle!=='bicycle')check(await vehiclePlateFor(c,r.id),409,'This rider has not added their number plate');
+   await approveRiderLicence(c,r.id,actor.id);
    await approveRiderDocuments(c,r.id,actor.id,{companyRider:true});
    await approveVehicleRecord(c,r.id,actor.id);
    await c.query("UPDATE riders SET status='approved',verified_by_company_id=$2 WHERE id=$1",[r.id,co.id]);

@@ -13,7 +13,7 @@ test('concurrent food booking, payment callbacks and cancellation',{skip:!proces
  try{
   await migrate(db);
   const customer=randomUUID(),owner=randomUUID(),restaurant=randomUUID(),item=randomUUID();
-  for(const [id,kind] of [[customer,'customer'],[owner,'business']])await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'test-only',$3,now())",[id,'+2332'+randomInt(10000000,99999999),kind]);
+  for(const [id,kind] of [[customer,'customer'],[owner,'business']])await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at,terms_version,terms_accepted_at) VALUES($1,$2,'test-only',$3,now(),'2026-11',now())",[id,'+2332'+randomInt(10000000,99999999),kind]);
   await db.query('UPDATE pricing_policies SET active=false');
   await db.query("INSERT INTO pricing_policies(id,base_minor,per_km_minor,commission_bps,vehicle) VALUES($1,1000,100,1300,'motorcycle')",[randomUUID()]);
   await db.query("INSERT INTO restaurants(id,owner_id,name,phone,address,latitude,longitude,status) VALUES($1,$2,'Race Kitchen','+233241234567','Kitchen address',5.60,-0.18,'approved')",[restaurant,owner]);

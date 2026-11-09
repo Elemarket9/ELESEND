@@ -47,9 +47,17 @@ test('account deletion works against PostgreSQL and frees the phone number',{ski
   const app=platform(db,{otpKey:'c'.repeat(64)});
   const phone='+23324'+String(randomInt(0,10000000)).padStart(7,'0'),password='a-strong-password-1';
   for(const kind of ['customer','rider']){
-   const created=await app.register({phone,password,kind});
+   const created=await app.register({phone,password,kind,termsVersion:'2026-11'});
+   if(kind==='rider'){
+    await db.query(`INSERT INTO rider_licences(rider_id,document_type,legal_name,number_encrypted,number_hash,expires_on,ghana_card_encrypted,ghana_card_hash) VALUES($1,'ghana_card','Deleted Rider','sealed-number',$2,'2030-01-01','sealed-card',$3)`,[created.id,'n'+created.id.replaceAll('-',''),'c'+created.id.replaceAll('-','')]);
+    await db.query(`INSERT INTO rider_documents(rider_id,kind,data_encrypted,byte_size) VALUES($1,'ghana_card_photo','sealed-photo',12)`,[created.id]);
+   }
    const session=await app.login({phone,password});
    assert.deepEqual(await app.deleteAccount({id:created.id,kind},{password}),{ok:true});
+   if(kind==='rider'){
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM rider_licences WHERE rider_id=$1',[created.id])).rows[0].n,0);
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM rider_documents WHERE rider_id=$1',[created.id])).rows[0].n,0);
+   }
    const row=(await db.query('SELECT phone,deleted_at,password_hash FROM users WHERE id=$1',[created.id])).rows[0];
    assert.ok(row.phone.startsWith('deleted:'));assert.ok(row.deleted_at);assert.equal(row.password_hash,'deleted');
    await assert.rejects(app.authenticate(session.token),e=>e.status===401);

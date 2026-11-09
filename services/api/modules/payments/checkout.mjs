@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from '../../security.mjs';
 import {MARKET_CURRENCY} from '../../market.mjs';
-import {DIGITAL_METHODS,validateVerifiedPayment,validatedCheckoutUrl,processingFeeMinor} from './checkout-policy.mjs';
+import {DIGITAL_METHODS,channelsForCheckoutMethods,validateVerifiedPayment,validatedCheckoutUrl,processingFeeMinor} from './checkout-policy.mjs';
 import {customerMoneyReceived,customerMoneyUnapplied} from './checkout-accounting.mjs';
 import {validatePayer} from './payment-provider.mjs';
 const uuid=z.string().uuid(),key=z.string().regex(/^[a-zA-Z0-9_-]{8,128}$/);
@@ -66,7 +66,8 @@ export function checkoutService(db,options={}){
    const prior=(await c.query('SELECT * FROM checkout_confirmed_events WHERE provider=$1 AND event_id=$2',[provider.name,verification.eventId])).rows[0];
    const suspense=(await c.query('SELECT * FROM checkout_unapplied_payments WHERE provider=$1 AND event_id=$2',[provider.name,verification.eventId])).rows[0];
    if(prior||suspense){check((prior??suspense).intent_id===intent.id,409,'Provider event reused for another checkout');return {status:prior?'confirmed':'refund_review',duplicate:true,shipmentId:s.id,intentId:intent.id};}
-   const valid=(()=>{try{return validateVerifiedPayment(verification,{reference:intent.reference,amountMinor:Number(intent.amount_minor),currency:intent.currency,method:intent.method});}catch{return false;}})();
+   const acceptedChannels=provider?.hostedCheckoutChannelRestricted===false?[...new Set([...(provider.collectableChannels??[]),...channelsForCheckoutMethods(provider.methods)])]:undefined;
+   const valid=(()=>{try{return validateVerifiedPayment(verification,{reference:intent.reference,amountMinor:Number(intent.amount_minor),currency:intent.currency,method:intent.method,acceptedChannels});}catch{return false;}})();
    const fo=(await c.query('SELECT * FROM food_orders WHERE shipment_id=$1',[s.id])).rows[0];
    const expectedAmount=fo?Number(fo.total_minor):Number(s.amount_minor);
    const foodPayable=!fo||!['CANCELLED','REJECTED','DELIVERED'].includes(fo.state);

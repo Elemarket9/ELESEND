@@ -16,6 +16,24 @@ test('the customer fee leaves the full price after Paystack takes its percentage
  assert.equal(processingFeeMinor(10000,undefined),0);
 });
 
+test('motor riders still upload a licence photo when the identity provider checks the Ghana Card',async()=>{
+ const {requiredKinds,renderDocumentUploadPage}=await import('../services/api/rider-documents.mjs');
+ const saved={key:process.env.DIDIT_API_KEY,workflow:process.env.DIDIT_WORKFLOW_ID,secret:process.env.DIDIT_WEBHOOK_SECRET};
+ for(const [k,v] of [['DIDIT_API_KEY','k'],['DIDIT_WORKFLOW_ID','11111111-1111-4111-8111-111111111111'],['DIDIT_WEBHOOK_SECRET','whsec']])process.env[k]=v;
+ try{
+  assert.ok(requiredKinds('motorcycle').includes('licence_photo'));
+  assert.ok(requiredKinds('car').includes('licence_photo'));
+  assert.equal(requiredKinds('bicycle').includes('licence_photo'),false);
+  assert.equal(requiredKinds('motorcycle',{companyRider:true}).includes('licence_photo'),false);
+  assert.match(renderDocumentUploadPage(),/licence_photo/);
+ }finally{
+  for(const [k,v] of [['DIDIT_API_KEY',saved.key],['DIDIT_WORKFLOW_ID',saved.workflow],['DIDIT_WEBHOOK_SECRET',saved.secret]]){
+   if(v===undefined)delete process.env[k];else process.env[k]=v;
+  }
+ }
+ assert.ok(requiredKinds('motorcycle').includes('licence_photo'));
+});
+
 test('the fee rate is configurable, and bad values are refused',()=>{
  assert.equal(paystackCheckout({secretKey:'sk_test_x',production:false}).processingFeeBps,195);
  assert.equal(paystackCheckout({secretKey:'sk_test_x',production:false,processingFeeBps:0}).processingFeeBps,0);
@@ -48,7 +66,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
  const request={vehicle:'motorcycle',pickup:{address:'A',latitude:5.5,longitude:-0.2},destination:{address:'B',latitude:5.6,longitude:-0.2},recipientPhone:'+233241234567',weightG:100,description:'Test'};
  const {passwordHash}=await import('../services/api/security.mjs');
  const secret=await passwordHash('Correct-pass-1');
- async function user(kind){const id=randomUUID();await db.query('INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,$3,$4,now())',[id,phone(),secret,kind]);return id;}
+ async function user(kind){const id=randomUUID();await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at,terms_version,terms_accepted_at) VALUES($1,$2,$3,$4,now(),'2026-11',now())",[id,phone(),secret,kind]);return id;}
  async function newRider(){const id=await user('rider');await db.query("INSERT INTO riders(id,vehicle,max_weight_g,status,online) VALUES($1,'motorcycle',20000,'approved',true)",[id]);await db.query('INSERT INTO commission_accounts(rider_id) VALUES($1)',[id]);return id;}
  async function shipment(customer,state='AWAITING_PAYMENT',paid=false,amount=1000){
   const quote=randomUUID(),id=randomUUID();
@@ -265,6 +283,17 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   assert.equal(intent.amountMinor,1020);assert.equal(intent.processingFeeMinor,20);
   verification={reference:intent.reference,status:'success',amountMinor:1020,currency:'GHS',channel:'mobile_money',eventId:'evt_'+randomUUID()};
   assert.equal((await checkout.confirmVerified(verification)).status,'confirmed');
+  // A hosted page that cannot be limited to MOMO still applies a confirmed card payment. A provider that can limit the page does not.
+  const hostedCheckout=checkoutService(db,{provider:{name:'hostedfixture',methods:['MOMO'],hostedCheckoutChannelRestricted:false,collectableChannels:['mobile_money','card','qr'],payerFields:[],allowedCheckoutHosts:['checkout.test'],createCheckout:async x=>({reference:x.reference,checkoutUrl:'https://checkout.test/pay'}),verifyPayment:async()=>null,parseVerifiedWebhook:async()=>null}});
+  const cardPaid=await shipment(customer);
+  const cardIntent=await hostedCheckout.initiate({id:customer,kind:'customer'},cardPaid,{idempotencyKey:key()});
+  assert.equal((await hostedCheckout.confirmVerified({reference:cardIntent.reference,status:'success',amountMinor:cardIntent.amountMinor,currency:'GHS',channel:'card',eventId:'evt_'+randomUUID()})).status,'confirmed');
+  assert.equal((await db.query('SELECT paid FROM shipments WHERE id=$1',[cardPaid])).rows[0].paid,true);
+  const strictCheckout=checkoutService(db,{provider:{...psp,name:'strictfixture'}});
+  const mismatch=await shipment(customer);
+  const mismatchIntent=await strictCheckout.initiate({id:customer,kind:'customer'},mismatch,{idempotencyKey:key()});
+  assert.equal((await strictCheckout.confirmVerified({reference:mismatchIntent.reference,status:'success',amountMinor:mismatchIntent.amountMinor,currency:'GHS',channel:'card',eventId:'evt_'+randomUUID()})).status,'refund_review');
+  assert.equal((await db.query('SELECT paid FROM shipments WHERE id=$1',[mismatch])).rows[0].paid,false);
   const balances=async id=>Object.fromEntries((await db.query("SELECT l.account,sum(CASE WHEN l.side='credit' THEN amount_minor ELSE -amount_minor END)::bigint AS v FROM checkout_accounting_lines l JOIN checkout_accounting_journals j ON j.id=l.journal_id WHERE j.shipment_id=$1 GROUP BY l.account",[id])).rows.map(r=>[r.account,Number(r.v)]));
   let books=await balances(paidOrder);
   assert.equal(books.customer_delivery_liability,1000);assert.equal(books.customer_processing_fee_liability,20);assert.equal(books.provider_receivable,-1020);
@@ -421,13 +450,20 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
    decisionBody=decisionOf('GH 99999999',{face_matches:[{status:'Declined'}]});
    assert.equal((await syncIdentityCheck(db,selfie,{provider:didit})).status,'failed');
    await startIdentityCheck(db,{id:selfie,kind:'rider'},{provider:didit});
-   await uploadAll(selfie);
    decisionBody=decisionOf('GH 99999999');
+   const licenceMatch=await syncIdentityCheck(db,selfie,{provider:didit});
+   assert.equal(licenceMatch.status,'failed');
+   assert.match(licenceMatch.reason,/Ghana Card/);
+   await startIdentityCheck(db,{id:selfie,kind:'rider'},{provider:didit});
+   await uploadAll(selfie);
+   const licenceExpiry=(await db.query('SELECT expires_on::text AS expires_on FROM rider_licences WHERE rider_id=$1',[selfie])).rows[0].expires_on;
+   decisionBody=decisionOf('GHA-999999999-9',{id_verifications:[{status:'Approved',document_type:'Ghana Card',document_number:'GHA-999999999-9',expiration_date:'2099-12-31'}]});
    const raw=Buffer.from(JSON.stringify({session_id:sessionId,status:'Approved'}));
    const stamp=String(Math.floor(Date.now()/1000));
    await assert.rejects(identityWebhook(db,raw,{'x-timestamp':stamp,'x-signature':'0'.repeat(64)},{provider:didit}),/signature/);
    await assert.rejects(identityWebhook(db,raw,{'x-timestamp':'1','x-signature':createHmac('sha256','whsec').update(raw).digest('hex')},{provider:didit}),/Stale/);
    await identityWebhook(db,raw,{'x-timestamp':stamp,'x-signature':createHmac('sha256','whsec').update(raw).digest('hex')},{provider:didit});
+   assert.equal((await db.query('SELECT expires_on::text AS expires_on FROM rider_licences WHERE rider_id=$1',[selfie])).rows[0].expires_on,licenceExpiry,'a longer-lived Ghana Card must not extend the driver licence');
    await app.approve(reviewer,'riders',selfie,'approved');
    assert.equal((await db.query('SELECT status FROM riders WHERE id=$1',[selfie])).rows[0].status,'approved');
   }finally{for(const k of ['DIDIT_API_KEY','DIDIT_WORKFLOW_ID','DIDIT_WEBHOOK_SECRET'])delete process.env[k];}

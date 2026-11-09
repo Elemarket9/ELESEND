@@ -38,7 +38,7 @@ test('prepaid food database controls',{skip:!url},async t=>{
    const db={query:(...a)=>c.query(...a),async tx(f){const name='case_'+(++savepoint);await c.query('SAVEPOINT '+name);try{const result=await f(c);await c.query('RELEASE SAVEPOINT '+name);return result;}catch(e){await c.query('ROLLBACK TO SAVEPOINT '+name);throw e;}}};
    try{
     const customer=randomUUID(),owner=randomUUID(),restaurant=randomUUID(),item=randomUUID(),policy=randomUUID();
-    for(const [id,kind] of [[customer,'customer'],[owner,'business']])await c.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'test-only',$3,now())",[id,'+2332'+String(randomInt(10000000,99999999)),kind]);
+    for(const [id,kind] of [[customer,'customer'],[owner,'business']])await c.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at,terms_version,terms_accepted_at) VALUES($1,$2,'test-only',$3,now(),'2026-11',now())",[id,'+2332'+String(randomInt(10000000,99999999)),kind]);
     await c.query('UPDATE pricing_policies SET active=false');
     await c.query("INSERT INTO pricing_policies(id,base_minor,per_km_minor,commission_bps,vehicle) VALUES($1,1000,100,1300,'motorcycle')",[policy]);
     await c.query("INSERT INTO restaurants(id,owner_id,name,phone,address,latitude,longitude,status) VALUES($1,$2,'Test Kitchen','+233241234567','Test Kitchen Address',5.60,-0.18,'approved')",[restaurant,owner]);
@@ -1417,7 +1417,7 @@ test('prepaid food database controls',{skip:!url},async t=>{
    // Test account phone verification flow (register -> phoneStatus -> phoneChallenge -> 5 wrong attempts expire challenge -> resend -> verifyPhone)
    const sentSms=[];
    const app=platformService(db,{otpKey:'c'.repeat(64),sms:{async send(m){sentSms.push(m);return {accepted:true};}}});
-   const reg=await app.register({phone:'024'+String(randomInt(1000000,9999999)),password:'StrongPassword123!',kind:'customer',name:'New User'});
+   const reg=await app.register({phone:'024'+String(randomInt(1000000,9999999)),password:'StrongPassword123!',kind:'customer',name:'New User',termsVersion:'2026-11'});
    assert.equal(reg.phoneVerified,false);
    const newActor={id:reg.id,kind:'customer'};
    assert.equal((await app.phoneStatus(newActor)).verified,false);

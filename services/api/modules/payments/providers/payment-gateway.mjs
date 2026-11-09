@@ -17,9 +17,16 @@ export function paymentGateway({name,endpoint,allowedHost,token,methods=['MOMO',
   check(r.ok,503,'Payment bridge unavailable');return result;
  }
  async function verified(path,input){const r=await remote(path,input);check(r?.verified===true,409,'Independent provider verification required');return r;}
+ async function verifyPayment(reference){
+  const r=await verified('/verify',{reference});
+  check(r?.reference===reference,409,'Provider returned a different payment reference');
+  if(r.status==='success')check(Number.isSafeInteger(r.amountMinor),409,'Provider amount is not an integer minor unit');
+  return r;
+ }
  return {
   name,methods,allowedCheckoutHosts:checkoutHosts,payerFields,
-  createCheckout:x=>remote('/checkout',x),verifyPayment:reference=>verified('/verify',{reference}),
+  secretsConfigured:true,integerMinorAmounts:true,confirmsByReference:true,webhookSignatureEnforced:true,
+  createCheckout:x=>remote('/checkout',x),verifyPayment,
   createPayment:x=>remote('/commission-checkout',x),
   commissionIntentId:r=>{if(typeof r==='object'&&r?.commissionIntentId)return r.commissionIntentId;const ref=typeof r==='string'?r:r?.reference||'';const m=/^escomm_([0-9a-f]{32})$/.exec(ref);if(!m)return null;const h=m[1];return [h.slice(0,8),h.slice(8,12),h.slice(12,16),h.slice(16,20),h.slice(20)].join('-');},
   parseVerifiedWebhook:(rawBody,headers)=>{if(rawBody&&typeof rawBody==='object'&&!Buffer.isBuffer(rawBody)&&!(rawBody instanceof Uint8Array)&&('rawBody' in rawBody||'headers' in rawBody)){headers=rawBody.headers;rawBody=rawBody.rawBody;}return verified('/webhooks/verify',{rawBody:Buffer.from(rawBody).toString('base64'),headers:Object.fromEntries(Object.entries(headers||{}).filter(([k])=>!['authorization','cookie'].includes(k)))});},

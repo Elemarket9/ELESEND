@@ -51,9 +51,8 @@ export async function riderLicenceStatus(db,actor){
  if(identityConfigured())await syncIdentityCheck(db,actor.id).catch(()=>{});
  const company=(await db.query('SELECT c.name FROM riders r JOIN companies c ON c.id=r.company_id WHERE r.id=$1',[actor.id])).rows[0];
  const row=(await db.query('SELECT document_type,legal_name,licence_class,expires_on::text AS expires_on,status,rejection_reason,valid_until::text AS valid_until,identity_status,identity_reason,ghana_card_hash IS NOT NULL AS ghana_card_on_file FROM rider_licences WHERE rider_id=$1',[actor.id])).rows[0];
- // Company riders are checked by their company, so ELESEND does not ask them for a Ghana Card or licence.
- if(company&&!row)return {status:'not_required',companyName:company.name,identityAvailable:false};
- if(!row)return {status:'missing',identityAvailable:identityConfigured()};
+ // A company approves its own riders, but every rider still puts a Ghana Card on file first.
+ if(!row)return {status:'missing',companyName:company?.name??null,identityAvailable:identityConfigured()};
  return {status:row.status,companyName:company?.name??null,ghanaCardOnFile:row.ghana_card_on_file,identityAvailable:identityConfigured(),identityStatus:row.identity_status,identityReason:row.identity_reason,documentType:row.document_type,legalName:row.legal_name,licenceClass:row.licence_class,expiresOn:row.expires_on,vehiclePlate:await vehiclePlateFor(db,actor.id),rejectionReason:row.rejection_reason,validUntil:row.valid_until};
 }
 export async function submitRiderLicence(db,actor,input){
@@ -107,6 +106,10 @@ export async function saveRiderProfile(db,actor,input){
  });
 }
 /** Called inside rider approval: the approval fails unless a current document is on file. */
+/** Removes the stored licence and Ghana Card so a deleted account no longer holds those numbers. */
+export async function shredRiderLicence(c,riderId){
+ await c.query('DELETE FROM rider_licences WHERE rider_id=$1',[riderId]);
+}
 export async function approveRiderLicence(c,riderId,reviewerId){
  const row=(await c.query('SELECT status,expires_on::text AS expires_on,identity_status,ghana_card_hash FROM rider_licences WHERE rider_id=$1 FOR UPDATE',[riderId])).rows[0];
  check(row,409,'This rider has not submitted a licence');
@@ -172,11 +175,10 @@ function evaluateDecision(decision,licence){
  if(!id||!approved(id.status))return {status:'failed',reason:'The document was not accepted'};
  if(!decision.liveness_checks?.length||!decision.liveness_checks.every(x=>approved(x.status)))return {status:'failed',reason:'The live selfie check was not passed'};
  if(!decision.face_matches?.length||!decision.face_matches.every(x=>approved(x.status)))return {status:'failed',reason:'The selfie did not match the document'};
- if(compact(id.document_number)!==compact(licence.number))return {status:'failed',reason:'The number on the document does not match the number you entered'};
- const type=String(id.document_type??'').toLowerCase();
- if(licence.document_type==='drivers_licence'&&!/driv/.test(type))return {status:'failed',reason:'A driver\'s licence is required'};
+ if(!licence.ghanaCard||compact(id.document_number)!==compact(licence.ghanaCard))return {status:'failed',reason:'The number on the document does not match the Ghana Card you entered'};
  if(id.expiration_date&&id.expiration_date<ghanaToday())return {status:'failed',reason:'The document has expired'};
- return {status:'approved',expiresOn:/^\d{4}-\d{2}-\d{2}$/.test(id.expiration_date??'')?id.expiration_date:null};
+ // expires_on stays the date the rider entered. For a motor rider that is the driver's licence, not this card.
+ return {status:'approved'};
 }
 export async function syncIdentityCheck(db,riderId,{provider=identityProviderFromEnv()}={}){
  const row=(await db.query("SELECT identity_session_id FROM rider_licences WHERE rider_id=$1 AND identity_status='in_progress'",[riderId])).rows[0];
@@ -184,10 +186,10 @@ export async function syncIdentityCheck(db,riderId,{provider=identityProviderFro
  const decision=await provider.getDecision(row.identity_session_id);
  check(decision?.vendor_data===riderId&&decision?.session_id===row.identity_session_id,409,'Identity result does not belong to this rider');
  return db.tx(async c=>{
-  const licence=(await c.query("SELECT document_type,number_encrypted,identity_session_id,identity_status FROM rider_licences WHERE rider_id=$1 FOR UPDATE",[riderId])).rows[0];
+  const licence=(await c.query("SELECT document_type,number_encrypted,ghana_card_encrypted,identity_session_id,identity_status FROM rider_licences WHERE rider_id=$1 FOR UPDATE",[riderId])).rows[0];
   if(licence?.identity_status!=='in_progress'||licence.identity_session_id!==row.identity_session_id)return null;
-  const result=evaluateDecision(decision,{document_type:licence.document_type,number:decryptNumber(licence.number_encrypted,riderId)});
-  await c.query('UPDATE rider_licences SET identity_status=$2,identity_reason=$3,identity_checked_at=now(),expires_on=coalesce($4::date,expires_on),reverify_due_at=CASE WHEN $2=\'approved\' THEN NULL ELSE reverify_due_at END WHERE rider_id=$1',[riderId,result.status,result.reason??null,result.expiresOn??null]);
+  const result=evaluateDecision(decision,{document_type:licence.document_type,number:decryptNumber(licence.number_encrypted,riderId),ghanaCard:licence.ghana_card_encrypted?decryptCard(licence.ghana_card_encrypted,riderId):null});
+  await c.query('UPDATE rider_licences SET identity_status=$2,identity_reason=$3,identity_checked_at=now(),reverify_due_at=CASE WHEN $2=\'approved\' THEN NULL ELSE reverify_due_at END WHERE rider_id=$1',[riderId,result.status,result.reason??null]);
   if(result.status!=='in_progress')await c.query('INSERT INTO audit_logs(action,entity_id) VALUES($1,$2)',['rider.identity_'+result.status,riderId]);
   return result;
  });

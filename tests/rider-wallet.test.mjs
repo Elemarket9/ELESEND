@@ -44,7 +44,7 @@ test('rider wallet, COD commission debt, automatic recovery and debt restriction
 
   async function mkUser(q,kind,perms=[]){
    const id=randomUUID();
-   await q.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'test-only',$3,now())",[id,phone(),kind]);
+   await q.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at,terms_version,terms_accepted_at) VALUES($1,$2,'test-only',$3,now(),'2026-11',now())",[id,phone(),kind]);
    for(const p of perms)await q.query('INSERT INTO permissions(user_id,permission) VALUES($1,$2)',[id,p]);
    return id;
   }

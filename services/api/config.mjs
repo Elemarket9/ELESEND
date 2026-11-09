@@ -149,7 +149,9 @@ export function validateConfig(env = process.env) {
   const webPublicOrigin = (env.WEB_PUBLIC_ORIGIN || '').trim().replace(/\/$/, '');
   const adminHost = env.ADMIN_HOST ? env.ADMIN_HOST.split(':')[0].trim().toLowerCase() : null;
 
-  if (adminHost) {
+  if (isProduction && !adminHost) {
+    errors.push('ADMIN_HOST is required in production.');
+  } else if (adminHost) {
     if (adminHost.includes('/') || (adminHost.includes(':') && !/^\d+$/.test(adminHost.split(':')[1])) || /[\s<>"`\\@]/.test(adminHost)) {
       errors.push(`ADMIN_HOST "${adminHost}" is not a valid hostname.`);
     }
@@ -337,8 +339,8 @@ export function validateConfig(env = process.env) {
 
   if (rawPaymentProvider === 'hubtel') {
     paymentProviderName = 'hubtel';
-    if (!hubtelClientId || !hubtelClientSecret || !hubtelMerchantNo) {
-      errors.push('PAYMENT_PROVIDER is set to "hubtel", but HUBTEL_CLIENT_ID, HUBTEL_CLIENT_SECRET, or HUBTEL_MERCHANT_ACCOUNT_NUMBER is missing.');
+    if (!hubtelClientId || !hubtelClientSecret || !hubtelMerchantNo || !(env.HUBTEL_DISBURSEMENT_ACCOUNT_NUMBER || '').trim()) {
+      errors.push('PAYMENT_PROVIDER is set to "hubtel", but HUBTEL_CLIENT_ID, HUBTEL_CLIENT_SECRET, HUBTEL_MERCHANT_ACCOUNT_NUMBER, or HUBTEL_DISBURSEMENT_ACCOUNT_NUMBER is missing.');
     }
   } else if (rawPaymentProvider === 'paystack') {
     paymentProviderName = 'paystack';
@@ -370,13 +372,13 @@ export function validateConfig(env = process.env) {
   } else {
     errors.push(`Unknown PAYMENT_PROVIDER "${env.PAYMENT_PROVIDER}". Valid values: 'gateway', 'hubtel', 'paystack', 'moolre', 'none' (auto is development-only).`);
   }
-
   // Payment URLs & Options
   const hubtelPaymentConfig = (paymentProviderName === 'hubtel' || (hubtelClientId && hubtelClientSecret && hubtelMerchantNo))
     ? {
         clientId: hubtelClientId,
         clientSecret: hubtelClientSecret,
         merchantAccountNumber: hubtelMerchantNo,
+        disbursementAccountNumber: (env.HUBTEL_DISBURSEMENT_ACCOUNT_NUMBER || '').trim(),
         endpoint: (env.HUBTEL_PAYMENT_ENDPOINT || 'https://payproxyapi.hubtel.com').trim(),
         allowedHost: (env.HUBTEL_PAYMENT_ALLOWED_HOST || 'payproxyapi.hubtel.com').trim(),
         allowedMethods: (env.HUBTEL_ENABLED_METHODS || 'MOMO,CARD,QR').split(',').map(s => s.trim()).filter(Boolean),

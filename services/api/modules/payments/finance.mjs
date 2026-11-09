@@ -2,7 +2,7 @@ import {errorText,pool,raceTimeout,submissionChecks} from './async-helpers.mjs';
 import {CONFIRMED_INTENT_FIELDS,claimIntentsToReconcile,markOutcomeUncertain,markRejectedBeforeCharge,reconcileQuietly} from './intent-records.mjs';
 import {MARKET_CURRENCY} from '../../market.mjs';
 import {validatePayer} from './payment-provider.mjs';
-import {validatedCheckoutUrl} from './checkout-policy.mjs';
+import {validatedCheckoutUrl,confirmedRepaymentChannelAllowed} from './checkout-policy.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from '../../security.mjs';
@@ -181,7 +181,7 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
    const verified=await provider.verifyEvent({rawBody,headers});
    check(verified&&verified.providerName===provider.name&&verified.verified===true,403,'Provider evidence not verified');
    // Adapters that predate channel reporting only ever accepted mobile money.
-   check((await getWalletPolicy(db)).repayment_channels.includes(verified.channel??'mobile_money'),409,'Commission repayment channel not permitted by wallet policy');
+   check(confirmedRepaymentChannelAllowed(verified.channel??'mobile_money',{policyChannels:(await getWalletPolicy(db)).repayment_channels,provider}),409,'Commission repayment channel not permitted by wallet policy');
    return this.confirmed({providerName:verified.providerName,eventId:verified.eventId,intentId:verified.intentId,amountMinor:verified.amountMinor,currency:verified.currency});
   },
   async reportCash(actor,sid,input){requireRider(actor);UUID.parse(sid);
@@ -523,7 +523,7 @@ export function financeService(db,{provider=null,verifyTimeoutMs=10000,concurren
    if(providerStatus==='success'){
     check(verified.reference===ref,409,'Settlement verification reference mismatch');
     check(Number(verified.amountMinor)===Number(intent.amount_minor)&&verified.currency===MARKET_CURRENCY,409,'Settlement verification amount or currency mismatch');
-    check((await getWalletPolicy(db)).repayment_channels.includes(verified.channel),409,'Commission repayment channel not permitted by wallet policy');
+    check(confirmedRepaymentChannelAllowed(verified.channel,{policyChannels:(await getWalletPolicy(db)).repayment_channels,provider}),409,'Commission repayment channel not permitted by wallet policy');
     check(typeof verified.eventId==='string'&&verified.eventId.length>=4,409,'Settlement verification missing event ID');
     return this.confirmed({
      providerName:provider.name,

@@ -74,7 +74,7 @@ NIST SP 800-53 is written for US federal systems. These controls have direct cod
 ## Still open, most important first
 
 1. **Independent penetration test** before real customer money goes through ELESEND.
-2. **Turn on the limited database login** by setting `ELESEND_APP_DB_PASSWORD` and `DOCKER_APP_DATABASE_URL`. Without it, the API uses the database owner, which could switch off the audit triggers if the API were taken over.
+2. **Turn on the limited database login** by setting `ELESEND_APP_DB_PASSWORD` and `DOCKER_APP_DATABASE_URL`. Production startup now refuses a login that owns the tables or is a superuser.
 3. **Set `ADMIN_ALLOWED_IPS`** to a fixed office or VPN address.
 4. **Strict content policy for the admin and restaurant pages.** This means moving their inline handlers into scripts.
 5. **Send logs off the server and alert on them**, so a server takeover cannot hide its own traces.

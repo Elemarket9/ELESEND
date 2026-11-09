@@ -121,6 +121,7 @@ test('the motorcycle graph no longer uses the bicycle profile',()=>{
 test('van delivery is refused while its capability is off',async()=>{
  const {platform}=await import('../services/api/platform.mjs');
  const db={query:async sql=>{
+  if(sql.includes('terms_accepted_at'))return {rows:[{terms_accepted_at:new Date()}],rowCount:1};
   if(sql.includes('vehicle_capabilities'))return {rows:[{enabled:false}]};
   if(sql.includes('service_markets'))return {rows:[{service_enabled:true}],rowCount:1};
   return {rows:[{enabled:true}],rowCount:1};

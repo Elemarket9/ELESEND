@@ -7,7 +7,6 @@ import {createHash,randomBytes} from 'node:crypto';
 import {seal,unseal} from './sealed-values.mjs';
 import {z} from 'zod';
 import {check} from './security.mjs';
-import {identityConfigured} from './identity-verification.mjs';
 import {riderDataKey} from './rider-licence.mjs';
 
 const KINDS=['profile_photo','licence_photo','ghana_card_photo','insurance','roadworthiness'];
@@ -21,10 +20,11 @@ const imageContext=(riderId,kind)=>`elesend:rider-document:v1:${riderId}:${kind}
 const encryptImage=(image,riderId,kind)=>seal(key(),imageContext(riderId,kind),image);
 const decryptImage=(value,riderId,kind)=>unseal(key(),imageContext(riderId,kind),value);
 const requireVerifier=(c,actor)=>requirePermission(c,actor,'verification:write');
-// Every rider needs a profile photo, because customers see it. Company riders need only that: their company
-// checks the rest. Independent riders add their Ghana Card, and motor vehicle riders their licence and papers.
-// The identity provider photographs the licence when it is on; otherwise staff review a photo here.
-export const requiredKinds=(vehicle,{companyRider=false}={})=>companyRider?['profile_photo']:KINDS.filter(kind=>(!EXPIRING.includes(kind)||vehicle!=='bicycle')&&(kind!=='licence_photo'||(vehicle!=='bicycle'&&!identityConfigured())));
+// Every rider needs a profile photo, because customers see it, and a Ghana Card photo. Company riders stop there:
+// their company checks the vehicle papers. Independent motor riders also upload a licence photo. The identity
+// provider photographs the Ghana Card, not the licence, so that photo is still required here. Bicycles skip the
+// licence, insurance, and roadworthiness.
+export const requiredKinds=(vehicle,{companyRider=false}={})=>companyRider?['profile_photo','ghana_card_photo']:KINDS.filter(kind=>(kind!=='licence_photo'||vehicle!=='bicycle')&&(!EXPIRING.includes(kind)||vehicle!=='bicycle'));
 
 export async function createDocumentUploadLink(db,actor){
  check(actor?.kind==='rider',403,'Rider account required');
@@ -79,6 +79,11 @@ export async function riderDocumentStatus(db,actor){
  return {companyName:rider.company_name??null,displayName:rider.display_name,vehicle:rider.vehicle,vehiclePlate:rider.registration_plate,documents:requiredKinds(rider.vehicle,{companyRider:!!rider.company_id}).map(kind=>{const d=rows.find(r=>r.kind===kind);return {kind,status:d?.status??'missing',expiresOn:d?.expires_on??null,rejectionReason:d?.rejection_reason??null};})};
 }
 /** Called inside rider approval, alongside the licence check. Company approval checks only the profile photo. */
+/** Removes document photos and upload links for a deleted account. */
+export async function shredRiderDocuments(c,riderId){
+ await c.query('DELETE FROM rider_documents WHERE rider_id=$1',[riderId]);
+ await c.query('DELETE FROM rider_document_links WHERE rider_id=$1',[riderId]);
+}
 export async function approveRiderDocuments(c,riderId,reviewerId,{companyRider=false}={}){
  const rider=(await c.query('SELECT vehicle FROM riders WHERE id=$1',[riderId])).rows[0];
  check(rider,404,'Rider not found');
@@ -141,7 +146,7 @@ export async function suspendExpiredDocuments(db){
  for(const {id,kind} of rows)await db.query('INSERT INTO audit_logs(action,entity_id) VALUES($1,$2)',['rider.document_expired_suspended:'+kind,id]);
  return rows.map(r=>r.id);
 }
-export function renderDocumentUploadPage({includeLicencePhoto=!identityConfigured()}={}){
+export function renderDocumentUploadPage({includeLicencePhoto=true}={}){
  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rider Documents</title>
 <style>body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#f8fafc;color:#0f172a}section{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin-bottom:14px}h1{font-size:20px}h2{font-size:16px;margin:0 0 8px}label{display:block;font-size:14px;margin:10px 0 4px}input{font-size:16px;width:100%;box-sizing:border-box}button{margin-top:12px;width:100%;padding:12px;font-size:16px;font-weight:700;border:0;border-radius:8px;background:#0f172a;color:#fff}p.s{font-size:14px;margin:8px 0 0}</style></head><body>
 <h1>Rider documents</h1><p>Take clear photos where all the writing can be read.</p><div id="forms"></div>

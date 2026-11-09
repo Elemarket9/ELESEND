@@ -26,7 +26,7 @@ test('one verified webhook routes arbitrary references to checkout or commission
 });
 test('bridge supports an approved external PSP without built-in vendor names',async()=>{
  let calls=0;
- const gateway=paymentGateway({name:'other_psp',endpoint:'https://bridge.example.test/api',allowedHost:'bridge.example.test',token:'x'.repeat(32),checkoutHosts:['pay.example.test'],fetchImpl:async(url,options)=>{calls++;assert.equal(url.hostname,'bridge.example.test');assert.equal(options.redirect,'error');return {ok:true,json:async()=>({verified:true,status:'success',reference:'merchant-reference'})};}});
+ const gateway=paymentGateway({name:'other_psp',endpoint:'https://bridge.example.test/api',allowedHost:'bridge.example.test',token:'x'.repeat(32),checkoutHosts:['pay.example.test'],fetchImpl:async(url,options)=>{calls++;assert.equal(url.hostname,'bridge.example.test');assert.equal(options.redirect,'error');return {ok:true,json:async()=>({verified:true,status:'success',reference:'merchant-reference',amountMinor:1000,currency:'GHS'})};}});
  assert.equal(gateway.name,'other_psp');assert.equal((await gateway.verifyPayment('merchant-reference')).verified,true);assert.equal(calls,1);
  assert.throws(()=>paymentGateway({name:'other_psp',endpoint:'http://bridge.example.test',allowedHost:'bridge.example.test',token:'x'.repeat(32),checkoutHosts:['pay.example.test']}),/approved HTTPS/);
 });

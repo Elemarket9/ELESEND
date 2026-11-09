@@ -170,8 +170,8 @@ export async function getPublicTracking(db, token, {actor=null, secret=null, eta
   } : null,
   // What the customer checks at the door, as ride apps show it: photo, first name, plate and vehicle.
   rider: isCourierActive && row.rider_id && riderCard ? await riderCard(db, row.rider_id) : null,
-  // Raw riderPhone PII is only exposed to authenticated shipment participants or verified signed tracking tokens
-  riderPhone: isCourierActive ? (row.rider_phone || null) : null,
+  // A shared tracking link must not reveal the rider's phone. Only the customer, the rider, or an admin receive it.
+  riderPhone: isCourierActive && isAuthorizedActor ? (row.rider_phone || null) : null,
   eta:null,
   deliveryEta:eta?await eta.customerEta(row.id):null,
   createdAt:row.created_at,
