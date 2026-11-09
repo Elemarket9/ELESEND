@@ -12,7 +12,8 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 osmium tags-filter "$data/ghana-latest.osm.pbf" \
   nwr/amenity nwr/shop nwr/office nwr/craft nwr/tourism nwr/healthcare nwr/aeroway nwr/public_transport nwr/railway=station \
-  nwr/leisure=stadium,park,sports_centre nwr/building=commercial,retail,hospital,school,university,hotel \
+  nwr/leisure=stadium,park,sports_centre,pitch,playground,fitness_centre,sports_hall,swimming_pool \
+  nwr/building=commercial,retail,hospital,school,university,hotel,church,mosque,chapel,supermarket,civic,public,college,kindergarten,train_station \
   -o "$work/places.pbf"
 osmium tags-filter "$work/places.pbf" nwr/name -o "$work/named.pbf"
 osmium export "$work/named.pbf" -f geojsonseq --add-unique-id=type_id -o "$work/named.geojsonseq"

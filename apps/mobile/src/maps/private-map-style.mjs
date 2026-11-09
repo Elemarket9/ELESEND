@@ -1,5 +1,5 @@
 import {GHANA_SEA} from './ghana-sea.mjs';
-export const OSM_ATTRIBUTION='© OpenStreetMap contributors';
+export const OSM_ATTRIBUTION='© OpenStreetMap contributors (ODbL) · Overture Maps places (CDLA-Permissive-2.0)';
 export function isLocalOrPrivateMapHost(hostname){
  if(!hostname)return false;
  const h=hostname.toLowerCase();

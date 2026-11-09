@@ -259,6 +259,21 @@ services:
       - {type: bind, source: '${GHANA_MAP_DATA:-./map-data}', target: /data, read_only: true}
     networks: [private]
     logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+  # Optional. Stays off unless you start the photon profile after building a Ghana index.
+  # See scripts/photon-ghana.sh. The API ignores Photon when PHOTON_URL is empty.
+  photon:
+    profiles: [photon]
+    image: eclipse-temurin:21-jre
+    restart: unless-stopped
+    entrypoint: ["java", "-jar", "/data/photon/photon.jar"]
+    command: ["serve", "-data-dir", "/data/photon/data", "-listen-ip", "0.0.0.0", "-listen-port", "2322"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - {type: bind, source: '${GHANA_MAP_DATA:-./map-data}', target: /data, read_only: true}
+    networks: [private]
+    logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
   maps:
     build:
       context: ../..

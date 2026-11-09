@@ -24,8 +24,12 @@ jobs:
           sh scripts/build-ghana-places.sh /tmp/map | tee /tmp/places-summary.json
           size=$(stat -c %s services/api/infrastructure/maps/ghana-osm-places.json)
           echo "places file: $size bytes"
-          if [ "$size" -gt 90000000 ]; then echo '::error::Places file is over 90 MB; narrow the tag filter in scripts/build-ghana-places.sh'; exit 1; fi
-          if [ "$size" -gt 50000000 ]; then echo '::warning::Places file is over 50 MB; check server memory before merging'; fi
+          # The wider place list for Greater Accra, Kumasi and Central is still a named-feature extract, not the planet file.
+          # 120 MB leaves room for that list. A file past this is a filter bug, not expected growth.
+          if [ "$size" -gt 120000000 ]; then echo '::error::Places file is over 120 MB; narrow the tag filter in scripts/build-ghana-places.sh'; exit 1; fi
+          if [ "$size" -gt 80000000 ]; then echo '::warning::Places file is over 80 MB; check server memory before the nightly load'; fi
+      - name: Build named roads
+        run: sh scripts/build-ghana-roads.sh /tmp/map /tmp/map/ghana-osm-roads.json
       - name: Build road graphs
         run: sh scripts/prepare-ghana-osrm.sh /tmp/map
       - name: Start routing

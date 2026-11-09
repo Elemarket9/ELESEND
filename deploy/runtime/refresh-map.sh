@@ -47,6 +47,14 @@ elif ! sh "$root/scripts/build-ghana-places.sh" "$next" "$next/ghana-osm-places.
 elif ! GHANA_OSM_PLACES_FILE="$next/ghana-osm-places.json" node "$root/scripts/map-quality.mjs"; then
   say 'New places failed the search checks in config/map-quality.json. Keeping the previous places'; rm -f "$next/ghana-osm-places.json"; keep_old_places
 fi
+if command -v osmium >/dev/null && [ -f "$next/ghana-latest.osm.pbf" ]; then
+  sh "$root/scripts/build-ghana-roads.sh" "$next" "$next/ghana-osm-roads.json" || say 'Named roads were not rebuilt. Search keeps working without the new road index'
+fi
+if [ -n "${DATABASE_URL:-}" ] && [ -f "$next/ghana-osm-places.json" ]; then
+  files=("$next/ghana-osm-places.json")
+  [ -f "$next/ghana-osm-roads.json" ] && files+=("$next/ghana-osm-roads.json")
+  node "$root/scripts/load-search-places.mjs" "${files[@]}" || say 'Database place load failed. Curated search is unchanged'
+fi
 
 # Test the new map before anyone uses it.
 smoke_point_a=${MAP_REFRESH_SMOKE_FROM:--0.1825,5.5560}
