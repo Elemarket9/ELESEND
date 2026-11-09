@@ -177,7 +177,8 @@ function evaluateDecision(decision,licence){
  if(!decision.face_matches?.length||!decision.face_matches.every(x=>approved(x.status)))return {status:'failed',reason:'The selfie did not match the document'};
  if(!licence.ghanaCard||compact(id.document_number)!==compact(licence.ghanaCard))return {status:'failed',reason:'The number on the document does not match the Ghana Card you entered'};
  if(id.expiration_date&&id.expiration_date<ghanaToday())return {status:'failed',reason:'The document has expired'};
- return {status:'approved',expiresOn:/^\d{4}-\d{2}-\d{2}$/.test(id.expiration_date??'')?id.expiration_date:null};
+ // expires_on stays the date the rider entered. For a motor rider that is the driver's licence, not this card.
+ return {status:'approved'};
 }
 export async function syncIdentityCheck(db,riderId,{provider=identityProviderFromEnv()}={}){
  const row=(await db.query("SELECT identity_session_id FROM rider_licences WHERE rider_id=$1 AND identity_status='in_progress'",[riderId])).rows[0];
@@ -188,7 +189,7 @@ export async function syncIdentityCheck(db,riderId,{provider=identityProviderFro
   const licence=(await c.query("SELECT document_type,number_encrypted,ghana_card_encrypted,identity_session_id,identity_status FROM rider_licences WHERE rider_id=$1 FOR UPDATE",[riderId])).rows[0];
   if(licence?.identity_status!=='in_progress'||licence.identity_session_id!==row.identity_session_id)return null;
   const result=evaluateDecision(decision,{document_type:licence.document_type,number:decryptNumber(licence.number_encrypted,riderId),ghanaCard:licence.ghana_card_encrypted?decryptCard(licence.ghana_card_encrypted,riderId):null});
-  await c.query('UPDATE rider_licences SET identity_status=$2,identity_reason=$3,identity_checked_at=now(),expires_on=coalesce($4::date,expires_on),reverify_due_at=CASE WHEN $2=\'approved\' THEN NULL ELSE reverify_due_at END WHERE rider_id=$1',[riderId,result.status,result.reason??null,result.expiresOn??null]);
+  await c.query('UPDATE rider_licences SET identity_status=$2,identity_reason=$3,identity_checked_at=now(),reverify_due_at=CASE WHEN $2=\'approved\' THEN NULL ELSE reverify_due_at END WHERE rider_id=$1',[riderId,result.status,result.reason??null]);
   if(result.status!=='in_progress')await c.query('INSERT INTO audit_logs(action,entity_id) VALUES($1,$2)',['rider.identity_'+result.status,riderId]);
   return result;
  });
