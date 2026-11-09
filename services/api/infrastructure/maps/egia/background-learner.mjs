@@ -23,6 +23,8 @@ const retentionDays = () => {
   return Number.isInteger(days) && days > 0 ? days : 90;
 };
 // Roads already known that this line follows, even when one trip is longer than the other.
+// covered_m is how much of the known road this line retraces: a trip only counts as a sighting of the whole
+// road when it covers most of it.
 const FIND_SAME_ROAD = `
   WITH trace AS (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1), 4326) AS line)
   SELECT r.id, r.status, r.confidence, r.observation_count, r.distinct_riders,
@@ -30,7 +32,8 @@ const FIND_SAME_ROAD = `
          r.mean_accuracy_m, r.is_private_access, r.contributor_rider_ids, r.allowed_vehicles,
          ST_AsGeoJSON(r.corridor::geometry) AS existing_geojson,
          ST_Length(r.corridor) AS existing_m,
-         ST_Length(t.line::geography) AS trace_m
+         ST_Length(t.line::geography) AS trace_m,
+         ST_Length(ST_Intersection(r.corridor::geometry, ST_Buffer(t.line::geography, ${SAME_ROAD_METERS})::geometry)::geography) AS covered_m
   FROM candidate_roads r, trace t
   WHERE ST_DWithin(r.corridor, t.line::geography, ${SAME_ROAD_METERS})
     AND ST_Length(ST_Intersection(t.line, ST_Buffer(r.corridor, ${SAME_ROAD_METERS})::geometry)::geography)
@@ -206,6 +209,28 @@ export async function runGeographicLearningCycle(db, { routing = null, riderVehi
         // The learning window overlaps between cycles, so the same rider is seen again and again.
         if ((cur.contributor_rider_ids || []).includes(row.rider_id)) continue;
 
+        // A trip is a sighting of a road only if it retraces most of it. A short trip along part of a long road
+        // says nothing about the rest, so it is not counted.
+        const existingMeters = Number(cur.existing_m), coveredMeters = Number(cur.covered_m), traceMeters = Number(cur.trace_m);
+        if (Number.isFinite(existingMeters) && Number.isFinite(coveredMeters) && coveredMeters < SAME_ROAD_SHARE * existingMeters) continue;
+        const longer = Number.isFinite(traceMeters) && Number.isFinite(existingMeters) && traceMeters > existingMeters * LONGER_TRACE_RATIO;
+        if (longer && Number(cur.distinct_riders) <= 1) {
+          // One rider's longer trip replaces one rider's shorter one, and starts again as a single sighting.
+          // The earlier rider never rode the extra length, so their sighting cannot vouch for it.
+          await db.query(`
+            UPDATE candidate_roads
+            SET corridor = ST_SetSRID(ST_GeomFromGeoJSON($2), 4326)::geography,
+                status = 'OBSERVED', confidence = 35, observation_count = $3, distinct_riders = 1,
+                temporal_span_seconds = 0, bidirectional = false, mean_accuracy_m = $4,
+                contributor_rider_ids = ARRAY[$5::uuid], allowed_vehicles = ARRAY[$6],
+                created_at = $7, updated_at = now()
+            WHERE id = $1
+          `, [cur.id, lineGeoJson, corridor.pointCount, meanAcc, row.rider_id, vehicle, new Date(earliestObsTime)]);
+          continue;
+        }
+        // A road several riders confirmed keeps its shape: one longer trip counts as a sighting of the confirmed
+        // part and cannot stretch the road over ground nobody else rode.
+
         // How long the road has been seen for, from its first sighting.
         const firstSeen = new Date(cur.created_at).getTime();
         const cumulativeSpan = Math.max(cur.temporal_span_seconds || 0, Math.round(Math.abs(latestObsTime - firstSeen) / 1000));
@@ -253,10 +278,9 @@ export async function runGeographicLearningCycle(db, { routing = null, riderVehi
               mean_accuracy_m = $8,
               contributor_rider_ids = array_append(contributor_rider_ids, $9::uuid),
               allowed_vehicles = CASE WHEN $10 = ANY(allowed_vehicles) THEN allowed_vehicles ELSE array_append(allowed_vehicles, $10) END,
-              corridor = CASE WHEN $11::text IS NULL THEN corridor ELSE ST_SetSRID(ST_GeomFromGeoJSON($11), 4326)::geography END,
               updated_at = now()
           WHERE id = $1
-        `, [cur.id, newObsCount, newDistinctRiders, newConfidence, newStatus, cumulativeSpan, isBidirectional, combinedMeanAcc, row.rider_id, vehicle, Number(cur.trace_m) > Number(cur.existing_m) * LONGER_TRACE_RATIO ? lineGeoJson : null]);
+        `, [cur.id, newObsCount, newDistinctRiders, newConfidence, newStatus, cumulativeSpan, isBidirectional, combinedMeanAcc, row.rider_id, vehicle]);
 
         if (newStatus === 'CORROBORATED' && cur.status !== 'CORROBORATED') {
           result.roadsCorroborated++;

@@ -33,6 +33,9 @@ services:
     command: [node, scripts/migrate.mjs]
     environment:
       DATABASE_URL: ${DOCKER_DATABASE_URL:?Set a dedicated ELESEND PostgreSQL URL using db as hostname}
+      # Migrations create the limited login the API signs in with. Production refuses the owner login above.
+      ELESEND_APP_DB_ROLE: ${ELESEND_APP_DB_ROLE:-}
+      ELESEND_APP_DB_PASSWORD: ${ELESEND_APP_DB_PASSWORD:?Set a password for the limited elesend_app database login}
       DATABASE_SSL: ${DATABASE_SSL:-auto}
       DATABASE_SSL_CA: ${DATABASE_SSL_CA:-}
       DATABASE_SSL_REJECT_UNAUTHORIZED: ${DATABASE_SSL_REJECT_UNAUTHORIZED:-true}
@@ -47,7 +50,7 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     environment:
-      DATABASE_URL: ${DOCKER_DATABASE_URL:?Set database URL}
+      DATABASE_URL: ${DOCKER_APP_DATABASE_URL:?Set the database URL of the limited elesend_app login, using db as hostname}
       DATABASE_SSL: ${DATABASE_SSL:-auto}
       DATABASE_SSL_CA: ${DATABASE_SSL_CA:-}
       DATABASE_SSL_REJECT_UNAUTHORIZED: ${DATABASE_SSL_REJECT_UNAUTHORIZED:-true}

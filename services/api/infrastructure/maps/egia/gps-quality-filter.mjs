@@ -83,23 +83,34 @@ const PRIVACY_TRIM_METERS = 100;
 
 /**
  * Splits a clean trajectory into continuous stretches away from mapped roads.
- * Only these can reveal a missing road. Each stretch loses its first and last 100 m,
- * because that is where a rider's home or a customer's gate is most likely to be.
+ * Only these can reveal a missing road. An end that stops away from any road loses its last 100 m,
+ * because that is where a rider's home or a customer's gate is most likely to be. An end where the
+ * rider left or rejoined a mapped road is a public junction: it is kept, together with the fix on
+ * that road, so the new road joins the network it was reached from.
  */
 export function offRoadSegments(cleanSamples, roadDistances) {
   const segments = [];
-  let current = [];
-  const flush = () => {
+  let current = [], startRoadFix = null, lastRoadFix = null;
+  const secondsBetween = (a, b) => (new Date(b.observedAt) - new Date(a.observedAt)) / 1000;
+  const flush = (endRoadFix = null) => {
     if (current.length) {
       const first = current[0], last = current[current.length - 1];
-      segments.push(current.filter(s => haversine(s, first) >= PRIVACY_TRIM_METERS && haversine(s, last) >= PRIVACY_TRIM_METERS));
+      const kept = current.filter(s => (startRoadFix || haversine(s, first) >= PRIVACY_TRIM_METERS) && (endRoadFix || haversine(s, last) >= PRIVACY_TRIM_METERS));
+      segments.push(kept.length ? [...(startRoadFix ? [startRoadFix] : []), ...kept, ...(endRoadFix ? [endRoadFix] : [])] : kept);
     }
     current = [];
+    startRoadFix = null;
   };
   cleanSamples.forEach((sample, i) => {
-    if (roadDistances[i] <= OFF_ROAD_METERS) return flush();
     const previous = current[current.length - 1];
-    if (previous && (new Date(sample.observedAt) - new Date(previous.observedAt)) / 1000 > MAX_SEGMENT_GAP_SECONDS) flush();
+    if (roadDistances[i] <= OFF_ROAD_METERS) {
+      flush(previous && secondsBetween(previous, sample) <= MAX_SEGMENT_GAP_SECONDS ? sample : null);
+      lastRoadFix = sample;
+      return;
+    }
+    if (previous && secondsBetween(previous, sample) > MAX_SEGMENT_GAP_SECONDS) flush();
+    if (!current.length) startRoadFix = lastRoadFix && secondsBetween(lastRoadFix, sample) <= MAX_SEGMENT_GAP_SECONDS ? lastRoadFix : null;
+    lastRoadFix = null;
     current.push(sample);
   });
   flush();

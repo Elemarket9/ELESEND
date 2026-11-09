@@ -283,3 +283,30 @@ test('only operations staff see server health',async()=>{
  try{assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/api/v1/admin/system-health`,{headers:auth})).status,403);}
  finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
 });
+
+test('the API image can copy every file its Dockerfile names',()=>{
+ const read=path=>readFileSync(new URL('../'+path,import.meta.url),'utf8');
+ const ignore=read('.dockerignore').split('\n').map(line=>line.trim()).filter(line=>line&&!line.startsWith('#'));
+ const sources=read('Dockerfile').split('\n').filter(line=>line.startsWith('COPY ')).flatMap(line=>line.split(/\s+/).slice(1,-1).filter(part=>!part.startsWith('--')));
+ const mobile=sources.filter(source=>source.startsWith('apps/mobile/'));
+ assert.ok(mobile.length>0);
+ for(const source of mobile)assert.ok(ignore.includes('!'+source),`${source} is excluded by .dockerignore`);
+ assert.ok(!ignore.includes('apps/mobile'),'excluding the whole folder hides the files the Dockerfile copies');
+ assert.match(read('.github/workflows/ci.yml'),/docker build -t elesend-api:ci \./);
+});
+
+test('root compose starts the API on the limited database login',()=>{
+ const compose=readFileSync(new URL('../compose.yaml',import.meta.url),'utf8');
+ const service=name=>compose.split(/\n  (?=[a-z-]+:\n)/).find(block=>block.startsWith(name+':\n'));
+ assert.match(service('migrate'),/ELESEND_APP_DB_PASSWORD:\s*\$\{ELESEND_APP_DB_PASSWORD:\?/);
+ assert.match(service('api'),/DATABASE_URL:\s*\$\{DOCKER_APP_DATABASE_URL:\?/);
+ assert.doesNotMatch(service('api'),/DATABASE_URL:\s*\$\{DOCKER_DATABASE_URL/);
+});
+
+test('every route that can reach GhanaPostGPS shares one set of limits',()=>{
+ const http=readFileSync(new URL('../services/api/http.mjs',import.meta.url),'utf8');
+ assert.match(http,/const digitalAddressLookup=actor=>[^;]*\['customer','business','company'\][\s\S]{0,200}'ghana-address:user:'\+actor\.id,5,60\)[\s\S]{0,80}'ghana-address:global',100,3600\)/);
+ assert.doesNotMatch(http,/ghanaPostGps,photonUrl/,'search must not pass the unlimited lookup');
+ assert.equal(http.match(/ghanaPostGps:digitalAddressLookup\(actor\)/g).length,2);
+ assert.equal(http.match(/ghanaPostGps\(/g).length,1,'the provider is called in one place only');
+});

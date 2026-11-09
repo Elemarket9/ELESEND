@@ -181,6 +181,8 @@ Deployment requires explicit `API_PUBLIC_ORIGIN` and `WEB_PUBLIC_ORIGIN`. Config
 
 To launch the API, PostGIS database, and Redis using Docker (the private map stack is defined separately in `compose.private-maps.yaml`; `deploy/runtime/compose.yaml` includes it under `--profile maps`):
 
+Set `ELESEND_APP_DB_PASSWORD` and `DOCKER_APP_DATABASE_URL` first (see `.env.example`). Migrations create the limited `elesend_app` login, and the API signs in with it; production refuses the owner login.
+
 ```bash
 docker compose up -d
 ```

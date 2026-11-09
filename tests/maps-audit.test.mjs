@@ -96,15 +96,36 @@ test('without road data, and when road checks fail, nothing is learned',async()=
  }
 });
 
-test('off-road stretches split at roads and time gaps, and lose 100 m at each end',()=>{
+test('off-road stretches split at roads and time gaps, lose 100 m at a private end, and keep the fix where they join a road',()=>{
  const samples=trail(20);
  const distances=samples.map((_,i)=>i===10?5:200);
  const segments=offRoadSegments(samples,distances);
  assert.equal(segments.length,2);
  assert.equal(segments[0][0],samples[1]);
- assert.equal(segments[0].at(-1),samples[8]);
+ assert.equal(segments[0].at(-1),samples[10],'the end that rejoins a mapped road keeps the fix on that road');
+ assert.equal(segments[1][0],samples[10],'the next stretch starts from the same road fix');
+ assert.equal(segments[1].at(-1),samples[18],'an end away from any road still loses 100 m');
  const gap=trail(4).concat(trail(4,5.7).map(s=>({...s,observedAt:new Date(Date.now()+3600000).toISOString()})));
  assert.equal(offRoadSegments(gap,gap.map(()=>200)).length,2);
+});
+
+test('a road learned from GPS joins the network it was reached from',async()=>{
+ const {extractCandidateRoadCorridor}=await import('../services/api/infrastructure/maps/egia/gps-quality-filter.mjs');
+ const {verificationFailures}=await import('../services/api/infrastructure/maps/egia/road-verification.mjs');
+ const {riderRoadsOsm}=await import('../scripts/export-rider-roads.mjs');
+ // A mapped road runs along latitude 5.6. The rider rides it, then turns onto 600 m of unmapped road to a customer.
+ const metres=111320,toRoad=p=>Math.abs(p.latitude-5.6)*metres;
+ const at=i=>new Date(Date.parse('2026-11-01T10:00:00Z')+i*2000).toISOString();
+ const samples=[{latitude:5.6,longitude:-0.2003,accuracyMeters:8,observedAt:at(0)},...Array.from({length:61},(_,i)=>({latitude:5.6+i*10/metres,longitude:-0.2,accuracyMeters:8,observedAt:at(i+1)}))];
+ const [stretch]=offRoadSegments(samples,samples.map(toRoad)).filter(s=>s.length);
+ const corridor=extractCandidateRoadCorridor(stretch);
+ assert.ok(toRoad(corridor.startPoint)<=30,'starts at the fix on the mapped road');
+ assert.ok(toRoad(corridor.endPoint)<=505,'the customer end is trimmed for privacy');
+ assert.ok(600-toRoad(corridor.endPoint)>=95);
+ const road={status:'CORROBORATED',distinct_riders:3,temporal_span_seconds:90000,confidence:90,mean_accuracy_m:8,length_m:480,is_valid:true,join_meters:Math.min(toRoad(corridor.startPoint),toRoad(corridor.endPoint))};
+ assert.deepEqual(verificationFailures(road,verificationRulesOn()),[]);
+ const exported=await riderRoadsOsm([{name:'Learned',coordinates:corridor.coordinates,allowedVehicles:['motorcycle']}],async p=>({meters:toRoad(p),node:42}));
+ assert.equal(exported.count,1);
 });
 
 test('routing returns raw road times, so fares and dispatch ignore the customer ETA factor',async()=>{
@@ -260,14 +281,15 @@ test('EGIA on a real database: pieces join, verified roads publish with no rider
   await cycle(300);
   assert.equal((await road()).length,1,'first trip');
   assert.ok(seenVehicles.has('motorcycle'));
-  // A longer trip over the same road adds to it, instead of starting a new road.
+  // One rider's longer trip replaces one rider's shorter one, and counts as a single sighting of the longer road.
   await db.query('DELETE FROM rider_location_samples WHERE rider_id=$1',[first]);
   await ride(second,200,0,24);
   await ride(cyclist,200,0,24);
   await cycle(200);
   let roads=await road();
   assert.equal(roads.length,1,'still one road');
-  assert.equal(roads[0].distinct_riders,2);
+  assert.equal(roads[0].distinct_riders,1,'the first rider never rode the extra length');
+  assert.deepEqual(roads[0].contributor_rider_ids,[second]);
   assert.ok(roads[0].length_m>1000,'grew to the longer trip');
   assert.equal(roads[0].contributor_rider_ids.includes(cyclist),false,'bicycle trips teach nothing');
   await db.query('DELETE FROM rider_location_samples WHERE rider_id=ANY($1::uuid[])',[[second,cyclist]]);
@@ -275,8 +297,18 @@ test('EGIA on a real database: pieces join, verified roads publish with no rider
   await ride(third,100,0,24);
   await cycle(100);
   roads=await road();
-  assert.equal(roads[0].distinct_riders,3);
+  assert.equal(roads[0].distinct_riders,2);
   assert.equal(roads[0].status,'CORROBORATED');
+  // Confirmed by two riders: a much longer trip by one more rider is a sighting, and cannot stretch the road.
+  const confirmedLength=roads[0].length_m,fourth=await mkRider('motorcycle');
+  await db.query('DELETE FROM rider_location_samples WHERE rider_id=$1',[third]);
+  await ride(fourth,60,0,60);
+  await cycle(60);
+  roads=await road();
+  assert.equal(roads.length,1);
+  assert.equal(roads[0].distinct_riders,3);
+  assert.ok(Math.abs(roads[0].length_m-confirmedLength)<1,'one rider cannot redraw a confirmed road');
+  await db.query('DELETE FROM rider_location_samples WHERE rider_id=$1',[fourth]);
   assert.ok(roads[0].allowed_vehicles.includes('car'));
   // Spread over a day: it publishes itself, and rider ids are gone everywhere.
   await db.query('UPDATE candidate_roads SET temporal_span_seconds=90000 WHERE id=$1',[roads[0].id]);
