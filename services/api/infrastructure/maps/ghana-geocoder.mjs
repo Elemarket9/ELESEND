@@ -74,7 +74,34 @@ const OSM_PLACES = optionalPlaces(process.env.GHANA_OSM_PLACES_FILE || 'ghana-os
 // Some imported map entries carry only a generic word as their name ("Market", "Junction", "Village"). Shown as a
 // search result they tell the customer nothing about where they are, so they are left out.
 const NAMELESS = new Set(['village','church','mosque','clinic','hospital','market','shop','store','junction','house','bar','hotel','pharmacy','bank','station','filling station','police','school','building','office','yes','unnamed']);
-export const GHANA_GAZETTEER = [...rawGazetteer, ...OSM_PLACES].filter(p => !NAMELESS.has(String(p.name || '').trim().toLowerCase())).concat(NATIONAL_ANCHORS, PLACE_OVERLAY);
+
+// Alias rows copy an existing point. They never become a new coordinate.
+function metresBetween(a, b) {
+  const from = {latitude: Number(a.latitude), longitude: Number(a.longitude)};
+  const to = {latitude: Number(b.latitude), longitude: Number(b.longitude)};
+  if (!Number.isFinite(from.latitude) || !Number.isFinite(to.latitude)) return Infinity;
+  return haversine(from, to);
+}
+function applyAliasOverlays(places, overlay) {
+  for (const row of overlay) {
+    if (!row || row.attachAliases !== true) continue;
+    const target = String(row.aliasOf || row.name || '').trim().toLowerCase();
+    if (!target) continue;
+    let best = null, bestDistance = Infinity;
+    for (const place of places) {
+      if (String(place.name || '').trim().toLowerCase() !== target) continue;
+      const distance = metresBetween(place, row);
+      if (distance <= 50 && distance < bestDistance) { best = place; bestDistance = distance; }
+    }
+    if (!best) continue;
+    best.aliases = [...new Set([...(best.aliases || []), ...(row.aliases || [])].map(alias => String(alias)))];
+    if (row.locality && String(best.locality || '').trim().toLowerCase() === String(best.region || '').trim().toLowerCase()) best.locality = row.locality;
+    if (row.city && String(best.city || '').trim().toLowerCase() === String(best.region || '').trim().toLowerCase()) best.city = row.city;
+  }
+}
+const curatedPlaces = [...rawGazetteer, ...OSM_PLACES].filter(p => !NAMELESS.has(String(p.name || '').trim().toLowerCase()));
+applyAliasOverlays(curatedPlaces, PLACE_OVERLAY);
+export const GHANA_GAZETTEER = curatedPlaces.concat(NATIONAL_ANCHORS, PLACE_OVERLAY.filter(row => !row.attachAliases));
 
 const ABBREVIATIONS = {
   uni: 'university',
@@ -114,7 +141,7 @@ const ABBREVIATIONS = {
 
 const STOP_WORDS = new Set([
   'in', 'at', 'near', 'around', 'close', 'to', 'from', 'of', 'and', 'the',
-  'district', 'metropolitan', 'municipal', 'ghana'
+  'district', 'metropolitan', 'municipal', 'ghana', 'me'
 ]);
 
 const ALL_REGIONS = [
@@ -248,17 +275,134 @@ const MAX_CACHE_SIZE = 1000;
 const REVERSE_CACHE = new Map();
 const MAX_REVERSE_CACHE_SIZE = 2000;
 
+const STOP_CATEGORIES = new Set(['transport', 'transit']);
+const DESTINATION_CATEGORIES = new Set(['health', 'hospital', 'education', 'religion', 'market', 'mall', 'commerce', 'landmark', 'neighborhood', 'food', 'public_service', 'airport']);
+const compactText = value => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// AA-000-0000 (GhanaPost's usual 7-digit form) and AA-0000-0000. No coordinate is invented here.
+export function interpretDigitalAddress(query) {
+  const compact = String(query || '').trim().toUpperCase().replace(/[\s-]/g, '');
+  if (/^[A-Z]{2}\d{7}$/.test(compact)) return {formatted: `${compact.slice(0, 2)}-${compact.slice(2, 5)}-${compact.slice(5)}`};
+  if (/^[A-Z]{2}\d{8}$/.test(compact)) return {formatted: `${compact.slice(0, 2)}-${compact.slice(2, 6)}-${compact.slice(6)}`};
+  return null;
+}
+export function digitalAddressUnavailable(parsed) {
+  return [{
+    name: 'Digital address lookup is not available yet',
+    label: parsed.formatted,
+    type: 'digital_address',
+    digitalAddress: parsed.formatted,
+    available: false,
+    latitude: null,
+    longitude: null,
+    uncertainty: 'GhanaPostGPS lookup is turned off. No coordinate was guessed.'
+  }];
+}
+
+const CATEGORY_INTENTS = [
+  {phrases: ['filling station', 'fuel station', 'petrol station', 'gas station', 'fuel'], id: 'fuel'},
+  {phrases: ['chop bar', 'chopbar'], id: 'chop_bar'},
+  {phrases: ['supermarket'], id: 'supermarket'},
+  {phrases: ['pharmacy', 'chemist', 'drugstore'], id: 'pharmacy'},
+  {phrases: ['hospital'], id: 'hospital'},
+  {phrases: ['church'], id: 'church'},
+  {phrases: ['mosque'], id: 'mosque'},
+  {phrases: ['school'], id: 'school'},
+  {phrases: ['bank'], id: 'bank'},
+  {phrases: ['restaurant'], id: 'restaurant'},
+  {phrases: ['market'], id: 'market'}
+];
+function categoryIntent(text) {
+  const wanted = String(text || '').trim();
+  return CATEGORY_INTENTS.find(intent => intent.phrases.includes(wanted)) || null;
+}
+function matchesCategory(place, id) {
+  if (STOP_CATEGORIES.has(place.category)) return false;
+  const name = place._nameLower || '';
+  const sub = String(place.subcategory || '').toLowerCase();
+  const category = String(place.category || '').toLowerCase();
+  switch (id) {
+    case 'pharmacy': return sub === 'pharmacy' || /\b(pharmacy|chemist|drugstore)\b/.test(name);
+    case 'hospital': return category === 'hospital' || sub === 'hospital' || /\bhospital\b/.test(name);
+    case 'church': return !/\bmosque\b/.test(name) && (/\bchurch\b/.test(name) || (category === 'religion' && /\bchapel\b/.test(name)));
+    case 'mosque': return sub === 'mosque' || /\bmosque\b/.test(name);
+    case 'school': return category === 'education' || sub === 'school' || /\b(school|shs|jhs)\b/.test(name);
+    case 'bank': return sub === 'bank' || /\bbank\b/.test(name);
+    case 'supermarket': return sub === 'supermarket' || /\bsupermarket\b/.test(name);
+    case 'fuel': return sub === 'fuel' || sub === 'fuel_station' || /\b(filling station|fuel station|petrol|goil|shell)\b/.test(name);
+    case 'market': return category === 'market' || sub === 'market' || /\bmarket\b/.test(name);
+    case 'restaurant': return sub === 'restaurant' || sub === 'fast_food' || /\brestaurant\b/.test(name);
+    case 'chop_bar': return sub === 'chop_bar' || /\bchop ?bar\b/.test(name);
+    default: return false;
+  }
+}
+function placeResult(place, score, distanceMeters) {
+  return {
+    id: place.id,
+    name: place.name,
+    label: `${place.locality || place.region}, ${place.city || place.region}`,
+    locality: place.locality || place.region,
+    city: place.city || place.locality || place.region,
+    region: place.region,
+    category: place.category || 'landmark',
+    subcategory: place.subcategory || 'general',
+    latitude: place.latitude,
+    longitude: place.longitude,
+    coordinate_kind: place.coordinate_kind || 'mapped_point',
+    type: 'place',
+    aliases: place.aliases || [],
+    entrance: place.entrance || null,
+    street: place.street || null,
+    score: Number(score.toFixed(1)),
+    distanceMeters: Number.isFinite(distanceMeters) ? distanceMeters : null
+  };
+}
+
 // Fast In-Memory Geocoding Search (< 1ms across 31,000+ records)
-export function ghanaSearch(query, {limit = 10, db = null} = {}) {
+export function ghanaSearch(query, {limit = 10, near = null} = {}) {
   check(typeof query === 'string', 400, 'Search query must be text');
   const clean = query.trim();
   if (!clean) return [];
   check(clean.length <= 150, 400, 'Search query too long');
+  const digital = interpretDigitalAddress(clean);
+  if (digital) return digitalAddressUnavailable(digital);
+  const nearOk = near && Number(near.latitude) >= GHANA_BOUNDS.minLatitude && Number(near.latitude) <= GHANA_BOUNDS.maxLatitude && Number(near.longitude) >= GHANA_BOUNDS.minLongitude && Number(near.longitude) <= GHANA_BOUNDS.maxLongitude
+    ? {latitude: Number(near.latitude), longitude: Number(near.longitude)} : null;
+
+  const typed = clean.toLowerCase();
+  const wantsProximity = /\b(near me|nearby|around me|close to me)\b/.test(typed);
+  const cleanLower = typed.replace(/\b(near me|nearby|around me|close to me)\b/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!cleanLower) return [];
+  const nearKey = nearOk ? `${nearOk.latitude.toFixed(2)},${nearOk.longitude.toFixed(2)}` : '';
 
   // Check LRU cache
-  const cacheKey = `${clean.toLowerCase()}:${limit}`;
+  const cacheKey = `${cleanLower}:${limit}:${nearKey}:${wantsProximity ? 1 : 0}`;
   if (QUERY_CACHE.has(cacheKey)) {
     return QUERY_CACHE.get(cacheKey);
+  }
+
+  const intent = categoryIntent(cleanLower);
+  if (intent) {
+    const ranked = [];
+    for (const place of GHANA_GAZETTEER) {
+      if (!matchesCategory(place, intent.id)) continue;
+      const distanceMeters = nearOk ? Math.round(haversine(nearOk, place)) : null;
+      const proximity = distanceMeters == null ? 0 : Math.max(0, 400 - distanceMeters / 100);
+      ranked.push({place, score: (place.popularity || 0) + proximity + (wantsProximity && distanceMeters != null ? 20 : 0), distanceMeters});
+    }
+    const preferReligion = intent.id === 'church' || intent.id === 'mosque';
+    ranked.sort((a, b) => {
+      if (preferReligion && !nearOk) {
+        const religion = place => place.category === 'religion' ? 1 : 0;
+        const byKind = religion(b.place) - religion(a.place);
+        if (byKind) return byKind;
+      }
+      return (nearOk ? a.distanceMeters - b.distanceMeters : b.score - a.score) || b.place.popularity - a.place.popularity || a.place.name.localeCompare(b.place.name);
+    });
+    const categoryResults = ranked.slice(0, Math.max(1, Math.min(limit, 30))).map(row => placeResult(row.place, row.score, row.distanceMeters));
+    if (QUERY_CACHE.size >= MAX_CACHE_SIZE) QUERY_CACHE.delete(QUERY_CACHE.keys().next().value);
+    QUERY_CACHE.set(cacheKey, categoryResults);
+    return categoryResults;
   }
 
   // 1. Coordinate parsing (e.g. "5.6212, -0.1748")
@@ -277,8 +421,7 @@ export function ghanaSearch(query, {limit = 10, db = null} = {}) {
     }
   }
 
-  // 2. Tokenize, expand abbreviations and normalize
-  const cleanLower = clean.toLowerCase();
+  // 2. Tokenize, expand abbreviations and normalize. "near me" was already removed above.
   const expandedQuery = ABBREVIATIONS[cleanLower] || cleanLower;
 
   // Extract detected region mentions in the query
@@ -314,6 +457,16 @@ export function ghanaSearch(query, {limit = 10, db = null} = {}) {
     if (exactList) {
       for (const idx of exactList) {
         termMatches.set(idx, Math.max(termMatches.get(idx) || 0, 50));
+      }
+    }
+
+    // Dz/J is one Ghanaian spelling difference (Jorwulu / Dzorwulu). Only an exact indexed word is accepted,
+    // and only this pair, so Kotoka is not pulled toward Kotoko.
+    if (!exactList && term.length >= 5) {
+      const alt = term.startsWith('dz') ? 'j' + term.slice(2) : term.startsWith('j') ? 'dz' + term.slice(1) : null;
+      const altList = alt ? INVERTED_INDEX.get(alt) : null;
+      if (altList) {
+        for (const idx of altList) termMatches.set(idx, Math.max(termMatches.get(idx) || 0, 46));
       }
     }
 
@@ -546,6 +699,54 @@ export function ghanaSearch(query, {limit = 10, db = null} = {}) {
     scored.push({place, score, exact: terms.length >= 2 && place._nameLower === cleanLower});
   }
 
+  const queryCompact = compactText(cleanLower);
+  const queryHit = place => compactText(place._nameLower) === queryCompact || place._aliasTexts.some(alias => compactText(alias) === queryCompact);
+  const longerNamedHit = scored.some(row => {
+    const packed = compactText(row.place._nameLower);
+    return queryCompact.length >= 4 && packed.includes(queryCompact) && packed.length >= queryCompact.length + 3;
+  });
+  const destinationHit = scored.some(row => DESTINATION_CATEGORIES.has(row.place.category) && queryHit(row.place));
+  if (destinationHit || longerNamedHit) {
+    for (const row of scored) {
+      if (!STOP_CATEGORIES.has(row.place.category)) continue;
+      const packed = compactText(row.place._nameLower);
+      if (packed.length >= queryCompact.length + 3 && packed.includes(queryCompact)) continue;
+      if (packed === queryCompact || queryHit(row.place)) {
+        row.score -= 480;
+        // A trotro stop whose whole name is the query must not jump the queue ahead of the hospital or market.
+        row.exact = 0;
+      }
+    }
+  }
+
+  // An exact village name must not hide a business that uses that name (Papaye the restaurant, not the village).
+  // A major town (popularity 90 or more) still means the town: Kumasi stays Kumasi.
+  if (terms.length === 1) {
+    const branded = scored.some(row => ['commerce', 'food', 'mall', 'market'].includes(row.place.category) && (row.place._nameLower === cleanLower || row.place._aliasTexts.includes(cleanLower)));
+    if (branded) {
+      for (const row of scored) {
+        const village = row.place.category === 'settlement' || row.place.category === 'town' || ['village', 'hamlet'].includes(row.place.subcategory);
+        if (!village || (row.place.popularity || 0) >= 90) continue;
+        if (row.place._nameLower === cleanLower || row.place._aliasTexts.includes(cleanLower)) row.score -= 420;
+      }
+    }
+  }
+
+  if (nearOk) {
+    for (const row of scored) row.distanceMeters = Math.round(haversine(nearOk, row.place));
+    const closestByName = new Map();
+    for (const row of scored) {
+      const previous = closestByName.get(row.place._nameLower);
+      if (previous == null || row.distanceMeters < previous) closestByName.set(row.place._nameLower, row.distanceMeters);
+    }
+    for (const row of scored) {
+      if (row.distanceMeters < 3000) row.score += wantsProximity ? 220 : 140;
+      else if (row.distanceMeters < 20000) row.score += wantsProximity ? 120 : 70;
+      const closest = closestByName.get(row.place._nameLower);
+      if (closest != null && row.distanceMeters > closest + 20000) row.score -= Math.min(360, Math.round((row.distanceMeters - closest) / 250));
+    }
+  }
+
   // The exact name of a multi-word place comes first, whatever its context scores.
   scored.sort((a, b) => (b.exact - a.exact) || (b.score - a.score));
 
@@ -557,24 +758,7 @@ export function ghanaSearch(query, {limit = 10, db = null} = {}) {
     if (!repeat) distinct.push(row);
   }
 
-  const results = distinct.map(({place, score}) => ({
-    id: place.id,
-    name: place.name,
-    label: `${place.locality || place.region}, ${place.city || place.region}`,
-    locality: place.locality || place.region,
-    city: place.city || place.locality || place.region,
-    region: place.region,
-    category: place.category || 'landmark',
-    subcategory: place.subcategory || 'general',
-    latitude: place.latitude,
-    longitude: place.longitude,
-    coordinate_kind: place.coordinate_kind || 'mapped_point',
-    type: 'place',
-    aliases: place.aliases || [],
-    entrance: place.entrance || null,
-    street: place.street || null,
-    score: Number(score.toFixed(1))
-  }));
+  const results = distinct.map(({place, score, distanceMeters}) => placeResult(place, score, distanceMeters));
 
   // Store in bounded LRU cache
   if (QUERY_CACHE.size >= MAX_CACHE_SIZE) {
@@ -749,8 +933,32 @@ export async function ghanaReverseGeocodePostGIS(db, lat, lon) {
  * places riders taught the map once they are approved). Those used to be saved but never offered in search.
  * If the database is slow or unavailable the built-in results are returned on their own.
  */
-export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800} = {}) {
-  const local = ghanaSearch(query, {limit});
+export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800, near = null, ghanaPostGps = null} = {}) {
+  const digital = interpretDigitalAddress(query);
+  if (digital) {
+    if (typeof ghanaPostGps !== 'function') return digitalAddressUnavailable(digital);
+    try {
+      const found = await ghanaPostGps(digital.formatted);
+      if (found?.found === true && Number.isFinite(Number(found.latitude)) && Number.isFinite(Number(found.longitude))) {
+        return [{
+          name: found.label || digital.formatted,
+          label: digital.formatted,
+          type: 'digital_address',
+          digitalAddress: digital.formatted,
+          available: true,
+          found: true,
+          latitude: Number(found.latitude),
+          longitude: Number(found.longitude),
+          source: 'GhanaPostGPS',
+          requiresPinReview: true
+        }];
+      }
+      return [{name: 'Digital address was not found', label: digital.formatted, type: 'digital_address', digitalAddress: digital.formatted, available: true, found: false, latitude: null, longitude: null}];
+    } catch {
+      return [{name: 'Digital address lookup is not available yet', label: digital.formatted, type: 'digital_address', digitalAddress: digital.formatted, available: false, latitude: null, longitude: null, uncertainty: 'GhanaPostGPS lookup did not answer. No coordinate was guessed.'}];
+    }
+  }
+  const local = ghanaSearch(query, {limit, near});
   if (!db) return local;
   let stored = [];
   // The database stops the query itself after timeoutMs, so a slow search frees its connection instead of holding one

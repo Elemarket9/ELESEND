@@ -1,4 +1,4 @@
-import { ghanaSearch, GHANA_BOUNDS, GHANA_GAZETTEER } from '../ghana-geocoder.mjs';
+import { ghanaSearch, searchPlaces, GHANA_BOUNDS, GHANA_GAZETTEER, interpretDigitalAddress } from '../ghana-geocoder.mjs';
 import { haversine } from '../../../dispatch-geometry.mjs';
 
 // Prepositional relative patterns in Ghanaian informal addresses
@@ -109,95 +109,43 @@ export function parseInformalDescription(text) {
  * Advanced Ghanaian Location Intelligence Search (Phase 2)
  * Ranks candidates with explainable confidence scoring (0-100)
  */
-export async function searchInformalLocation(query, { db = null, userCoordinates = null, limit = 8 } = {}) {
+export async function searchInformalLocation(query, { db = null, userCoordinates = null, limit = 8, ghanaPostGps = null } = {}) {
   if (!query || typeof query !== 'string' || !query.trim()) return [];
+  if (interpretDigitalAddress(query)) return searchPlaces(null, query, {ghanaPostGps});
 
   const parsed = parseInformalDescription(query);
   const candidates = [];
-
-  // 1. Direct Search on Core Target + Locality (deduplicated to avoid redundant gazetteer scans)
-  const searchTerms = [...new Set([
-    parsed.localityContext ? `${parsed.coreTarget} ${parsed.localityContext}` : null,
-    parsed.coreTarget,
-    parsed.normalized
-  ].filter(t => t && t.length >= 2))];
-
   const seenIds = new Set();
+  const near = userCoordinates && Number.isFinite(Number(userCoordinates.latitude)) && Number.isFinite(Number(userCoordinates.longitude))
+    ? {latitude: Number(userCoordinates.latitude), longitude: Number(userCoordinates.longitude)} : null;
 
-  for (const term of searchTerms) {
-    if (!term || term.length < 2) continue;
-
-    // Search in-memory gazetteer
-    const gazResults = ghanaSearch(term, { limit: 12 });
-    for (const res of gazResults) {
-      const key = `${res.latitude.toFixed(5)}:${res.longitude.toFixed(5)}`;
-      if (seenIds.has(key)) continue;
-      seenIds.add(key);
-
-      // Calculate candidate confidence
-      let confidence = 50;
-      const reasons = [];
-
-      // Exact or partial name match on core target
-      const resNameLower = (res.name || '').toLowerCase();
-      if (resNameLower.includes(parsed.coreTarget)) {
-        confidence += 25;
-        reasons.push(`Matched landmark "${res.name}"`);
-      } else {
-        confidence += 10;
-        reasons.push(`Partial text match on "${res.name}"`);
-      }
-
-      // Locality boost
-      if (parsed.localityContext) {
-        const resLoc = ((res.locality || '') + ' ' + (res.city || '')).toLowerCase();
-        if (resLoc.includes(parsed.localityContext)) {
-          confidence += 20;
-          reasons.push(`Located in requested area "${parsed.localityContext}"`);
-        }
-      }
-
-      // Proximity boost if customer location provided (use Number.isFinite so lon=0 at Tema is not falsy)
-      if (userCoordinates && Number.isFinite(Number(userCoordinates.latitude)) && Number.isFinite(Number(userCoordinates.longitude))) {
-        const distKm = haversine(userCoordinates, { latitude: res.latitude, longitude: res.longitude }) / 1000;
-        if (distKm < 5) {
-          confidence += 15;
-          reasons.push(`Within 5km of your location`);
-        } else if (distKm < 15) {
-          confidence += 5;
-          reasons.push(`Within 15km of your location`);
-        }
-      }
-
-      // If relative description like "behind the school" was used, note that exact house cannot be inferred
-      let promptConfirmation = false;
-      let explanation = reasons.join('; ');
-
-      if (parsed.relativeRelation) {
-        confidence = Math.min(confidence, 78); // Cap confidence because "behind school" is not an exact building
-        promptConfirmation = true;
-        explanation = `Anchor landmark found: "${res.name}". Because "${parsed.relativeRelation}" indicates an informal offset, please confirm the exact pin on the map.`;
-      }
-
-      candidates.push({
-        id: res.id || `gaz-${candidates.length + 1}`,
-        name: res.name,
-        category: res.category || 'landmark',
-        locality: res.locality || parsed.localityContext || 'Greater Accra',
-        city: res.city || 'Ghana',
-        region: res.region || 'Greater Accra',
-        latitude: res.latitude,
-        longitude: res.longitude,
-        confidence: Math.min(Math.max(confidence, 10), 99),
-        candidateType: parsed.relativeRelation ? 'relative_offset_reference' : 'exact_landmark',
-        relativeRelation: parsed.relativeRelation,
-        promptConfirmation,
-        explanation
-      });
+  // The full query keeps the ranker's place-versus-stop order. Fragment searches used to reshuffle that
+  // and let a weak hit hide the better result.
+  const gazResults = ghanaSearch(query, {limit: Math.max(limit, 8), near});
+  if (gazResults[0]?.type === 'digital_address') return gazResults;
+  gazResults.forEach((res, index) => {
+    if (res.latitude == null || res.longitude == null) return;
+    const key = `${Number(res.latitude).toFixed(5)}:${Number(res.longitude).toFixed(5)}`;
+    if (seenIds.has(key)) return;
+    seenIds.add(key);
+    let confidence = Math.max(48, 96 - index * 3);
+    let promptConfirmation = false;
+    let explanation = `Matched landmark "${res.name}"`;
+    if (parsed.relativeRelation) {
+      confidence = Math.min(confidence, 78);
+      promptConfirmation = true;
+      explanation = `Anchor landmark found: "${res.name}". Because "${parsed.relativeRelation}" indicates an informal offset, please confirm the exact pin on the map.`;
     }
-
-    if (candidates.length >= limit) break;
-  }
+    candidates.push({
+      ...res,
+      id: res.id || `gaz-${index + 1}`,
+      confidence,
+      candidateType: parsed.relativeRelation ? 'relative_offset_reference' : 'exact_landmark',
+      relativeRelation: parsed.relativeRelation,
+      promptConfirmation,
+      explanation
+    });
+  });
 
   // 2. Database Search on mapped_restaurants and spatial_landmarks (always query mapped_restaurants when db is provided)
   if (db && (parsed.coreTarget || parsed.localityContext)) {
@@ -227,6 +175,9 @@ export async function searchInformalLocation(query, { db = null, userCoordinates
         let conf = Math.round(Number(row.sim || 0.45) * 65) + (row.is_registered_merchant ? 25 : 18);
         if (Number(row.loc_match) === 1) conf += 15;
         if (parsed.relativeRelation) conf = Math.min(conf, 78);
+        const wanted = String(query).toLowerCase().replace(/[^a-z0-9]/g, '');
+        const named = String(row.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (wanted.length >= 3 && !named.includes(wanted)) conf = Math.min(conf, 46);
 
         const mappedCandidate = {
           id: row.restaurant_id,
@@ -288,6 +239,10 @@ export async function searchInformalLocation(query, { db = null, userCoordinates
           const key = `${Number(row.latitude).toFixed(5)}:${Number(row.longitude).toFixed(5)}`;
           if (seenIds.has(key)) continue;
           seenIds.add(key);
+          const wanted = String(query).toLowerCase().replace(/[^a-z0-9]/g, '');
+          const named = String(row.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+          let landmarkConfidence = Math.round(Number(row.sim) * 70) + 15;
+          if (wanted.length >= 3 && !named.includes(wanted)) landmarkConfidence = Math.min(landmarkConfidence, 46);
 
           candidates.push({
             id: row.id,
@@ -298,7 +253,7 @@ export async function searchInformalLocation(query, { db = null, userCoordinates
             region: row.region,
             latitude: Number(row.latitude),
             longitude: Number(row.longitude),
-            confidence: Math.round(Number(row.sim) * 70) + 15,
+            confidence: landmarkConfidence,
             candidateType: 'exact_landmark',
             promptConfirmation: Boolean(parsed.relativeRelation),
             explanation: `Database match for "${row.name}" (${row.locality}, ${row.region})`
