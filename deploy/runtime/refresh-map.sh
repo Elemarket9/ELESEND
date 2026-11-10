@@ -34,6 +34,14 @@ exec 9>"$live.lock"
 flock -n 9 || { say 'Already running'; exit 0; }
 free_gb=$(df -BG --output=avail "$(dirname "$live")" | tail -1 | tr -dc 0-9)
 [ "$free_gb" -ge "$min_free_gb" ] || { say "Stopped: ${free_gb} GB free, needs ${min_free_gb} GB"; exit 1; }
+if [ "$map_mode" = dedicated ] && [ -d "$live" ]; then
+  # Existing live dataset + next build coexist; fail early before consuming the disk.
+  live_bytes=$(du -sb "$live" | cut -f1)
+  free_bytes=$(df -B1 --output=avail "$(dirname "$live")" | tail -1 | tr -dc 0-9)
+  reserve_bytes=$((min_free_gb * 1024 * 1024 * 1024))
+  required_bytes=$((live_bytes + live_bytes / 2 + reserve_bytes))
+  [ "$free_bytes" -ge "$required_bytes" ] || { say "Stopped: insufficient free space for next build and reserve. Live map unchanged"; exit 1; }
+fi
 
 rm -rf "$next"; mkdir -p "$next"
 trap 'docker rm -f elesend-map-smoke >/dev/null 2>&1 || true; rm -rf "$next"' EXIT
@@ -49,6 +57,7 @@ if [ -z "$roads_file" ]; then
   fi
   dc exec -T -e OSRM_URL=http://osrm-motorcycle:5000 api node scripts/export-rider-roads.mjs - > "$roads_file"
 fi
+[ -f "$roads_file" ] || { say "Required rider-road export missing: $roads_file"; exit 2; }
 if grep -q '<way ' "$roads_file"; then
   sh "$root/scripts/merge-rider-roads.sh" "$next" "$roads_file"
 fi
