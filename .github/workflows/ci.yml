@@ -60,3 +60,13 @@ jobs:
           node --check apps/mobile/src/manual-address.js
           node --check apps/mobile/src/booking-contract.js
           node --check apps/mobile/src/maps/private-map-style.mjs
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build the API image
+        run: docker build -t elesend-api:ci .
+      - name: Build the map tile image
+        run: docker build -t elesend-maps:ci -f deploy/maps/Dockerfile .
+      - name: The API image holds every module the server imports
+        run: docker run --rm elesend-api:ci node --input-type=module -e "await import('/app/services/api/http.mjs');await import('/app/services/api/infrastructure/maps/trace-review.mjs')"

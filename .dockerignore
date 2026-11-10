@@ -10,4 +10,7 @@ reference
 documentation
 tests
 .runtime
-apps/mobile
+# The API serves the map style, which it shares with the mobile app. Only those two files go into the image.
+apps/mobile/**
+!apps/mobile/src/maps/private-map-style.mjs
+!apps/mobile/src/maps/ghana-sea.mjs

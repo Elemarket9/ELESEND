@@ -79,6 +79,11 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   const trafficRoutes=trafficRouting(app?.routing,trafficService(db));
   const eta=etaService(db,{routing:trafficRoutes,baselineFactors:etaBaselineFactors});
   const ipLimit=ipLimits(),floodGuard=memoryRateLimiter();
+  // Every route that can reach GhanaPostGPS goes through this, so the lookup has one set of limits however it is
+  // asked for: customer, business and company sign-ins only, 5 a minute each and 100 an hour for everyone together.
+  const digitalAddressLookup=actor=>ghanaPostGps&&['customer','business','company'].includes(actor?.kind)&&!actor.api_client_id
+   ?async address=>{await limit(db,'ghana-address:user:'+actor.id,5,60);await limit(db,'ghana-address:global',100,3600);return ghanaPostGps(address);}
+   :null;
   const server=createServer({headersTimeout:5000,requestTimeout:20000,maxHeaderSize:8192,keepAliveTimeout:65000},async(req,res)=>{
  const requestId=randomUUID();res.setHeader('X-Request-Id',requestId);
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');
@@ -239,8 +244,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    check(ghanaPostGps,503,'GhanaPostGPS address lookup is disabled');
    check(['customer','business','company'].includes(actor.kind)&&!actor.api_client_id,403,'Customer or business account required');
    check(body&&typeof body==='object'&&!Array.isArray(body)&&Object.keys(body).length===1&&typeof body.address==='string',400,'Provide only a GhanaPostGPS address');
-   await limit(db,'ghana-address:user:'+actor.id,5,60);await limit(db,'ghana-address:global',100,3600);
-   result=await ghanaPostGps(body.address);
+   result=await digitalAddressLookup(actor)(body.address);
   }
   else if(method==='GET'&&path==='/api/v1/maps/search'){
    const params=new URL(req.url,'http://localhost').searchParams;
@@ -249,7 +253,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    await limit(db,'maps-search:'+actor.id,60,60);
    const lat=Number(params.get('lat')),lon=Number(params.get('lon'));
    const near=Number.isFinite(lat)&&Number.isFinite(lon)?{latitude:lat,longitude:lon}:null;
-   result=await searchPlaces(db,q,{near,ghanaPostGps,photonUrl:process.env.PHOTON_URL||null});
+   result=await searchPlaces(db,q,{near,ghanaPostGps:digitalAddressLookup(actor),photonUrl:process.env.PHOTON_URL||null});
   }
   else if(method==='GET'&&path==='/api/v1/maps/reverse'){
    const u=new URL(req.url,'http://localhost').searchParams;
@@ -393,7 +397,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
     const egiaQuery=typeof body?.query==='string'?body.query:'';
     check(egiaQuery.trim().length>=2&&egiaQuery.length<=150,400,'Search text must be 2-150 characters');
     const egiaLimit=Math.min(30,Math.max(1,Number.parseInt(body?.limit,10)||10));
-    result=await searchInformalLocation(egiaQuery,{db,userCoordinates:body?.coordinates,limit:egiaLimit,ghanaPostGps,photonUrl:process.env.PHOTON_URL||null});
+    result=await searchInformalLocation(egiaQuery,{db,userCoordinates:body?.coordinates,limit:egiaLimit,ghanaPostGps:digitalAddressLookup(actor),photonUrl:process.env.PHOTON_URL||null});
    }
    else if(method==='POST'&&path==='/api/v1/maps/egia/temporary-reference'){
     await limit(db,'temp-ref:'+actor.id,40,60);
