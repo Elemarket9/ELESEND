@@ -4,9 +4,24 @@
 # Needs Docker, Java 21+, Node and curl; osmium-tool for searchable places. Runs daily: see deploy/runtime/elesend-map-refresh.timer.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
-compose_file="$root/deploy/runtime/compose.yaml"
+map_mode=${MAP_REFRESH_MODE:-combined}
+case "$map_mode" in
+  combined) compose_file="$root/deploy/runtime/compose.yaml" ;;
+  dedicated) compose_file="$root/deploy/runtime/compose.map-vps.yaml" ;;
+  *) echo "Unsupported MAP_REFRESH_MODE: $map_mode" >&2; exit 2 ;;
+esac
 env_file=${ELESEND_ENV_FILE:-"$root/.env"}
+if [ "$map_mode" = dedicated ] && [ -z "${GHANA_MAP_DATA:-}" ]; then
+  echo "Dedicated map refresh requires GHANA_MAP_DATA (absolute path)" >&2; exit 2
+fi
 live=$(realpath -m "${GHANA_MAP_DATA:-$root/deploy/runtime/map-data}")
+if [ "$map_mode" = dedicated ]; then
+  case "$live" in
+    /*) ;;
+    *) echo "Map data path must be absolute" >&2; exit 2 ;;
+  esac
+  [ "$live" != / ] || { echo "Refusing root map data path" >&2; exit 2; }
+fi
 next="$live.next"
 previous="$live.previous"
 image=ghcr.io/project-osrm/osrm-backend:v26.4.0
@@ -14,9 +29,9 @@ min_free_gb=${MAP_REFRESH_MIN_FREE_GB:-6}
 dc() { docker compose --env-file "$env_file" -f "$compose_file" "$@"; }
 say() { echo "[map refresh] $*"; }
 
+mkdir -p "$(dirname "$live")"
 exec 9>"$live.lock"
 flock -n 9 || { say 'Already running'; exit 0; }
-mkdir -p "$(dirname "$live")"
 free_gb=$(df -BG --output=avail "$(dirname "$live")" | tail -1 | tr -dc 0-9)
 [ "$free_gb" -ge "$min_free_gb" ] || { say "Stopped: ${free_gb} GB free, needs ${min_free_gb} GB"; exit 1; }
 
@@ -29,6 +44,9 @@ sh "$root/scripts/download-ghana.sh" "$next"
 roads_file=${MAP_REFRESH_ROADS_FILE:-}
 if [ -z "$roads_file" ]; then
   roads_file="$next/rider-roads-input.osm"
+  if [ "$map_mode" = dedicated ]; then
+    say "Dedicated map refresh needs MAP_REFRESH_ROADS_FILE exported securely from the app VPS (or an explicit trusted empty OSM input)"; exit 2
+  fi
   dc exec -T -e OSRM_URL=http://osrm-motorcycle:5000 api node scripts/export-rider-roads.mjs - > "$roads_file"
 fi
 if grep -q '<way ' "$roads_file"; then
@@ -50,7 +68,7 @@ fi
 if command -v osmium >/dev/null && [ -f "$next/ghana-latest.osm.pbf" ]; then
   sh "$root/scripts/build-ghana-roads.sh" "$next" "$next/ghana-osm-roads.json" || say 'Named roads were not rebuilt. Search keeps working without the new road index'
 fi
-if [ -n "${DATABASE_URL:-}" ] && [ -f "$next/ghana-osm-places.json" ]; then
+if [ "$map_mode" != dedicated ] && [ -n "${DATABASE_URL:-}" ] && [ -f "$next/ghana-osm-places.json" ]; then
   files=("$next/ghana-osm-places.json")
   [ -f "$next/ghana-osm-roads.json" ] && files+=("$next/ghana-osm-roads.json")
   node "$root/scripts/load-search-places.mjs" "${files[@]}" || say 'Database place load failed. Curated search is unchanged'
@@ -78,14 +96,19 @@ fi
 
 restart_map() {
   [ "${MAP_REFRESH_NO_RESTART:-}" = 1 ] && return 0
-  dc up -d --force-recreate osrm osrm-motorcycle maps
-  # The API reads places from the map folder that was just swapped in, so it restarts to pick them up.
-  dc up -d --no-deps --force-recreate api
+  dc up -d --no-deps --force-recreate osrm osrm-motorcycle maps
+  if [ "$map_mode" = combined ]; then
+    # Legacy combined-host flow: the API reads places from this local folder.
+    dc up -d --no-deps --force-recreate api
+  fi
 }
 live_map_healthy() {
   [ "${MAP_REFRESH_NO_RESTART:-}" = 1 ] && return 0
   for _ in $(seq 1 30); do
-    if dc exec -T api node -e "fetch('http://osrm-motorcycle:5000/route/v1/driving/$smoke_point_a;$smoke_point_b?overview=false').then(r=>r.json()).then(b=>process.exit(b.code==='Ok'?0:1)).catch(()=>process.exit(1))" 2>/dev/null; then return 0; fi
+    if [ "$map_mode" = dedicated ]; then
+      # OSRM ports are bound only to the map VPS VPN/private interface.
+      if curl -fsS --max-time 5 "http://${MAP_PRIVATE_BIND_IP:?Set MAP_PRIVATE_BIND_IP}:5002/route/v1/driving/$smoke_point_a;$smoke_point_b?overview=false" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.exit(JSON.parse(s).code==='Ok'?0:1)}catch{process.exit(1)}})" 2>/dev/null; then return 0; fi
+    elif dc exec -T api node -e "fetch('http://osrm-motorcycle:5000/route/v1/driving/$smoke_point_a;$smoke_point_b?overview=false').then(r=>r.json()).then(b=>process.exit(b.code==='Ok'?0:1)).catch(()=>process.exit(1))" 2>/dev/null; then return 0; fi
     sleep 4
   done
   return 1
