@@ -261,6 +261,7 @@ services:
     logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
   # Optional. Stays off unless you start the photon profile after building a Ghana index.
   # See scripts/photon-ghana.sh. The API ignores Photon when PHOTON_URL is empty.
+  # The container stays read-only. Photon still needs /tmp for the JVM and a writable index directory for its lock files.
   photon:
     profiles: [photon]
     image: eclipse-temurin:21-jre
@@ -270,8 +271,11 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,exec,nosuid,size=512m,mode=1777
     volumes:
       - {type: bind, source: '${GHANA_MAP_DATA:-./map-data}', target: /data, read_only: true}
+      - {type: bind, source: '${GHANA_MAP_DATA:-./map-data}/photon/data', target: /data/photon/data, read_only: false, bind: {create_host_path: true}}
     networks: [private]
     logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
   maps:

@@ -24,7 +24,7 @@ const AMENITY = {
   research_institute: 'education', library: 'education',
   restaurant: 'commerce', fast_food: 'commerce', cafe: 'commerce', bar: 'commerce', pub: 'commerce',
   ice_cream: 'commerce', food_court: 'commerce', biergarten: 'commerce',
-  fuel: 'transport', bus_station: 'transport', taxi: 'transport', ferry_terminal: 'transport',
+  fuel: 'commerce', bus_station: 'transport', taxi: 'transport', ferry_terminal: 'transport',
   marketplace: 'market',
   police: 'public_service', post_office: 'logistics', courthouse: 'public_service', townhall: 'public_service',
   community_centre: 'landmark', place_of_worship: 'religion',
@@ -146,6 +146,17 @@ export function placeFromFeature(feature, classified) {
   return {place};
 }
 
+// Overture release ids look like 2026-11-01.0. source_date is inserted as a PostgreSQL date, so only the calendar day is kept.
+export function sourceDate(value) {
+  if (value == null || value === '') return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:\.\d+)?$/.exec(String(value).trim());
+  if (!match) return null;
+  const year = Number(match[1]), month = Number(match[2]), day = Number(match[3]);
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  if (utc.getUTCFullYear() !== year || utc.getUTCMonth() !== month - 1 || utc.getUTCDate() !== day) return null;
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+
 export function overturePlace(feature, {release, minConfidence = 0.5, grid} = {}) {
   const props = feature.properties || feature;
   const name = String(props.names?.primary || props.name || '').trim();
@@ -170,7 +181,7 @@ export function overturePlace(feature, {release, minConfidence = 0.5, grid} = {}
     confidence,
     license: 'CDLA-Permissive-2.0',
     source: 'Overture Maps',
-    source_date: release || null,
+    source_date: sourceDate(release),
     verification_status: 'unverified'
   }};
 }
@@ -245,7 +256,7 @@ export function landmarkRecord(place) {
     coordinate_kind: place.coordinate_kind || 'mapped_point',
     source: place.source,
     source_id: place.id,
-    source_date: place.source_date || null,
+    source_date: sourceDate(place.source_date),
     license: place.license,
     verification_status: 'unverified',
     aliases: place.aliases || [],

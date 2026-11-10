@@ -319,9 +319,11 @@ function categoryIntent(text) {
   return CATEGORY_INTENTS.find(intent => intent.phrases.includes(wanted)) || null;
 }
 function matchesCategory(place, id) {
+  const sub = String(place.subcategory || '').toLowerCase();
+  // Filling stations are destinations. An older import stored amenity=fuel as transport, the same category as a bus stop.
+  if (id === 'fuel' && (sub === 'fuel' || sub === 'fuel_station')) return true;
   if (STOP_CATEGORIES.has(place.category)) return false;
   const name = place._nameLower || '';
-  const sub = String(place.subcategory || '').toLowerCase();
   const category = String(place.category || '').toLowerCase();
   switch (id) {
     case 'pharmacy': return sub === 'pharmacy' || /\b(pharmacy|chemist|drugstore)\b/.test(name);
@@ -1079,7 +1081,7 @@ export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800, near
   // The database stops the query itself after timeoutMs, so a slow search frees its connection instead of holding one
   // while bookings wait. The race is a second guard for a database that does not answer at all.
   const lookup = typeof db.tx === 'function'
-    ? db.tx(async c => { await c.query(`SET LOCAL statement_timeout = ${Math.max(50, Math.min(5000, Math.round(timeoutMs)))}`); return ghanaSearchPostGIS(c, query, {limit}); })
+    ? db.tx(async c => { await c.query(`SET LOCAL statement_timeout = ${Math.max(50, Math.min(5000, Math.round(timeoutMs)))}`); return ghanaSearchPostGIS(c, query, {limit, near}); })
     : ghanaSearchPostGIS(db, query, {limit, near});
   let timer;
   try {

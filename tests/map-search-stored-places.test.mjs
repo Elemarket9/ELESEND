@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {searchPlaces} from '../services/api/infrastructure/maps/ghana-geocoder.mjs';
+import {haversine} from '../services/api/dispatch-geometry.mjs';
 const row={id:'lm-1',name:'Mama Esi Chop Bar Kasoa',search_name:'mama esi chop bar kasoa',category:'commerce',subcategory:'restaurant',locality:'Kasoa',city:'Kasoa',region:'Central',latitude:'5.5341',longitude:'-0.4190',aliases:[],entrance:null,popularity:10,street:null,coordinate_kind:'mapped_point',name_sim:0.9,sim:0.9};
 test('an approved place from the database is offered first when its name is what was typed',async()=>{
  const r=await searchPlaces({query:async()=>({rows:[row]})},'Mama Esi Chop Bar');
@@ -17,6 +18,27 @@ test('a place in both lists is shown once',async()=>{
 });
 test('a search of only filler words does not query the database',async()=>{
  let asked=false;await searchPlaces({query:async()=>{asked=true;return {rows:[]};}},'at the');assert.equal(asked,false);
+});
+test('the database transaction path ranks a nearby road above a far one', async () => {
+  const near = {latitude: 5.63, longitude: -0.12};
+  const road = (id, latitude, longitude) => ({id, name: 'Zzprobe Quarry Road', category: 'road', subcategory: 'residential', locality: 'Accra', city: 'Accra', region: 'Greater Accra', latitude, longitude, aliases: [], entrance: null, popularity: 20, street: null, coordinate_kind: 'road_midpoint', name_sim: 0.8, sim: 0.8, verification_status: 'unverified', source: 'OpenStreetMap', license: 'ODbL 1.0'});
+  const far = road('ROAD_FAR', 6.69, -1.62);
+  const close = road('ROAD_NEAR', 5.631, -0.121);
+  let sawDistance = false;
+  const client = {query: async (sql, params = []) => {
+    if (String(sql).includes('statement_timeout')) return {rows: []};
+    const nearLat = params[2], nearLon = params[3];
+    assert.equal(nearLat, near.latitude);
+    assert.equal(nearLon, near.longitude);
+    sawDistance = /ST_Distance/.test(String(sql)) && Number.isFinite(nearLat) && Number.isFinite(nearLon);
+    const bonus = row => sawDistance ? Math.max(0, 80 - haversine({latitude: nearLat, longitude: nearLon}, {latitude: Number(row.latitude), longitude: Number(row.longitude)}) / 800) : 0;
+    return {rows: [far, close].sort((a, b) => bonus(b) - bonus(a))};
+  }};
+  const rows = await searchPlaces({tx: async fn => fn(client)}, 'Zzprobe Quarry Road', {near, limit: 5});
+  const found = rows.filter(row => row.name === 'Zzprobe Quarry Road');
+  assert.equal(sawDistance, true);
+  assert.equal(found[0].id, 'ROAD_NEAR');
+  assert.equal(found[1].id, 'ROAD_FAR');
 });
 test('the database search runs under its own statement timeout',async()=>{
  const seen=[];const client={query:async sql=>{seen.push(String(sql));return {rows:[]};}};

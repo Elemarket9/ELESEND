@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {writeFileSync, mkdtempSync} from 'node:fs';
+import {readFileSync, writeFileSync, mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {classifyOsmTags, geometryCentre, INSERT_LANDMARKS_SQL, landmarkRecord, overturePlace, placeGrid, priorityArea} from '../scripts/place-import.mjs';
 import {photonResult, photonSearch} from '../services/api/infrastructure/maps/photon-search.mjs';
-import {searchPlaces} from '../services/api/infrastructure/maps/ghana-geocoder.mjs';
+import {ghanaSearch, GHANA_GAZETTEER, searchPlaces} from '../services/api/infrastructure/maps/ghana-geocoder.mjs';
 import {missingLinkFlags, speedProposals} from '../services/api/infrastructure/maps/trace-review.mjs';
 
 const run = promisify(execFile);
@@ -21,6 +21,10 @@ test('OpenStreetMap tags keep delivery places and name the reason for every drop
   assert.equal(classifyOsmTags({highway: 'footway', name: 'Foot Path'}).drop, 'not_a_destination');
   assert.equal(classifyOsmTags({amenity: 'clinic', name: 'Clinic', disused: 'yes'}).drop, 'disused');
   assert.equal(classifyOsmTags({amenity: 'bank'}).drop, 'unnamed');
+  const station = classifyOsmTags({amenity: 'fuel', name: 'Zzprobe Goil'});
+  assert.equal(station.category, 'commerce');
+  assert.equal(station.subcategory, 'fuel');
+  assert.equal(classifyOsmTags({amenity: 'bus_station', name: 'Zzprobe Bus Station'}).category, 'transport');
 });
 
 test('a named road uses its own midpoint and never gains a house number', () => {
@@ -62,11 +66,48 @@ test('Overture rows stay unverified, in the priority areas, and do not copy over
   const kept = overturePlace({properties: {id: 'ov1', names: {primary: 'New Clinic'}, categories: {primary: 'clinic'}, confidence: 0.8}, geometry: {type: 'Point', coordinates: [-0.2, 5.60]}}, {release, grid});
   assert.equal(kept.place.verification_status, 'unverified');
   assert.equal(kept.place.license, 'CDLA-Permissive-2.0');
-  assert.equal(kept.place.source_date, release);
+  assert.equal(kept.place.source_date, '2026-11-01');
   assert.equal(kept.place.latitude, 5.6);
   assert.equal(overturePlace({properties: {id: 'low', names: {primary: 'Low'}, confidence: 0.2}, geometry: {type: 'Point', coordinates: [-0.2, 5.6]}}, {release, grid}).drop, 'low_confidence');
   assert.equal(overturePlace({properties: {id: 'north', names: {primary: 'Tamale Shop'}, confidence: 0.9}, geometry: {type: 'Point', coordinates: [-0.84, 9.40]}}, {release, grid}).drop, 'outside_priority');
   assert.equal(overturePlace({properties: {id: 'dup', names: {primary: 'Accra Mall'}, confidence: 0.95}, geometry: {type: 'Point', coordinates: [-0.1748, 5.6212]}}, {release, grid}).drop, 'duplicate_curated');
+});
+
+test('an Overture release id is stored as a date the landmark insert can cast', () => {
+  const release = '2026-11-01.0';
+  const kept = overturePlace({properties: {id: 'ov-date', names: {primary: 'Date Clinic'}, categories: {primary: 'clinic'}, confidence: 0.8}, geometry: {type: 'Point', coordinates: [-0.2, 5.60]}}, {release});
+  assert.equal(kept.place.source_date, '2026-11-01');
+  const row = landmarkRecord({...kept.place, source_date: release});
+  assert.equal(row.source_date, '2026-11-01');
+  assert.match(row.source_date, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(landmarkRecord({...kept.place, source_date: '2026-02-31.0'}).source_date, null);
+  assert.equal(landmarkRecord({...kept.place, source_date: 'not-a-release'}).source_date, null);
+  assert.match(INSERT_LANDMARKS_SQL, /source_date date/);
+});
+
+test('fuel and filling-station searches keep imported stations and skip bus stops', () => {
+  const imported = classifyOsmTags({amenity: 'fuel', name: 'Zzprobe Goil'});
+  const stop = classifyOsmTags({amenity: 'bus_station', name: 'Zzprobe Bus Station'});
+  const added = [
+    {id: 'OSMIMP_zzfuel', name: 'Zzprobe Goil', category: imported.category, subcategory: imported.subcategory, locality: 'Spintex', city: 'Accra', region: 'Greater Accra', latitude: 5.6301, longitude: -0.1201, popularity: 90, _nameLower: 'zzprobe goil'},
+    {id: 'OSMIMP_zzfuel_old', name: 'Zzprobe Filling Station', category: 'transport', subcategory: 'fuel', locality: 'Spintex', city: 'Accra', region: 'Greater Accra', latitude: 5.6302, longitude: -0.1202, popularity: 90, _nameLower: 'zzprobe filling station'},
+    {id: 'OSMIMP_zzbus', name: 'Zzprobe Bus Station', category: stop.category, subcategory: stop.subcategory, locality: 'Circle', city: 'Accra', region: 'Greater Accra', latitude: 5.6303, longitude: -0.1203, popularity: 90, _nameLower: 'zzprobe bus station'}
+  ];
+  GHANA_GAZETTEER.push(...added);
+  try {
+    const near = {latitude: 5.6301, longitude: -0.1201};
+    for (const query of ['fuel', 'filling station', 'filling station near me']) {
+      const rows = ghanaSearch(query, {limit: 30, near});
+      assert.ok(rows.some(row => row.id === 'OSMIMP_zzfuel'), query);
+      assert.ok(rows.some(row => row.id === 'OSMIMP_zzfuel_old'), query);
+      assert.equal(rows.some(row => row.id === 'OSMIMP_zzbus'), false, query);
+    }
+  } finally {
+    for (const place of added) {
+      const index = GHANA_GAZETTEER.indexOf(place);
+      if (index >= 0) GHANA_GAZETTEER.splice(index, 1);
+    }
+  }
 });
 
 test('unverified imports cannot replace a curated landmark', () => {
@@ -74,6 +115,16 @@ test('unverified imports cannot replace a curated landmark', () => {
   assert.match(INSERT_LANDMARKS_SQL, /IS DISTINCT FROM 'unverified'/);
   assert.match(INSERT_LANDMARKS_SQL, /ON CONFLICT \(id\) DO UPDATE/);
   assert.match(INSERT_LANDMARKS_SQL, /ST_DWithin/);
+});
+
+test('the photon service can write its temp files and index lock while the container stays read-only', () => {
+  const compose = readFileSync(new URL('../deploy/runtime/compose.yaml', import.meta.url), 'utf8');
+  const photon = compose.slice(compose.indexOf('\n  photon:'), compose.indexOf('\n  maps:'));
+  assert.match(photon, /read_only:\s*true/);
+  assert.match(photon, /tmpfs:/);
+  assert.match(photon, /\/tmp:rw,exec,/);
+  assert.match(photon, /target: \/data, read_only: true/);
+  assert.match(photon, /target: \/data\/photon\/data, read_only: false/);
 });
 
 test('Photon is optional and does not invent a house number', async () => {
