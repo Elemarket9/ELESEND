@@ -1,0 +1,9 @@
+# Map VPS serves only public vector tiles. Never expose OSRM or Photon here.
+{$MAPS_HOST} {
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options nosniff
+    -Server
+  }
+  reverse_proxy maps:3145
+}
