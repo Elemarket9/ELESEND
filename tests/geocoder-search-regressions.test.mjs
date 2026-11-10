@@ -120,7 +120,7 @@ test('a search the built-in places do not fully answer also asks Photon',async()
  assert.equal(found[0].name,'Kasoa Old Market');
  assert.equal(found[0].source,'Photon');
  assert.ok(found.findIndex(r=>r.name==='Somewhere Else')>found.findIndex(r=>r.source!=='Photon'),'a Photon place that lacks the typed words follows the built-in results');
- await searchPlaces(null,'Accra Mall',options);
- assert.equal(asked.length,1,'a search already answered does not call Photon');
+ for(const q of ['Accra Mall','Ho','Wa','Kejetia Market Ashanti','Accra Mall Greater Accra'])await searchPlaces(null,q,options);
+ assert.deepEqual(asked,['Kasoa Old Market'],'a search already answered does not call Photon, however short and whether or not it names the region');
  assert.ok((await searchPlaces(null,'Kasoa Old Market',{photonUrl:'http://photon:2322',fetchImpl:async()=>{throw Error('down');}})).length>0,'Photon being down changes nothing');
 });

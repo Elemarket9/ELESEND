@@ -33,7 +33,7 @@ const INCOMPATIBLE_CATEGORY_PAIRS = [
 const PERSON_TITLE = /\b(?:mr|mrs|miss|madam|maame|uncle|aunt|auntie|aunty|brother|sister|bro|sis)\b\.?/i;
 const BUSINESS_WORD = /\b(?:store|stores|shop|chop ?bar|bar|spot|pub|salon|saloon|barber|barbering|pharmacy|chemist|ventures|enterprise|enterprises|kitchen|restaurant|canteen|eatery|joint|cafe|bakery|clinic|school|academy|church|mosque|market|supermarket|mart|boutique|fashion|tailor|tailoring|electricals|hardware|provisions|cold store|kiosk|hotel|lodge|filling station|workshop|fitting shop|vulcanizer|washing bay|printing|pharmaceuticals|cosmetics|mobile money|momo)\b/i;
 // "Guest House" and "Chop House" are businesses, not homes.
-const PUBLIC_HOUSE = /\b(?:guest|chop|club|rest|court|boarding|coffee|tea) ?house\b/gi;
+const PUBLIC_HOUSE = /\b(?:guest|chop|club|rest|court|boarding|coffee|tea) ?house\b/i;
 // A Ghanaian phone number written into a name is someone's contact, not a place name.
 const PHONE_NUMBER = /(?:\+?233|0)\d{9}(?!\d)/;
 
@@ -43,8 +43,8 @@ const PHONE_NUMBER = /(?:\+?233|0)\d{9}(?!\d)/;
 export function isLikelyPrivateResidence(name) {
   if (!name || typeof name !== 'string') return false;
   if (PHONE_NUMBER.test(name.replace(/[\s().-]/g, ''))) return true;
-  if (PERSON_TITLE.test(name) && !BUSINESS_WORD.test(name)) return true;
-  const text = name.replace(PUBLIC_HOUSE, ' ');
+  if (PERSON_TITLE.test(name) && !BUSINESS_WORD.test(name) && !PUBLIC_HOUSE.test(name)) return true;
+  const text = name.replace(new RegExp(PUBLIC_HOUSE.source, 'gi'), ' ');
   return PRIVATE_RESIDENCE_PATTERNS.some(p => p.test(text));
 }
 

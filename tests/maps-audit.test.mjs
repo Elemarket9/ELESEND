@@ -139,7 +139,7 @@ test('a road that leaves the network and rejoins it nearby is still learned, and
 test('a person is kept off the public map, and a business under a person\'s name is not',async()=>{
  const {isLikelyPrivateResidence}=await import('../services/api/infrastructure/maps/egia/deduplicator.mjs');
  for(const name of ['Mrs. Adjei','Mr Mensah','Auntie Ama','Uncle Ebo','Mr. Mensah house gate','Kofi 0244123456','Ama +233 24 412 3456','my house','Family House'])assert.equal(isLikelyPrivateResidence(name),true,name);
- for(const name of ['Mr. Mensah Store','Auntie Ama Chop Bar','Uncle Ebo Spot','Sister Grace Salon','Royal Guest House','Papaye','Shell Filling Station'])assert.equal(isLikelyPrivateResidence(name),false,name);
+ for(const name of ['Mr. Mensah Store','Auntie Ama Chop Bar','Uncle Ebo Spot','Sister Grace Salon','Royal Guest House','Auntie Efua Guest House','Uncle Sam Chop House','Papaye','Shell Filling Station'])assert.equal(isLikelyPrivateResidence(name),false,name);
 });
 
 test('several riders reporting one shop produce one suggestion',async()=>{

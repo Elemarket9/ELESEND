@@ -1098,11 +1098,12 @@ export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800, near
   return dedupePlaces([...photonFirst, ...exact, ...local, ...rest, ...photonLast], limit);
 }
 
-/** True when a result's own words hold every word that was typed. */
+/** True when a result's own words hold every word that was typed. A short word ("Ho", "Wa") must be a whole word. */
 function answersQuery(row, query) {
-  const text = compactText([row?.name, row?.label, row?.locality, row?.city, ...(row?.aliases || [])].join(' '));
-  const words = String(query || '').toLowerCase().split(/[^a-z0-9]+/).filter(word => word.length >= 3 && !STOP_WORDS.has(word));
-  return words.length > 0 && words.every(word => text.includes(word));
+  const own = [row?.name, row?.label, row?.locality, row?.city, row?.region, ...(row?.aliases || [])].join(' ').toLowerCase();
+  const text = compactText(own), whole = new Set(own.split(/[^a-z0-9]+/));
+  const words = String(query || '').toLowerCase().split(/[^a-z0-9]+/).filter(word => word && !STOP_WORDS.has(word));
+  return words.length > 0 && words.every(word => word.length >= 3 ? text.includes(word) : whole.has(word));
 }
 
 function dedupePlaces(rows, limit) {
