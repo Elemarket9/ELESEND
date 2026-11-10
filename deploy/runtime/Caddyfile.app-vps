@@ -1,0 +1,34 @@
+# App VPS deliberately does not serve the maps hostname.
+{$ELESEND_API_HOST} {
+  encode gzip
+  @blocked path /api/v1/debug* /api/v1/admin* /admin* /.env*
+  respond @blocked 404
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options nosniff
+    -Server
+  }
+  reverse_proxy api:3090 {
+    health_uri /health
+    transport http {
+      dial_timeout 5s
+      response_header_timeout 15s
+    }
+  }
+}
+
+{$WEB_HOST} {
+  encode gzip
+  @blocked path /api/v1/debug* /api/v1/admin* /admin* /.env*
+  respond @blocked 404
+  reverse_proxy api:3090
+}
+
+{$ADMIN_HOST} {
+  encode gzip
+  @outside not remote_ip {$ADMIN_ALLOWED_IPS}
+  respond @outside 404
+  @blocked path /api/v1/debug* /.env*
+  respond @blocked 404
+  reverse_proxy api:3090
+}
