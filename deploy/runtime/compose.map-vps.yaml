@@ -1,0 +1,80 @@
+# Standalone Ghana map VPS: run ONLY on the map server.
+# Map data remains on this VPS; never shares the app VPS disk.
+# Required: GHANA_MAP_DATA (absolute path), MAPS_HOST and MAP_PRIVATE_BIND_IP
+# MAP_PRIVATE_BIND_IP must be the map VPS's private WireGuard/VPN interface address.
+name: elesend-map
+services:
+  maps:
+    build:
+      context: ../..
+      dockerfile: deploy/maps/Dockerfile
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    volumes:
+      - {type: bind, source: '${GHANA_MAP_DATA:?Set absolute map data directory}', target: /data, read_only: true}
+    networks: [map]
+    logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v26.4.0
+    command: [osrm-routed, --algorithm, mld, --max-table-size, '100', /data/ghana-latest.osrm]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    volumes:
+      - {type: bind, source: '${GHANA_MAP_DATA:?Set absolute map data directory}', target: /data, read_only: true}
+    ports:
+      - '${MAP_PRIVATE_BIND_IP:?Set map VPS VPN/private interface IP}:5001:5000'
+    networks: [map]
+    logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+  osrm-motorcycle:
+    image: ghcr.io/project-osrm/osrm-backend:v26.4.0
+    command: [osrm-routed, --algorithm, mld, --max-table-size, '100', /data/ghana-motorcycle.osrm]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    volumes:
+      - {type: bind, source: '${GHANA_MAP_DATA:?Set absolute map data directory}', target: /data, read_only: true}
+    ports:
+      - '${MAP_PRIVATE_BIND_IP:?Set map VPS VPN/private interface IP}:5002:5000'
+    networks: [map]
+    logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+  photon:
+    profiles: [photon]
+    image: eclipse-temurin:21-jre
+    entrypoint: ["java", "-jar", "/data/photon/photon.jar"]
+    command: ["serve", "-data-dir", "/data/photon/data", "-listen-ip", "0.0.0.0", "-listen-port", "2322"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    volumes:
+      - {type: bind, source: '${GHANA_MAP_DATA:?Set absolute map data directory}', target: /data, read_only: true}
+    ports:
+      - '${MAP_PRIVATE_BIND_IP:?Set map VPS VPN/private interface IP}:2322:2322'
+    networks: [map]
+    logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ['no-new-privileges:true']
+    environment:
+      MAPS_HOST: ${MAPS_HOST:?Set public map tiles hostname}
+    volumes:
+      - ./Caddyfile.map-vps:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    ports: ['80:80', '443:443']
+    networks: [map]
+    depends_on: [maps]
+    logging: {driver: json-file, options: {max-size: '10m', max-file: '3'}}
+networks:
+  map: {}
+volumes:
+  caddydata: {}
+  caddyconfig: {}
