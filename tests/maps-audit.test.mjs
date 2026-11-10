@@ -136,6 +136,34 @@ test('a road that leaves the network and rejoins it nearby is still learned, and
  assert.equal(extractCandidateRoadCorridor([point(0,0),point(20,5),point(10,-10),point(5,15)]),null);
 });
 
+test('a person is kept off the public map, and a business under a person\'s name is not',async()=>{
+ const {isLikelyPrivateResidence}=await import('../services/api/infrastructure/maps/egia/deduplicator.mjs');
+ for(const name of ['Mrs. Adjei','Mr Mensah','Auntie Ama','Uncle Ebo','Mr. Mensah house gate','Kofi 0244123456','Ama +233 24 412 3456','my house','Family House'])assert.equal(isLikelyPrivateResidence(name),true,name);
+ for(const name of ['Mr. Mensah Store','Auntie Ama Chop Bar','Uncle Ebo Spot','Sister Grace Salon','Royal Guest House','Papaye','Shell Filling Station'])assert.equal(isLikelyPrivateResidence(name),false,name);
+});
+
+test('several riders reporting one shop produce one suggestion',async()=>{
+ const inserts=[];
+ const report=(notes,north)=>({id:randomUUID(),rider_id:randomUUID(),report_type:'missing_landmark',notes,latitude:9.9+north/111320,longitude:-1.9,road_geojson:null,corroboration_count:2});
+ const db={query:async sql=>{
+  if(sql.includes('FROM rider_map_reports r1'))return {rows:[report('Zak Provisions Store',0),report('Zak Provision Store',10),report('Zak Store',20),report('Other Hardware Shop',400)]};
+  if(sql.includes('INSERT INTO candidate_landmarks'))inserts.push(sql);
+  return {rows:[],rowCount:1};
+ }};
+ const result=await runGeographicLearningCycle(db,{});
+ assert.equal(inserts.length,2,'one for the shop three riders reported, one for the shop 400 m away');
+ assert.equal(result.landmarksCorroborated,2);
+});
+
+test('a shop already waiting for review is not suggested again',async()=>{
+ const {deduplicateLandmark}=await import('../services/api/infrastructure/maps/egia/deduplicator.mjs');
+ const db={query:async sql=>sql.includes('FROM candidate_landmarks')?{rows:[{id:randomUUID(),name:'Zak Provisions Store',category:'commerce',dist_m:12}]}:{rows:[]}};
+ const again=await deduplicateLandmark(db,{name:'Zak Provision Store',category:'commerce',latitude:9.9,longitude:-1.9});
+ assert.equal(again.isDuplicate,true);
+ assert.equal(again.matchType,'existing_candidate_landmark');
+ assert.equal((await deduplicateLandmark(db,{name:'Blessed Hardware',category:'commerce',latitude:9.9,longitude:-1.9})).isDuplicate,false);
+});
+
 test('routing returns raw road times, so fares and dispatch ignore the customer ETA factor',async()=>{
  const fetchImpl=async()=>new Response(JSON.stringify({code:'Ok',routes:[{distance:5000,duration:1000,geometry:{type:'LineString',coordinates:[]}}],waypoints:[]}));
  const routing=osrmRouting({endpoint:'http://osrm.test',profiles:{motorcycle:'driving'},fetchImpl});

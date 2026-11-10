@@ -1,7 +1,7 @@
 // Searches a real customer typed while booking RAPID Courier to Kasoa, which returned the wrong place first.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ghanaSearch,GHANA_GAZETTEER} from '../services/api/infrastructure/maps/ghana-geocoder.mjs';
+import {ghanaSearch,searchPlaces,GHANA_GAZETTEER} from '../services/api/infrastructure/maps/ghana-geocoder.mjs';
 const first=q=>ghanaSearch(q,{limit:5})[0]||{};
 test('a brand typed as one word still finds the branch in the named town',()=>{
  assert.match(first('GTBank Cape Coast').name,/GT ?Bank/i);
@@ -74,4 +74,53 @@ test('a digital address is recognised and not given a guessed coordinate while l
  assert.equal(normalizeGhanaDigitalAddress('GA-184-9321'),'GA-184-9321');
  assert.equal(normalizeGhanaDigitalAddress('GA1849321'),'GA-184-9321');
  assert.equal(normalizeGhanaDigitalAddress('GA-1849-3210'),'GA-1849-3210');
+});
+
+// Found by searching twenty places across Ghana on 10 Nov 2026.
+test('text that matches nothing returns nothing, so the app can offer a map pin',()=>{
+ for(const q of ['asdfqwer zxcv','qqqq','xyzzy plugh'])assert.deepEqual(ghanaSearch(q),[],q);
+ for(const q of ['kejetea','achimoota','kanishie','tema comunity 1'])assert.ok(ghanaSearch(q).length>0,q+' is a misspelling and must still be found');
+});
+test('a famous place wins over an obscure spot that shares its first word',()=>{
+ const makola=first('Makola');
+ assert.equal(makola.name,'Makola Market');
+ assert.ok(Math.abs(makola.latitude-5.545)<0.01&&Math.abs(makola.longitude+0.206)<0.01,'in Accra Central');
+});
+test('a town name means the town, not its station, market or a hamlet that shares the name',()=>{
+ for(const town of ['Sunyani','Koforidua','Goaso','Tema','Ho','Wa','Kumasi','Tamale','Bolgatanga'])assert.equal(first(town).name,town);
+ assert.equal(first('Madina').region,'Greater Accra');
+});
+test('the same place is listed once',()=>{
+ const names=q=>ghanaSearch(q).map(r=>r.name);
+ assert.equal(names('Makola Market').filter(n=>n==='Makola Market').length,1);
+ assert.equal(names('Makola').filter(n=>/^Makola Shop/.test(n)).length,1,'a misspelt copy next door is the same place');
+ assert.equal(names('Sunyani').filter(n=>n==='Sunyani').length,1);
+});
+test('a label never repeats itself',()=>{
+ for(const q of ['Kejetia Market','Cape Coast Castle','Madina','Bolgatanga','Tamale Teaching Hospital','Shoprite'])
+  for(const r of ghanaSearch(q)){const [a,b]=r.label.replace(/^Near [^·]+· /,'').split(', ');assert.notEqual(a,b,`${q}: ${r.label}`);}
+ assert.equal(first('Cape Coast Castle').label,'Central Region');
+});
+test('a business typed with its area finds the nearest one to that area',()=>{
+ for(const q of ['Spintex Shoprite','Shoprite Spintex']){
+  const hit=first(q);
+  assert.equal(hit.name,'Shoprite',q);
+  assert.match(hit.label,/^Near Spintex · /);
+  assert.ok(Math.abs(hit.latitude-5.64)<0.08&&Math.abs(hit.longitude+0.10)<0.08,'within reach of Spintex');
+ }
+ assert.doesNotMatch(first('Accra Mall').label,/^Near /,'a place that holds every word is left alone');
+});
+test('a search the built-in places do not fully answer also asks Photon',async()=>{
+ const asked=[];
+ const feature=(name,lon,lat)=>({geometry:{coordinates:[lon,lat]},properties:{name,city:'Kasoa',state:'Central'}});
+ const fetchImpl=async url=>{asked.push(new URL(url).searchParams.get('q'));return new Response(JSON.stringify({features:[feature('Kasoa Old Market',-0.4301,5.5342),feature('Somewhere Else',-0.43,5.53)]}));};
+ const options={photonUrl:'http://photon:2322',fetchImpl};
+ const found=await searchPlaces(null,'Kasoa Old Market',options);
+ assert.deepEqual(asked,['Kasoa Old Market']);
+ assert.equal(found[0].name,'Kasoa Old Market');
+ assert.equal(found[0].source,'Photon');
+ assert.ok(found.findIndex(r=>r.name==='Somewhere Else')>found.findIndex(r=>r.source!=='Photon'),'a Photon place that lacks the typed words follows the built-in results');
+ await searchPlaces(null,'Accra Mall',options);
+ assert.equal(asked.length,1,'a search already answered does not call Photon');
+ assert.ok((await searchPlaces(null,'Kasoa Old Market',{photonUrl:'http://photon:2322',fetchImpl:async()=>{throw Error('down');}})).length>0,'Photon being down changes nothing');
 });

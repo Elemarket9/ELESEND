@@ -19,6 +19,16 @@ ELESEND runs its own maps. Customers search for places, riders get turn-by-turn 
 
 Every optional piece fails soft. If a data file is missing, search runs on the rest. If the database is slow, search answers from the built-in places. If GhanaPostGPS or routing is not configured, the server still starts and logs a warning.
 
+## What search does when the built-in places fall short
+
+Search is not limited to the places compiled into the server.
+
+- **Nothing matches.** Search returns no results instead of loose look-alikes, so the app can offer a map pin.
+- **A business typed with its area** ("Spintex Shoprite"). When no single place holds both, search finds the area and then the nearest places of that name within 8 km. Their label starts with "Near".
+- **The best built-in result leaves a typed word unmatched.** Search also asks Photon, when `PHOTON_URL` is set. Photon holds every street and named place on the map. A Photon place that holds every typed word goes first; the rest follow the built-in results. Street searches ask Photon as before.
+
+To turn Photon on, build its Ghana index with `scripts/photon-ghana.sh`, start the `photon` profile in `deploy/runtime/compose.yaml` and set `PHOTON_URL`.
+
 ## Adding a place customers can't find
 
 1. **It's on OpenStreetMap.** It arrives in ELESEND the next morning, after the nightly refresh.
