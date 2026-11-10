@@ -128,6 +128,14 @@ test('a road learned from GPS joins the network it was reached from',async()=>{
  assert.equal(exported.count,1);
 });
 
+test('a road that leaves the network and rejoins it nearby is still learned, and standing still is not',async()=>{
+ const {extractCandidateRoadCorridor}=await import('../services/api/infrastructure/maps/egia/gps-quality-filter.mjs');
+ const point=(north,east)=>({latitude:5.6+north/111320,longitude:-0.2+east/110800});
+ const loop=[point(0,0),point(100,0),point(200,20),point(100,40),point(0,40)];
+ assert.equal(extractCandidateRoadCorridor(loop).pointCount,5);
+ assert.equal(extractCandidateRoadCorridor([point(0,0),point(20,5),point(10,-10),point(5,15)]),null);
+});
+
 test('routing returns raw road times, so fares and dispatch ignore the customer ETA factor',async()=>{
  const fetchImpl=async()=>new Response(JSON.stringify({code:'Ok',routes:[{distance:5000,duration:1000,geometry:{type:'LineString',coordinates:[]}}],waypoints:[]}));
  const routing=osrmRouting({endpoint:'http://osrm.test',profiles:{motorcycle:'driving'},fetchImpl});

@@ -133,8 +133,10 @@ export function extractCandidateRoadCorridor(cleanSamples, minPoints = 3) {
     { latitude: end.latitude, longitude: end.longitude }
   );
 
-  // Must represent meaningful movement (at least 60 meters)
-  if (totalDist < 60) return null;
+  // Must represent meaningful movement: some point at least 60 metres from the start. Measuring the furthest
+  // reach, not the gap between the two ends, keeps a road that leaves a junction and rejoins the network nearby.
+  const reach = cleanSamples.reduce((far, s) => Math.max(far, haversine(start, s)), 0);
+  if (reach < 60) return null;
 
   // Format as GeoJSON LineString coordinates [[lon, lat], ...]
   const coordinates = cleanSamples.map(s => [
