@@ -11,7 +11,7 @@ const PUBLIC_CATEGORIES = new Set([
 // Expanded patterns to rigorously protect customer privacy across Ghana
 const PRIVATE_RESIDENCE_PATTERNS = [
   /\b(?:house|home|residence|residential|apartment|flat|personal|compound|living here|private residence)\b/i,
-  /\b(?:mr\.|mrs\.|uncle|aunt|brother|sister|proprietor|landlord|family house)\b/i,
+  /\b(?:proprietor|landlord|family house)\b/i,
   /\b(?:my house|my room|father(?:'s)? house|mother(?:'s)? house|mama(?:'s)? (?:house|room|compound)|papa(?:'s)? (?:house|room|compound)|kofi's place|ama's house|kwame's room)\b/i,
   /\b(?:villa|bungalow|private gate|gate \d+|room \d+|flat \d+|block \d+ flat)\b/i,
   /\b(?:fie|ofie|efie|kurom)\b/i // Akan/Twi domestic residence references
@@ -28,12 +28,24 @@ const INCOMPATIBLE_CATEGORY_PAIRS = [
   ['shop', 'fuel_station']
 ];
 
+// "Mrs. Adjei" is a person and stays off the map. "Mr. Mensah Store" and "Auntie Ama Chop Bar" are businesses that
+// trade under a person's name, which is how most small shops in Ghana are known, so they are allowed.
+const PERSON_TITLE = /\b(?:mr|mrs|miss|madam|maame|uncle|aunt|auntie|aunty|brother|sister|bro|sis)\b\.?/i;
+const BUSINESS_WORD = /\b(?:store|stores|shop|chop ?bar|bar|spot|pub|salon|saloon|barber|barbering|pharmacy|chemist|ventures|enterprise|enterprises|kitchen|restaurant|canteen|eatery|joint|cafe|bakery|clinic|school|academy|church|mosque|market|supermarket|mart|boutique|fashion|tailor|tailoring|electricals|hardware|provisions|cold store|kiosk|hotel|lodge|filling station|workshop|fitting shop|vulcanizer|washing bay|printing|pharmaceuticals|cosmetics|mobile money|momo)\b/i;
+// "Guest House" and "Chop House" are businesses, not homes.
+const PUBLIC_HOUSE = /\b(?:guest|chop|club|rest|court|boarding|coffee|tea) ?house\b/i;
+// A Ghanaian phone number written into a name is someone's contact, not a place name.
+const PHONE_NUMBER = /(?:\+?233|0)\d{9}(?!\d)/;
+
 /**
- * Checks whether a proposed landmark name looks like a private home
+ * Checks whether a proposed landmark name looks like a private home or a private person
  */
 export function isLikelyPrivateResidence(name) {
   if (!name || typeof name !== 'string') return false;
-  return PRIVATE_RESIDENCE_PATTERNS.some(p => p.test(name));
+  if (PHONE_NUMBER.test(name.replace(/[\s().-]/g, ''))) return true;
+  if (PERSON_TITLE.test(name) && !BUSINESS_WORD.test(name) && !PUBLIC_HOUSE.test(name)) return true;
+  const text = name.replace(new RegExp(PUBLIC_HOUSE.source, 'gi'), ' ');
+  return PRIVATE_RESIDENCE_PATTERNS.some(p => p.test(text));
 }
 
 /**
@@ -162,6 +174,26 @@ export async function deduplicateLandmark(db, candidate) {
       } catch {
         // Ignore DB search error
       }
+    }
+  }
+
+  // 3. A suggestion already waiting for review, or already decided, at the same spot. Without this, every rider who
+  // reports the same shop adds another copy of it.
+  if (db) {
+    try {
+      const waiting = await db.query(`
+        SELECT id, name, category,
+               ST_Distance(location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) AS dist_m
+        FROM candidate_landmarks
+        WHERE ST_DWithin(location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, 80)
+        LIMIT 20;
+      `, [candidate.longitude, candidate.latitude]);
+      for (const row of waiting.rows || []) {
+        const match = landmarkMatch(normName, row);
+        if (match) return { ...match, matchType: 'existing_candidate_landmark' };
+      }
+    } catch {
+      // The other checks still stand.
     }
   }
 

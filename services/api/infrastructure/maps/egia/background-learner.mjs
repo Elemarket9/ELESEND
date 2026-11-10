@@ -2,6 +2,7 @@ import { sanitizeTrajectory, extractCandidateRoadCorridor, offRoadSegments } fro
 import { validatePublicLandmarkCandidate, deduplicateLandmark } from './deduplicator.mjs';
 import { calculateBearing, angleDifference } from './unmapped-navigation.mjs';
 import { randomUUID } from 'node:crypto';
+import { haversine } from '../../../dispatch-geometry.mjs';
 import { ghanaReverseGeocode } from '../ghana-geocoder.mjs';
 import { createMapLifecycleService } from './map-lifecycle-service.mjs';
 
@@ -73,7 +74,13 @@ export async function runGeographicLearningCycle(db, { routing = null, riderVehi
     LIMIT 50;
   `);
 
+  // Reports of one thing by several riders arrive together. The first one handled speaks for the group; the others
+  // are already marked as used by then and must not add a second copy.
+  const handled = [];
   for (const rep of corroboratedReports.rows) {
+    const here = { latitude: Number(rep.latitude), longitude: Number(rep.longitude) };
+    if (handled.some(done => done.type === rep.report_type && haversine(done, here) <= 50)) continue;
+    handled.push({ type: rep.report_type, ...here });
     if (rep.report_type === 'missing_landmark' && rep.notes) {
       const candidateObj = {
         name: rep.notes.slice(0, 80),

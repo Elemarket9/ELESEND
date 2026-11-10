@@ -28,6 +28,7 @@ const NATIONAL_ANCHORS = [
   {name:'Tamale Central',category:'market',locality:'Central',city:'Tamale',region:'Northern',latitude:9.4072,longitude:-0.8392,popularity:88},
   {name:'Tamale Central Market',category:'market',locality:'Central',city:'Tamale',region:'Northern',latitude:9.4072,longitude:-0.8392,popularity:86},
   {name:'Savelugu Main Station',category:'transit',locality:'Central',city:'Savelugu',region:'Northern',latitude:9.6253,longitude:-0.8267,popularity:75},
+  {name:'Ho',category:'town',locality:'Central',city:'Ho',region:'Volta',latitude:6.6008,longitude:0.4713,popularity:90},
   {name:'Ho Central Market',category:'market',locality:'Central',city:'Ho',region:'Volta',latitude:6.6112,longitude:0.4715,popularity:76},
   {name:'Hohoe',category:'town',locality:'Central',city:'Hohoe',region:'Volta',latitude:7.1519,longitude:0.4736,popularity:85},
   {name:'Hohoe Central Market',category:'market',locality:'Central',city:'Hohoe',region:'Volta',latitude:7.1519,longitude:0.4736,popularity:74},
@@ -337,11 +338,40 @@ function matchesCategory(place, id) {
     default: return false;
   }
 }
+// "Asokwa, Kumasi" when both are known. A part is never repeated ("Kumasi, Kumasi"), and a place known only by its
+// region says so ("Central Region") instead of naming the region twice.
+function placeLabel(place) {
+  const parts = [];
+  for (const part of [place.locality, place.city, place.region]) {
+    const text = String(part || '').trim();
+    if (text && !parts.some(kept => kept.toLowerCase() === text.toLowerCase())) parts.push(text);
+  }
+  if (!parts.length) return 'Ghana';
+  if (parts.length === 1) return parts[0].toLowerCase() === String(place.region || '').trim().toLowerCase() ? `${parts[0]} Region` : parts[0];
+  return `${parts[0]}, ${parts[1]}`;
+}
+const SETTLEMENT_CATEGORIES = new Set(['settlement', 'town', 'city', 'village']);
+// Two rows that are one place on the ground: the same name close by, the same town a few kilometres apart, the same
+// market mapped at two of its gates, or one name misspelt next to the other.
+function samePlace(a, b) {
+  const metres = haversine(a, b);
+  if (a._nameLower === b._nameLower) {
+    if (metres <= DUPLICATE_METERS) return true;
+    if (SETTLEMENT_CATEGORIES.has(a.category) && SETTLEMENT_CATEGORIES.has(b.category)) return metres <= 5000;
+    return /\bmarket\b/.test(a._nameLower) && metres <= 1000;
+  }
+  return metres <= 100 && a._nameLower.length >= 10 && Math.abs(a._nameLower.length - b._nameLower.length) <= 2 && levenshtein(a._nameLower, b._nameLower) <= 2;
+}
+// Below this a result shares too little with what was typed to be shown. Measured before any nearness bonus.
+const MIN_MATCH_SCORE = 100;
+// How far a business may be from the area named with it ("Shoprite Spintex").
+const NEAR_AREA_METERS = 8000;
+
 function placeResult(place, score, distanceMeters) {
   return {
     id: place.id,
     name: place.name,
-    label: `${place.locality || place.region}, ${place.city || place.region}`,
+    label: placeLabel(place),
     locality: place.locality || place.region,
     city: place.city || place.locality || place.region,
     region: place.region,
@@ -360,7 +390,7 @@ function placeResult(place, score, distanceMeters) {
 }
 
 // Fast In-Memory Geocoding Search (< 1ms across 31,000+ records)
-export function ghanaSearch(query, {limit = 10, near = null} = {}) {
+export function ghanaSearch(query, {limit = 10, near = null, combine = true} = {}) {
   check(typeof query === 'string', 400, 'Search query must be text');
   const clean = query.trim();
   if (!clean) return [];
@@ -377,7 +407,7 @@ export function ghanaSearch(query, {limit = 10, near = null} = {}) {
   const nearKey = nearOk ? `${nearOk.latitude.toFixed(2)},${nearOk.longitude.toFixed(2)}` : '';
 
   // Check LRU cache
-  const cacheKey = `${cleanLower}:${limit}:${nearKey}:${wantsProximity ? 1 : 0}`;
+  const cacheKey = `${cleanLower}:${limit}:${nearKey}:${wantsProximity ? 1 : 0}:${combine ? 1 : 0}`;
   if (QUERY_CACHE.has(cacheKey)) {
     return QUERY_CACHE.get(cacheKey);
   }
@@ -530,11 +560,12 @@ export function ghanaSearch(query, {limit = 10, near = null} = {}) {
     for (const [idx, termScore] of termMatches) {
       let entry = candidateScores.get(idx);
       if (!entry) {
-        entry = {matchedTerms: new Set(), score: 0};
+        entry = {matchedTerms: new Set(), score: 0, best: 0};
         candidateScores.set(idx, entry);
       }
       entry.matchedTerms.add(ti);
       entry.score += termScore;
+      entry.best = Math.max(entry.best, termScore);
     }
   }
 
@@ -544,7 +575,8 @@ export function ghanaSearch(query, {limit = 10, near = null} = {}) {
     if (!joined) continue;
     for (const idx of joined) {
       let entry = candidateScores.get(idx);
-      if (!entry) { entry = {matchedTerms: new Set(), score: 0}; candidateScores.set(idx, entry); }
+      if (!entry) { entry = {matchedTerms: new Set(), score: 0, best: 0}; candidateScores.set(idx, entry); }
+      entry.best = Math.max(entry.best, 48);
       if (!entry.matchedTerms.has(ti)) { entry.matchedTerms.add(ti); entry.score += 48; }
       if (!entry.matchedTerms.has(ti + 1)) { entry.matchedTerms.add(ti + 1); entry.score += 48; }
     }
@@ -580,6 +612,8 @@ export function ghanaSearch(query, {limit = 10, near = null} = {}) {
     }
 
     if (matchCount < minMatches && !fullNameInQuery) continue;
+    // Sounding alike is the loosest match there is. Alone it is not a reason to show a place.
+    if (data.best <= 20 && !fullNameInQuery) continue;
 
     let score = data.score;
 
@@ -641,11 +675,13 @@ export function ghanaSearch(query, {limit = 10, near = null} = {}) {
 
     // D. GEOGRAPHIC CONTEXT ALIGNMENT (General algorithms, universal for all communities)
     // 1. Locality alignment
-    if (place._localityLower && place._localityLower.length >= 3 && cleanLower.includes(place._localityLower)) {
+    // A place filed under its own name ("Madina" in "Madina") gains nothing here: typing its name is not extra context,
+    // and it would lift a hamlet above the well-known town that shares the name.
+    if (place._localityLower && place._localityLower.length >= 3 && place._localityLower !== place._nameLower && cleanLower.includes(place._localityLower)) {
       score += 50;
     }
     // 2. City alignment
-    if (place._cityLower && place._cityLower.length >= 3 && cleanLower.includes(place._cityLower)) {
+    if (place._cityLower && place._cityLower.length >= 3 && place._cityLower !== place._nameLower && cleanLower.includes(place._cityLower)) {
       score += 40;
     }
     // 3. Region alignment
@@ -684,8 +720,14 @@ export function ghanaSearch(query, {limit = 10, near = null} = {}) {
     }
 
     // A well-known town name means the town, not a small place elsewhere that shares it.
-    if (place._cityLower === expandedQuery && (place.popularity || 0) >= 70 && place._nameLower.startsWith(expandedQuery)) {
+    // A station or stop in that town is not the town.
+    if (place._cityLower === expandedQuery && (place.popularity || 0) >= 70 && place._nameLower.startsWith(expandedQuery) && !STOP_CATEGORIES.has(place.category)) {
       score += 300;
+    }
+
+    // The town itself comes before its market or its first neighbourhood when only the town's name was typed.
+    if (place._nameLower === expandedQuery && SETTLEMENT_CATEGORIES.has(place.category) && (place.popularity || 0) >= 70 && place._cityLower !== expandedQuery) {
+      score += 120;
     }
 
     // F. POPULARITY & VERIFIED STATUS TIE-BREAKER (Max 35 pts)
@@ -697,7 +739,21 @@ export function ghanaSearch(query, {limit = 10, near = null} = {}) {
       score += 10;
     }
 
-    scored.push({place, score, exact: terms.length >= 2 && place._nameLower === cleanLower});
+    scored.push({place, score, matched: matchCount, exact: terms.length >= 2 && place._nameLower === cleanLower});
+  }
+
+  // One word that is both an obscure spot's whole name and the start of a famous place's name ("Makola" and
+  // "Makola Market") means the famous place. A town of that name is left alone: the town is what was meant.
+  if (terms.length === 1) {
+    const named = scored.filter(row => row.place._nameLower === cleanLower);
+    const obscure = named.length > 0 && named.every(row => !SETTLEMENT_CATEGORIES.has(row.place.category) && row.place.category !== 'neighborhood' && (row.place.popularity || 50) < 70);
+    if (obscure) {
+      for (const row of scored) {
+        if ((row.place.popularity || 0) < 85 || STOP_CATEGORIES.has(row.place.category) || !row.place._nameLower.startsWith(cleanLower + ' ')) continue;
+        const rest = row.place._nameLower.slice(cleanLower.length).replace(/\([^)]*\)/g, ' ').trim().split(/\s+/).filter(Boolean);
+        if (rest.length && rest.every(word => GENERIC_CATEGORY_WORDS.has(word))) row.score += 280;
+      }
+    }
   }
 
   const queryCompact = compactText(cleanLower);
@@ -733,6 +789,10 @@ export function ghanaSearch(query, {limit = 10, near = null} = {}) {
     }
   }
 
+  const strong = scored.filter(row => row.score >= MIN_MATCH_SCORE);
+  scored.length = 0;
+  scored.push(...strong);
+
   if (nearOk) {
     for (const row of scored) row.distanceMeters = Math.round(haversine(nearOk, row.place));
     const closestByName = new Map();
@@ -755,11 +815,20 @@ export function ghanaSearch(query, {limit = 10, near = null} = {}) {
   const wanted = Math.max(1, Math.min(limit, 30)), distinct = [];
   for (const row of scored) {
     if (distinct.length >= wanted) break;
-    const repeat = distinct.some(kept => kept.place._nameLower === row.place._nameLower && haversine(kept.place, row.place) <= DUPLICATE_METERS);
-    if (!repeat) distinct.push(row);
+    if (!distinct.some(kept => samePlace(kept.place, row.place))) distinct.push(row);
   }
 
-  const results = distinct.map(({place, score, distanceMeters}) => placeResult(place, score, distanceMeters));
+  let results = distinct.map(({place, score, distanceMeters}) => placeResult(place, score, distanceMeters));
+
+  // A business and the area it is in, typed together ("Spintex Shoprite"), when no single place carries both: find the
+  // area, then the nearest places of that name around it. Tried only when the best result leaves a typed word unmatched.
+  if (combine && terms.length >= 2 && terms.length <= 5 && !(distinct[0] && distinct[0].matched >= terms.length)) {
+    const around = nearAreaMatches(rawWords, wanted);
+    if (around.length) {
+      const ids = new Set(around.map(row => row.id));
+      results = [...around, ...results.filter(row => !ids.has(row.id))].slice(0, wanted);
+    }
+  }
 
   // Store in bounded LRU cache
   if (QUERY_CACHE.size >= MAX_CACHE_SIZE) {
@@ -769,6 +838,29 @@ export function ghanaSearch(query, {limit = 10, near = null} = {}) {
   QUERY_CACHE.set(cacheKey, results);
 
   return results;
+}
+
+function nearAreaMatches(words, wanted) {
+  const covers = (text, typed) => compactText(text).includes(compactText(typed));
+  for (let cut = 1; cut < words.length; cut++) {
+    for (const [areaWords, nameWords] of [[words.slice(0, cut), words.slice(cut)], [words.slice(cut), words.slice(0, cut)]]) {
+      // An area is one or two words ("Spintex", "East Legon"), which also bounds the work done here.
+      if (areaWords.length > 2) continue;
+      const areaText = areaWords.join(' '), nameText = nameWords.join(' ');
+      if (compactText(nameText).length < 3 || nameWords.every(word => GENERIC_CATEGORY_WORDS.has(word))) continue;
+      const area = ghanaSearch(areaText, {limit: 1, combine: false})[0];
+      if (!area || !Number.isFinite(area.latitude)) continue;
+      const isArea = SETTLEMENT_CATEGORIES.has(area.category) || area.category === 'neighborhood';
+      if (!isArea || !(compactText(area.name).startsWith(compactText(areaText)) || compactText(area.locality) === compactText(areaText))) continue;
+      const found = ghanaSearch(nameText, {limit: 30, near: area, combine: false})
+        .filter(row => covers(row.name, nameText) && row.distanceMeters != null && row.distanceMeters <= NEAR_AREA_METERS)
+        .sort((a, b) => a.distanceMeters - b.distanceMeters)
+        .slice(0, wanted)
+        .map(row => ({...row, label: `Near ${areaText.replace(/\b[a-z]/g, letter => letter.toUpperCase())} · ${row.label}`, distanceMeters: null}));
+      if (found.length) return found;
+    }
+  }
+  return [];
 }
 
 // Fast In-Memory Reverse Geocoding (< 1ms using spatial grid)
@@ -972,9 +1064,17 @@ export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800, near
     }
   }
   const local = ghanaSearch(query, {limit, near});
+  // Photon holds every street and named place on the map. It is asked for street searches, and for any search the
+  // built-in places do not fully answer, so search is not limited to the places compiled into this server.
+  const street = looksLikeStreetQuery(query);
+  const answered = local.length > 0 && answersQuery(local[0], query);
   let photon = [];
-  if (photonUrl && looksLikeStreetQuery(query)) photon = await photonSearch(query, {baseUrl: photonUrl, fetchImpl});
-  if (!db) return dedupePlaces([...photon, ...local], limit);
+  if (photonUrl && (street || !answered)) photon = await photonSearch(query, {baseUrl: photonUrl, fetchImpl});
+  // Street results lead as before. Otherwise only a Photon place that holds every typed word goes ahead of a partial
+  // built-in match; the rest follow.
+  const photonFirst = street ? photon : photon.filter(row => answersQuery(row, query));
+  const photonLast = photon.filter(row => !photonFirst.includes(row));
+  if (!db) return dedupePlaces([...photonFirst, ...local, ...photonLast], limit);
   let stored = [];
   // The database stops the query itself after timeoutMs, so a slow search frees its connection instead of holding one
   // while bookings wait. The race is a second guard for a database that does not answer at all.
@@ -995,7 +1095,15 @@ export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800, near
   // A stored place whose name holds everything typed is what was asked for; anything else follows the built-in results.
   const exact = fresh.filter(s => wanted.length >= 3 && compact(s.name).includes(wanted));
   const rest = fresh.filter(s => !exact.includes(s));
-  return dedupePlaces([...photon, ...exact, ...local, ...rest], limit);
+  return dedupePlaces([...photonFirst, ...exact, ...local, ...rest, ...photonLast], limit);
+}
+
+/** True when a result's own words hold every word that was typed. A short word ("Ho", "Wa") must be a whole word. */
+function answersQuery(row, query) {
+  const own = [row?.name, row?.label, row?.locality, row?.city, row?.region, ...(row?.aliases || [])].join(' ').toLowerCase();
+  const text = compactText(own), whole = new Set(own.split(/[^a-z0-9]+/));
+  const words = String(query || '').toLowerCase().split(/[^a-z0-9]+/).filter(word => word && !STOP_WORDS.has(word));
+  return words.length > 0 && words.every(word => word.length >= 3 ? text.includes(word) : whole.has(word));
 }
 
 function dedupePlaces(rows, limit) {

@@ -1,6 +1,7 @@
 import { verificationFailures, verificationRules } from './road-verification.mjs';
 import { randomUUID } from 'node:crypto';
 import { check } from '../../../security.mjs';
+import { isLikelyPrivateResidence } from './deduplicator.mjs';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const requireId = id => check(typeof id === 'string' && UUID_PATTERN.test(id), 400, 'Valid candidate id required');
@@ -160,7 +161,7 @@ export function createMapLifecycleService(db) {
       check(cand, 404, 'Candidate landmark not found');
       check(cand.verification_status !== 'PUBLISHED', 409, 'Landmark is already published');
       check(!['REJECTED', 'RETIRED'].includes(cand.verification_status), 409, 'Rejected or retired landmarks cannot be published');
-      check(!cand.is_private, 422, 'Private residence cannot be published to public map');
+      check(!cand.is_private && !isLikelyPrivateResidence(cand.name), 422, 'Private residence cannot be published to public map');
 
       const versionTag = `lmk-pub-${cand.id.slice(0, 8)}-${Date.now()}`;
 
