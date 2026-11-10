@@ -1,0 +1,21 @@
+# Overlay for main ELESEND VPS. The default compose remains available for one-server deployments.
+# Use BOTH files in this order; map services are excluded from the default deployment.
+# Requires ROUTING_OSRM_CAR_URL and ROUTING_OSRM_MOTORCYCLE_URL pointing to
+# the map VPS's VPN/private address, never its public IP.
+services:
+  osrm:
+    profiles: [single-vps-map]
+  osrm-motorcycle:
+    profiles: [single-vps-map]
+  maps:
+    profiles: [single-vps-map]
+  photon:
+    profiles: [single-vps-map]
+  caddy:
+    volumes:
+      - ./Caddyfile.app-vps:/etc/caddy/Caddyfile:ro
+  api:
+    environment:
+      ROUTING_OSRM_CAR_URL: ${ROUTING_OSRM_CAR_URL:?Set private map VPS OSRM car URL}
+      ROUTING_OSRM_MOTORCYCLE_URL: ${ROUTING_OSRM_MOTORCYCLE_URL:?Set private map VPS OSRM motorcycle URL}
+      PHOTON_URL: ${PHOTON_URL:-}
