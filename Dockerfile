@@ -1,4 +1,4 @@
-FROM node:24.22.1-bookworm-slim
+FROM node:26.13.1-bookworm-slim
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
