@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID,randomInt} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import {ETA_ASSUMPTIONS as A,calculateStageEta,classifyGps,routeDecision,positionOnRoute,etaRange,stabilizeArrival,summarizeTripEvidence,travelAdjustment,timeBucket,cityBucket} from '../services/api/eta/stage-eta.mjs';
-import {etaService} from '../services/api/eta/eta-service.mjs';
+import {ETA_ASSUMPTIONS as A,calculateStageEta,classifyGps,routeDecision,positionOnRoute,etaRange,stabilizeArrival,summarizeTripEvidence,travelAdjustment,timeBucket,cityBucket} from '../services/api/modules/orders/eta/stage-eta.mjs';
+import {etaService} from '../services/api/modules/orders/eta/eta-service.mjs';
 
 const NOW=Date.parse('2026-11-03T12:00:00Z');
 const GOOD={quality:'good',usable:true};
@@ -81,7 +81,7 @@ test('without a road route there is no estimate, never a straight-line one',()=>
   const eta=calculateStageEta({...input,gps:GOOD,now:NOW});
   assert.equal(eta.status,'unavailable');assert.equal(eta.reason,'no_route');assert.match(eta.customerMessage,/cannot estimate/);
  }
- const tracker=readFileSync(new URL('../services/api/infrastructure/maps/web-tracker.mjs',import.meta.url),'utf8');
+ const tracker=readFileSync(new URL('../services/api/modules/maps/web-tracker.mjs',import.meta.url),'utf8');
  assert.equal(tracker.includes('straight_line_approximation'),false);
  assert.equal(tracker.includes('haversine'),false);
 });
@@ -190,11 +190,11 @@ test('production starts map services by default, and raw road times stay in rout
  for(const service of ['osrm:','osrm-motorcycle:','maps:'])assert.ok(compose.includes('  '+service),service);
  assert.ok(!compose.includes('profiles: [maps]'));
  assert.match(readFileSync(new URL('../deploy/runtime/Caddyfile',import.meta.url),'utf8'),/reverse_proxy maps:3145/);
- assert.equal(readFileSync(new URL('../services/api/dispatch-routing.mjs',import.meta.url),'utf8').includes('durationFactors'),false);
+ assert.equal(readFileSync(new URL('../services/api/modules/maps/osrm-routing.mjs',import.meta.url),'utf8').includes('durationFactors'),false);
 });
 
 test('timeline records and measured accuracy work against PostgreSQL',{skip:!process.env.TEST_DATABASE_URL},async()=>{
- const {database}=await import('../services/api/db.mjs');
+ const {database}=await import('../services/api/shared/db.mjs');
  const {migrate}=await import('../scripts/migrate.mjs');
  const configured=new URL(process.env.TEST_DATABASE_URL);
  assert.match(configured.pathname,/^\/elesend_test/);
@@ -239,7 +239,7 @@ test('timeline records and measured accuracy work against PostgreSQL',{skip:!pro
 });
 
 test('trip time factors apply only where there is a real reading',async()=>{
- const {baselineFactorFor,etaBaselineFactors,quotedEtaMinutes}=await import('../services/api/eta/baseline-factors.mjs');
+ const {baselineFactorFor,etaBaselineFactors,quotedEtaMinutes}=await import('../services/api/modules/orders/eta/baseline-factors.mjs');
  const factors=etaBaselineFactors({});
  assert.equal(baselineFactorFor(factors,'motorcycle','evening_peak','accra'),1.4);
  assert.equal(baselineFactorFor(factors,'car','evening_peak','accra'),2.2);
@@ -256,7 +256,7 @@ test('trip time factors apply only where there is a real reading',async()=>{
 });
 
 test('the quote covers the whole delivery when a nearby rider is known',async()=>{
- const {quotedEtaMinutes}=await import('../services/api/eta/baseline-factors.mjs');
+ const {quotedEtaMinutes}=await import('../services/api/modules/orders/eta/baseline-factors.mjs');
  const whole=quotedEtaMinutes(2361,1.4,{riderSeconds:600});
  assert.deepEqual(whole,{low:56,high:93,evidence:'assumed_baseline',includesPickup:true});
  assert.equal(quotedEtaMinutes(2361,1).includesPickup,false);

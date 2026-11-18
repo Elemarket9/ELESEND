@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {readFileSync,existsSync} from 'node:fs';
 import {checkLandmarks,parseTsv,LANDMARK_COLUMNS} from '../scripts/check-landmarks.mjs';
-import {database} from '../services/api/db.mjs';
+import {database} from '../services/api/shared/db.mjs';
 const files=['data/spatial_landmarks_v9_import.tsv',...(existsSync('data/spatial_landmarks_osm_regions.tsv')?['data/spatial_landmarks_osm_regions.tsv']:[])];
 const load=file=>parseTsv(readFileSync(file,'utf8'));
 

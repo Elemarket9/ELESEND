@@ -13,7 +13,7 @@ const features = raw.trim().startsWith('{')
   ? (JSON.parse(raw).features || [JSON.parse(raw)])
   : raw.split(/\n/).filter(Boolean).map(line => JSON.parse(line.replace(/^\x1e/, '')));
 let curated = [];
-try { curated = JSON.parse(readFileSync(new URL('../services/api/infrastructure/maps/ghana-gazetteer-data.json', import.meta.url), 'utf8')); } catch { curated = []; }
+try { curated = JSON.parse(readFileSync(new URL('../services/api/modules/maps/ghana-gazetteer-data.json', import.meta.url), 'utf8')); } catch { curated = []; }
 const grid = placeGrid(curated);
 const kept = [];
 const droppedByReason = {};

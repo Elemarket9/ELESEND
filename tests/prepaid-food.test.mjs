@@ -1,21 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID,randomInt} from 'node:crypto';
-import {database} from '../services/api/db.mjs';
+import {database} from '../services/api/shared/db.mjs';
 import {migrate} from '../scripts/migrate.mjs';
-import {restaurantOrderService} from '../services/api/restaurant-orders.mjs';
+import {restaurantOrderService} from '../services/api/modules/food/restaurant-orders.mjs';
 import {checkoutService} from '../services/api/modules/payments/checkout.mjs';
 import {digitalDeliveryCompleted} from '../services/api/modules/payments/checkout-accounting.mjs';
 import {foodDispatchAllowed} from '../services/api/modules/payments/food-payment.mjs';
-import {notificationWorker} from '../services/api/notifications.mjs';
+import {notificationWorker} from '../services/api/modules/orders/notifications.mjs';
 import {moneyOperations} from '../services/api/modules/payments/money-operations.mjs';
-import {restaurantService} from '../services/api/restaurant.mjs';
+import {restaurantService} from '../services/api/modules/food/restaurant.mjs';
 import {financeService,balance,journal,postCashCommission} from '../services/api/modules/payments/finance.mjs';
 import {backgroundJobs} from '../services/api/background-jobs.mjs';
-import {dispatchEngine} from '../services/api/dispatch.mjs';
-import {platform as platformService} from '../services/api/platform.mjs';
+import {dispatchEngine} from '../services/api/modules/orders/dispatch.mjs';
+import {platform as platformService} from '../services/api/modules/orders/platform.mjs';
 import {paymentWebhook} from '../services/api/modules/payments/payment-provider.mjs';
-import {commissionEngine} from '../services/api/commission-engine.mjs';
+import {commissionEngine} from '../services/api/modules/food/commission-engine.mjs';
 import {
  getGhanaWeekKey,
  evaluateRiderWeeklyEligibility,

@@ -1,5 +1,5 @@
 import {payoutSettings} from './payout-settings.mjs';
-import {MARKET_CURRENCY} from '../../market.mjs';
+import {MARKET_CURRENCY} from '../../shared/market.mjs';
 /**
  * Rider wallet: a read/write facade over ELESEND's EXISTING immutable ledgers.
  *
@@ -19,7 +19,7 @@ import {MARKET_CURRENCY} from '../../market.mjs';
  */
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {check} from '../../security.mjs';
+import {check} from '../../shared/security.mjs';
 import {journal,balance,postCashCommission,outstandingObligations,allocateFifo} from './finance.mjs';
 import {checkoutJournal,digitalDeliveryCompleted} from './checkout-accounting.mjs';
 import {assessCompanyCashCommission,recoverCompanyDebt} from './company-commission.mjs';

@@ -401,9 +401,9 @@ test('Offline cache state machine: segment chunking, metadata commitment, and ex
 });
 
 test('Real-world readiness regressions: Hubtel return SMS, IPv6 proxy CIDR, informal landmark city preservation, and food menu contract', async () => {
-  const { hubtelSmsGateway } = await import('../services/api/providers/hubtel-sms.mjs');
-  const { clientIp } = await import('../services/api/client-ip.mjs');
-  const { parseInformalDescription } = await import('../services/api/infrastructure/maps/egia/informal-geocoder.mjs');
+  const { hubtelSmsGateway } = await import('../services/api/shared/providers/hubtel-sms.mjs');
+  const { clientIp } = await import('../services/api/shared/client-ip.mjs');
+  const { parseInformalDescription } = await import('../services/api/modules/maps/egia/informal-geocoder.mjs');
 
   // 1. Hubtel SMS gateway supports parcel return OTPs
   let sentBody = '';

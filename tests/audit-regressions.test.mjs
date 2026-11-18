@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import net from 'node:net';
 import {httpServer} from '../services/api/http.mjs';
-import {equal} from '../services/api/security.mjs';
+import {equal} from '../services/api/shared/security.mjs';
 import {paymentWebhook} from '../services/api/modules/payments/payment-provider.mjs';
 import {adminWalletReconciliation} from '../services/api/modules/payments/rider-wallet.mjs';
-import {promotionEngine} from '../services/api/promotion-engine.mjs';
-import {platform} from '../services/api/platform.mjs';
-import {mac} from '../services/api/security.mjs';
-import {rateLimitKey} from '../services/api/client-ip.mjs';
-import {ipLimits,memoryRateLimiter,parseIpLimitMultiplier} from '../services/api/rate-limits.mjs';
+import {promotionEngine} from '../services/api/modules/food/promotion-engine.mjs';
+import {platform} from '../services/api/modules/orders/platform.mjs';
+import {mac} from '../services/api/shared/security.mjs';
+import {rateLimitKey} from '../services/api/shared/client-ip.mjs';
+import {ipLimits,memoryRateLimiter,parseIpLimitMultiplier} from '../services/api/shared/rate-limits.mjs';
 
 const SESSION='a'.repeat(64);
 const permissive=(overrides=()=>null)=>{
@@ -250,7 +250,7 @@ test('live chat connections are limited per address like other requests',async()
 
 test('tracking links cannot be forged with a key from the code, and do not reuse the SMS code key',async()=>{
  const {createHmac}=await import('node:crypto');
- const {createPublicTrackingToken,verifyPublicTrackingToken}=await import('../services/api/infrastructure/maps/web-tracker.mjs');
+ const {createPublicTrackingToken,verifyPublicTrackingToken}=await import('../services/api/modules/maps/web-tracker.mjs');
  const id='11111111-2222-4333-8444-555555555555',exp=Math.floor(Date.now()/1000)+3600;
  const forge=key=>`${id}.${exp}.${createHmac('sha256',Buffer.from(key,'utf8')).update(`${id}.${exp}`).digest('hex').slice(0,32)}`;
  const saved={NODE_ENV:process.env.NODE_ENV,OTP_KEY:process.env.OTP_KEY,TRACKING_TOKEN_SECRET:process.env.TRACKING_TOKEN_SECRET};

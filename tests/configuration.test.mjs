@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {validateConfig} from '../services/api/config.mjs';
-import {database} from '../services/api/db.mjs';
-import {osrmRouting} from '../services/api/dispatch-routing.mjs';
-import {httpsSmsGateway} from '../services/api/sms-gateway.mjs';
+import {database} from '../services/api/shared/db.mjs';
+import {osrmRouting} from '../services/api/modules/maps/osrm-routing.mjs';
+import {httpsSmsGateway} from '../services/api/shared/sms-gateway.mjs';
 const base={NODE_ENV:'production',DATABASE_URL:'postgres://test:test@localhost/test',OTP_KEY:'a'.repeat(64),ADMIN_MFA_ENCRYPTION_KEY:'b'.repeat(64),RIDER_ID_ENCRYPTION_KEY:'d'.repeat(64),SAFETY_ALERT_PHONE:'+233241234567',DIDIT_API_KEY:'didit-key',DIDIT_WORKFLOW_ID:'11111111-1111-4111-8111-111111111111',DIDIT_WEBHOOK_SECRET:'didit-secret',API_PUBLIC_ORIGIN:'https://api.example.test',WEB_PUBLIC_ORIGIN:'https://app.example.test',ADMIN_HOST:'admin.example.test',ROUTING_OSRM_CAR_URL:'http://car:5000',ROUTING_OSRM_MOTORCYCLE_URL:'http://bike:5000'};
 test('vehicle settings produce working adapter contract',()=>{const r=validateConfig(base);assert.equal(r.ok,true);assert.doesNotThrow(()=>osrmRouting({vehicleRoutes:r.config.routing.vehicleRoutes,profiles:r.config.routing.profiles}));});
 test('production rejects absent origins, malformed origins and malformed port',()=>{
@@ -115,7 +115,7 @@ test('production still requires ELESEND own secrets',()=>{
 });
 
 test('the API tells apps where the map lives, with no address in the code',async()=>{
- const {publicMapConfig}=await import('../services/api/map-config.mjs');
+ const {publicMapConfig}=await import('../services/api/modules/maps/map-config.mjs');
  assert.deepEqual(publicMapConfig({MAPS_PUBLIC_ORIGIN:'https://maps.example.test/'}),{tileUrl:'https://maps.example.test/tiles/{z}/{x}/{y}.pbf',glyphsUrl:'https://maps.example.test/fonts/{fontstack}/{range}.pbf'});
  assert.deepEqual(publicMapConfig({}),{tileUrl:null,glyphsUrl:null});
 });

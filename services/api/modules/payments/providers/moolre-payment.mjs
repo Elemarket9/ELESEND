@@ -1,5 +1,5 @@
 import {timingSafeEqual} from 'node:crypto';
-import {check,phone as canonicalGhanaPhone} from '../../../security.mjs';
+import {check,phone as canonicalGhanaPhone} from '../../../shared/security.mjs';
 import {validatedCheckoutUrl} from '../checkout-policy.mjs';
 
 /**

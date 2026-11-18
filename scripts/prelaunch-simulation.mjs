@@ -1,9 +1,9 @@
 // SIMULATION ONLY: runs the real API on loopback against a throwaway test database, with stand-ins for SMS,
 // payments and routing (simulationBoundaries). Used by local:load, local:simulate and the device session script.
 import {randomInt,randomBytes} from 'node:crypto';
-import {platform} from '../services/api/platform.mjs';
+import {platform} from '../services/api/modules/orders/platform.mjs';
 import {httpServer} from '../services/api/http.mjs';
-import {dispatchEngine} from '../services/api/dispatch.mjs';
+import {dispatchEngine} from '../services/api/modules/orders/dispatch.mjs';
 import {checkoutService,financeService,moneyOperations,paymentWebhook} from '../services/api/modules/payments/index.mjs';
 import {simulationBoundaries,simulationPhone,withSimulationDatabase} from './local-simulation-support.mjs';
 

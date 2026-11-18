@@ -2,8 +2,8 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomInt} from 'node:crypto';
-import {calculateQuote,waitingFeeMinor} from '../services/api/pricing.mjs';
-import {applicableTolls,routePasses} from '../services/api/toll-rules.mjs';
+import {calculateQuote,waitingFeeMinor} from '../services/api/modules/orders/pricing.mjs';
+import {applicableTolls,routePasses} from '../services/api/modules/orders/toll-rules.mjs';
 
 const approved={base_minor:1200,per_km_minor:320,per_minute_minor:25,minimum_minor:2000,commission_bps:1300};
 
@@ -86,7 +86,7 @@ test('new riders get the approved GH₵150 cash debt limit, existing limits stay
 });
 
 test('a fare refuses pins far from the road and routes shorter than the pins allow; dispatch keeps its wider limit',async()=>{
- const {osrmRouting}=await import('../services/api/dispatch-routing.mjs');
+ const {osrmRouting}=await import('../services/api/modules/maps/osrm-routing.mjs');
  const from={latitude:5.60,longitude:-0.20},to={latitude:5.60,longitude:-0.145};
  const stub=(distance,snap)=>osrmRouting({endpoint:'http://o:5000',profiles:{car:'car'},fetchImpl:async()=>({ok:true,status:200,json:async()=>({code:'Ok',routes:[{distance,duration:300,geometry:{type:'LineString',coordinates:[]}}],waypoints:[{distance:snap},{distance:snap}]})})});
  await assert.rejects(stub(7000,600).route(from,to,{vehicle:'car',billing:true}),/too far from a mapped road/);

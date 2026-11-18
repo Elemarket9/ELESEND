@@ -1,4 +1,4 @@
-import {check} from '../../security.mjs';
+import {check} from '../../shared/security.mjs';
 
 export function restaurantOpenNow(restaurant,now=new Date()){
  if(!restaurant.is_open||restaurant.is_paused)return false;

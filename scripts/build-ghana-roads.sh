@@ -4,7 +4,7 @@
 set -eu
 data=${1:-"$HOME/ghana-map-data"}
 root=$(cd "$(dirname "$0")/.." && pwd -P)
-out=${2:-"$root/services/api/infrastructure/maps/ghana-osm-roads.json"}
+out=${2:-"$root/services/api/modules/maps/ghana-osm-roads.json"}
 test -f "$data/ghana-latest.osm.pbf" || { echo "Run scripts/download-ghana.sh $data first" >&2; exit 1; }
 command -v osmium >/dev/null || { echo 'Install osmium-tool (apt install osmium-tool)' >&2; exit 1; }
 work=$(mktemp -d)

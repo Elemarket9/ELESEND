@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startWorker, withAdvisoryLock, LOCK_ID_PAYMENT_RECON, LOCK_ID_FOOD_MAINTENANCE } from '../services/api/worker.mjs';
-import { REQUIRED_MIGRATIONS } from '../services/api/startup-guards.mjs';
+import { REQUIRED_MIGRATIONS } from '../services/api/shared/startup-guards.mjs';
 
 test('Worker advisory lock acquires and releases cleanly', async () => {
   const calls = [];

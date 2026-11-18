@@ -1,6 +1,6 @@
-import {etaBaselineFactors} from './eta/baseline-factors.mjs';
-import {parseFirebaseAccount} from './firebase-account.mjs';
-import {parseIpLimitMultiplier} from './rate-limits.mjs';
+import {etaBaselineFactors} from './modules/orders/index.mjs';
+import {parseFirebaseAccount} from './shared/firebase-account.mjs';
+import {parseIpLimitMultiplier} from './shared/rate-limits.mjs';
 /**
  * ELESEND Unified Environment & Runtime Configuration Module
  * 

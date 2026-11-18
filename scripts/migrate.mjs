@@ -1,6 +1,6 @@
 import {readFile,readdir} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
-import {database} from '../services/api/db.mjs';
+import {database} from '../services/api/shared/db.mjs';
 export async function migrate(db){await db.tx(async c=>{
  await c.query('SELECT pg_advisory_xact_lock(617290112)');
  // An index build on a big table can take minutes, so the app's 15-second limit does not apply here. Waiting for a

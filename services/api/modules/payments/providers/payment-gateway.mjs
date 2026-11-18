@@ -1,4 +1,4 @@
-import {check} from '../../../security.mjs';
+import {check} from '../../../shared/security.mjs';
 import {isIP} from 'node:net';
 
 // Deployment-owned PSP bridge. This is an ELESEND integration contract, not a

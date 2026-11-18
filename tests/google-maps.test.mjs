@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {googleMapsConfig, googleRouting, googlePlacesSearch, googleTileProxy, dailyBudget, tileTouchesGhana, googleSteps} from '../services/api/infrastructure/maps/google-maps.mjs';
-import {privateRoutingPriority} from '../services/api/infrastructure/maps/PrivateRoutingPolicy.mjs';
-import {createRouting} from '../services/api/infrastructure/maps/routing-provider.mjs';
-import {searchPlaces} from '../services/api/infrastructure/maps/ghana-geocoder.mjs';
+import {googleMapsConfig, googleRouting, googlePlacesSearch, googleTileProxy, dailyBudget, tileTouchesGhana, googleSteps} from '../services/api/modules/maps/google-maps.mjs';
+import {privateRoutingPriority} from '../services/api/modules/maps/PrivateRoutingPolicy.mjs';
+import {createRouting} from '../services/api/modules/maps/routing-provider.mjs';
+import {searchPlaces} from '../services/api/modules/maps/ghana-geocoder.mjs';
 
 const KEY = 'test-google-key-0123456789';
 const accra = {latitude: 5.6037, longitude: -0.187};

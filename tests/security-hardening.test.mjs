@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {createHash,randomUUID,randomInt} from 'node:crypto';
-import {assertAcceptablePassword,passwordHash,passwordMatches,passwordNeedsUpgrade} from '../services/api/security.mjs';
+import {assertAcceptablePassword,passwordHash,passwordMatches,passwordNeedsUpgrade} from '../services/api/shared/security.mjs';
 import {findSecrets} from '../scripts/secret-scan.mjs';
 import {companyPortalCsp,renderCompanyPortalHtml} from '../services/api/company-web/company-portal.mjs';
 
@@ -45,7 +45,7 @@ test('admin routes stay off the public hosts, and only the admin host can be res
 const url=process.env.TEST_DATABASE_URL;
 test('limited database login cannot change structure or audit history',{skip:!url},async()=>{
  assert.match(new URL(url).pathname,/^\/elesend_test/,'Requires dedicated test database');
- const {database}=await import('../services/api/db.mjs');
+ const {database}=await import('../services/api/shared/db.mjs');
  const {migrate,applyAppRole}=await import('../scripts/migrate.mjs');
  const db=database(url);
  try{
@@ -63,12 +63,12 @@ test('limited database login cannot change structure or audit history',{skip:!ur
 });
 
 test('administrator sessions end after 30 minutes without use',{skip:!url},async()=>{
- const {database}=await import('../services/api/db.mjs');
- const {platform}=await import('../services/api/platform.mjs');
+ const {database}=await import('../services/api/shared/db.mjs');
+ const {platform}=await import('../services/api/modules/orders/platform.mjs');
  const db=database(url);
  try{
   const id=randomUUID(),token='a'.repeat(32)+randomUUID().replaceAll('-','');
-  const {hash}=await import('../services/api/security.mjs');
+  const {hash}=await import('../services/api/shared/security.mjs');
   await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,'test-only','admin',now())",[id,'+2332'+randomInt(10000000,99999999)]);
   await db.query("INSERT INTO sessions(token_hash,user_id,expires_at,admin_mfa_verified,last_seen_at) VALUES($1,$2,now()+interval '4 hours',true,now()-interval '31 minutes')",[hash(token),id]);
   await assert.rejects(platform(db,{otpKey:'d'.repeat(64)}).authenticate(token),{status:401});

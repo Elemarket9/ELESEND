@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID,randomInt} from 'node:crypto';
-import {database} from '../services/api/db.mjs';
+import {database} from '../services/api/shared/db.mjs';
 import {migrate} from '../scripts/migrate.mjs';
 import {financeService,balance} from '../services/api/modules/payments/finance.mjs';
 import {moneyOperations} from '../services/api/modules/payments/money-operations.mjs';
-import {platform as platformService} from '../services/api/platform.mjs';
+import {platform as platformService} from '../services/api/modules/orders/platform.mjs';
 import {paymentWebhook} from '../services/api/modules/payments/payment-provider.mjs';
-import {calculateQuote} from '../services/api/pricing.mjs';
-import {calculateCommissionBreakdown} from '../services/api/commission-engine.mjs';
+import {calculateQuote} from '../services/api/modules/orders/pricing.mjs';
+import {calculateCommissionBreakdown} from '../services/api/modules/food/commission-engine.mjs';
 import {digitalDeliveryCompleted} from '../services/api/modules/payments/checkout-accounting.mjs';
 import {
  settleCompletedDelivery,walletSummary,walletDebt,walletTransactions,assignmentEligibility,requireDebtEligible,

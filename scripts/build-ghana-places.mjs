@@ -8,7 +8,7 @@ import {classifyOsmTags, emptyAreaCounts, geometryCentre, inGhana, nearbyNamed, 
 
 const [,, input, output] = process.argv;
 if (!input || !output) { console.error('Usage: node scripts/build-ghana-places.mjs <ghana-named.geojsonseq> <out.json>'); process.exit(2); }
-const mapsDir = join(dirname(fileURLToPath(import.meta.url)), '../services/api/infrastructure/maps');
+const mapsDir = join(dirname(fileURLToPath(import.meta.url)), '../services/api/modules/maps');
 const curated = [...JSON.parse(readFileSync(join(mapsDir, 'ghana-gazetteer-data.json'), 'utf8')),
   ...JSON.parse(readFileSync(join(mapsDir, 'ghana-places-overlay.json'), 'utf8'))].filter(place => place.category === 'settlement' || place.category === 'town' || place.latitude);
 const towns = curated.filter(place => place.category === 'settlement' || place.category === 'town');

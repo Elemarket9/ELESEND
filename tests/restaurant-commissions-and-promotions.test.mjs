@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID, randomInt } from 'node:crypto';
-import { database } from '../services/api/db.mjs';
+import { database } from '../services/api/shared/db.mjs';
 import { migrate } from '../scripts/migrate.mjs';
-import { commissionEngine, computeRestaurantCommissionBreakdown } from '../services/api/commission-engine.mjs';
-import { promotionEngine } from '../services/api/promotion-engine.mjs';
-import { restaurantOrderService } from '../services/api/restaurant-orders.mjs';
+import { commissionEngine, computeRestaurantCommissionBreakdown } from '../services/api/modules/food/commission-engine.mjs';
+import { promotionEngine } from '../services/api/modules/food/promotion-engine.mjs';
+import { restaurantOrderService } from '../services/api/modules/food/restaurant-orders.mjs';
 import { checkoutService } from '../services/api/modules/payments/checkout.mjs';
 import { digitalDeliveryCompleted } from '../services/api/modules/payments/checkout-accounting.mjs';
-import { restaurantService } from '../services/api/restaurant.mjs';
+import { restaurantService } from '../services/api/modules/food/restaurant.mjs';
 
 const url = process.env.TEST_DATABASE_URL;
 

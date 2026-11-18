@@ -1,4 +1,4 @@
-import {database} from '../services/api/db.mjs';
+import {database} from '../services/api/shared/db.mjs';
 import {migrate} from './migrate.mjs';
 import {simulationTarget} from './local-simulation-support.mjs';
 import {importToDb} from './import_mapped_restaurants.mjs';

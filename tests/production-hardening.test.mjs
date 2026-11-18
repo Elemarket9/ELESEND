@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import {randomUUID,randomInt} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import {installProcessGuards} from '../services/api/process-guards.mjs';
-import {registerRealtimeConnection} from '../services/api/chat-engine.mjs';
-import {platform} from '../services/api/platform.mjs';
-import {passwordHash} from '../services/api/security.mjs';
+import {installProcessGuards} from '../services/api/shared/process-guards.mjs';
+import {registerRealtimeConnection} from '../services/api/modules/safety/chat-engine.mjs';
+import {platform} from '../services/api/modules/orders/platform.mjs';
+import {passwordHash} from '../services/api/shared/security.mjs';
 
 test('fatal process errors are logged and end the process',()=>{
  const target=new EventEmitter(),exits=[],lines=[];
@@ -37,7 +37,7 @@ test('both apps offer account deletion',()=>{
 });
 
 test('account deletion works against PostgreSQL and frees the phone number',{skip:!process.env.TEST_DATABASE_URL},async()=>{
- const {database}=await import('../services/api/db.mjs');
+ const {database}=await import('../services/api/shared/db.mjs');
  const {migrate}=await import('../scripts/migrate.mjs');
  const configured=new URL(process.env.TEST_DATABASE_URL);
  assert.match(configured.pathname,/^\/elesend_test/);
@@ -67,6 +67,6 @@ test('account deletion works against PostgreSQL and frees the phone number',{ski
 });
 
 test('the transaction helper keeps the original error when rollback fails',()=>{
- const source=readFileSync(new URL('../services/api/db.mjs',import.meta.url),'utf8');
+ const source=readFileSync(new URL('../services/api/shared/db.mjs',import.meta.url),'utf8');
  assert.match(source,/c\.query\('ROLLBACK'\)\.catch/);assert.match(source,/c\.release\(broken\)/);
 });

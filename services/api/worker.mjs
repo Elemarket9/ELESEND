@@ -8,26 +8,26 @@
  * worker separate from stateless HTTP API instances.
  */
 
-import { database } from './db.mjs';
-import {assertRequiredSchema,assertPaymentOperations,warnIfOwnerDatabaseLogin} from './startup-guards.mjs';
+import { database } from './shared/db.mjs';
+import {assertRequiredSchema,assertPaymentOperations,warnIfOwnerDatabaseLogin} from './shared/startup-guards.mjs';
 import { loadConfig } from './config.mjs';
-import { dispatchEngine } from './dispatch.mjs';
-import { etaService } from './eta/eta-service.mjs';
-import { trafficRouting, trafficService } from './traffic.mjs';
-import { installProcessGuards } from './process-guards.mjs';
-import { createRouting } from './infrastructure/maps/routing-provider.mjs';
+import {dispatchEngine} from './modules/orders/index.mjs';
+import {etaService} from './modules/orders/index.mjs';
+import { trafficRouting, trafficService } from './modules/maps/index.mjs';
+import { installProcessGuards } from './shared/process-guards.mjs';
+import { createRouting } from './modules/maps/index.mjs';
 import { financeService } from './modules/payments/index.mjs';
 import { checkoutService } from './modules/payments/index.mjs';
 import { moneyOperations } from './modules/payments/index.mjs';
-import { firebasePush } from './providers/firebase-push.mjs';
-import { platform } from './platform.mjs';
-import { restaurantOrderService } from './restaurant-orders.mjs';
+import {firebasePush} from './modules/orders/index.mjs';
+import {platform} from './modules/orders/index.mjs';
+import { restaurantOrderService } from './modules/food/index.mjs';
 import { reconcileAndEnforceWeeklyRestrictions } from './modules/payments/index.mjs';
 import { createPaymentProvider } from './modules/payments/index.mjs';
-import { hubtelSmsGateway } from './providers/hubtel-sms.mjs';
-import { httpsSmsGateway } from './sms-gateway.mjs';
-import { notificationGateway, notificationWorker, queueNotification } from './notifications.mjs';
-import { enforcePatchedNodeRuntime } from './runtime-enforce.mjs';
+import { hubtelSmsGateway } from './shared/providers/hubtel-sms.mjs';
+import { httpsSmsGateway } from './shared/sms-gateway.mjs';
+import {notificationGateway,notificationWorker,queueNotification} from './modules/orders/index.mjs';
+import { enforcePatchedNodeRuntime } from './shared/runtime-enforce.mjs';
 import { backgroundJobs, LOCKS, withAdvisoryLock as sharedAdvisoryLock } from './background-jobs.mjs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';

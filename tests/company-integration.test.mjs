@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {randomBytes} from 'node:crypto';
-import {isPublicAddress,validWebhookUrl,signatureFor,webhookService} from '../services/api/api-webhooks.mjs';
-import {network} from '../services/api/network.mjs';
+import {isPublicAddress,validWebhookUrl,signatureFor,webhookService} from '../services/api/modules/orders/api-webhooks.mjs';
+import {network} from '../services/api/modules/riders/network.mjs';
 import {renderCompanyPortalHtml} from '../services/api/company-web/company-portal.mjs';
 
 test('webhooks cannot reach internal addresses',()=>{
@@ -48,7 +48,7 @@ test('API keys reach only their own scopes',()=>{
 });
 
 test('company registration and keys are limited to approved delivery companies',()=>{
- const source=readFileSync(new URL('../services/api/network.mjs',import.meta.url),'utf8');
+ const source=readFileSync(new URL('../services/api/modules/riders/network.mjs',import.meta.url),'utf8');
  assert.match(source,/co\.status='approved' AND 'delivery'=ANY\(co\.services\)/);
  assert.match(source,/await assertCompanyDelivery\(db,actor\)/);
 });
@@ -64,9 +64,9 @@ const url=process.env.TEST_DATABASE_URL;
 test('company works through approval, API access, riders and status updates',{skip:!url},async()=>{
  assert.match(new URL(url).pathname,/^\/elesend_test/,'Requires dedicated test database');
  const {randomUUID,randomInt}=await import('node:crypto');
- const {database}=await import('../services/api/db.mjs');
+ const {database}=await import('../services/api/shared/db.mjs');
  const {migrate}=await import('../scripts/migrate.mjs');
- const {companyService}=await import('../services/api/company.mjs');
+ const {companyService}=await import('../services/api/modules/riders/company.mjs');
  const db=database(url);
  const key=randomBytes(32);
  const phone=()=>'+2332'+String(randomInt(10000000,99999999));
@@ -144,7 +144,7 @@ test('companies register in the Rider app and manage riders there',()=>{
 
 test('Firebase push signs in, sends, and reports dead devices',async()=>{
  const {generateKeyPairSync}=await import('node:crypto');
- const {firebasePush}=await import('../services/api/providers/firebase-push.mjs');
+ const {firebasePush}=await import('../services/api/modules/orders/providers/firebase-push.mjs');
  const {privateKey}=generateKeyPairSync('rsa',{modulusLength:2048,privateKeyEncoding:{type:'pkcs8',format:'pem'},publicKeyEncoding:{type:'spki',format:'pem'}});
  const calls=[];
  const fetchImpl=async(u,o)=>{calls.push({u:String(u),o});if(String(u).includes('oauth2'))return {ok:true,json:async()=>({access_token:'tok',expires_in:3600})};const t=JSON.parse(o.body).message.token;return t==='dead'?{ok:false,status:404}:{ok:true,status:200,json:async()=>({name:'projects/p/messages/1'})};};
@@ -159,7 +159,7 @@ test('Firebase push signs in, sends, and reports dead devices',async()=>{
 });
 
 test('chat never becomes a paid SMS, and with push set up neither do offers',async()=>{
- const {notificationWorker}=await import('../services/api/notifications.mjs');
+ const {notificationWorker}=await import('../services/api/modules/orders/notifications.mjs');
  const job=kind=>({id:kind,kind,recipient_id:'u',payload:{message:'m'},attempts:1});
  const run=async transport=>{const sent=[];
   const db={query:async sql=>/FROM users/.test(sql)?{rows:[{phone:'+233241234567'}]}:/SELECT 1 FROM dispatch_offers/.test(sql)?{rows:[{}],rowCount:1}:{rows:[]},tx:async f=>f({query:async sql=>/WITH due/.test(sql)?{rows:['dispatch_offer','chat_message','refund_completed'].map(job)}:{rows:[]}})};

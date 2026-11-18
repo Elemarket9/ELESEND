@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {hasArrived,locateOnRoute,metersBetween,rerouteCheck,upcomingStep,usableFix,voicePrompt} from '../apps/mobile/src/rider/navigation-logic.mjs';
-import {osrmRouting,stepInstruction} from '../services/api/dispatch-routing.mjs';
-import {ghanaReverseGeocode,ghanaSearch} from '../services/api/infrastructure/maps/ghana-geocoder.mjs';
+import {osrmRouting,stepInstruction} from '../services/api/modules/maps/osrm-routing.mjs';
+import {ghanaReverseGeocode,ghanaSearch} from '../services/api/modules/maps/ghana-geocoder.mjs';
 
 const METER=1/111320;
 const east=m=>({latitude:5.6,longitude:-0.2+m*METER});

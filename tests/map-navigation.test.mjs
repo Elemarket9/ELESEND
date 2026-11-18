@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { osrmRouting, stepInstruction } from '../services/api/dispatch-routing.mjs';
+import { osrmRouting, stepInstruction } from '../services/api/modules/maps/osrm-routing.mjs';
 import { formatDistance, locateOnRoute, metersBetween, rerouteCheck, upcomingStep } from '../apps/mobile/src/rider/navigation-logic.mjs';
 import { privateMapStyle } from '../apps/mobile/src/maps/private-map-style.mjs';
 

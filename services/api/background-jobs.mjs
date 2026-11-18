@@ -1,10 +1,10 @@
-import {trafficService} from './traffic.mjs';
-import {purgeUnbookedQuotes} from './platform.mjs';
-import {suspendExpiredDocuments} from './rider-documents.mjs';
-import {suspendExpiredLicences,syncOpenIdentityChecks,requireIdentityRefresh} from './rider-licence.mjs';
-import {enforceDrivingLimits,flagUnusualStops,offlineSignedOutRiders,settleRiderRewards} from './rider-tools.mjs';
-import {flagOverdueParcels} from './custody-incidents.mjs';
-import {webhookService} from './api-webhooks.mjs';
+import {trafficService} from './modules/maps/index.mjs';
+import {purgeUnbookedQuotes} from './modules/orders/index.mjs';
+import {suspendExpiredDocuments} from './modules/riders/index.mjs';
+import {suspendExpiredLicences,syncOpenIdentityChecks,requireIdentityRefresh} from './modules/riders/index.mjs';
+import {enforceDrivingLimits,flagUnusualStops,offlineSignedOutRiders,settleRiderRewards} from './modules/riders/index.mjs';
+import {flagOverdueParcels} from './modules/orders/index.mjs';
+import {webhookService} from './modules/orders/index.mjs';
 /**
  * Shared background job scheduling for the API process and the dedicated worker.
  * Food deadlines never wait on payment-provider calls: expiry and financial
@@ -12,10 +12,10 @@ import {webhookService} from './api-webhooks.mjs';
  */
 import {reconcileAndEnforceWeeklyRestrictions} from './modules/payments/index.mjs';
 import {runScheduledRecovery} from './modules/payments/index.mjs';
-import {runGeographicLearningCycle} from './infrastructure/maps/egia/background-learner.mjs';
-import {scanMapChangesIfDue} from './infrastructure/maps/egia/imagery-change-scan.mjs';
-import {egiaEnabled} from './infrastructure/maps/egia/road-verification.mjs';
-import {chatEngine} from './chat-engine.mjs';
+import {runGeographicLearningCycle} from './modules/maps/index.mjs';
+import {scanMapChangesIfDue} from './modules/maps/index.mjs';
+import {egiaEnabled} from './modules/maps/index.mjs';
+import {chatEngine} from './modules/safety/index.mjs';
 
 export const LOCKS={mapChangeScan:839292,traffic:839291,dispatchPruning:839201,corridors:839202,paymentRecon:839203,foodExpiry:839204,maintenance:839205,moneyRecon:839206,walletRecon:839207,geoLearning:839208,deliveryWatchdog:839209,etaRefresh:839210,businessPayouts:839211,parcelCustody:839213,riderSafety:839214,chatRetention:839215};
 

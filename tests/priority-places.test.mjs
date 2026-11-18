@@ -6,9 +6,9 @@ import {join} from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {classifyOsmTags, geometryCentre, INSERT_LANDMARKS_SQL, landmarkRecord, overturePlace, placeGrid, priorityArea} from '../scripts/place-import.mjs';
-import {photonResult, photonSearch} from '../services/api/infrastructure/maps/photon-search.mjs';
-import {searchPlaces} from '../services/api/infrastructure/maps/ghana-geocoder.mjs';
-import {missingLinkFlags, speedProposals} from '../services/api/infrastructure/maps/trace-review.mjs';
+import {photonResult, photonSearch} from '../services/api/modules/maps/photon-search.mjs';
+import {searchPlaces} from '../services/api/modules/maps/ghana-geocoder.mjs';
+import {missingLinkFlags, speedProposals} from '../services/api/modules/maps/trace-review.mjs';
 
 const run = promisify(execFile);
 

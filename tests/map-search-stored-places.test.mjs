@@ -1,7 +1,7 @@
 // Places approved into the database (rider-learned or added by staff) must reach the customer search box.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {searchPlaces} from '../services/api/infrastructure/maps/ghana-geocoder.mjs';
+import {searchPlaces} from '../services/api/modules/maps/ghana-geocoder.mjs';
 const row={id:'lm-1',name:'Mama Esi Chop Bar Kasoa',search_name:'mama esi chop bar kasoa',category:'commerce',subcategory:'restaurant',locality:'Kasoa',city:'Kasoa',region:'Central',latitude:'5.5341',longitude:'-0.4190',aliases:[],entrance:null,popularity:10,street:null,coordinate_kind:'mapped_point',name_sim:0.9,sim:0.9};
 test('an approved place from the database is offered first when its name is what was typed',async()=>{
  const r=await searchPlaces({query:async()=>({rows:[row]})},'Mama Esi Chop Bar');

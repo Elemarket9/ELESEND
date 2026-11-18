@@ -1,4 +1,4 @@
-import {check,phone as canonicalGhanaPhone} from '../../../security.mjs';
+import {check,phone as canonicalGhanaPhone} from '../../../shared/security.mjs';
 import {validatedCheckoutUrl} from '../checkout-policy.mjs';
 const STATUS_HOST='https://api-txnstatus.hubtel.com';
 const REFUND_HOST='https://refund-api.hubtel.com';

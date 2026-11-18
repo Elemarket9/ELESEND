@@ -1,5 +1,5 @@
 import {createHmac,timingSafeEqual} from 'node:crypto';
-import {check} from '../../security.mjs';
+import {check} from '../../shared/security.mjs';
 import {validatedCheckoutUrl} from './checkout-policy.mjs';
 /** OPTIONAL initial adapter. Not a domain dependency. Never expose secret to native app.
  * QR renders a provider-hosted checkout URL as a QR code (not GHQR merchant QR).
