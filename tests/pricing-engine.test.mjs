@@ -12,7 +12,22 @@ test('approved tariff reproduces the Kasoa to Terminal 3 quote from the real roa
  assert.equal(q.amountMinor,18892);
  assert.equal(q.commissionMinor,2456);
  assert.equal(q.riderEarningsMinor,16436);
- assert.deepEqual(q.breakdown,{fareMinor:18892,salesCommissionMinor:2456,bookingFeeMinor:0,tollMinor:0,minimumApplied:false});
+ assert.equal(q.breakdown.fareMinor,18892);
+ assert.equal(q.breakdown.salesCommissionMinor,2456);
+ assert.equal(q.breakdown.bookingFeeMinor,0);
+ assert.equal(q.breakdown.tollMinor,0);
+ assert.equal(q.breakdown.minimumApplied,false);
+});
+
+test('cargo helper and no-lift floor prices use server tariff rates in integer pesewas',()=>{
+ const policy={base_minor:1000,per_km_minor:100,per_minute_minor:0,minimum_minor:0,commission_bps:0,per_helper_minor:2500,per_floor_minor:400};
+ const q=calculateQuote(policy,1000,{helpers:2,floors:3});
+ assert.equal(q.breakdown.baseMinor,1000);
+ assert.equal(q.breakdown.distanceMinor,100);
+ assert.equal(q.breakdown.helperMinor,5000);
+ assert.equal(q.breakdown.floorMinor,1200);
+ assert.equal(q.amountMinor,7300);
+ assert.throws(()=>calculateQuote(policy,1000,{helpers:2.5}),/Invalid helpers/);
 });
 
 test('very short trips use the minimum, and distance rounds up to the pesewa',()=>{

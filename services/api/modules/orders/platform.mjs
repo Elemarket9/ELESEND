@@ -32,6 +32,10 @@ export async function requireAcceptedTerms(db,actor){
  const row=(await db.query('SELECT terms_accepted_at FROM users WHERE id=$1',[actor.id])).rows[0];
  check(row?.terms_accepted_at,409,'Accept the current terms before booking');
 }
+export async function warnPlaceholderTariffs(db){
+ const vehicles=(await db.query("SELECT vehicle FROM pricing_policies WHERE active AND vehicle IS NOT NULL AND is_placeholder ORDER BY vehicle")).rows.map(x=>x.vehicle);
+ if(vehicles.length)process.stderr.write(JSON.stringify({level:'warn',component:'pricing',code:'placeholder_vehicle_tariffs',vehicles})+'\n');
+}
 import {featureService} from '../../shared/algorithms/features.mjs';
 import {detectFraudSignals} from '../../shared/algorithms/fraud.mjs';
 import {marketService} from '../../shared/markets.mjs';
@@ -53,15 +57,21 @@ export async function purgeUnbookedQuotes(db){
  return (await db.query("DELETE FROM quotes WHERE id IN (SELECT q.id FROM quotes q WHERE q.expires_at<now()-interval '7 days' AND NOT EXISTS(SELECT 1 FROM shipments s WHERE s.quote_id=q.id) LIMIT 5000)")).rowCount;
 }
 export function hideEndedContacts(actor,s){
- if(!s||actor?.kind==='admin'||contactOpen(s))return s;
+ if(!s||actor?.kind==='admin')return s;
+ const stripDeclared=d=>d&&typeof d==='object'?{...d,declaredGoodsValueMinor:undefined}:d;
+ const strip=d=>d&&typeof d==='object'?{...d,recipientPhone:undefined,pickupPhone:undefined,declaredGoodsValueMinor:undefined}:d;
+ if(actor?.kind==='rider'){
+  if(contactOpen(s))return {...s,details:stripDeclared(s.details),quote_request:stripDeclared(s.quote_request)};
+  return {...s,recipient_phone:null,rider_phone:s.rider_phone===undefined?undefined:null,details:strip(s.details),quote_request:strip(s.quote_request)};
+ }
+ if(contactOpen(s))return s;
  if(actor?.id===s.customer_id)return {...s,rider_phone:s.rider_phone===undefined?undefined:null};
- const strip=d=>d&&typeof d==='object'?{...d,recipientPhone:undefined,pickupPhone:undefined}:d;
  return {...s,recipient_phone:null,details:strip(s.details),rider_phone:s.rider_phone===undefined?undefined:null};
 }
 const vehicleTypes=['bicycle','motorcycle','tricycle','car','pickup','van','box_truck','long_vehicle','truck'];
 const registration=z.object({phone:z.string().max(30),termsVersion:z.string().trim().min(1).max(40),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(vehicleTypes).optional(),maxWeightG:z.number().int().min(1).max(30000000).optional(),car:carRegistration.optional(),vehicleDetails:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
 const address=z.object({address:z.string().min(5).max(400),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict();
-const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(vehicleTypes.filter(x=>x!=='bicycle')).optional(),recipientPhone:z.string().max(30),pickupPhone:z.string().max(30).optional(),weightG:z.number().int().min(1).max(30000000),lengthCm:z.number().int().positive().max(30000).optional(),volumeL:z.number().int().positive().max(1000000).optional(),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
+const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(vehicleTypes.filter(x=>x!=='bicycle')).optional(),recipientPhone:z.string().max(30),pickupPhone:z.string().max(30).optional(),weightG:z.number().int().min(1).max(30000000),lengthCm:z.number().int().positive().max(30000).optional(),volumeL:z.number().int().positive().max(1000000).optional(),helpers:z.number().int().min(0).max(4).default(0),pickupFloorsNoLift:z.number().int().min(0).max(100).default(0),dropoffFloorsNoLift:z.number().int().min(0).max(100).default(0),declaredGoodsValueMinor:z.number().int().min(1).max(2147483647).optional(),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
 // Legacy SMS handovers are disabled by default in production. Test/development fixtures remain compatible.
 const allowLegacySmsHandover=()=>process.env.NODE_ENV!=='production'||process.env.HANDOVER_SMS_LEGACY_ENABLED==='true';
 const ACCOUNT_SMS_PER_NUMBER=5,ACCOUNT_SMS_BLOCK_SECONDS=900;
@@ -111,7 +121,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   // The terms the customer saw at quote time.
   const quote=(await c.query('SELECT p.wait_per_minute_minor,q.pricing_evidence,q.request FROM quotes q JOIN pricing_policies p ON p.id=q.policy_id WHERE q.id=$1',[s.quote_id])).rows[0];
   const terms=quote?.pricing_evidence?.waitingTerms;
-  if(!terms)return null;
+  if(!terms?.enabled)return null;
   const place=quote.request[stop==='pickup'?'pickup':'destination'];
   const stay=(await c.query(`SELECT min(observed_at) AS started_at,count(*)::int AS samples,extract(epoch FROM $3::timestamptz-min(observed_at))::int AS seconds
     FROM (SELECT observed_at,inside,max(observed_at) FILTER (WHERE NOT inside) OVER () AS left_at
@@ -620,21 +630,23 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');await c.query('UPDATE pricing_policies SET active=false WHERE active AND vehicle IS NULL');const pid=id();await c.query('INSERT INTO pricing_policies(id,base_minor,per_km_minor,commission_bps,commission_mode,commission_fixed_minor,commission_cap_minor,per_minute_minor,wait_per_minute_minor,per_extra_stop_minor) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[pid,v.baseMinor,v.perKmMinor,v.commissionBps,v.commissionMode,v.commissionFixedMinor,v.commissionCapMinor,v.perMinuteMinor,v.waitPerMinuteMinor,v.perExtraStopMinor]);await audit(c,actor.id,'pricing.created',pid);return {id:pid};});
  },
  async configureVehicleTariff(actor,input){
-  const v=z.object({vehicle:z.enum(['motorcycle','car','van']),baseMinor:z.number().int().min(1).max(1000000),perKmMinor:z.number().int().min(0).max(100000),perMinuteMinor:z.number().int().min(0).max(100000).default(0),minimumMinor:z.number().int().min(0).max(100000000).default(0),rushHourEnabled:z.boolean().default(false),supplyDemandEnabled:z.boolean().default(false),commissionBps:z.number().int().min(0).max(10000).default(1300),rushHourBps:z.number().int().min(10000).max(20000).optional(),waitPerMinuteMinor:z.number().int().min(0).max(1000).optional(),trafficTimePricing:z.boolean().optional(),bookingFeeBps:z.number().int().min(0).max(3000).optional()}).strict().parse(input);
+  const v=z.object({vehicle:z.enum(['motorcycle','car','tricycle','pickup','van','box_truck','long_vehicle','truck']),baseMinor:z.number().int().min(1).max(1000000),perKmMinor:z.number().int().min(0).max(100000),perMinuteMinor:z.number().int().min(0).max(100000).default(0),minimumMinor:z.number().int().min(0).max(100000000).default(0),rushHourEnabled:z.boolean().default(false),supplyDemandEnabled:z.boolean().default(false),commissionBps:z.number().int().min(0).max(10000).default(1300),rushHourBps:z.number().int().min(10000).max(20000).optional(),waitPerMinuteMinor:z.number().int().min(0).max(1000).optional(),trafficTimePricing:z.boolean().optional(),bookingFeeBps:z.number().int().min(0).max(3000).optional(),perExtraStopMinor:z.number().int().min(0).max(1000000).optional(),perHelperMinor:z.number().int().min(0).max(10000000).optional(),perFloorMinor:z.number().int().min(0).max(10000000).optional(),freeLoadingMinutes:z.number().int().min(0).max(240).optional()}).strict().parse(input);
   return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');
-   const kept=(await c.query('SELECT rush_hour_bps,wait_per_minute_minor,traffic_time_pricing,booking_fee_bps FROM pricing_policies WHERE active AND vehicle=$1',[v.vehicle])).rows[0];
+   const kept=(await c.query('SELECT rush_hour_bps,wait_per_minute_minor,traffic_time_pricing,booking_fee_bps,per_extra_stop_minor,per_helper_minor,per_floor_minor,free_loading_minutes FROM pricing_policies WHERE active AND vehicle=$1',[v.vehicle])).rows[0];
    await c.query('UPDATE pricing_policies SET active=false WHERE active AND vehicle=$1',[v.vehicle]);const pid=id();
-   await c.query('INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled,supply_demand_enabled,commission_bps,rush_hour_bps,wait_per_minute_minor,traffic_time_pricing,booking_fee_bps) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',[pid,v.vehicle,v.baseMinor,v.perKmMinor,v.perMinuteMinor,v.minimumMinor,v.rushHourEnabled,v.supplyDemandEnabled,v.commissionBps,v.rushHourBps??kept?.rush_hour_bps??14000,v.waitPerMinuteMinor??kept?.wait_per_minute_minor??0,v.trafficTimePricing??kept?.traffic_time_pricing??false,v.bookingFeeBps??kept?.booking_fee_bps??0]);
+   await c.query('INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled,supply_demand_enabled,commission_bps,rush_hour_bps,wait_per_minute_minor,traffic_time_pricing,booking_fee_bps,per_extra_stop_minor,per_helper_minor,per_floor_minor,free_loading_minutes,is_placeholder) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,false)',[pid,v.vehicle,v.baseMinor,v.perKmMinor,v.perMinuteMinor,v.minimumMinor,v.rushHourEnabled,v.supplyDemandEnabled,v.commissionBps,v.rushHourBps??kept?.rush_hour_bps??14000,v.waitPerMinuteMinor??kept?.wait_per_minute_minor??0,v.trafficTimePricing??kept?.traffic_time_pricing??false,v.bookingFeeBps??kept?.booking_fee_bps??0,v.perExtraStopMinor??kept?.per_extra_stop_minor??0,v.perHelperMinor??kept?.per_helper_minor??0,v.perFloorMinor??kept?.per_floor_minor??0,v.freeLoadingMinutes??kept?.free_loading_minutes??5]);
    await audit(c,actor.id,'pricing.vehicle_version_created',pid);return {id:pid,...v};
   });
  },
- async vehicleTariffs(actor){check(['customer','business','company','admin'].includes(actor.kind),403);return (await db.query(`SELECT p.id,p.vehicle,p.base_minor,p.per_km_minor,p.per_minute_minor,p.minimum_minor,p.rush_hour_enabled,
+ async vehicleTariffs(actor){check(['customer','business','company','admin'].includes(actor.kind),403);return (await db.query(`SELECT p.id,p.vehicle,p.base_minor,p.per_km_minor,p.per_minute_minor,p.minimum_minor,p.rush_hour_enabled,p.is_placeholder,p.per_helper_minor,p.per_floor_minor,p.free_loading_minutes,
    vc.max_weight_g,vc.max_trip_m,vc.max_length_cm,vc.max_volume_l,vc.customer_description,vc.customer_example
    FROM pricing_policies p JOIN vehicle_capabilities vc ON vc.vehicle=p.vehicle
-   WHERE p.active AND p.vehicle IS NOT NULL AND vc.enabled ORDER BY p.vehicle`)).rows;},
+   WHERE p.active AND NOT p.is_placeholder AND p.vehicle IS NOT NULL AND vc.enabled ORDER BY p.vehicle`)).rows;},
+ async getCargoPolicy(actor){check(actor?.kind==='admin',403);await permission(db,actor,'pricing:write');return (await db.query('SELECT liability_limit_minor,liability_terms,updated_at FROM cargo_policy_settings WHERE id=1')).rows[0];},
+ async setCargoPolicy(actor,input){const v=z.object({liabilityLimitMinor:z.number().int().min(1).max(2147483647),liabilityTerms:z.string().trim().min(20).max(4000)}).strict().parse(input);return db.tx(async c=>{await permission(c,actor,'pricing:write');await c.query('UPDATE cargo_policy_settings SET liability_limit_minor=$1,liability_terms=$2,updated_by=$3,updated_at=now() WHERE id=1',[v.liabilityLimitMinor,v.liabilityTerms,actor.id]);await audit(c,actor.id,'pricing.cargo_terms_updated',actor.id);return {ok:true,...v};});},
  async getPricing(actor){check(actor?.kind==='admin',403);check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])",[actor.id,['pricing:write','finance:read','finance:approve','finance:configure']])).rowCount,403,'Pricing permission required');return (await db.query('SELECT * FROM pricing_policies WHERE active ORDER BY vehicle NULLS FIRST')).rows;},
  async configureCommission(actor,input){
-  const v=z.object({vehicle:z.enum(['motorcycle','car','van']).nullable().optional(),commissionBps:z.number().int().min(0).max(10000),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null)}).strict().parse(input);
+  const v=z.object({vehicle:z.enum(['motorcycle','car','tricycle','pickup','van','box_truck','long_vehicle','truck']).nullable().optional(),commissionBps:z.number().int().min(0).max(10000),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null)}).strict().parse(input);
   return db.tx(async c=>{
    await permission(c,actor,'pricing:write');await c.query('SELECT pg_advisory_xact_lock(617290113)');
    let targets;
@@ -645,7 +657,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    for(const cur of targets){
     await c.query('UPDATE pricing_policies SET active=false WHERE id=$1',[cur.id]);
     const pid=id();
-    await c.query('INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled,supply_demand_enabled,commission_bps,commission_mode,commission_fixed_minor,commission_cap_minor,wait_per_minute_minor,per_extra_stop_minor,rush_hour_bps,traffic_time_pricing,booking_fee_bps) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)',[pid,cur.vehicle,cur.base_minor,cur.per_km_minor,cur.per_minute_minor??0,cur.minimum_minor??0,cur.rush_hour_enabled??false,cur.supply_demand_enabled??false,v.commissionBps,v.commissionMode,v.commissionFixedMinor,v.commissionCapMinor,cur.wait_per_minute_minor??0,cur.per_extra_stop_minor??0,cur.rush_hour_bps??14000,cur.traffic_time_pricing??false,cur.booking_fee_bps??0]);
+    await c.query('INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled,supply_demand_enabled,commission_bps,commission_mode,commission_fixed_minor,commission_cap_minor,wait_per_minute_minor,per_extra_stop_minor,rush_hour_bps,traffic_time_pricing,booking_fee_bps,per_helper_minor,per_floor_minor,free_loading_minutes,is_placeholder) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)',[pid,cur.vehicle,cur.base_minor,cur.per_km_minor,cur.per_minute_minor??0,cur.minimum_minor??0,cur.rush_hour_enabled??false,cur.supply_demand_enabled??false,v.commissionBps,v.commissionMode,v.commissionFixedMinor,v.commissionCapMinor,cur.wait_per_minute_minor??0,cur.per_extra_stop_minor??0,cur.rush_hour_bps??14000,cur.traffic_time_pricing??false,cur.booking_fee_bps??0,cur.per_helper_minor??0,cur.per_floor_minor??0,cur.free_loading_minutes??5,Boolean(cur.is_placeholder)]);
     await audit(c,actor.id,'pricing.commission_configured',pid);
     created.push({id:pid,vehicle:cur.vehicle,commissionBps:v.commissionBps,commissionMode:v.commissionMode,commissionFixedMinor:v.commissionFixedMinor,commissionCapMinor:v.commissionCapMinor});
    }
@@ -727,7 +739,14 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    check(!v.lengthCm||!capability?.max_length_cm||v.lengthCm<=capability.max_length_cm,422,`This load is too long for a ${VEHICLE_LABELS[v.vehicle]??v.vehicle}. Try ${largerName} or split the load.`);
    check(!v.volumeL||!capability?.max_volume_l||v.volumeL<=capability.max_volume_l,422,`This load is too large for a ${VEHICLE_LABELS[v.vehicle]??v.vehicle}. Try ${largerName} or split the load.`);}
   for(const location of [v.pickup,v.destination])validateGhanaBoundary(location.latitude,location.longitude);
-  const p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NOT DISTINCT FROM $1',[v.vehicle??null])).rows[0];check(p,503,'Pricing not configured for selected vehicle');
+  const p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NOT DISTINCT FROM $1',[v.vehicle??null])).rows[0];check(p&&!p.is_placeholder,503,'This vehicle price is being prepared. Please choose another vehicle or contact support.');
+  let liabilityStatement=null,liabilityEvidence=null;
+  if(['tricycle','pickup','van','box_truck','long_vehicle','truck'].includes(v.vehicle)){
+   const terms=(await db.query('SELECT liability_limit_minor,liability_terms FROM cargo_policy_settings WHERE id=1')).rows[0];
+   check(terms?.liability_limit_minor&&terms.liability_terms.trim(),503,'Cargo terms are being prepared. Please choose another vehicle or contact support.');
+   liabilityEvidence={limitMinor:Number(terms.liability_limit_minor),terms:terms.liability_terms};
+   liabilityStatement=`Declared value is recorded for disputes only. It does not buy insurance. ELESEND’s liability is limited to GH₵${(Number(terms.liability_limit_minor)/100).toFixed(2)} under the published cargo terms. ${terms.liability_terms}`;
+  }
   check(routing,503,'Road routing not configured; prices cannot be estimated safely');
   const route=await routing.route(v.pickup,v.destination,{vehicle:v.vehicle??'car',billing:true});
   check(route.source==='routing-provider'||(process.env.NODE_ENV!=='production'&&route.source==='fixture'),503,'Unsupported road estimate');
@@ -747,16 +766,17 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const adjustment=travelAdjustment({evidence:await quoteEvidence({vehicle:v.vehicle??'car',deliveryType:'parcel',city:cityBucket(v.destination),bucket}),baselineFactor:baselineFactorFor(etaBaselineFactors(),v.vehicle??'car',bucket,cityBucket(v.pickup))});
   const trafficFactor=adjustment.factor;
   const waitingEnabled=process.env.WAITING_CHARGES_ENABLED==='true'&&Number(p.wait_per_minute_minor??0)>0;
-  const waitingTerms=waitingEnabled?{freeMinutes:envInt(process.env.WAIT_FREE_MINUTES,5,0),maxMinor:envInt(process.env.WAIT_FEE_MAX_MINOR,1500,0)}:null;
+  const waitingTerms={freeMinutes:Number(p.free_loading_minutes??5),maxMinor:waitingEnabled?envInt(process.env.WAIT_FEE_MAX_MINOR,1500,0):0,enabled:waitingEnabled};
   const pricedSeconds=p.traffic_time_pricing?Math.round(route.durationSeconds*trafficFactor):route.durationSeconds;
   const tolls=applicableTolls(await activeTollRules(db),{geometry:route.geometry,vehicle:v.vehicle??'car'});
   const tollMinor=tolls.reduce((sum,toll)=>sum+toll.amountMinor,0);
-  const {amountMinor,commissionMinor,riderEarningsMinor,breakdown}=calculateQuote(p,meters,{durationSeconds:pricedSeconds,surgeBps,tollMinor});const qid=id();
-  const evidence={policyId:p.id,vehicle:v.vehicle??'legacy_unspecified',routeVehicle:v.vehicle??'car',distanceMeters:meters,durationSeconds:route.durationSeconds,pricedSeconds,tolls,breakdown,waitingTerms,routeProfile:routing.capabilities?.profileVersion??null,source:route.source,surgeBps,scheduledMultiplier,surgeObservation,quotedAt:new Date().toISOString(),commissionBps:p.commission_bps,minimumMinor:p.minimum_minor};
+  const floors=v.pickupFloorsNoLift+v.dropoffFloorsNoLift;
+  const {amountMinor,commissionMinor,riderEarningsMinor,breakdown}=calculateQuote(p,meters,{durationSeconds:pricedSeconds,surgeBps,tollMinor,helpers:v.helpers,pickupFloors:v.pickupFloorsNoLift,dropoffFloors:v.dropoffFloorsNoLift});const qid=id();
+  const evidence={policyId:p.id,vehicle:v.vehicle??'legacy_unspecified',routeVehicle:v.vehicle??'car',distanceMeters:meters,durationSeconds:route.durationSeconds,pricedSeconds,tolls,breakdown,waitingTerms,liability:liabilityEvidence,routeProfile:routing.capabilities?.profileVersion??null,source:route.source,surgeBps,scheduledMultiplier,surgeObservation,quotedAt:new Date().toISOString(),commissionBps:p.commission_bps,minimumMinor:p.minimum_minor};
   const r=await db.query("INSERT INTO quotes(id,customer_id,policy_id,request,amount_minor,commission_minor,expires_at,payment_method,pricing_evidence) VALUES($1,$2,$3,$4,$5,$6,now()+interval '15 minutes',$7,$8) RETURNING id,amount_minor,commission_minor,expires_at,payment_method",[qid,actor.id,p.id,JSON.stringify(v),amountMinor,commissionMinor,v.paymentMethod,JSON.stringify(evidence)]);
   const capacity=dispatch?await dispatch.availability({pickup:v.pickup,weightG:v.weightG,vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize,lengthCm:v.lengthCm,volumeL:v.volumeL}):{status:'unknown',guaranteed:false};
-  const fareBreakdown={...breakdown,tolls:tolls.map(({name,amountMinor})=>({name,amountMinor})),tariffId:p.id,startMinor:Number(p.base_minor),perKmMinor:Number(p.per_km_minor),perMinuteMinor:Number(p.per_minute_minor??0),pricedMinutes:Math.ceil(pricedSeconds/60),minimumMinor:Number(p.minimum_minor??0),rushHourMultiplier:surgeMultiplier,waitPerMinuteMinor:waitingEnabled?Number(p.wait_per_minute_minor):0,waitFreeMinutes:waitingTerms?.freeMinutes??0,waitMaxMinor:waitingTerms?.maxMinor??0};
-  return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEvidence:evidence,fareBreakdown,etaMinutes:quotedEtaMinutes(route.durationSeconds,trafficFactor,{riderSeconds:capacity.nearestRiderSeconds,source:adjustment.source}),surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
+  const fareBreakdown={...breakdown,tolls:tolls.map(({name,amountMinor})=>({name,amountMinor})),tariffId:p.id,startMinor:Number(p.base_minor),perKmMinor:Number(p.per_km_minor),perMinuteMinor:Number(p.per_minute_minor??0),pricedMinutes:Math.ceil(pricedSeconds/60),minimumMinor:Number(p.minimum_minor??0),rushHourMultiplier:surgeMultiplier,waitPerMinuteMinor:waitingEnabled?Number(p.wait_per_minute_minor):0,waitFreeMinutes:waitingTerms.freeMinutes,waitMaxMinor:waitingTerms.maxMinor,waitingEnabled,helpers:v.helpers,pickupFloorsNoLift:v.pickupFloorsNoLift,dropoffFloorsNoLift:v.dropoffFloorsNoLift};
+  return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEvidence:evidence,fareBreakdown,liabilityStatement,etaMinutes:quotedEtaMinutes(route.durationSeconds,trafficFactor,{riderSeconds:capacity.nearestRiderSeconds,source:adjustment.source}),surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
  },
  async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business','company'].includes(actor.kind),403);await requireAcceptedTerms(db,actor);await assertCompanyDelivery(db,actor);
   if(process.env.NODE_ENV==='production')check(dispatch,503,'Delivery booking paused: dispatch unavailable');

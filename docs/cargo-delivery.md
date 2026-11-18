@@ -31,3 +31,11 @@ Sources:
 ## Vehicle approval
 
 Every powered road vehicle except a motorcycle needs staff approval before dispatch. The vehicle record includes plate, make, model, colour, payload, body type, roadworthy expiry and insurance expiry. Expired papers suspend the rider and take the vehicle out of dispatch until staff review updated details. Driver licence records continue through the existing rider licence review.
+
+## Cargo pricing setup before launch
+
+Migration `077_cargo_pricing_options.sql` adds active, zero-price placeholder tariffs for the cargo tricycle, pickup, box truck and long vehicle. The API logs a startup warning while placeholders remain. Quotes and customer vehicle pickers ignore placeholders. Van keeps its existing tariff values in a new version with a 15-minute free loading allowance, but its vehicle class remains disabled.
+
+Before enabling any cargo class, a staff member with `pricing:write` must publish real start, per-kilometre, per-minute and minimum fares, commission, helper price, per-floor/per-side price, free loading time and waiting fee through Admin → Tariffs & Commission Control. Placeholder prices are intentionally zero and are not launch prices. Configure the published cargo liability cap and plain-English terms in the Cargo liability terms section; the cap is not an insurance offer. Until both a real tariff and cargo terms exist, cargo quotes are refused.
+
+The customer may declare the goods value. ELESEND stores that amount with the immutable quote for dispute records only; it does not change the fare or buy insurance. The quote displays and snapshots the liability terms in force when it is priced.

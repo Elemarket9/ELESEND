@@ -74,7 +74,7 @@ export function isConfirmedLocation(loc) {
  * Body for POST /api/v1/quotes. Only keys present in quoteSchema are sent.
  * Throws a user-facing error instead of sending unconfirmed or unresolved locations.
  */
-export function buildParcelQuoteRequest({ pickup, destination, vehicle, weightG, lengthCm, volumeL, paymentMethod, recipientPhone, description, cashPayer, destinationInstructions }) {
+export function buildParcelQuoteRequest({ pickup, destination, vehicle, weightG, lengthCm, volumeL, paymentMethod, recipientPhone, description, cashPayer, destinationInstructions, helpers, pickupFloorsNoLift, dropoffFloorsNoLift, declaredGoodsValueMinor }) {
   if (!isConfirmedLocation(pickup)) throw new Error('Please confirm your pickup location on the map before requesting a price.');
   if (!isConfirmedLocation(destination)) throw new Error('Please confirm your delivery location on the map before requesting a price.');
   const dest = toAddressPayload(destination);
@@ -95,6 +95,10 @@ export function buildParcelQuoteRequest({ pickup, destination, vehicle, weightG,
   };
   if (Number.isInteger(Number(lengthCm)) && Number(lengthCm) > 0) body.lengthCm = Number(lengthCm);
   if (Number.isInteger(Number(volumeL)) && Number(volumeL) > 0) body.volumeL = Number(volumeL);
+  body.helpers = Number.isInteger(Number(helpers)) ? Math.max(0, Math.min(4, Number(helpers))) : 0;
+  body.pickupFloorsNoLift = Number.isInteger(Number(pickupFloorsNoLift)) ? Math.max(0, Number(pickupFloorsNoLift)) : 0;
+  body.dropoffFloorsNoLift = Number.isInteger(Number(dropoffFloorsNoLift)) ? Math.max(0, Number(dropoffFloorsNoLift)) : 0;
+  if (Number.isSafeInteger(Number(declaredGoodsValueMinor)) && Number(declaredGoodsValueMinor) > 0) body.declaredGoodsValueMinor = Number(declaredGoodsValueMinor);
   if (['CASH', 'MOMO', 'CARD', 'QR', 'DIGITAL'].includes(paymentMethod)) body.paymentMethod = paymentMethod;
   if (['sender', 'recipient'].includes(cashPayer)) body.cashPayer = cashPayer;
   return body;

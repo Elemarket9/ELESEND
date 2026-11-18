@@ -40,10 +40,18 @@ export async function runAudit(db) {
     const alice = await account('customer'), bob = await account('customer');
 
     await safely('cargo', 'vehicle capacity limits', async () => {
+      const tamperedRates = await api(alice.token, 'POST', '/api/v1/quotes', trip({helpers: 2, pickupFloorsNoLift: 3, perHelperMinor: 1, perFloorMinor: 1}));
+      expect('cargo', 'a customer cannot set helper or floor prices in the quote request', tamperedRates.status === 400, tamperedRates);
+      const tooManyHelpers = await api(alice.token, 'POST', '/api/v1/quotes', trip({helpers: 5}));
+      expect('cargo', 'the quote refuses more than four helpers', tooManyHelpers.status === 400, tooManyHelpers);
       const cap = (await db.query("SELECT enabled,max_weight_g,max_trip_m,max_length_cm,max_volume_l FROM vehicle_capabilities WHERE vehicle='tricycle'")).rows[0];
-      const tariff = (await db.query("SELECT id FROM pricing_policies WHERE vehicle='tricycle' AND active")).rows[0];
+      const tariff = (await db.query("SELECT id,is_placeholder FROM pricing_policies WHERE vehicle='tricycle' AND active")).rows[0];
+      const temporaryTariff = randomUUID();
+      const cargoTerms = (await db.query('SELECT liability_limit_minor,liability_terms FROM cargo_policy_settings WHERE id=1')).rows[0];
       try {
-        if (!tariff) await db.query("INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,commission_bps,active) VALUES(gen_random_uuid(),'tricycle',100,0,0,0,0,true)");
+        if (tariff) await db.query('UPDATE pricing_policies SET active=false WHERE id=$1', [tariff.id]);
+        await db.query("INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,commission_bps,active,is_placeholder) VALUES($1,'tricycle',100,0,0,0,0,true,false)", [temporaryTariff]);
+        await db.query("UPDATE cargo_policy_settings SET liability_limit_minor=500000,liability_terms='Temporary test cargo terms only.' WHERE id=1");
         await db.query("UPDATE vehicle_capabilities SET enabled=true,max_weight_g=300000,max_trip_m=25000,max_length_cm=200,max_volume_l=1500 WHERE vehicle='tricycle'");
         const heavy = await api(alice.token, 'POST', '/api/v1/quotes', trip({vehicle: 'tricycle', weightG: 300001, lengthCm: 100, volumeL: 1000}));
         expect('cargo', 'tricycle quote refuses an overweight load', heavy.status === 422 && /heavy|heavier/i.test(heavy.data.error ?? ''), heavy);
@@ -53,7 +61,10 @@ export async function runAudit(db) {
         expect('cargo', 'tricycle quote refuses a road trip beyond its limit', far.status === 422 && /limit|larger vehicle|truck/i.test(far.data.error ?? ''), far);
       } finally {
         await db.query("UPDATE vehicle_capabilities SET enabled=$1,max_weight_g=$2,max_trip_m=$3,max_length_cm=$4,max_volume_l=$5 WHERE vehicle='tricycle'", [cap.enabled, cap.max_weight_g, cap.max_trip_m, cap.max_length_cm, cap.max_volume_l]);
-        if (!tariff) await db.query("DELETE FROM pricing_policies WHERE vehicle='tricycle' AND active");
+        await db.query("UPDATE pricing_policies SET active=false WHERE id=$1", [temporaryTariff]);
+        await db.query('DELETE FROM pricing_policies WHERE id=$1', [temporaryTariff]);
+        if (tariff) await db.query('UPDATE pricing_policies SET active=true WHERE id=$1', [tariff.id]);
+        await db.query('UPDATE cargo_policy_settings SET liability_limit_minor=$1,liability_terms=$2 WHERE id=1', [cargoTerms.liability_limit_minor, cargoTerms.liability_terms]);
       }
     });
 

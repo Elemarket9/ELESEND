@@ -10,5 +10,5 @@ export {tollRuleService} from './toll-rules.mjs';
 export {webhookService} from './api-webhooks.mjs';
 export {dispatchEngine} from './dispatch.mjs';
 export {notificationGateway,notificationWorker,queueNotification} from './notifications.mjs';
-export {platform,purgeUnbookedQuotes,requireAcceptedTerms} from './platform.mjs';
+export {platform,purgeUnbookedQuotes,requireAcceptedTerms,warnPlaceholderTariffs} from './platform.mjs';
 export {firebasePush} from './providers/firebase-push.mjs';

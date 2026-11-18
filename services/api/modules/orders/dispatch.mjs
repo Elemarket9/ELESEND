@@ -107,7 +107,7 @@ export function dispatchEngine(db,{routing}={}){
  async function vehiclePolicy(actor){await getPolicy(actor);return (await db.query('SELECT * FROM vehicle_capabilities ORDER BY vehicle')).rows;}
  async function setVehiclePolicy(actor,input){await getPolicy(actor);const v=z.object({vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','box_truck','long_vehicle','truck']),maxParcelSize:z.enum(['small','medium','large']),allowedCategories:z.array(z.enum(['general','documents','fragile','food'])).min(1).max(4),enabled:z.boolean(),maxWeightG:z.number().int().min(1).max(30000000).nullable().optional(),maxTripKm:z.number().int().min(1).max(2000).nullable().optional(),maxLengthCm:z.number().int().min(1).max(30000).nullable().optional(),maxVolumeL:z.number().int().min(1).max(1000000).nullable().optional(),minLicenceClass:z.string().trim().min(1).max(20).nullable().optional(),needsManualVerification:z.boolean().optional(),customerDescription:z.string().trim().min(1).max(240).optional(),customerExample:z.string().trim().min(1).max(160).optional()}).strict().parse(input);
   // Leaving out a limit keeps the current one; null removes it.
-  return db.tx(async c=>{if(v.enabled){check((await c.query('SELECT 1 FROM pricing_policies WHERE vehicle=$1 AND active',[v.vehicle])).rowCount,409,'Set a real active fare for this vehicle before enabling it');if(!['bicycle','motorcycle'].includes(v.vehicle))check(v.maxLengthCm>0&&v.maxVolumeL>0&&v.minLicenceClass,409,'Set verified load dimensions and the current minimum Ghana licence class before enabling this vehicle');}const updated=await c.query(`UPDATE vehicle_capabilities SET max_parcel_size=$2,allowed_categories=$3,enabled=$4,
+  return db.tx(async c=>{if(v.enabled){check((await c.query('SELECT 1 FROM pricing_policies WHERE vehicle=$1 AND active AND NOT is_placeholder',[v.vehicle])).rowCount,409,'Set a real active fare for this vehicle before enabling it');if(!['bicycle','motorcycle'].includes(v.vehicle))check(v.maxLengthCm>0&&v.maxVolumeL>0&&v.minLicenceClass,409,'Set verified load dimensions and the current minimum Ghana licence class before enabling this vehicle');if(['tricycle','pickup','van','box_truck','long_vehicle','truck'].includes(v.vehicle))check((await c.query("SELECT 1 FROM cargo_policy_settings WHERE id=1 AND liability_limit_minor IS NOT NULL AND length(trim(liability_terms))>=20")).rowCount,409,'Publish the cargo liability cap and customer terms before enabling cargo quotes');}const updated=await c.query(`UPDATE vehicle_capabilities SET max_parcel_size=$2,allowed_categories=$3,enabled=$4,
     max_weight_g=CASE WHEN $5 THEN $6::int ELSE max_weight_g END,max_trip_m=CASE WHEN $7 THEN $8::int ELSE max_trip_m END,
     max_length_cm=CASE WHEN $9 THEN $10::int ELSE max_length_cm END,max_volume_l=CASE WHEN $11 THEN $12::int ELSE max_volume_l END,
     min_licence_class=CASE WHEN $13 THEN $14::text ELSE min_licence_class END,
@@ -195,8 +195,9 @@ export function dispatchEngine(db,{routing}={}){
   const shipments=(await db.query(`SELECT s.id,s.state,s.recipient_phone,s.amount_minor,s.commission_minor,s.payment_method,s.cash_payer,q.request,c.promised_delivery_before
     FROM shipments s JOIN quotes q ON q.id=s.quote_id LEFT JOIN dispatch_commitments c ON c.shipment_id=s.id
     WHERE s.rider_id=$1 AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP','FAILED','RETURN_REQUESTED') ORDER BY s.created_at`,[actor.id])).rows;
+  const riderShipments=shipments.map(s=>({...s,request:s.request&&Object.fromEntries(Object.entries(s.request).filter(([key])=>key!=='declaredGoodsValueMinor'))}));
   const plan=(await db.query('SELECT stops,revision FROM rider_dispatch_plans WHERE rider_id=$1',[actor.id])).rows[0];
-  const shipmentMap=new Map(shipments.map(s=>[s.id,s]));
+  const shipmentMap=new Map(riderShipments.map(s=>[s.id,s]));
   const stops=(plan?.stops??[]).map(st=>{
     const sh=shipmentMap.get(st.shipmentId);
     return {
@@ -213,7 +214,7 @@ export function dispatchEngine(db,{routing}={}){
       destination: sh?.request?.destination
     };
   });
-  const finalStops=stops.length?stops:shipments.map(s=>({
+  const finalStops=stops.length?stops:riderShipments.map(s=>({
     id: s.id,
     shipmentId: s.id,
     kind: s.state==='RIDER_ASSIGNED'?'pickup':'dropoff',
@@ -227,7 +228,7 @@ export function dispatchEngine(db,{routing}={}){
     pickup: s.request?.pickup,
     destination: s.request?.destination
   }));
-  return {optedIn:r.multi_stop_opt_in,vehicle:r.vehicle,capacityG:r.max_weight_g,shipments,stops:finalStops,revision:plan?.revision??0};
+  return {optedIn:r.multi_stop_opt_in,vehicle:r.vehicle,capacityG:r.max_weight_g,shipments:riderShipments,stops:finalStops,revision:plan?.revision??0};
  }
  // A previously accepted route must be complete and have explicit delivery deadlines before inserting another parcel.
  async function planForCandidate(r,request,sid,p,routeEngine=routing){

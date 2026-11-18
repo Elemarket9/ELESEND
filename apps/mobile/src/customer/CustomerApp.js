@@ -82,6 +82,10 @@ function parcelQuoteBody(booking, pickup, destination, authPhone, paymentMethod,
     weightG: booking.weightG,
     lengthCm: booking.lengthCm,
     volumeL: booking.volumeL,
+    helpers: Number(booking.helpers || 0),
+    pickupFloorsNoLift: Number(booking.pickupFloorsNoLift || 0),
+    dropoffFloorsNoLift: Number(booking.dropoffFloorsNoLift || 0),
+    declaredGoodsValueMinor: booking.declaredGoodsValueGhs ? Math.round(Number(booking.declaredGoodsValueGhs) * 100) : undefined,
     paymentMethod: paymentMethod || booking.paymentMethod,
     recipientPhone: normalizeGhanaPhone(booking.recipientPhone || authPhone),
     description: booking.description || 'Package',
@@ -113,6 +117,10 @@ export default function CustomerApp() {
     weightG: '1500',
     lengthCm: '',
     volumeL: '',
+    helpers: '0',
+    pickupFloorsNoLift: '0',
+    dropoffFloorsNoLift: '0',
+    declaredGoodsValueGhs: '',
     description: 'Package',
     parcelCategory: 'general',
     parcelSize: 'small',
@@ -1667,6 +1675,24 @@ export default function CustomerApp() {
                     <Text style={styles.inputMicroLabel}>Load volume (litres)</Text>
                     <TextInput style={styles.sheetNoteInput} placeholder="Approximate volume" keyboardType="number-pad" value={booking.volumeL} onChangeText={v => updateBooking('volumeL', v)} />
                   </View>
+                </View>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputMicroLabel}>Helpers (up to 4)</Text>
+                    <TextInput style={styles.sheetNoteInput} keyboardType="number-pad" value={booking.helpers} onChangeText={v => updateBooking('helpers', v)} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputMicroLabel}>Pickup floors, no lift</Text>
+                    <TextInput style={styles.sheetNoteInput} keyboardType="number-pad" value={booking.pickupFloorsNoLift} onChangeText={v => updateBooking('pickupFloorsNoLift', v)} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputMicroLabel}>Drop-off floors, no lift</Text>
+                    <TextInput style={styles.sheetNoteInput} keyboardType="number-pad" value={booking.dropoffFloorsNoLift} onChangeText={v => updateBooking('dropoffFloorsNoLift', v)} />
+                  </View>
+                </View>
+                <View>
+                  <Text style={styles.inputMicroLabel}>Declared goods value GH₵ (optional)</Text>
+                  <TextInput style={styles.sheetNoteInput} keyboardType="decimal-pad" placeholder="For dispute records only" value={booking.declaredGoodsValueGhs} onChangeText={v => updateBooking('declaredGoodsValueGhs', v)} />
                 </View>
                 <Text style={styles.inputMicroLabel}>Handover & Landmark Instructions (Optional)</Text>
                 <TextInput
