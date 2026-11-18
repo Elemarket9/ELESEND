@@ -43,5 +43,5 @@ jobs:
       - name: Test suite with the new places
         run: node --test tests/geocoder-search-regressions.test.mjs tests/map-quality.test.mjs tests/map-search-stored-places.test.mjs tests/map-place-overlay.test.mjs
       - name: Keep the built places for inspection
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with: {name: ghana-osm-places, path: services/api/modules/maps/ghana-osm-places.json, retention-days: 7}
