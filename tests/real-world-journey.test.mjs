@@ -70,7 +70,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    try{
     await db.query("UPDATE vehicle_capabilities SET enabled=true,max_weight_g=30000000,max_trip_m=800000,max_length_cm=1600,max_volume_l=1000000,min_licence_class='TEST-STAFF-SET' WHERE vehicle='long_vehicle'");
     await db.query("UPDATE cargo_policy_settings SET liability_limit_minor=500000,liability_terms='Temporary test terms for freight quote coverage.' WHERE id=1");
-    const stillPlaceholder=await api(c.token,'POST','/api/v1/quotes',trip({vehicle:'long_vehicle',weightG:4000000,lengthCm:900,volumeL:20000}));
+    const stillPlaceholder=await api(c.token,'POST','/api/v1/quotes',trip({vehicle:'long_vehicle',weightG:4000000,lengthCm:900,volumeL:20000,pickupWindow:{startAt:new Date(Date.now()+3600000).toISOString(),endAt:new Date(Date.now()+7200000).toISOString()}}));
     assert.equal(stillPlaceholder.status,503);assert.match(stillPlaceholder.data.error,/heavy-freight rates are not configured/i);
     await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'pricing:write') ON CONFLICT DO NOTHING",[c.id]);
     await assert.rejects(()=>app.configureVehicleTariff({id:c.id,kind:'admin'},{vehicle:'long_vehicle',baseMinor:10000,perKmMinor:150,perMinuteMinor:0,minimumMinor:0}),/heavy-freight pricing controls/);
@@ -79,7 +79,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     const activeHeavy=(await db.query("SELECT id,is_placeholder FROM long_vehicle_pricing_policies WHERE active AND vehicle='long_vehicle'")).rows[0];
     assert.equal(activeHeavy?.id,policyId);assert.equal(activeHeavy?.is_placeholder,false);
     assert.ok(oldGeneric,'migration provides the quote policy reference row');
-    const quote=await api(c.token,'POST','/api/v1/quotes',trip({vehicle:'long_vehicle',weightG:4000000,lengthCm:900,volumeL:20000,helpers:2,pickupFloorsNoLift:1,dropoffFloorsNoLift:2}));
+    const quote=await api(c.token,'POST','/api/v1/quotes',trip({vehicle:'long_vehicle',weightG:4000000,lengthCm:900,volumeL:20000,helpers:2,pickupFloorsNoLift:1,dropoffFloorsNoLift:2,pickupWindow:{startAt:new Date(Date.now()+3600000).toISOString(),endAt:new Date(Date.now()+7200000).toISOString()}}));
     assert.equal(quote.status,200,JSON.stringify(quote.data));
     assert.equal(quote.data.pricingEngine,'long_vehicle_heavy_freight_v1');
     assert.equal(quote.data.pricingEvidence.longVehiclePolicyId,policyId);
@@ -106,14 +106,14 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
   });
 
   await t.test('scheduled pickups are bounded, fixed at quote, dispatched early, and reminded',async()=>{
-   const c=await customer();const scheduledRider=await readyRider();
+   const c=await customer();
    const missingTruckWindow=await api(c.token,'POST','/api/v1/quotes',trip({vehicle:'box_truck',weightG:2000000,lengthCm:300,volumeL:8000}));
    assert.equal(missingTruckWindow.status,422);assert.match(missingTruckWindow.data.error,/pickup date and time/i);
    const past=await api(c.token,'POST','/api/v1/quotes',trip({pickupWindow:{startAt:new Date(Date.now()-60000).toISOString(),endAt:new Date(Date.now()+60000).toISOString()}}));
    assert.equal(past.status,422);assert.match(past.data.error,/future/i);
    const tooFar=await api(c.token,'POST','/api/v1/quotes',trip({pickupWindow:{startAt:new Date(Date.now()+15*86400000).toISOString(),endAt:new Date(Date.now()+15*86400000+3600000).toISOString()}}));
    assert.equal(tooFar.status,422);assert.match(tooFar.data.error,/14 days/i);
-   async function scheduledOrder(minutesAhead,{acceptInAdvance=false,rider=scheduledRider}={}){
+   async function scheduledOrder(minutesAhead){
     const start=new Date(Date.now()+minutesAhead*60000),end=new Date(start.getTime()+3600000);
     const q=await api(c.token,'POST','/api/v1/quotes',trip({paymentMethod:'MOMO',pickupWindow:{startAt:start.toISOString(),endAt:end.toISOString()}}));
     assert.equal(q.status,200,JSON.stringify(q.data));assert.equal(q.data.pickupWindow.startAt,start.toISOString());
@@ -123,15 +123,18 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     const pay=await api(c.token,'POST','/api/v1/shipments/'+booked.data.id+'/checkout',{idempotencyKey:key,email:'owner@example.com'});assert.equal(pay.status,200,JSON.stringify(pay.data));
     const payment=(await db.query('SELECT amount_minor FROM shipment_checkout_intents WHERE reference=$1',[pay.data.reference])).rows[0];
     await checkout.confirmVerified({status:'success',reference:pay.data.reference,amountMinor:Number(payment.amount_minor),currency:'GHS',eventId:'sched-'+randomUUID(),channel:'mobile_money'});
-    if(acceptInAdvance){
-     await dispatch.tick();
-     const offer=(await api(rider.token,'GET','/api/v1/rider/offers')).data.find(row=>row.id===booked.data.id);
-     assert.ok(offer,'scheduled jobs are offered to riders before pickup time');
-     assert.equal(new Date(offer.scheduledPickupStart).toISOString(),start.toISOString());
-     assert.equal(offer.pickupWindow.startAt,start.toISOString());
-     assert.equal((await api(rider.token,'POST','/api/v1/shipments/'+booked.data.id+'/accept',{offerId:offer.offerId})).status,200);
-    }else await db.query("UPDATE shipments SET state='RIDER_ASSIGNED',rider_id=$2 WHERE id=$1",[booked.data.id,rider.id]);
     return {id:booked.data.id,start,amount:q.data.amount_minor};
+   }
+   async function acceptScheduled(order){
+    const rider=await readyRider();
+    await db.query('UPDATE shipments SET next_dispatch_at=now() WHERE id=$1',[order.id]);
+    await dispatch.tick();
+    const offer=(await api(rider.token,'GET','/api/v1/rider/offers')).data.find(row=>row.id===order.id);
+    assert.ok(offer,'scheduled jobs are offered to riders before pickup time');
+    assert.equal(new Date(offer.scheduledPickupStart).toISOString(),order.start.toISOString());
+    assert.equal(offer.pickupWindow.startAt,order.start.toISOString());
+    assert.equal((await api(rider.token,'POST','/api/v1/shipments/'+order.id+'/accept',{offerId:offer.offerId})).status,200);
+    return rider;
    }
    const early=await scheduledOrder(2*24*60);
    const scheduledRow=(await db.query('SELECT next_dispatch_at,scheduled_pickup_start,amount_minor FROM shipments WHERE id=$1',[early.id])).rows[0];
@@ -139,13 +142,14 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    assert.equal(Number(scheduledRow.amount_minor),early.amount,'the booked amount stays fixed at the quote amount');
    assert.ok(Math.abs(new Date(scheduledRow.next_dispatch_at).getTime()-(early.start.getTime()-24*3600000))<3000,'scheduled dispatch opens one day early by default');
    await assert.rejects(()=>db.query("UPDATE shipments SET scheduled_pickup_start=now()+interval '1 hour' WHERE id=$1",[early.id]),/Shipment terms immutable/);
+   await acceptScheduled(early);
    const termsEarly=await app.cancelTerms({id:c.id,kind:'customer'},early.id);assert.equal(termsEarly.feeMinor,0);assert.ok(termsEarly.freeSecondsLeft>0);
-   await scheduledOrder(10*60,{acceptInAdvance:true,rider:await readyRider()});
-   const late=await scheduledOrder(60);
+   const tenHours=await scheduledOrder(10*60);await acceptScheduled(tenHours);
+   const late=await scheduledOrder(60);await acceptScheduled(late);
    const termsLate=await app.cancelTerms({id:c.id,kind:'customer'},late.id);assert.ok(termsLate.feeMinor>0);
-   const reminder60=await scheduledOrder(50);await dispatch.tick();
+   const reminder60=await scheduledOrder(50);await acceptScheduled(reminder60);await dispatch.tick();
    assert.equal((await db.query("SELECT 1 FROM notification_jobs WHERE id=$1",['scheduled-pickup:'+reminder60.id+':60'])).rowCount,1);
-   const reminder15=await scheduledOrder(10);await dispatch.tick();
+   const reminder15=await scheduledOrder(10);await acceptScheduled(reminder15);await dispatch.tick();
    assert.equal((await db.query("SELECT 1 FROM notification_jobs WHERE id=$1",['scheduled-pickup:'+reminder15.id+':15'])).rowCount,1);
   });
 
@@ -175,7 +179,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     assert.equal(fakePrice.status,400,'client cannot override a helper price');
     const beyondTrip=await api(customerAccount.token,'POST','/api/v1/quotes',trip({vehicle:'tricycle',destination:{address:'Kumasi Central Market',latitude:6.6975,longitude:-1.6244},weightG:1000,lengthCm:100,volumeL:1000}));
     assert.equal(beyondTrip.status,422);assert.match(beyondTrip.data.error,/trip.*limit|Try a/i);
-    const unavailable=await api(customerAccount.token,'POST','/api/v1/quotes',trip({vehicle:'box_truck',weightG:1000,lengthCm:100,volumeL:1000}));
+    const unavailable=await api(customerAccount.token,'POST','/api/v1/quotes',trip({vehicle:'box_truck',weightG:1000,lengthCm:100,volumeL:1000,pickupWindow:{startAt:new Date(Date.now()+3600000).toISOString(),endAt:new Date(Date.now()+7200000).toISOString()}}));
     assert.equal(unavailable.status,409);
 
     const papers={plateNumber:'GT 5432-26',make:'Howo',model:'Cargo',color:'White',payloadCapacityG:7000000,bodyType:'closed',roadworthyExpiresOn:'2027-12-31',insuranceExpiresOn:'2027-12-31'};
