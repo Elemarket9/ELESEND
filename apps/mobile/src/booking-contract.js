@@ -74,7 +74,7 @@ export function isConfirmedLocation(loc) {
  * Body for POST /api/v1/quotes. Only keys present in quoteSchema are sent.
  * Throws a user-facing error instead of sending unconfirmed or unresolved locations.
  */
-export function buildParcelQuoteRequest({ pickup, destination, vehicle, weightG, lengthCm, volumeL, paymentMethod, recipientPhone, description, cashPayer, destinationInstructions, helpers, pickupFloorsNoLift, dropoffFloorsNoLift, declaredGoodsValueMinor }) {
+export function buildParcelQuoteRequest({ pickup, destination, vehicle, weightG, lengthCm, volumeL, paymentMethod, recipientPhone, description, cashPayer, destinationInstructions, helpers, pickupFloorsNoLift, dropoffFloorsNoLift, declaredGoodsValueMinor, pickupWindow }) {
   if (!isConfirmedLocation(pickup)) throw new Error('Please confirm your pickup location on the map before requesting a price.');
   if (!isConfirmedLocation(destination)) throw new Error('Please confirm your delivery location on the map before requesting a price.');
   const dest = toAddressPayload(destination);
@@ -99,6 +99,7 @@ export function buildParcelQuoteRequest({ pickup, destination, vehicle, weightG,
   body.pickupFloorsNoLift = Number.isInteger(Number(pickupFloorsNoLift)) ? Math.max(0, Number(pickupFloorsNoLift)) : 0;
   body.dropoffFloorsNoLift = Number.isInteger(Number(dropoffFloorsNoLift)) ? Math.max(0, Number(dropoffFloorsNoLift)) : 0;
   if (Number.isSafeInteger(Number(declaredGoodsValueMinor)) && Number(declaredGoodsValueMinor) > 0) body.declaredGoodsValueMinor = Number(declaredGoodsValueMinor);
+  if (pickupWindow?.startAt && pickupWindow?.endAt) body.pickupWindow = { startAt: pickupWindow.startAt, endAt: pickupWindow.endAt };
   if (['CASH', 'MOMO', 'CARD', 'QR', 'DIGITAL'].includes(paymentMethod)) body.paymentMethod = paymentMethod;
   if (['sender', 'recipient'].includes(cashPayer)) body.cashPayer = cashPayer;
   return body;
@@ -124,6 +125,7 @@ export function isQuoteBoundToInputs(quoted, currentQuoteBody) {
   if (Number(q.weightG) !== Number(c.weightG)) return false;
   if (Number(q.lengthCm || 0) !== Number(c.lengthCm || 0)) return false;
   if (Number(q.volumeL || 0) !== Number(c.volumeL || 0)) return false;
+  if ((q.pickupWindow?.startAt || null) !== (c.pickupWindow?.startAt || null) || (q.pickupWindow?.endAt || null) !== (c.pickupWindow?.endAt || null)) return false;
   if (Math.abs(Number(q.pickup?.latitude) - Number(c.pickup?.latitude)) > 1e-6) return false;
   if (Math.abs(Number(q.pickup?.longitude) - Number(c.pickup?.longitude)) > 1e-6) return false;
   if (Math.abs(Number(q.destination?.latitude) - Number(c.destination?.latitude)) > 1e-6) return false;

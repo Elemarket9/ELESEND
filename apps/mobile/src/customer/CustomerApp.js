@@ -75,6 +75,18 @@ function sanitizeAddressPayload(loc) {
 
 // Builds the authoritative parcel quote body (no unknown keys; confirmed locations only).
 function parcelQuoteBody(booking, pickup, destination, authPhone, paymentMethod, extraInstructions = '') {
+  const hasStart = Boolean(booking.pickupStartLocal?.trim());
+  const hasEnd = Boolean(booking.pickupEndLocal?.trim());
+  if (hasStart !== hasEnd) throw new Error('Enter both the start and end of your pickup window.');
+  const localPickupWindow = hasStart ? (() => {
+    const asIso = value => {
+      if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value.trim())) throw new Error('Use YYYY-MM-DD HH:mm for both pickup times.');
+      const date = new Date(value.trim().replace(' ', 'T') + ':00');
+      if (!Number.isFinite(date.getTime())) throw new Error('Enter a valid pickup date and time.');
+      return date.toISOString();
+    };
+    return { startAt: asIso(booking.pickupStartLocal), endAt: asIso(booking.pickupEndLocal) };
+  })() : undefined;
   return buildParcelQuoteRequest({
     pickup,
     destination,
@@ -86,6 +98,7 @@ function parcelQuoteBody(booking, pickup, destination, authPhone, paymentMethod,
     pickupFloorsNoLift: Number(booking.pickupFloorsNoLift || 0),
     dropoffFloorsNoLift: Number(booking.dropoffFloorsNoLift || 0),
     declaredGoodsValueMinor: booking.declaredGoodsValueGhs ? Math.round(Number(booking.declaredGoodsValueGhs) * 100) : undefined,
+    pickupWindow: localPickupWindow,
     paymentMethod: paymentMethod || booking.paymentMethod,
     recipientPhone: normalizeGhanaPhone(booking.recipientPhone || authPhone),
     description: booking.description || 'Package',
@@ -120,6 +133,8 @@ export default function CustomerApp() {
     helpers: '0',
     pickupFloorsNoLift: '0',
     dropoffFloorsNoLift: '0',
+    pickupStartLocal: '',
+    pickupEndLocal: '',
     declaredGoodsValueGhs: '',
     description: 'Package',
     parcelCategory: 'general',
@@ -1694,6 +1709,12 @@ export default function CustomerApp() {
                 <View>
                   <Text style={styles.inputMicroLabel}>Declared goods value GH₵ (optional)</Text>
                   <TextInput style={styles.sheetNoteInput} keyboardType="decimal-pad" placeholder="For dispute records only" value={booking.declaredGoodsValueGhs} onChangeText={v => updateBooking('declaredGoodsValueGhs', v)} />
+                </View>
+                <View>
+                  <Text style={styles.inputMicroLabel}>Pickup window (optional; required for box and long vehicles)</Text>
+                  <Text style={{ fontSize: 11, color: colors.textSecondary, marginBottom: 4 }}>Use local time: YYYY-MM-DD HH:mm. Schedule up to 14 days ahead.</Text>
+                  <TextInput style={styles.sheetNoteInput} placeholder="Start, e.g. 2026-11-20 08:00" value={booking.pickupStartLocal} onChangeText={v => updateBooking('pickupStartLocal', v)} />
+                  <TextInput style={[styles.sheetNoteInput, { marginTop: 5 }]} placeholder="End, e.g. 2026-11-20 09:00" value={booking.pickupEndLocal} onChangeText={v => updateBooking('pickupEndLocal', v)} />
                 </View>
                 <Text style={styles.inputMicroLabel}>Handover & Landmark Instructions (Optional)</Text>
                 <TextInput

@@ -60,6 +60,15 @@ const initialCreds = {
 };
 
 const isStationary = speed => speed === null || speed < 2.5;
+function scheduledPickupLabel(window) {
+  if (!window?.startAt || !window?.endAt) return null;
+  const start = new Date(window.startAt), end = new Date(window.endAt);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return null;
+  const format = value => new Intl.DateTimeFormat('en-GH', {
+    timeZone: 'Africa/Accra', dateStyle: 'medium', timeStyle: 'short'
+  }).format(value);
+  return `Scheduled pickup: ${format(start)}–${format(end)}`;
+}
 
 function BrandRow({ tagline }) {
   return (
@@ -1457,6 +1466,7 @@ export default function RiderApp() {
                 </View>
 
                 <Text style={styles.offerPackageInfo}>📦 {o.description || 'Standard Package'} • {o.vehicle || vehicle?.vehicle || 'motorcycle'}</Text>
+                {scheduledPickupLabel(o.pickupWindow) ? <Text style={styles.offerPackageInfo}>{scheduledPickupLabel(o.pickupWindow)}</Text> : null}
 
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
                   <TouchableOpacity

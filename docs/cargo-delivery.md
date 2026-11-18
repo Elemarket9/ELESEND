@@ -38,6 +38,10 @@ Migration `077_cargo_pricing_options.sql` adds active, zero-price placeholder ta
 
 Before enabling any cargo class, a staff member with `pricing:write` must publish real start, per-kilometre, per-minute and minimum fares, commission, helper price, per-floor/per-side price, free loading time and waiting fee through Admin → Tariffs & Commission Control. Placeholder prices are intentionally zero and are not launch prices. Configure the published cargo liability cap and plain-English terms in the Cargo liability terms section; the cap is not an insurance offer. Until both a real tariff and cargo terms exist, cargo quotes are refused.
 
+## Scheduled pickup setup
+
+Box truck and long vehicle quotes require a future pickup window. Other vehicle classes can book without one or may request a window. Windows can be booked up to 14 days ahead and can be no longer than four hours. The quoted amount is fixed when the customer books. The default dispatch lead is 1,440 minutes (24 hours) and staff can adjust it per vehicle class in Admin → Vehicle classes; dispatch still checks the rider's road ETA against the end of the pickup window before offering the job. Riders receive reminders at about 60 and 15 minutes before the pickup. Scheduled cargo can be cancelled without a fee until two hours before its pickup window, after which the existing cancellation fee terms apply.
+
 The customer may declare the goods value. ELESEND stores that amount with the immutable quote for dispute records only; it does not change the fare or buy insurance. The quote displays and snapshots the liability terms in force when it is priced.
 
 ## Long-vehicle heavy-freight pricing

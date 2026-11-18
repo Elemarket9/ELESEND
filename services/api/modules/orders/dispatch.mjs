@@ -105,15 +105,15 @@ export function dispatchEngine(db,{routing}={}){
  }
  async function trackingSettings(actor){check(actor?.kind==='rider',403,'Rider credentials required');const p=await policy(db);return {movingUploadSeconds:p.moving_upload_seconds,idleUploadSeconds:p.idle_upload_seconds,locationFreshSeconds:p.fresh_seconds,privacyRetentionHours:p.sample_retention_hours};}
  async function vehiclePolicy(actor){await getPolicy(actor);return (await db.query('SELECT * FROM vehicle_capabilities ORDER BY vehicle')).rows;}
- async function setVehiclePolicy(actor,input){await getPolicy(actor);const v=z.object({vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','box_truck','long_vehicle','truck']),maxParcelSize:z.enum(['small','medium','large']),allowedCategories:z.array(z.enum(['general','documents','fragile','food'])).min(1).max(4),enabled:z.boolean(),maxWeightG:z.number().int().min(1).max(30000000).nullable().optional(),maxTripKm:z.number().int().min(1).max(2000).nullable().optional(),maxLengthCm:z.number().int().min(1).max(30000).nullable().optional(),maxVolumeL:z.number().int().min(1).max(1000000).nullable().optional(),minLicenceClass:z.string().trim().min(1).max(20).nullable().optional(),needsManualVerification:z.boolean().optional(),customerDescription:z.string().trim().min(1).max(240).optional(),customerExample:z.string().trim().min(1).max(160).optional()}).strict().parse(input);
+ async function setVehiclePolicy(actor,input){await getPolicy(actor);const v=z.object({vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','box_truck','long_vehicle','truck']),maxParcelSize:z.enum(['small','medium','large']),allowedCategories:z.array(z.enum(['general','documents','fragile','food'])).min(1).max(4),enabled:z.boolean(),maxWeightG:z.number().int().min(1).max(30000000).nullable().optional(),maxTripKm:z.number().int().min(1).max(2000).nullable().optional(),maxLengthCm:z.number().int().min(1).max(30000).nullable().optional(),maxVolumeL:z.number().int().min(1).max(1000000).nullable().optional(),minLicenceClass:z.string().trim().min(1).max(20).nullable().optional(),needsManualVerification:z.boolean().optional(),customerDescription:z.string().trim().min(1).max(240).optional(),customerExample:z.string().trim().min(1).max(160).optional(),scheduledDispatchLeadMinutes:z.number().int().min(30).max(10080).optional()}).strict().parse(input);
   // Leaving out a limit keeps the current one; null removes it.
   return db.tx(async c=>{if(v.enabled){const tariffSql=v.vehicle==='long_vehicle'?"SELECT 1 FROM long_vehicle_pricing_policies WHERE active AND NOT is_placeholder":"SELECT 1 FROM pricing_policies WHERE vehicle=$1 AND active AND NOT is_placeholder";check((await c.query(tariffSql,v.vehicle==='long_vehicle'?[]:[v.vehicle])).rowCount,409,'Set a real price for this vehicle through its correct pricing controls before enabling it');if(!['bicycle','motorcycle'].includes(v.vehicle))check(v.maxLengthCm>0&&v.maxVolumeL>0&&v.minLicenceClass,409,'Set verified load dimensions and the current minimum Ghana licence class before enabling this vehicle');if(['tricycle','pickup','van','box_truck','long_vehicle','truck'].includes(v.vehicle))check((await c.query("SELECT 1 FROM cargo_policy_settings WHERE id=1 AND liability_limit_minor IS NOT NULL AND length(trim(liability_terms))>=20")).rowCount,409,'Publish the cargo liability cap and customer terms before enabling cargo quotes');}const updated=await c.query(`UPDATE vehicle_capabilities SET max_parcel_size=$2,allowed_categories=$3,enabled=$4,
     max_weight_g=CASE WHEN $5 THEN $6::int ELSE max_weight_g END,max_trip_m=CASE WHEN $7 THEN $8::int ELSE max_trip_m END,
     max_length_cm=CASE WHEN $9 THEN $10::int ELSE max_length_cm END,max_volume_l=CASE WHEN $11 THEN $12::int ELSE max_volume_l END,
     min_licence_class=CASE WHEN $13 THEN $14::text ELSE min_licence_class END,
-    needs_manual_verification=COALESCE($15,needs_manual_verification),customer_description=COALESCE($16,customer_description),customer_example=COALESCE($17,customer_example)
-    WHERE vehicle=$1 RETURNING vehicle,max_weight_g,max_trip_m,max_length_cm,max_volume_l,min_licence_class,needs_manual_verification,enabled,customer_description,customer_example`,
-   [v.vehicle,v.maxParcelSize,[...new Set(v.allowedCategories)],v.enabled,v.maxWeightG!==undefined,v.maxWeightG??null,v.maxTripKm!==undefined,v.maxTripKm==null?null:v.maxTripKm*1000,v.maxLengthCm!==undefined,v.maxLengthCm??null,v.maxVolumeL!==undefined,v.maxVolumeL??null,v.minLicenceClass!==undefined,v.minLicenceClass??null,v.needsManualVerification??null,v.customerDescription??null,v.customerExample??null]);
+    needs_manual_verification=COALESCE($15,needs_manual_verification),customer_description=COALESCE($16,customer_description),customer_example=COALESCE($17,customer_example),scheduled_dispatch_lead_minutes=COALESCE($18,scheduled_dispatch_lead_minutes)
+    WHERE vehicle=$1 RETURNING vehicle,max_weight_g,max_trip_m,max_length_cm,max_volume_l,min_licence_class,needs_manual_verification,enabled,customer_description,customer_example,scheduled_dispatch_lead_minutes`,
+   [v.vehicle,v.maxParcelSize,[...new Set(v.allowedCategories)],v.enabled,v.maxWeightG!==undefined,v.maxWeightG??null,v.maxTripKm!==undefined,v.maxTripKm==null?null:v.maxTripKm*1000,v.maxLengthCm!==undefined,v.maxLengthCm??null,v.maxVolumeL!==undefined,v.maxVolumeL??null,v.minLicenceClass!==undefined,v.minLicenceClass??null,v.needsManualVerification??null,v.customerDescription??null,v.customerExample??null,v.scheduledDispatchLeadMinutes??null]);
    check(updated.rowCount,404,'Vehicle class not found');await audit(c,actor.id,'dispatch.vehicle_policy_changed',null);return {ok:true,vehicle:updated.rows[0]};});
  }
  async function riderPosition(actor,input){check(actor?.kind==='rider',403,'Rider credentials required');const v=correctPhoneClock(sampleSchema.parse(input)),p=await policy(db);
@@ -412,6 +412,10 @@ export function dispatchEngine(db,{routing}={}){
     if(current?.state==='AWAITING_ASSIGNMENT'&&(current.paid||current.payment_method==='CASH')){await c.query("UPDATE shipments SET next_dispatch_at=now()+($2::int*interval '1 second'),dispatch_attempts=dispatch_attempts+1 WHERE id=$1",[sid,p.retry_seconds]);await audit(c,null,'dispatch.routing_unavailable',sid);}
    });return {status:'routing_unavailable',retryAfterSeconds:p.retry_seconds,code:e.status??'routing_error'};
   }
+  if(sh.scheduled_pickup_end){
+   const latestPickup=new Date(sh.scheduled_pickup_end).getTime();
+   ranked=ranked.filter(r=>Date.now()+Number(r.roadEtaSeconds)*1000<=latestPickup);
+  }
   return db.tx(async c=>{
    const s=(await c.query('SELECT * FROM shipments WHERE id=$1 FOR UPDATE',[sid])).rows[0];check(s,404);
    if(s.state!=='AWAITING_ASSIGNMENT'||!(s.paid||s.payment_method==='CASH'))return {status:'not_dispatchable'};
@@ -474,7 +478,7 @@ export function dispatchEngine(db,{routing}={}){
   if(pre.company_id)check((await c.query("SELECT 1 FROM companies WHERE id=$1 AND status='approved' FOR UPDATE",[pre.company_id])).rowCount,403,'Company inactive');
   const r=(await c.query("SELECT * FROM riders WHERE id=$1 AND status='approved' FOR UPDATE",[actor.id])).rows[0];authorizedRider(r);check(r.online,409,'Go online first');
   return (await c.query(`SELECT o.id AS "offerId",o.shipment_id AS id,o.expires_at AS "expiresAt",o.pickup_eta_seconds AS "pickupEtaSeconds",o.pickup_road_meters AS "pickupRoadMeters",o.pickup_road_meters AS distance_m,o.direction,o.quoted_entitlement_minor AS entitlement_minor,o.expected_active AS "existingParcels",o.planned_dropoff_seconds AS "estimatedDropoffSeconds",
-    s.amount_minor,s.commission_minor,s.payment_method,s.cash_payer,COALESCE(q.request->>'vehicle',$2) AS vehicle,q.request->>'description' AS description,q.request->'pickup' AS pickup,q.request->'destination' AS destination
+    s.amount_minor,s.commission_minor,s.payment_method,s.cash_payer,s.scheduled_pickup_start AS "scheduledPickupStart",s.scheduled_pickup_end AS "scheduledPickupEnd",COALESCE(q.request->>'vehicle',$2) AS vehicle,q.request->>'description' AS description,q.request->'pickup' AS pickup,q.request->'destination' AS destination,q.request->'pickupWindow' AS "pickupWindow"
    FROM dispatch_offers o JOIN shipments s ON s.id=o.shipment_id JOIN quotes q ON q.id=s.quote_id
    WHERE o.rider_id=$1 AND o.status='offered' AND o.expires_at>now() AND s.state='AWAITING_ASSIGNMENT' AND (s.paid OR s.payment_method='CASH') ORDER BY o.created_at LIMIT 30`,[actor.id,r.vehicle])).rows;
  });}
@@ -489,6 +493,7 @@ export function dispatchEngine(db,{routing}={}){
    check(await foodDispatchAllowed(c,sid),409,'Food order awaits verified payment and kitchen acceptance');
    const o=(await c.query("SELECT * FROM dispatch_offers WHERE id=$1 AND shipment_id=$2 AND rider_id=$3 FOR UPDATE",[offerId,sid,actor.id])).rows[0];
    check(o&&o.status==='offered'&&new Date(o.expires_at)>new Date(),409,'Offer expired or not assigned to rider');
+   check(!s.scheduled_pickup_end||Date.now()+Number(o.pickup_eta_seconds)*1000<=new Date(s.scheduled_pickup_end).getTime(),409,'This pickup window has passed for the current route. Please wait for another offer.');
    const p=await policy(c);check(r.position_at&&new Date(r.position_at).getTime()>Date.now()-p.fresh_seconds*1000,409,'Location refresh required');
    const location=(await c.query('SELECT ST_Y(current_position::geometry) AS latitude,ST_X(current_position::geometry) AS longitude FROM riders WHERE id=$1',[actor.id])).rows[0];
    check(location?.latitude!==null&&haversine(point(location),{latitude:o.anchor_lat,longitude:o.anchor_lon})<=p.max_offer_movement_m,409,'Rider moved: fresh road offer required');
@@ -741,6 +746,15 @@ export function dispatchEngine(db,{routing}={}){
   return results;
  }
  async function tick(limit=8){check(Number.isInteger(limit)&&limit>=1&&limit<=20,400);
+  // Stable IDs make these reminders exactly-once across overlapping worker ticks and retries.
+  await db.query(`INSERT INTO notification_jobs(id,recipient_id,kind,payload)
+   SELECT 'scheduled-pickup:'||s.id::text||':60',s.rider_id,'scheduled_pickup_reminder',jsonb_build_object('shipmentId',s.id,'minutes',60,'pickupAt',s.scheduled_pickup_start,'message','Your scheduled ELESEND pickup is in about one hour. Please get ready and check the pickup details.')
+   FROM shipments s WHERE s.scheduled_pickup_start>now()+interval '15 minutes' AND s.scheduled_pickup_start<=now()+interval '60 minutes'
+    AND s.rider_id IS NOT NULL AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED') ON CONFLICT(id) DO NOTHING`);
+  await db.query(`INSERT INTO notification_jobs(id,recipient_id,kind,payload)
+   SELECT 'scheduled-pickup:'||s.id::text||':15',s.rider_id,'scheduled_pickup_reminder',jsonb_build_object('shipmentId',s.id,'minutes',15,'pickupAt',s.scheduled_pickup_start,'message','Your scheduled ELESEND pickup is in about 15 minutes. Please head to the pickup address.')
+   FROM shipments s WHERE s.scheduled_pickup_start>now() AND s.scheduled_pickup_start<=now()+interval '15 minutes'
+    AND s.rider_id IS NOT NULL AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED') ON CONFLICT(id) DO NOTHING`);
   await watchdog({limit,onlyDueReviews:true});
   const due=(await db.query(`SELECT s.id FROM shipments s WHERE state='AWAITING_ASSIGNMENT' AND (paid OR payment_method='CASH') AND next_dispatch_at<=now()
     AND NOT EXISTS (SELECT 1 FROM food_orders f WHERE f.shipment_id=s.id AND (f.payment_status<>'PAID' OR f.payment_method='CASH' OR f.state NOT IN ('ACCEPTED','PREPARING','READY_FOR_PICKUP')))
