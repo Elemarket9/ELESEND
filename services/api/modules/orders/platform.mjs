@@ -756,8 +756,9 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const longVehicle=v.vehicle==='long_vehicle';
   let p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NOT DISTINCT FROM $1',[v.vehicle??null])).rows[0];
   // Quotes retain their legacy generic policy foreign key for compatibility. Heavy-freight amounts
-  // never use this row; when a class-specific anchor is absent, reference the active global version.
+  // never use this row; a historical long_vehicle placeholder is only a storage anchor and may be inactive.
   if(longVehicle&&!p)p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NULL ORDER BY created_at DESC LIMIT 1')).rows[0];
+  if(longVehicle&&!p)p=(await db.query("SELECT * FROM pricing_policies WHERE vehicle='long_vehicle' ORDER BY active DESC,created_at DESC LIMIT 1")).rows[0];
   const longPolicy=longVehicle?(await db.query("SELECT * FROM long_vehicle_pricing_policies WHERE active AND vehicle='long_vehicle'")).rows[0]:null;
   check(p,503,'This vehicle price is being prepared. Please choose another vehicle or contact support.');
   if(longVehicle)check(longPolicy&&!longPolicy.is_placeholder,503,'Long-vehicle heavy-freight rates are not configured yet. Please choose another vehicle or contact support.');

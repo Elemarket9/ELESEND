@@ -65,7 +65,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    const cap=(await db.query("SELECT enabled,max_weight_g,max_trip_m,max_length_cm,max_volume_l,min_licence_class FROM vehicle_capabilities WHERE vehicle='long_vehicle'")).rows[0];
    const terms=(await db.query('SELECT liability_limit_minor,liability_terms FROM cargo_policy_settings WHERE id=1')).rows[0];
    const oldLong=(await db.query("SELECT id,is_placeholder FROM long_vehicle_pricing_policies WHERE active AND vehicle='long_vehicle'")).rows[0];
-   const oldGeneric=(await db.query("SELECT id FROM pricing_policies WHERE vehicle='long_vehicle' AND active")).rows[0];
+   const oldGeneric=(await db.query("SELECT id,active FROM pricing_policies WHERE vehicle='long_vehicle' ORDER BY active DESC,created_at DESC LIMIT 1")).rows[0];
    let policyId=null;
    try{
     await db.query("UPDATE vehicle_capabilities SET enabled=true,max_weight_g=30000000,max_trip_m=800000,max_length_cm=1600,max_volume_l=1000000,min_licence_class='TEST-STAFF-SET' WHERE vehicle='long_vehicle'");
@@ -96,7 +96,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     await db.query("UPDATE vehicle_capabilities SET enabled=$1,max_weight_g=$2,max_trip_m=$3,max_length_cm=$4,max_volume_l=$5,min_licence_class=$6 WHERE vehicle='long_vehicle'",[cap.enabled,cap.max_weight_g,cap.max_trip_m,cap.max_length_cm,cap.max_volume_l,cap.min_licence_class]);
     if(policyId)await db.query("UPDATE long_vehicle_pricing_policies SET active=false WHERE id=$1",[policyId]);
     if(oldLong)await db.query("UPDATE long_vehicle_pricing_policies SET active=true WHERE id=$1",[oldLong.id]);
-    if(oldGeneric)await db.query('UPDATE pricing_policies SET active=true WHERE id=$1',[oldGeneric.id]);
+    if(oldGeneric?.active)await db.query('UPDATE pricing_policies SET active=true WHERE id=$1',[oldGeneric.id]);
     await db.query('UPDATE cargo_policy_settings SET liability_limit_minor=$1,liability_terms=$2 WHERE id=1',[terms.liability_limit_minor,terms.liability_terms]);
     await db.query("DELETE FROM permissions WHERE user_id=$1 AND permission='pricing:write'",[c.id]);
    }
