@@ -39,3 +39,9 @@ Migration `077_cargo_pricing_options.sql` adds active, zero-price placeholder ta
 Before enabling any cargo class, a staff member with `pricing:write` must publish real start, per-kilometre, per-minute and minimum fares, commission, helper price, per-floor/per-side price, free loading time and waiting fee through Admin → Tariffs & Commission Control. Placeholder prices are intentionally zero and are not launch prices. Configure the published cargo liability cap and plain-English terms in the Cargo liability terms section; the cap is not an insurance offer. Until both a real tariff and cargo terms exist, cargo quotes are refused.
 
 The customer may declare the goods value. ELESEND stores that amount with the immutable quote for dispute records only; it does not change the fare or buy insurance. The quote displays and snapshots the liability terms in force when it is priced.
+
+## Long-vehicle heavy-freight pricing
+
+Long vehicles use a separate `long_vehicle_pricing_policies` versioned tariff and `long_vehicle_heavy_freight_v1` calculator. The fare uses staff-set base, road-kilometre and loaded tonne-kilometre rates, a configurable return-leg factor, minimum fare, helpers, floors, extra stops, booking fee, tolls and waiting terms. It does not use the standard class start/km/minute formula, time fare or parcel surge multiplier. The quoted engine name and long-vehicle policy version are saved with the quote and fare evidence.
+
+Migration `078_long_vehicle_pricing_engine.sql` seeds only a blank placeholder. Staff must enter every long-vehicle rate in Admin → Long Vehicle Heavy-Freight Engine, then enable the class from Vehicle Classes. The ordinary vehicle tariff endpoint refuses long-vehicle updates, and the class cannot be enabled or quoted until the dedicated rate version is complete. All amounts are integer pesewas; there are no seeded long-haul prices.

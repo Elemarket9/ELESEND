@@ -214,7 +214,7 @@ export function renderAdminPortalHtml() {
           <div class="card-title">Change a Vehicle Tariff</div>
           <div class="card-subtitle">Saving creates a new tariff version. Issued quotes keep their price.</div>
           <form onsubmit="handleTariffUpdate(event)" style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
-            <div style="flex: 1; min-width: 120px;"><label class="form-label">Vehicle</label><select id="tariffVehicle" class="form-input" onchange="fillTariffForm()"><option value="motorcycle">Motorcycle</option><option value="car">Car</option><option value="tricycle">Cargo tricycle</option><option value="pickup">Pickup</option><option value="van">Van</option><option value="box_truck">Box truck</option><option value="long_vehicle">Long vehicle</option></select></div>
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Vehicle</label><select id="tariffVehicle" class="form-input" onchange="fillTariffForm()"><option value="motorcycle">Motorcycle</option><option value="car">Car</option><option value="tricycle">Cargo tricycle</option><option value="pickup">Pickup</option><option value="van">Van</option><option value="box_truck">Box truck</option></select></div>
             <div style="flex: 1; min-width: 120px;"><label class="form-label">Start GH₵</label><input type="number" id="tariffBase" class="form-input" step="0.01" min="0.01" required></div>
             <div style="flex: 1; min-width: 120px;"><label class="form-label">Per km GH₵</label><input type="number" id="tariffKm" class="form-input" step="0.01" min="0" required></div>
             <div style="flex: 1; min-width: 120px;"><label class="form-label">Per minute GH₵</label><input type="number" id="tariffMin" class="form-input" step="0.01" min="0" required></div>
@@ -227,6 +227,27 @@ export function renderAdminPortalHtml() {
             <div style="flex: 1; min-width: 120px;"><label class="form-label">Per floor, per side GH₵</label><input type="number" id="tariffFloor" class="form-input" step="0.01" min="0" required></div>
             <div style="flex: 1; min-width: 120px;"><label class="form-label">Free loading minutes</label><input type="number" id="tariffLoading" class="form-input" step="1" min="0" max="240" required></div>
             <button type="submit" class="action-btn">Save tariff</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span>Long Vehicle Heavy-Freight Engine</span><button class="action-btn" onclick="loadLongVehiclePricing()">Refresh heavy-freight rates</button></div>
+          <div class="card-subtitle">Separate from parcel start/km/minute pricing. Fare = base + road-km charge + loaded tonne-km charge + helpers + floors + extra stops; configured return-leg factor and minimum apply. Rates below are staff-owned. No long-vehicle quote is issued while any required rate is blank.</div>
+          <div id="longVehiclePriceStatus" class="badge badge-pending" style="margin:8px 0">Loading heavy-freight rates...</div>
+          <form onsubmit="saveLongVehiclePricing(event)" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+            <div style="flex:1;min-width:140px"><label class="form-label">Base GH₵</label><input id="lvBase" type="number" class="form-input" step="0.01" min="0" required></div>
+            <div style="flex:1;min-width:140px"><label class="form-label">Per road km GH₵</label><input id="lvKm" type="number" class="form-input" step="0.01" min="0" required></div>
+            <div style="flex:1;min-width:160px"><label class="form-label">Per loaded tonne-km GH₵</label><input id="lvTonneKm" type="number" class="form-input" step="0.01" min="0" required></div>
+            <div style="flex:1;min-width:140px"><label class="form-label">Minimum fare GH₵</label><input id="lvMinimum" type="number" class="form-input" step="0.01" min="0.01" required></div>
+            <div style="flex:1;min-width:140px"><label class="form-label">Commission %</label><input id="lvCommission" type="number" class="form-input" step="0.01" min="0" max="100" required></div>
+            <div style="flex:1;min-width:140px"><label class="form-label">Return-leg factor %</label><input id="lvReturn" type="number" class="form-input" step="0.01" min="0" max="100" required></div>
+            <div style="flex:1;min-width:140px"><label class="form-label">Per helper GH₵</label><input id="lvHelper" type="number" class="form-input" step="0.01" min="0" required></div>
+            <div style="flex:1;min-width:140px"><label class="form-label">Per floor/side GH₵</label><input id="lvFloor" type="number" class="form-input" step="0.01" min="0" required></div>
+            <div style="flex:1;min-width:140px"><label class="form-label">Per extra stop GH₵</label><input id="lvStop" type="number" class="form-input" step="0.01" min="0" required></div>
+            <div style="flex:1;min-width:140px"><label class="form-label">Booking fee %</label><input id="lvBooking" type="number" class="form-input" step="0.01" min="0" max="30" required></div>
+            <div style="flex:1;min-width:140px"><label class="form-label">Waiting GH₵/min</label><input id="lvWait" type="number" class="form-input" step="0.01" min="0" required></div>
+            <div style="flex:1;min-width:140px"><label class="form-label">Free loading minutes</label><input id="lvLoading" type="number" class="form-input" step="1" min="0" max="240" required></div>
+            <button class="action-btn" type="submit">Save long-vehicle rates</button>
           </form>
         </div>
 
@@ -1035,10 +1056,11 @@ export function renderAdminPortalHtml() {
       try {
         const tariffs = await api('/api/v1/admin/pricing');
         const tb = document.getElementById('pricingTable');
-        window.__tariffs = tariffs;
+        window.__tariffs = tariffs.filter(t => t.vehicle !== 'long_vehicle');
         fillTariffForm();
         loadTolls();
-        tb.innerHTML = tariffs.map(t => \`
+        loadLongVehiclePricing();
+        tb.innerHTML = window.__tariffs.map(t => \`
           <tr>
             <td><strong>\${escapeHtml((t.vehicle || 'STANDARD').toUpperCase())}</strong></td>
             <td>\${ghc(t.base_minor)}</td>
@@ -1058,6 +1080,42 @@ export function renderAdminPortalHtml() {
       } catch (e) {
         console.error(e);
       }
+    }
+
+    async function loadLongVehiclePricing() {
+      const status = document.getElementById('longVehiclePriceStatus');
+      try {
+        const p = await api('/api/v1/admin/pricing/long-vehicle');
+        const ghs = value => value == null ? '' : (Number(value) / 100).toFixed(2);
+        const set = (id, value) => { document.getElementById(id).value = value; };
+        set('lvBase', ghs(p?.base_minor)); set('lvKm', ghs(p?.per_km_minor)); set('lvTonneKm', ghs(p?.per_tonne_km_minor));
+        set('lvMinimum', ghs(p?.minimum_minor)); set('lvCommission', p?.commission_bps == null ? '' : (Number(p.commission_bps) / 100).toFixed(2));
+        set('lvReturn', p?.return_leg_bps == null ? '' : (Number(p.return_leg_bps) / 100).toFixed(2));
+        set('lvHelper', ghs(p?.per_helper_minor)); set('lvFloor', ghs(p?.per_floor_minor)); set('lvStop', ghs(p?.per_extra_stop_minor));
+        set('lvBooking', p?.booking_fee_bps == null ? '' : (Number(p.booking_fee_bps) / 100).toFixed(2));
+        set('lvWait', ghs(p?.wait_per_minute_minor)); set('lvLoading', p?.free_loading_minutes == null ? '' : Number(p.free_loading_minutes));
+        status.className = 'badge ' + (p?.is_placeholder ? 'badge-pending' : 'badge-active');
+        status.textContent = p?.is_placeholder ? 'PLACEHOLDER — no long-vehicle quotes until all real rates are saved' : 'Active heavy-freight tariff · version ' + p.id;
+      } catch (e) { status.textContent = 'Could not load heavy-freight rates: ' + e.message; }
+    }
+
+    async function saveLongVehiclePricing(e) {
+      e.preventDefault();
+      const num = id => Number(document.getElementById(id).value);
+      const money = id => Math.round(num(id) * 100);
+      const values = ['lvBase','lvKm','lvTonneKm','lvMinimum','lvCommission','lvReturn','lvHelper','lvFloor','lvStop','lvBooking','lvWait','lvLoading'];
+      if (values.some(id => !Number.isFinite(num(id)))) { alert('Enter every heavy-freight rate before saving.'); return; }
+      if (!confirm('Save a new long-vehicle heavy-freight tariff version? New quotes will use it immediately.')) return;
+      try {
+        await api('/api/v1/admin/pricing/long-vehicle', { method: 'POST', body: JSON.stringify({
+          baseMinor: money('lvBase'), perKmMinor: money('lvKm'), perTonneKmMinor: money('lvTonneKm'), minimumMinor: money('lvMinimum'),
+          commissionBps: Math.round(num('lvCommission') * 100), returnLegBps: Math.round(num('lvReturn') * 100),
+          perHelperMinor: money('lvHelper'), perFloorMinor: money('lvFloor'), perExtraStopMinor: money('lvStop'),
+          bookingFeeBps: Math.round(num('lvBooking') * 100), waitPerMinuteMinor: money('lvWait'), freeLoadingMinutes: num('lvLoading')
+        })});
+        await loadLongVehiclePricing();
+        alert('Heavy-freight tariff saved.');
+      } catch (err) { alert('Could not save heavy-freight rates: ' + err.message); }
     }
 
     function fillTariffForm() {

@@ -92,6 +92,8 @@ export async function runSecurityAudit(db) {
       const payload = {pickup: PLACES.accraMall, destination: PLACES.osuOxford, vehicle: 'motorcycle', recipientPhone: simulationPhone(), weightG: 1000, description: 'Simulation cargo', paymentMethod: 'CASH', helpers: 1, pickupFloorsNoLift: 1, dropoffFloorsNoLift: 1};
       const changedRates = await api(customer.token, 'POST', '/api/v1/quotes', {...payload, perHelperMinor: 1, perFloorMinor: 1, helperPriceMinor: 1, floorPriceMinor: 1});
       expect('cargo', 'the quote rejects client-supplied helper and floor prices', changedRates.status === 400, changedRates);
+      const changedHeavyFreightRate = await api(customer.token, 'POST', '/api/v1/quotes', {...payload, vehicle: 'long_vehicle', perTonneKmMinor: 1});
+      expect('cargo', 'the quote rejects client-supplied long-vehicle tonne-kilometre rates', changedHeavyFreightRate.status === 400, changedHeavyFreightRate);
       const tooMany = await api(customer.token, 'POST', '/api/v1/quotes', {...payload, helpers: 5});
       expect('cargo', 'the quote rejects more than four helpers', tooMany.status === 400, tooMany);
       const tooManyFloors = await api(customer.token, 'POST', '/api/v1/quotes', {...payload, pickupFloorsNoLift: 101});

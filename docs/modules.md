@@ -6,7 +6,7 @@ The API is a modular monolith: one process and one database, split into modules 
 services/api/
 ├── modules/
 │   ├── payments/   checkout, wallets, settlement, commission, payouts
-│   ├── orders/     parcels, dispatch, pricing, ETAs, notifications, webhooks
+│   ├── orders/     parcels, dispatch, standard and heavy-freight pricing, ETAs, notifications, webhooks
 │   ├── riders/     rider documents, licence, vehicles, rider tools, companies
 │   ├── food/       restaurants, food orders, commissions, promotions
 │   ├── maps/       routing (OSRM or Google), search, traffic, map learning, tracking
