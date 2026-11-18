@@ -3,6 +3,7 @@ import {assessDeliveryHealth,RIDER_LATE_OR_SILENT_SQL} from '../../shared/algori
 import {recordRiderRiskSignals} from './risk-signals.mjs';
 import {cashAlreadyReported} from '../payments/index.mjs';
 import {foodDispatchAllowed} from '../payments/index.mjs';
+import {riderMeetsVehicleLicence} from '../riders/index.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {check} from '../../shared/security.mjs';
@@ -86,7 +87,7 @@ export function dispatchEngine(db,{routing}={}){
    ORDER BY s.created_at LIMIT 4`)).rows;
   const riderCandidates=new Map(),perOrder=[];
   for(const sh of rows){
-   const eligible=await nearby(sh.request.pickup,sh.request.weightG,{shipmentId:sh.id,parcelCategory:sh.request.parcelCategory??'general',parcelSize:sh.request.parcelSize??'small'});
+   const eligible=await nearby(sh.request.pickup,sh.request.weightG,{shipmentId:sh.id,lengthCm:sh.request.lengthCm??null,volumeL:sh.request.volumeL??null,parcelCategory:sh.request.parcelCategory??'general',parcelSize:sh.request.parcelSize??'small'});
    const allowed=[];for(const r of eligible){
     if(sh.payment_method==='CASH'){try{await db.tx(c=>cashEligible(c,r.id,sh.commission_minor));}catch(e){if(e.status===403||e.status===409)continue;throw e;}}
     allowed.push(r);
@@ -104,9 +105,16 @@ export function dispatchEngine(db,{routing}={}){
  }
  async function trackingSettings(actor){check(actor?.kind==='rider',403,'Rider credentials required');const p=await policy(db);return {movingUploadSeconds:p.moving_upload_seconds,idleUploadSeconds:p.idle_upload_seconds,locationFreshSeconds:p.fresh_seconds,privacyRetentionHours:p.sample_retention_hours};}
  async function vehiclePolicy(actor){await getPolicy(actor);return (await db.query('SELECT * FROM vehicle_capabilities ORDER BY vehicle')).rows;}
- async function setVehiclePolicy(actor,input){await getPolicy(actor);const v=z.object({vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']),maxParcelSize:z.enum(['small','medium','large']),allowedCategories:z.array(z.enum(['general','documents','fragile','food'])).min(1).max(4),enabled:z.boolean(),maxWeightG:z.number().int().min(1).max(10000000).nullable().optional(),maxTripKm:z.number().int().min(1).max(2000).nullable().optional()}).strict().parse(input);
+ async function setVehiclePolicy(actor,input){await getPolicy(actor);const v=z.object({vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','box_truck','long_vehicle','truck']),maxParcelSize:z.enum(['small','medium','large']),allowedCategories:z.array(z.enum(['general','documents','fragile','food'])).min(1).max(4),enabled:z.boolean(),maxWeightG:z.number().int().min(1).max(30000000).nullable().optional(),maxTripKm:z.number().int().min(1).max(2000).nullable().optional(),maxLengthCm:z.number().int().min(1).max(30000).nullable().optional(),maxVolumeL:z.number().int().min(1).max(1000000).nullable().optional(),minLicenceClass:z.string().trim().min(1).max(20).nullable().optional(),needsManualVerification:z.boolean().optional(),customerDescription:z.string().trim().min(1).max(240).optional(),customerExample:z.string().trim().min(1).max(160).optional()}).strict().parse(input);
   // Leaving out a limit keeps the current one; null removes it.
-  return db.tx(async c=>{await c.query('UPDATE vehicle_capabilities SET max_parcel_size=$2,allowed_categories=$3,enabled=$4,max_weight_g=CASE WHEN $5 THEN $6::int ELSE max_weight_g END,max_trip_m=CASE WHEN $7 THEN $8::int ELSE max_trip_m END WHERE vehicle=$1',[v.vehicle,v.maxParcelSize,[...new Set(v.allowedCategories)],v.enabled,v.maxWeightG!==undefined,v.maxWeightG??null,v.maxTripKm!==undefined,v.maxTripKm==null?null:v.maxTripKm*1000]);await audit(c,actor.id,'dispatch.vehicle_policy_changed',null);return {ok:true};});
+  return db.tx(async c=>{if(v.enabled){check((await c.query('SELECT 1 FROM pricing_policies WHERE vehicle=$1 AND active',[v.vehicle])).rowCount,409,'Set a real active fare for this vehicle before enabling it');if(!['bicycle','motorcycle'].includes(v.vehicle))check(v.maxLengthCm>0&&v.maxVolumeL>0&&v.minLicenceClass,409,'Set verified load dimensions and the current minimum Ghana licence class before enabling this vehicle');}const updated=await c.query(`UPDATE vehicle_capabilities SET max_parcel_size=$2,allowed_categories=$3,enabled=$4,
+    max_weight_g=CASE WHEN $5 THEN $6::int ELSE max_weight_g END,max_trip_m=CASE WHEN $7 THEN $8::int ELSE max_trip_m END,
+    max_length_cm=CASE WHEN $9 THEN $10::int ELSE max_length_cm END,max_volume_l=CASE WHEN $11 THEN $12::int ELSE max_volume_l END,
+    min_licence_class=CASE WHEN $13 THEN $14::text ELSE min_licence_class END,
+    needs_manual_verification=COALESCE($15,needs_manual_verification),customer_description=COALESCE($16,customer_description),customer_example=COALESCE($17,customer_example)
+    WHERE vehicle=$1 RETURNING vehicle,max_weight_g,max_trip_m,max_length_cm,max_volume_l,min_licence_class,needs_manual_verification,enabled,customer_description,customer_example`,
+   [v.vehicle,v.maxParcelSize,[...new Set(v.allowedCategories)],v.enabled,v.maxWeightG!==undefined,v.maxWeightG??null,v.maxTripKm!==undefined,v.maxTripKm==null?null:v.maxTripKm*1000,v.maxLengthCm!==undefined,v.maxLengthCm??null,v.maxVolumeL!==undefined,v.maxVolumeL??null,v.minLicenceClass!==undefined,v.minLicenceClass??null,v.needsManualVerification??null,v.customerDescription??null,v.customerExample??null]);
+   check(updated.rowCount,404,'Vehicle class not found');await audit(c,actor.id,'dispatch.vehicle_policy_changed',null);return {ok:true,vehicle:updated.rows[0]};});
  }
  async function riderPosition(actor,input){check(actor?.kind==='rider',403,'Rider credentials required');const v=correctPhoneClock(sampleSchema.parse(input)),p=await policy(db);
   const age=(Date.now()-Date.parse(v.observedAt))/1000;
@@ -258,18 +266,20 @@ export function dispatchEngine(db,{routing}={}){
   if(!result)return null;
   return {...result,revision:Number(plan?.revision??0),expectedActive:active.length,anchor:{latitude:start.latitude,longitude:start.longitude}};
  }
- async function nearby(pickup,weightG,{shipmentId=null,parcelCategory='general',parcelSize='small',vehicle=null}={}){
+ async function nearby(pickup,weightG,{shipmentId=null,parcelCategory='general',parcelSize='small',vehicle=null,lengthCm=null,volumeL=null}={}){
   const p=await policy(db);
   const discovery=await discoverByRadii({radiiMeters:p.search_radii_m,limit:p.candidate_limit,queryRadius:async radius=>{
-   const result=await db.query(`SELECT r.id,r.company_id,r.vehicle,r.max_weight_g,r.position_at,r.multi_stop_opt_in,
+   const result=await db.query(`SELECT r.id,r.company_id,r.vehicle,r.max_weight_g,r.position_at,r.multi_stop_opt_in,vc.min_licence_class,
       ST_Y(r.current_position::geometry) AS latitude,ST_X(r.current_position::geometry) AS longitude,
       ST_Distance(r.current_position,ST_SetSRID(ST_MakePoint($1,$2),4326)::geography) AS crow_meters
      FROM riders r LEFT JOIN companies co ON co.id=r.company_id JOIN vehicle_capabilities vc ON vc.vehicle=r.vehicle
      WHERE r.status='approved' AND r.online AND (r.company_id IS NULL OR co.status='approved')
-       AND (r.vehicle<>'car' OR EXISTS(SELECT 1 FROM rider_vehicle_registrations vr WHERE vr.rider_id=r.id AND vr.vehicle='car' AND vr.verification_status='approved'))
+       AND (r.vehicle IN ('bicycle','motorcycle') OR EXISTS(SELECT 1 FROM rider_vehicle_registrations vr WHERE vr.rider_id=r.id AND vr.vehicle=r.vehicle AND vr.verification_status='approved' AND vr.payload_capacity_g>=$5 AND vr.roadworthy_expires_on>=CURRENT_DATE AND vr.insurance_expires_on>=CURRENT_DATE))
        AND r.position_at>now()-($3::int * interval '1 second')
        AND r.position_accuracy_m<=$4
        AND r.max_weight_g>=$5 AND vc.enabled AND $9=ANY(vc.allowed_categories) AND ($13::text IS NULL OR r.vehicle=$13)
+       AND ($14::int IS NULL OR vc.max_length_cm IS NULL OR vc.max_length_cm>=$14)
+       AND ($15::int IS NULL OR vc.max_volume_l IS NULL OR vc.max_volume_l>=$15)
        AND CASE vc.max_parcel_size WHEN 'large' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END >= CASE $10::text WHEN 'large' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END
        AND ST_DWithin(r.current_position,ST_SetSRID(ST_MakePoint($1,$2),4326)::geography,r.service_radius_m)
        AND NOT EXISTS (SELECT 1 FROM shipments failed WHERE failed.rider_id=r.id AND failed.state IN ('FAILED','RETURN_REQUESTED'))
@@ -284,7 +294,7 @@ export function dispatchEngine(db,{routing}={}){
        AND ($6::uuid IS NULL OR NOT EXISTS(SELECT 1 FROM dispatch_offers o WHERE o.rider_id=r.id AND o.shipment_id=$6 AND o.status IN ('declined','invalidated','expired')))
        AND ST_DWithin(r.current_position,ST_SetSRID(ST_MakePoint($1,$2),4326)::geography,$7)
      ORDER BY r.current_position <-> ST_SetSRID(ST_MakePoint($1,$2),4326)::geography LIMIT $8`,
-     [pickup.longitude,pickup.latitude,p.fresh_seconds,p.max_accuracy_m,weightG,shipmentId,radius,p.candidate_limit,parcelCategory,parcelSize,p.multi_stop_enabled&&await features.enabled('multi_parcel_vrp')&&await features.enabled('dynamic_pickup_insertion'),p.max_active_parcels,vehicle]);
+     [pickup.longitude,pickup.latitude,p.fresh_seconds,p.max_accuracy_m,weightG,shipmentId,radius,p.candidate_limit,parcelCategory,parcelSize,p.multi_stop_enabled&&await features.enabled('multi_parcel_vrp')&&await features.enabled('dynamic_pickup_insertion'),p.max_active_parcels,vehicle,lengthCm,volumeL]);
    return result.rows;
   }});
   let candidates=discovery.candidates;
@@ -293,7 +303,7 @@ export function dispatchEngine(db,{routing}={}){
   // Both PostGIS proximity gates and later full route-insertion feasibility apply.
   if(p.multi_stop_enabled&&await features.enabled('multi_parcel_vrp')&&await features.enabled('dynamic_pickup_insertion')&&await features.enabled('road_corridor_discovery')){
    const corridorRadius=1500; // bounded search envelope; not a replacement for route ETA
-   const extra=await db.query(`SELECT r.id,r.company_id,r.vehicle,r.max_weight_g,r.position_at,r.multi_stop_opt_in,
+   const extra=await db.query(`SELECT r.id,r.company_id,r.vehicle,r.max_weight_g,r.position_at,r.multi_stop_opt_in,vc.min_licence_class,
       ST_Y(r.current_position::geometry) AS latitude, ST_X(r.current_position::geometry) AS longitude,
       ST_Distance(r.current_position,ST_SetSRID(ST_MakePoint($1,$2),4326)::geography) AS crow_meters
     FROM rider_route_corridors rc JOIN riders r ON r.id=rc.rider_id
@@ -302,8 +312,10 @@ export function dispatchEngine(db,{routing}={}){
      AND (r.company_id IS NULL OR co.status='approved')
      AND r.position_at>now()-($3::int*interval '1 second') AND r.position_accuracy_m<=$4
      AND r.max_weight_g>=$5 AND vc.enabled AND $9=ANY(vc.allowed_categories) AND ($13::text IS NULL OR r.vehicle=$13)
-     AND (r.vehicle<>'car' OR EXISTS(SELECT 1 FROM rider_vehicle_registrations vr WHERE vr.rider_id=r.id AND vr.vehicle='car' AND vr.verification_status='approved'))
+     AND (r.vehicle IN ('bicycle','motorcycle') OR EXISTS(SELECT 1 FROM rider_vehicle_registrations vr WHERE vr.rider_id=r.id AND vr.vehicle=r.vehicle AND vr.verification_status='approved' AND vr.payload_capacity_g>=$5 AND vr.roadworthy_expires_on>=CURRENT_DATE AND vr.insurance_expires_on>=CURRENT_DATE))
      AND CASE vc.max_parcel_size WHEN 'large' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END>=CASE $10::text WHEN 'large' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END
+     AND ($14::int IS NULL OR vc.max_length_cm IS NULL OR vc.max_length_cm>=$14)
+     AND ($15::int IS NULL OR vc.max_volume_l IS NULL OR vc.max_volume_l>=$15)
      AND (SELECT count(*) FROM shipments ac WHERE ac.rider_id=r.id AND ac.state=ANY($11::text[]))<$12
      AND NOT EXISTS(SELECT 1 FROM shipments f WHERE f.rider_id=r.id AND f.state IN ('FAILED','RETURN_REQUESTED'))
      AND ($6::uuid IS NULL OR NOT EXISTS (SELECT 1 FROM dispatch_offers o WHERE o.rider_id=r.id AND o.shipment_id=$6 AND o.status IN ('declined','invalidated','expired')))
@@ -312,13 +324,18 @@ export function dispatchEngine(db,{routing}={}){
        ST_LineLocatePoint(rc.road_path::geometry,r.current_position::geometry),1)::geography,
        ST_SetSRID(ST_MakePoint($1,$2),4326)::geography,$7)
     ORDER BY ST_Distance(rc.road_path,ST_SetSRID(ST_MakePoint($1,$2),4326)::geography)
-    LIMIT $8`,[pickup.longitude,pickup.latitude,p.fresh_seconds,p.max_accuracy_m,weightG,shipmentId,corridorRadius,p.candidate_limit,parcelCategory,parcelSize,activeStates,p.max_active_parcels,vehicle]);
+    LIMIT $8`,[pickup.longitude,pickup.latitude,p.fresh_seconds,p.max_accuracy_m,weightG,shipmentId,corridorRadius,p.candidate_limit,parcelCategory,parcelSize,activeStates,p.max_active_parcels,vehicle,lengthCm,volumeL]);
    const seen=new Set(candidates.map(x=>x.id));for(const row of extra.rows)if(!seen.has(row.id)){candidates.push(row);seen.add(row.id);}
   }
-  return vehicle?candidates.filter(r=>r.vehicle===vehicle):candidates;
+  const licenceChecked=[];
+  for(const candidate of candidates){
+   if(vehicle&&candidate.vehicle!==vehicle)continue;
+   if(await riderMeetsVehicleLicence(db,candidate.id,candidate.min_licence_class))licenceChecked.push(candidate);
+  }
+  return licenceChecked;
  }
- async function availability(input){const v=z.object({pickup:z.object({latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).passthrough(),vehicle:z.enum(['motorcycle','car','van']).optional(),weightG:z.number().int().positive(),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small')}).parse(input);
-  const riders=await nearby(v.pickup,v.weightG,{vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize});let nearestRiderSeconds=null;
+ async function availability(input){const v=z.object({pickup:z.object({latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).passthrough(),vehicle:z.enum(['motorcycle','car','van','tricycle','pickup','box_truck','long_vehicle','truck']).optional(),weightG:z.number().int().positive(),lengthCm:z.number().int().positive().optional(),volumeL:z.number().int().positive().optional(),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small')}).parse(input);
+  const riders=await nearby(v.pickup,v.weightG,{vehicle:v.vehicle,lengthCm:v.lengthCm,volumeL:v.volumeL,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize});let nearestRiderSeconds=null;
   if(riders.length&&routing?.matrix&&v.vehicle)try{
    const closest=[...riders].filter(r=>Number.isFinite(r.latitude)&&Number.isFinite(r.longitude)).sort((a,b)=>Number(a.crow_meters)-Number(b.crow_meters)).slice(0,5);
    const legs=closest.length?await routing.matrix(closest.map(r=>({latitude:r.latitude,longitude:r.longitude})),v.pickup,{vehicle:v.vehicle}):[];
@@ -373,7 +390,7 @@ export function dispatchEngine(db,{routing}={}){
   if(sh.state!=='AWAITING_ASSIGNMENT'||!(sh.paid||sh.payment_method==='CASH'))return {status:'not_dispatchable'};
   if(!await foodDispatchAllowed(db,sid))return {status:'awaiting_paid_kitchen_acceptance'};
   const p=await policy(db);if(sh.dispatch_attempts>=p.max_attempts)return db.tx(c=>noRiderFound(c,sid));
-  const nearbyRiders=await nearby(sh.request.pickup,sh.request.weightG,{vehicle:sh.request.vehicle??null,shipmentId:sid,parcelCategory:sh.request.parcelCategory??'general',parcelSize:sh.request.parcelSize??'small'});
+  const nearbyRiders=await nearby(sh.request.pickup,sh.request.weightG,{vehicle:sh.request.vehicle??null,shipmentId:sid,lengthCm:sh.request.lengthCm??null,volumeL:sh.request.volumeL??null,parcelCategory:sh.request.parcelCategory??'general',parcelSize:sh.request.parcelSize??'small'});
   // Avoid buying route-matrix calls for riders already blocked by commission policy.
   // Acceptance STILL independently revalidates under a locked rider transaction.
   const eligible=[];
@@ -412,15 +429,18 @@ export function dispatchEngine(db,{routing}={}){
     const free=(await c.query("SELECT pg_try_advisory_xact_lock(hashtext($1)) AS got",['rider-offer:'+r.id])).rows[0].got
      &&!(await c.query("SELECT 1 FROM dispatch_offers WHERE rider_id=$1 AND status='offered' AND expires_at>now() LIMIT 1",[r.id])).rowCount;
     if(!free){ridersBusyWithOffers=true;continue;}
-    const current=(await c.query(`SELECT r.id FROM riders r LEFT JOIN companies co ON co.id=r.company_id JOIN vehicle_capabilities vc ON vc.vehicle=r.vehicle
+    const current=(await c.query(`SELECT r.id,vc.min_licence_class FROM riders r LEFT JOIN companies co ON co.id=r.company_id JOIN vehicle_capabilities vc ON vc.vehicle=r.vehicle
       WHERE r.id=$1 AND r.online AND r.status='approved' AND (r.company_id IS NULL OR co.status='approved')
        AND r.position_at>now()-($2::int * interval '1 second') AND r.max_weight_g>=$3 AND vc.enabled
        AND $4=ANY(vc.allowed_categories) AND CASE vc.max_parcel_size WHEN 'large' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END >= CASE $5::text WHEN 'large' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END
-       AND (r.vehicle<>'car' OR EXISTS(SELECT 1 FROM rider_vehicle_registrations vr WHERE vr.rider_id=r.id AND vr.vehicle='car' AND vr.verification_status='approved'))`,
-      [r.id,p.fresh_seconds,sh.request.weightG,sh.request.parcelCategory??'general',sh.request.parcelSize??'small'])).rowCount;
+       AND (r.vehicle IN ('bicycle','motorcycle') OR EXISTS(SELECT 1 FROM rider_vehicle_registrations vr WHERE vr.rider_id=r.id AND vr.vehicle=r.vehicle AND vr.verification_status='approved' AND vr.payload_capacity_g>=$3 AND vr.roadworthy_expires_on>=CURRENT_DATE AND vr.insurance_expires_on>=CURRENT_DATE))
+       AND ($6::int IS NULL OR vc.max_length_cm IS NULL OR vc.max_length_cm>=$6)
+       AND ($7::int IS NULL OR vc.max_volume_l IS NULL OR vc.max_volume_l>=$7)`,
+      [r.id,p.fresh_seconds,sh.request.weightG,sh.request.parcelCategory??'general',sh.request.parcelSize??'small',sh.request.lengthCm??null,sh.request.volumeL??null])).rows[0];
+    const licenceOk=current&&await riderMeetsVehicleLicence(c,r.id,current.min_licence_class);
     const snapshot=(await c.query('SELECT revision FROM rider_dispatch_plans WHERE rider_id=$1',[r.id])).rows[0];
     const active=(await c.query('SELECT count(*)::int AS n FROM shipments WHERE rider_id=$1 AND state=ANY($2::text[])',[r.id,activeStates])).rows[0].n;
-    const found=current && active===r.plan?.expectedActive && Number(snapshot?.revision??0)===r.plan?.revision;
+    const found=current && licenceOk && active===r.plan?.expectedActive && Number(snapshot?.revision??0)===r.plan?.revision;
     if(found)selected.push(r);
     if(found&&!broadcast)break;
    }
@@ -475,7 +495,10 @@ export function dispatchEngine(db,{routing}={}){
    check(!q.request.vehicle||q.request.vehicle===r.vehicle,409,'Vehicle does not match accepted quote');
    const vc=(await c.query('SELECT * FROM vehicle_capabilities WHERE vehicle=$1 AND enabled',[r.vehicle])).rows[0];
    check(vc&&vc.allowed_categories.includes(q.request.parcelCategory??'general')&&({small:1,medium:2,large:3})[vc.max_parcel_size]>=({small:1,medium:2,large:3})[q.request.parcelSize??'small'],409,'Vehicle restriction changed');
-   if(r.vehicle==='car')check((await c.query("SELECT 1 FROM rider_vehicle_registrations WHERE rider_id=$1 AND vehicle='car' AND verification_status='approved'",[actor.id])).rowCount,403,'Car not verified');
+   if(!['bicycle','motorcycle'].includes(r.vehicle))check((await c.query(`SELECT 1 FROM rider_vehicle_registrations WHERE rider_id=$1 AND vehicle=$2 AND verification_status='approved' AND payload_capacity_g>=$3 AND roadworthy_expires_on>=CURRENT_DATE AND insurance_expires_on>=CURRENT_DATE`,[actor.id,r.vehicle,q.request.weightG])).rowCount,403,'Your vehicle papers must be current and approved');
+   check(!vc.max_length_cm||!q.request.lengthCm||q.request.lengthCm<=vc.max_length_cm,409,'Load length exceeds the approved vehicle limit');
+   check(!vc.max_volume_l||!q.request.volumeL||q.request.volumeL<=vc.max_volume_l,409,'Load size exceeds the approved vehicle limit');
+   check(await riderMeetsVehicleLicence(c,actor.id,vc.min_licence_class),403,'Your approved licence class does not cover this vehicle');
    const plan=(await c.query('SELECT * FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[actor.id])).rows[0];
    const active=(await c.query('SELECT s.id,s.state,q.request FROM shipments s JOIN quotes q ON q.id=s.quote_id WHERE s.rider_id=$1 AND s.state=ANY($2::text[])',[actor.id,activeStates])).rows;
    check(active.length===o.expected_active&&Number(plan?.revision??0)===Number(o.plan_revision),409,'Manifest changed: fresh offer required');

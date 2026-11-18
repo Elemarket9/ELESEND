@@ -80,6 +80,8 @@ function parcelQuoteBody(booking, pickup, destination, authPhone, paymentMethod,
     destination,
     vehicle: booking.vehicle,
     weightG: booking.weightG,
+    lengthCm: booking.lengthCm,
+    volumeL: booking.volumeL,
     paymentMethod: paymentMethod || booking.paymentMethod,
     recipientPhone: normalizeGhanaPhone(booking.recipientPhone || authPhone),
     description: booking.description || 'Package',
@@ -109,6 +111,8 @@ export default function CustomerApp() {
     recipientPhone: '',
     recipientName: '',
     weightG: '1500',
+    lengthCm: '',
+    volumeL: '',
     description: 'Package',
     parcelCategory: 'general',
     parcelSize: 'small',
@@ -1606,25 +1610,27 @@ export default function CustomerApp() {
                 </TouchableOpacity>
               </View>
 
-              {/* Service Option Selector Carousel */}
+              {/* Vehicle hire picker is driven by enabled, priced server classes. */}
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.vehicleCarousel}>
-                {/* Express Motorcycle */}
-                <TouchableOpacity
-                  style={[styles.vehicleOptionCard, booking.vehicle === 'motorcycle' && styles.vehicleOptionCardActive]}
-                  onPress={() => updateBooking('vehicle', 'motorcycle')}>
-                  <Text style={{ fontSize: 26, marginBottom: 4 }}>🏍️</Text>
-                  <Text style={styles.vehicleOptionName}>Express</Text>
-                  {vehicleFromPrice('motorcycle') && <Text style={styles.vehicleOptionPrice}>{vehicleFromPrice('motorcycle')}</Text>}
-                </TouchableOpacity>
-
-                {/* Car Delivery */}
-                <TouchableOpacity
-                  style={[styles.vehicleOptionCard, booking.vehicle === 'car' && styles.vehicleOptionCardActive]}
-                  onPress={() => updateBooking('vehicle', 'car')}>
-                  <Text style={{ fontSize: 26, marginBottom: 4 }}>🚗</Text>
-                  <Text style={styles.vehicleOptionName}>Standard Car</Text>
-                  {vehicleFromPrice('car') && <Text style={styles.vehicleOptionPrice}>{vehicleFromPrice('car')}</Text>}
-                </TouchableOpacity>
+                {vehicleTariffs.map(t => {
+                  const choices = {
+                    motorcycle: ['🏍️', 'Motorbike'], car: ['🚗', 'Car'], tricycle: ['🛺', 'Cargo tricycle'],
+                    pickup: ['🛻', 'Pickup'], van: ['🚐', 'Van'], box_truck: ['🚚', 'Box truck'],
+                    long_vehicle: ['🚛', 'Long vehicle'], truck: ['🚚', 'Truck']
+                  };
+                  const [icon, title] = choices[t.vehicle] || ['🚚', t.vehicle];
+                  const maxKg = t.max_weight_g ? `${Math.floor(Number(t.max_weight_g) / 1000)} kg` : '';
+                  const limit = [maxKg, t.max_length_cm ? `${t.max_length_cm} cm` : ''].filter(Boolean).join(' · ');
+                  return <TouchableOpacity key={t.vehicle}
+                    style={[styles.vehicleOptionCard, booking.vehicle === t.vehicle && styles.vehicleOptionCardActive]}
+                    onPress={() => updateBooking('vehicle', t.vehicle)}>
+                    <Text style={{ fontSize: 26, marginBottom: 4 }}>{icon}</Text>
+                    <Text style={styles.vehicleOptionName}>{title}</Text>
+                    <Text style={styles.vehicleOptionPrice}>{ghc(t.base_minor)} start</Text>
+                    {limit ? <Text style={styles.vehicleOptionPrice}>{limit}</Text> : null}
+                    {t.customer_example ? <Text style={styles.vehicleOptionPrice}>{t.customer_example}</Text> : null}
+                  </TouchableOpacity>;
+                })}
               </ScrollView>
 
               {/* Recipient & Package Details + Handover Instructions */}
@@ -1650,6 +1656,16 @@ export default function CustomerApp() {
                       value={booking.description}
                       onChangeText={v => updateBooking('description', v)}
                     />
+                  </View>
+                </View>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputMicroLabel}>Load length (cm)</Text>
+                    <TextInput style={styles.sheetNoteInput} placeholder="Longest side" keyboardType="number-pad" value={booking.lengthCm} onChangeText={v => updateBooking('lengthCm', v)} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.inputMicroLabel}>Load volume (litres)</Text>
+                    <TextInput style={styles.sheetNoteInput} placeholder="Approximate volume" keyboardType="number-pad" value={booking.volumeL} onChangeText={v => updateBooking('volumeL', v)} />
                   </View>
                 </View>
                 <Text style={styles.inputMicroLabel}>Handover & Landmark Instructions (Optional)</Text>

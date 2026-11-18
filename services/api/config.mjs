@@ -281,7 +281,7 @@ export function validateConfig(env = process.env) {
 
   // Graph entries the router would reject at startup are dropped here with a warning instead, so a typo in routing
   // settings switches off that vehicle's routes rather than the whole server.
-  const ROUTED_VEHICLES = ['motorcycle', 'car', 'van', 'bicycle', 'tricycle', 'pickup', 'truck'];
+  const ROUTED_VEHICLES = ['motorcycle', 'car', 'van', 'bicycle', 'tricycle', 'pickup', 'truck', 'box_truck', 'long_vehicle'];
   if (assembledVehicleRoutes) {
     const sameAddress = (a, b) => { try { return new URL(a).toString() === new URL(b).toString(); } catch { return false; } };
     for (const [vehicle, entry] of Object.entries(assembledVehicleRoutes)) {

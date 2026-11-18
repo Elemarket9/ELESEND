@@ -53,7 +53,10 @@ const initialCreds = {
   plateNumber: '',
   make: '',
   model: '',
-  color: ''
+  color: '',
+  bodyType: 'closed',
+  roadworthyExpiresOn: '',
+  insuranceExpiresOn: ''
 };
 
 const isStationary = speed => speed === null || speed < 2.5;
@@ -377,13 +380,21 @@ export default function RiderApp() {
       vehicle: credentials.vehicle,
       maxWeightG: Number(credentials.maxWeightG) || 20000
     };
-    if (credentials.vehicle === 'car') {
-      if (!credentials.plateNumber.trim()) throw Error('Vehicle registration plate is required for cars');
-      body.car = {
+    if (!['motorcycle', 'bicycle'].includes(credentials.vehicle)) {
+      for (const [field, label] of [['plateNumber', 'number plate'], ['make', 'vehicle make'], ['model', 'vehicle model'], ['color', 'vehicle colour'], ['roadworthyExpiresOn', 'roadworthy expiry date'], ['insuranceExpiresOn', 'insurance expiry date']]) {
+        if (!String(credentials[field] || '').trim()) throw Error(`Enter the vehicle ${label}`);
+      }
+      if (!Number.isSafeInteger(Number(credentials.maxWeightG)) || Number(credentials.maxWeightG) <= 0) throw Error('Enter the vehicle payload capacity in kilograms');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(credentials.roadworthyExpiresOn) || !/^\d{4}-\d{2}-\d{2}$/.test(credentials.insuranceExpiresOn)) throw Error('Enter both expiry dates as year-month-day');
+      body.vehicleDetails = {
         plateNumber: credentials.plateNumber.trim(),
-        make: credentials.make.trim() || 'Toyota',
-        model: credentials.model.trim() || 'Vitz',
-        color: credentials.color.trim() || 'Silver'
+        make: credentials.make.trim(),
+        model: credentials.model.trim(),
+        color: credentials.color.trim(),
+        payloadCapacityG: Number(credentials.maxWeightG),
+        bodyType: credentials.bodyType,
+        roadworthyExpiresOn: credentials.roadworthyExpiresOn,
+        insuranceExpiresOn: credentials.insuranceExpiresOn
       };
     }
 
@@ -927,14 +938,22 @@ export default function RiderApp() {
                 <Text style={styles.inputLabel}>Vehicle Class</Text>
                 <View style={styles.vehicleRow}>
                   {[
-                    { id: 'motorcycle', label: '🛵 Motorbike', sub: 'Up to 20kg' },
-                    { id: 'car', label: '🚗 Car', sub: 'Up to 150kg' }
+                    { id: 'motorcycle', label: '🛵 Motorbike', sub: 'Up to 20kg', capacity: '20000' },
+                    { id: 'tricycle', label: '🛺 Cargo tricycle', sub: 'Up to 300kg', capacity: '300000' },
+                    { id: 'car', label: '🚗 Car', sub: 'Up to 100kg', capacity: '100000' },
+                    { id: 'pickup', label: '🛻 Pickup', sub: 'Up to 1,000kg', capacity: '1000000' },
+                    { id: 'van', label: '🚐 Van', sub: 'Up to 1,500kg', capacity: '1500000' },
+                    { id: 'box_truck', label: '🚚 Box truck', sub: 'Up to 7,000kg', capacity: '7000000' },
+                    { id: 'long_vehicle', label: '🚛 Long vehicle', sub: 'Up to 30,000kg', capacity: '30000000' }
                   ].map(v => (
                     <TouchableOpacity
                       key={v.id}
                       onPress={() => {
                         edit('vehicle', v.id);
-                        edit('maxWeightG', v.id === 'motorcycle' ? '20000' : v.id === 'car' ? '150000' : '800000');
+                        edit('maxWeightG', v.capacity);
+                        if (v.id === 'pickup') edit('bodyType', 'open');
+                        else if (v.id === 'long_vehicle') edit('bodyType', 'flatbed');
+                        else edit('bodyType', 'closed');
                       }}
                       style={[styles.vehicleChoice, credentials.vehicle === v.id && styles.vehicleChoiceActive]}>
                       <Text style={styles.vehicleChoiceTitle}>{v.label}</Text>
@@ -943,7 +962,7 @@ export default function RiderApp() {
                   ))}
                 </View>
 
-                {credentials.vehicle === 'car' && (
+                {!['motorcycle', 'bicycle'].includes(credentials.vehicle) && (
                   <View style={{ marginTop: 12 }}>
                     <TextInput
                       placeholder="License Plate (e.g. GR-2024-26)"
@@ -968,6 +987,17 @@ export default function RiderApp() {
                         onChangeText={v => edit('model', v)}
                       />
                     </View>
+                    <TextInput placeholder="Colour (e.g. White)" placeholderTextColor={colors.textMuted} style={[styles.input, { marginTop: 8 }]} value={credentials.color} onChangeText={v => edit('color', v)} />
+                    <Text style={[styles.inputLabel, { marginTop: 10 }]}>Payload capacity (kg)</Text>
+                    <TextInput placeholder="Rated payload" placeholderTextColor={colors.textMuted} keyboardType="decimal-pad" style={styles.input} value={String(Number(credentials.maxWeightG || 0) / 1000 || '')} onChangeText={v => edit('maxWeightG', v.trim() ? String(Math.round(Number(v) * 1000)) : '')} />
+                    <Text style={[styles.inputLabel, { marginTop: 10 }]}>Body type</Text>
+                    <View style={styles.vehicleRow}>
+                      {['open', 'closed', 'flatbed', 'refrigerated'].map(type => <TouchableOpacity key={type} onPress={() => edit('bodyType', type)} style={[styles.vehicleChoice, credentials.bodyType === type && styles.vehicleChoiceActive]}><Text style={styles.vehicleChoiceTitle}>{type}</Text></TouchableOpacity>)}
+                    </View>
+                    <Text style={[styles.inputLabel, { marginTop: 10 }]}>Roadworthy certificate expiry (YYYY-MM-DD)</Text>
+                    <TextInput placeholder="2027-12-31" placeholderTextColor={colors.textMuted} style={styles.input} value={credentials.roadworthyExpiresOn} onChangeText={v => edit('roadworthyExpiresOn', v)} />
+                    <Text style={[styles.inputLabel, { marginTop: 10 }]}>Insurance expiry (YYYY-MM-DD)</Text>
+                    <TextInput placeholder="2027-12-31" placeholderTextColor={colors.textMuted} style={styles.input} value={credentials.insuranceExpiresOn} onChangeText={v => edit('insuranceExpiresOn', v)} />
                   </View>
                 )}
               </View>

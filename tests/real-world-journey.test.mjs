@@ -14,6 +14,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
  const {checkoutService,financeService,moneyOperations}=await import('../services/api/modules/payments/index.mjs');
  const {restaurantOrderService}=await import('../services/api/modules/food/restaurant-orders.mjs');
  const {offlineSignedOutRiders}=await import('../services/api/modules/riders/rider-tools.mjs');
+ const {suspendExpiredDocuments}=await import('../services/api/modules/riders/rider-documents.mjs');
  const db=database(url);await migrate(db);
  const texts=[];let smsWorks=true;
  const sms={async send(m){if(!smsWorks)return {accepted:false};texts.push(m);return {accepted:true};},async sendNotification(m){texts.push(m);return {accepted:true};}};
@@ -59,6 +60,42 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
  }
  const offerFor=async(r,id)=>(await api(r.token,'GET','/api/v1/rider/offers')).data.find(o=>o.id===id);
  try{
+  await t.test('cargo class limits and vehicle approval block unsafe quotations and dispatch',async()=>{
+   const customerAccount=await customer();
+   const previous=(await db.query("SELECT enabled,max_weight_g,max_trip_m,max_length_cm,max_volume_l FROM vehicle_capabilities WHERE vehicle='tricycle'")).rows[0];
+   const previousBox=(await db.query("SELECT enabled,min_licence_class FROM vehicle_capabilities WHERE vehicle='box_truck'")).rows[0];
+   const existingTariff=(await db.query("SELECT id FROM pricing_policies WHERE vehicle='tricycle' AND active")).rows[0];
+   try{
+    // A throwaway test tariff lets the route-limit assertion reach the real routing path before Stage 2 seeds cargo tariffs.
+    if(!existingTariff)await db.query("INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,commission_bps,active) VALUES(gen_random_uuid(),'tricycle',100,0,0,0,0,true)");
+    await db.query("UPDATE vehicle_capabilities SET enabled=true,max_weight_g=300000,max_trip_m=25000,max_length_cm=200,max_volume_l=1500 WHERE vehicle='tricycle'");
+    const overweight=await api(customerAccount.token,'POST','/api/v1/quotes',trip({vehicle:'tricycle',weightG:300001,lengthCm:100,volumeL:1000}));
+    assert.equal(overweight.status,422);assert.match(overweight.data.error,/heavier vehicle|load is too heavy/i);
+    const overlength=await api(customerAccount.token,'POST','/api/v1/quotes',trip({vehicle:'tricycle',weightG:300000,lengthCm:201,volumeL:1000}));
+    assert.equal(overlength.status,422);assert.match(overlength.data.error,/too long/i);
+    const beyondTrip=await api(customerAccount.token,'POST','/api/v1/quotes',trip({vehicle:'tricycle',destination:{address:'Kumasi Central Market',latitude:6.6975,longitude:-1.6244},weightG:1000,lengthCm:100,volumeL:1000}));
+    assert.equal(beyondTrip.status,422);assert.match(beyondTrip.data.error,/trip.*limit|Try a/i);
+    const unavailable=await api(customerAccount.token,'POST','/api/v1/quotes',trip({vehicle:'box_truck',weightG:1000,lengthCm:100,volumeL:1000}));
+    assert.equal(unavailable.status,409);
+
+    const papers={plateNumber:'GT 5432-26',make:'Howo',model:'Cargo',color:'White',payloadCapacityG:7000000,bodyType:'closed',roadworthyExpiresOn:'2027-12-31',insuranceExpiresOn:'2027-12-31'};
+    const pending=await signUp('rider',{vehicle:'box_truck',maxWeightG:7000000,vehicleDetails:papers});
+    await verifyPhone(pending);await approve(pending.id);
+    assert.equal((await api(pending.token,'POST','/api/v1/rider/availability',{online:true})).status,403,'unapproved truck records cannot go online');
+    await db.query("UPDATE vehicle_capabilities SET enabled=true,min_licence_class=NULL WHERE vehicle='box_truck'");
+    await db.query("UPDATE rider_vehicle_registrations SET verification_status='approved' WHERE rider_id=$1",[pending.id]);
+    assert.equal((await api(pending.token,'POST','/api/v1/rider/availability',{online:true})).status,200,'approved truck with current papers can go online when policy is configured');
+    await db.query("UPDATE rider_vehicle_registrations SET verification_status='approved',roadworthy_expires_on=CURRENT_DATE-1 WHERE rider_id=$1",[pending.id]);
+    await db.query("UPDATE riders SET online=false WHERE id=$1",[pending.id]);
+    await suspendExpiredDocuments(db);
+    const status=(await db.query('SELECT status,online FROM riders WHERE id=$1',[pending.id])).rows[0];
+    assert.equal(status.status,'suspended');assert.equal(status.online,false);
+   } finally {
+    await db.query('UPDATE vehicle_capabilities SET enabled=$2,max_weight_g=$3,max_trip_m=$4,max_length_cm=$5,max_volume_l=$6 WHERE vehicle=$1',['tricycle',previous.enabled,previous.max_weight_g,previous.max_trip_m,previous.max_length_cm,previous.max_volume_l]);
+    await db.query("DELETE FROM pricing_policies WHERE vehicle='tricycle' AND active AND id IS DISTINCT FROM $1",[existingTariff?.id??null]);
+    await db.query("UPDATE vehicle_capabilities SET enabled=$1,min_licence_class=$2 WHERE vehicle='box_truck'",[previousBox.enabled,previousBox.min_licence_class]);
+   }
+  });
   await t.test('a new rider can finish setting up and do nothing else until approved',async()=>{
    const r=await signUp('rider',{vehicle:'motorcycle',maxWeightG:20000});
    assert.equal(r.user.awaitingApproval,true);

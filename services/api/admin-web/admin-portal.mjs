@@ -166,6 +166,12 @@ export function renderAdminPortalHtml() {
         </div>
 
         <div class="card">
+          <div class="card-title">Vehicle classes and launch limits</div>
+          <div class="card-subtitle">Disabled classes cannot be quoted or dispatched. Verify the required Ghana licence class and vehicle papers before enabling a class.</div>
+          <div class="table-container"><table><thead><tr><th>Class</th><th>Enabled</th><th>Max load kg</th><th>Trip km</th><th>Length cm</th><th>Volume L</th><th>Minimum licence class</th><th>Example</th><th></th></tr></thead><tbody id="vehiclePolicyRows"><tr><td colspan="9">Loading vehicle classes...</td></tr></tbody></table></div>
+        </div>
+
+        <div class="card">
           <div class="card-title">Active Dispatch Policy</div>
           <div class="card-subtitle">Server-authoritative matching and offer window parameters.</div>
           <div id="policyParams" class="grid-2">
@@ -912,7 +918,7 @@ export function renderAdminPortalHtml() {
       el.classList.add('active');
       document.getElementById(tabId).classList.add('active');
 
-      if (tabId === 'dispatchTab') loadAlgorithms();
+      if (tabId === 'dispatchTab') { loadAlgorithms(); loadVehiclePolicy(); }
       if (tabId === 'pricingTab') { loadPricing(); loadCommissionRules(); }
       if (tabId === 'fleetTab') loadFleet();
       if (tabId === 'riskTab') loadRisk();
@@ -952,6 +958,52 @@ export function renderAdminPortalHtml() {
       } catch (e) {
         console.error(e);
       }
+    }
+
+    async function loadVehiclePolicy() {
+      try {
+        const rows = await api('/api/v1/admin/vehicle-policy');
+        window.__vehiclePolicies = rows;
+        const tb = document.getElementById('vehiclePolicyRows');
+        tb.innerHTML = rows.map(v => {
+          const key = v.vehicle;
+          return \`<tr>
+            <td><strong>\${escapeHtml(key.replaceAll('_', ' '))}</strong><br><small>\${escapeHtml(v.customer_description || '')}</small></td>
+            <td><input id="vp_enabled_\${key}" type="checkbox" \${v.enabled ? 'checked' : ''} aria-label="Enable \${escapeHtml(key)}"></td>
+            <td><input id="vp_weight_\${key}" type="number" min="1" step="1" value="\${v.max_weight_g ? Math.round(v.max_weight_g / 1000) : ''}" style="width:85px"></td>
+            <td><input id="vp_trip_\${key}" type="number" min="1" step="1" value="\${v.max_trip_m ? Math.round(v.max_trip_m / 1000) : ''}" style="width:75px"></td>
+            <td><input id="vp_length_\${key}" type="number" min="1" step="1" value="\${v.max_length_cm || ''}" style="width:75px"></td>
+            <td><input id="vp_volume_\${key}" type="number" min="1" step="1" value="\${v.max_volume_l || ''}" style="width:75px"></td>
+            <td><input id="vp_licence_\${key}" maxlength="20" value="\${escapeHtml(v.min_licence_class || '')}" style="width:100px"></td>
+            <td>\${escapeHtml(v.customer_example || '')}</td>
+            <td><button class="action-btn" onclick="saveVehiclePolicy('\${key}')">Save</button></td>
+          </tr>\`;
+        }).join('');
+      } catch (e) {
+        const tb = document.getElementById('vehiclePolicyRows');
+        if (tb) tb.innerHTML = \`<tr><td colspan="9">\${escapeHtml(e.message)}</td></tr>\`;
+      }
+    }
+
+    async function saveVehiclePolicy(vehicle) {
+      const current = (window.__vehiclePolicies || []).find(x => x.vehicle === vehicle);
+      if (!current) return;
+      const value = id => document.getElementById(id).value;
+      const numberOrNull = n => value(n).trim() === '' ? null : Number(value(n));
+      const kg = numberOrNull('vp_weight_' + vehicle);
+      const minLicenceClass = value('vp_licence_' + vehicle).trim() || null;
+      if (!confirm(\`Save \${vehicle.replaceAll('_', ' ')} limits\${document.getElementById('vp_enabled_' + vehicle).checked ? ' and enable it' : ' and keep it disabled'}?\`)) return;
+      try {
+        await api('/api/v1/admin/vehicle-policy', { method: 'POST', body: JSON.stringify({
+          vehicle, maxParcelSize: current.max_parcel_size || 'large', allowedCategories: current.allowed_categories,
+          enabled: document.getElementById('vp_enabled_' + vehicle).checked,
+          maxWeightG: kg == null ? null : Math.round(kg * 1000), maxTripKm: numberOrNull('vp_trip_' + vehicle),
+          maxLengthCm: numberOrNull('vp_length_' + vehicle), maxVolumeL: numberOrNull('vp_volume_' + vehicle), minLicenceClass,
+          needsManualVerification: !['bicycle', 'motorcycle'].includes(vehicle),
+          customerDescription: current.customer_description, customerExample: current.customer_example
+        })});
+        await loadVehiclePolicy();
+      } catch (e) { alert('Could not save vehicle policy: ' + e.message); }
     }
 
     async function toggleAlgorithm(key, enabled) {
