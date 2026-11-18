@@ -87,6 +87,17 @@ export async function runSecurityAudit(db) {
       }
     });
 
+    await safely('cargo', 'helper and floor price tampering', async () => {
+      const customer = await account('customer');
+      const payload = {pickup: PLACES.accraMall, destination: PLACES.osuOxford, vehicle: 'motorcycle', recipientPhone: simulationPhone(), weightG: 1000, description: 'Simulation cargo', paymentMethod: 'CASH', helpers: 1, pickupFloorsNoLift: 1, dropoffFloorsNoLift: 1};
+      const changedRates = await api(customer.token, 'POST', '/api/v1/quotes', {...payload, perHelperMinor: 1, perFloorMinor: 1, helperPriceMinor: 1, floorPriceMinor: 1});
+      expect('cargo', 'the quote rejects client-supplied helper and floor prices', changedRates.status === 400, changedRates);
+      const tooMany = await api(customer.token, 'POST', '/api/v1/quotes', {...payload, helpers: 5});
+      expect('cargo', 'the quote rejects more than four helpers', tooMany.status === 400, tooMany);
+      const tooManyFloors = await api(customer.token, 'POST', '/api/v1/quotes', {...payload, pickupFloorsNoLift: 101});
+      expect('cargo', 'the quote rejects floor counts outside the configured bound', tooManyFloors.status === 400, tooManyFloors);
+    });
+
     // ---------- 2. Admin routes as everyone else ----------
     await safely('admin', 'sweep', async () => {
       const customer = await account('customer'), business = await account('business');

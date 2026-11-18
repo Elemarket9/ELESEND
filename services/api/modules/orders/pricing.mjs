@@ -12,8 +12,11 @@ export function calculateQuote(policy,distanceMeters,extras={}){
  const timePerMin=positive(policy.per_minute_minor??0,'per-minute rate');
  const waitPerMin=positive(policy.wait_per_minute_minor??0,'waiting-minute rate');
  const stopPrice=positive(policy.per_extra_stop_minor??0,'extra stop price');
- const subtotal=base+(meters*perKm+999n)/1000n+(duration*timePerMin+59n)/60n+
-   (waiting*waitPerMin+59n)/60n+stops*stopPrice+surcharge;
+ const helpers=positive(extras.helpers??0,'helpers'),helperPrice=positive(policy.per_helper_minor??0,'helper price');
+ const pickupFloors=positive(extras.pickupFloors??extras.floors??0,'pickup floors'),dropoffFloors=positive(extras.dropoffFloors??0,'drop-off floors'),floors=pickupFloors+dropoffFloors,floorPrice=positive(policy.per_floor_minor??0,'floor price');
+ const distance=(meters*perKm+999n)/1000n,time=(duration*timePerMin+59n)/60n;
+ const wait=(waiting*waitPerMin+59n)/60n,helperCharge=helpers*helperPrice,floorCharge=floors*floorPrice,extraStopCharge=stops*stopPrice;
+ const subtotal=base+distance+time+wait+helperCharge+floorCharge+extraStopCharge+surcharge;
  if(discount>=subtotal)throw Error('Discount would remove the entire delivery fare');
  const surgeBps=positive(extras.surgeBps??10000,'surge basis points');
  if(surgeBps<10000n||surgeBps>20000n)throw Error('Surge multiplier outside policy bounds');
@@ -38,7 +41,7 @@ export function calculateQuote(policy,distanceMeters,extras={}){
  if(total>2147483647n)throw Error('Charge exceeds invoice bounds');
  const platform=commission+booking;
  return {amountMinor:Number(total),commissionMinor:Number(platform),riderEarningsMinor:Number(total-platform),
-  breakdown:{fareMinor:Number(charge),salesCommissionMinor:Number(commission),bookingFeeMinor:Number(booking),tollMinor:Number(tolls),minimumApplied:surged<minimum}};
+  breakdown:{fareMinor:Number(charge),baseMinor:Number(base),distanceMinor:Number(distance),timeMinor:Number(time),waitingMinor:Number(wait),helpers:Number(helpers),helperUnitMinor:Number(helperPrice),helperMinor:Number(helperCharge),floors:Number(floors),pickupFloors:Number(pickupFloors),dropoffFloors:Number(dropoffFloors),floorUnitMinor:Number(floorPrice),floorMinor:Number(floorCharge),pickupFloorMinor:Number(pickupFloors*floorPrice),dropoffFloorMinor:Number(dropoffFloors*floorPrice),extraStops:Number(stops),extraStopsMinor:Number(extraStopCharge),surchargeMinor:Number(surcharge),discountMinor:Number(discount),salesCommissionMinor:Number(commission),bookingFeeMinor:Number(booking),tollMinor:Number(tolls),minimumApplied:surged<minimum}};
 }
 
 /** Fee after the free minutes, per started minute, up to the limit. */

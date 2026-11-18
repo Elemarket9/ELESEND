@@ -36,18 +36,19 @@ export default function FareSummary({ quote }) {
       </View>
       {open && (
         <View style={{ marginTop: 6 }}>
-          <Line name="Start" amount={ghc(fare.startMinor)} />
-          <Line name="Per km" amount={ghc(fare.perKmMinor)} />
-          <Line name={`Per minute (${fare.pricedMinutes} min)`} amount={ghc(fare.perMinuteMinor)} />
+          <Line name="Base" amount={ghc(fare.baseMinor ?? fare.startMinor)} />
+          <Line name={`Distance (${km.toFixed(1)} km)`} amount={ghc(fare.distanceMinor ?? 0)} />
+          <Line name={`Time (${fare.pricedMinutes} min)`} amount={ghc(fare.timeMinor ?? 0)} />
+          {fare.helpers > 0 && <Line name={`Helpers (${fare.helpers} × ${ghc(fare.helperUnitMinor)})`} amount={ghc(fare.helperMinor)} />}
+          {fare.pickupFloorsNoLift > 0 && <Line name={`Pickup floors without a lift (${fare.pickupFloorsNoLift} × ${ghc(fare.floorUnitMinor)})`} amount={ghc(fare.pickupFloorMinor)} />}
+          {fare.dropoffFloorsNoLift > 0 && <Line name={`Drop-off floors without a lift (${fare.dropoffFloorsNoLift} × ${ghc(fare.floorUnitMinor)})`} amount={ghc(fare.dropoffFloorMinor)} />}
           <Line name="Minimum price" amount={ghc(fare.minimumMinor)} />
           {fare.rushHourMultiplier > 1 && <Line name="Busy-time multiplier" amount={`${fare.rushHourMultiplier}×`} />}
           {fare.bookingFeeMinor > 0 && <Line name="Booking fee" amount={ghc(fare.bookingFeeMinor)} />}
+          <Line name="Waiting after free loading time" amount={fare.waitingEnabled ? `${fare.waitFreeMinutes} min free, then ${ghc(fare.waitPerMinuteMinor)}/min (up to ${ghc(fare.waitMaxMinor)})` : `${fare.waitFreeMinutes} min free; waiting fees are currently off`} />
           {(fare.tolls || []).map(toll => <Line key={toll.name} name={`Toll: ${toll.name}`} amount={ghc(toll.amountMinor)} />)}
-          {fare.waitPerMinuteMinor > 0 && (
-            <Text style={[label, { marginTop: 8 }]}>
-              Waiting: {fare.waitFreeMinutes} minutes free at each stop, then {ghc(fare.waitPerMinuteMinor)} per minute, up to {ghc(fare.waitMaxMinor)}. Cash orders only.
-            </Text>
-          )}
+          {quote.liabilityStatement && <Text style={[label, { marginTop: 8 }]}>{quote.liabilityStatement}</Text>}
+          <Text style={[label, { marginTop: 8 }]}>Declared goods value is recorded for disputes only. ELESEND does not sell insurance.</Text>
           <Text style={[label, { marginTop: 8 }]}>Trip time is an estimate from pickup to dropoff, and can change with traffic. Time for a rider to reach the pickup is extra.</Text>
         </View>
       )}

@@ -11,7 +11,7 @@
 import { database } from './shared/db.mjs';
 import {assertRequiredSchema,assertPaymentOperations,warnIfOwnerDatabaseLogin} from './shared/startup-guards.mjs';
 import { loadConfig } from './config.mjs';
-import {dispatchEngine} from './modules/orders/index.mjs';
+import {dispatchEngine,warnPlaceholderTariffs} from './modules/orders/index.mjs';
 import {etaService} from './modules/orders/index.mjs';
 import { trafficRouting, trafficService } from './modules/maps/index.mjs';
 import { installProcessGuards } from './shared/process-guards.mjs';
@@ -51,6 +51,7 @@ export async function startWorker(options = {}) {
     await db.query('SELECT 1');
   }
   await assertRequiredSchema(db);
+  await warnPlaceholderTariffs(db);
   if(!options.db)await warnIfOwnerDatabaseLogin(db,{production:process.env.NODE_ENV==='production'});
 
   const routing = options.routing || createRouting(config);

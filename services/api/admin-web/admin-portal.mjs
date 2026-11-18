@@ -200,11 +200,11 @@ export function renderAdminPortalHtml() {
                   <th>Minimum</th>
                   <th>Rush Hour</th>
                   <th>Booking Fee</th>
-                  <th>Waiting/Min</th>
+                  <th>Waiting/Min</th><th>Helper</th><th>Floor/side</th><th>Free loading</th><th>Price status</th>
                 </tr>
               </thead>
               <tbody id="pricingTable">
-                <tr><td colspan="9" style="text-align: center; color: var(--text-muted);">Loading pricing...</td></tr>
+                <tr><td colspan="13" style="text-align: center; color: var(--text-muted);">Loading pricing...</td></tr>
               </tbody>
             </table>
           </div>
@@ -214,7 +214,7 @@ export function renderAdminPortalHtml() {
           <div class="card-title">Change a Vehicle Tariff</div>
           <div class="card-subtitle">Saving creates a new tariff version. Issued quotes keep their price.</div>
           <form onsubmit="handleTariffUpdate(event)" style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
-            <div style="flex: 1; min-width: 120px;"><label class="form-label">Vehicle</label><select id="tariffVehicle" class="form-input" onchange="fillTariffForm()"><option value="motorcycle">Motorcycle</option><option value="car">Car</option><option value="van">Van</option></select></div>
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Vehicle</label><select id="tariffVehicle" class="form-input" onchange="fillTariffForm()"><option value="motorcycle">Motorcycle</option><option value="car">Car</option><option value="tricycle">Cargo tricycle</option><option value="pickup">Pickup</option><option value="van">Van</option><option value="box_truck">Box truck</option><option value="long_vehicle">Long vehicle</option></select></div>
             <div style="flex: 1; min-width: 120px;"><label class="form-label">Start GH₵</label><input type="number" id="tariffBase" class="form-input" step="0.01" min="0.01" required></div>
             <div style="flex: 1; min-width: 120px;"><label class="form-label">Per km GH₵</label><input type="number" id="tariffKm" class="form-input" step="0.01" min="0" required></div>
             <div style="flex: 1; min-width: 120px;"><label class="form-label">Per minute GH₵</label><input type="number" id="tariffMin" class="form-input" step="0.01" min="0" required></div>
@@ -223,7 +223,20 @@ export function renderAdminPortalHtml() {
             <div style="flex: 1; min-width: 120px;"><label class="form-label">Rush hour</label><select id="tariffRushOn" class="form-input"><option value="true">On</option><option value="false">Off</option></select></div>
             <div style="flex: 1; min-width: 120px;"><label class="form-label">Booking fee %</label><input type="number" id="tariffBooking" class="form-input" step="0.01" min="0" max="30" required></div>
             <div style="flex: 1; min-width: 120px;"><label class="form-label">Waiting GH₵/min</label><input type="number" id="tariffWait" class="form-input" step="0.01" min="0" max="10" required></div>
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Per helper GH₵</label><input type="number" id="tariffHelper" class="form-input" step="0.01" min="0" required></div>
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Per floor, per side GH₵</label><input type="number" id="tariffFloor" class="form-input" step="0.01" min="0" required></div>
+            <div style="flex: 1; min-width: 120px;"><label class="form-label">Free loading minutes</label><input type="number" id="tariffLoading" class="form-input" step="1" min="0" max="240" required></div>
             <button type="submit" class="action-btn">Save tariff</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Cargo liability terms</div>
+          <div class="card-subtitle">Declared value is stored for disputes only. It is not insurance. Set the approved liability cap and customer terms before cargo quotes can be issued.</div>
+          <form onsubmit="saveCargoTerms(event)" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+            <div style="min-width:160px;flex:1"><label class="form-label">Liability cap GH₵</label><input id="cargoLiabilityCap" type="number" class="form-input" step="0.01" min="0.01" required></div>
+            <div style="min-width:300px;flex:3"><label class="form-label">Published cargo terms</label><textarea id="cargoLiabilityTerms" class="form-input" rows="3" required minlength="20"></textarea></div>
+            <button class="action-btn" type="submit">Save cargo terms</button>
           </form>
         </div>
 
@@ -919,7 +932,7 @@ export function renderAdminPortalHtml() {
       document.getElementById(tabId).classList.add('active');
 
       if (tabId === 'dispatchTab') { loadAlgorithms(); loadVehiclePolicy(); }
-      if (tabId === 'pricingTab') { loadPricing(); loadCommissionRules(); }
+      if (tabId === 'pricingTab') { loadPricing(); loadCommissionRules(); loadCargoTerms(); }
       if (tabId === 'fleetTab') loadFleet();
       if (tabId === 'riskTab') loadRisk();
       if (tabId === 'financeTab') loadFinance();
@@ -1036,6 +1049,10 @@ export function renderAdminPortalHtml() {
             <td>\${t.traffic_time_pricing ? 'By trip time' : t.rush_hour_enabled ? (Number(t.rush_hour_bps || 14000) / 10000).toFixed(2) + 'x' : 'Off'}</td>
             <td>\${(Number(t.booking_fee_bps || 0) / 100).toFixed(2)}%</td>
             <td>\${ghc(t.wait_per_minute_minor || 0)}</td>
+            <td>\${ghc(t.per_helper_minor || 0)}</td>
+            <td>\${ghc(t.per_floor_minor || 0)}</td>
+            <td>\${Number(t.free_loading_minutes || 0)} min</td>
+            <td>\${t.is_placeholder ? '<span class="badge badge-pending">PLACEHOLDER — set real prices</span>' : '<span class="badge badge-active">Live</span>'}</td>
           </tr>
         \`).join('');
       } catch (e) {
@@ -1056,6 +1073,9 @@ export function renderAdminPortalHtml() {
       set('tariffRushOn', String(Boolean(t.rush_hour_enabled)));
       set('tariffBooking', (Number(t.booking_fee_bps || 0) / 100).toFixed(2));
       set('tariffWait', ((t.wait_per_minute_minor || 0) / 100).toFixed(2));
+      set('tariffHelper', ((t.per_helper_minor || 0) / 100).toFixed(2));
+      set('tariffFloor', ((t.per_floor_minor || 0) / 100).toFixed(2));
+      set('tariffLoading', Number(t.free_loading_minutes ?? 5));
     }
 
     async function handleTariffUpdate(e) {
@@ -1080,6 +1100,9 @@ export function renderAdminPortalHtml() {
             rushHourBps: Math.round(num('tariffRush') * 10000),
             bookingFeeBps: Math.round(num('tariffBooking') * 100),
             waitPerMinuteMinor: Math.round(num('tariffWait') * 100),
+            perHelperMinor: Math.round(num('tariffHelper') * 100),
+            perFloorMinor: Math.round(num('tariffFloor') * 100),
+            freeLoadingMinutes: num('tariffLoading'),
             trafficTimePricing: Boolean(t.traffic_time_pricing)
           })
         });
@@ -1088,6 +1111,24 @@ export function renderAdminPortalHtml() {
       } catch (err) {
         alert('Failed: ' + err.message);
       }
+    }
+
+    async function loadCargoTerms() {
+      try {
+        const terms = await api('/api/v1/admin/cargo-policy');
+        if (terms?.liability_limit_minor) document.getElementById('cargoLiabilityCap').value = (Number(terms.liability_limit_minor) / 100).toFixed(2);
+        document.getElementById('cargoLiabilityTerms').value = terms?.liability_terms || '';
+      } catch (e) { console.error(e); }
+    }
+
+    async function saveCargoTerms(e) {
+      e.preventDefault();
+      const cap = Number(document.getElementById('cargoLiabilityCap').value);
+      const liabilityTerms = document.getElementById('cargoLiabilityTerms').value;
+      try {
+        await api('/api/v1/admin/cargo-policy', { method: 'POST', body: JSON.stringify({ liabilityLimitMinor: Math.round(cap * 100), liabilityTerms }) });
+        alert('Cargo liability terms saved.');
+      } catch (err) { alert('Failed: ' + err.message); }
     }
 
     async function loadTolls() {

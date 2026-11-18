@@ -64,15 +64,26 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    const customerAccount=await customer();
    const previous=(await db.query("SELECT enabled,max_weight_g,max_trip_m,max_length_cm,max_volume_l FROM vehicle_capabilities WHERE vehicle='tricycle'")).rows[0];
    const previousBox=(await db.query("SELECT enabled,min_licence_class FROM vehicle_capabilities WHERE vehicle='box_truck'")).rows[0];
-   const existingTariff=(await db.query("SELECT id FROM pricing_policies WHERE vehicle='tricycle' AND active")).rows[0];
+   const existingTariff=(await db.query("SELECT id,is_placeholder FROM pricing_policies WHERE vehicle='tricycle' AND active")).rows[0];
+   const temporaryTariff=randomUUID();
+   const cargoTerms=(await db.query('SELECT liability_limit_minor,liability_terms FROM cargo_policy_settings WHERE id=1')).rows[0];
    try{
-    // A throwaway test tariff lets the route-limit assertion reach the real routing path before Stage 2 seeds cargo tariffs.
-    if(!existingTariff)await db.query("INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,commission_bps,active) VALUES(gen_random_uuid(),'tricycle',100,0,0,0,0,true)");
+    if(existingTariff)await db.query("UPDATE pricing_policies SET active=false WHERE id=$1",[existingTariff.id]);
+    await db.query("INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,commission_bps,active,is_placeholder,per_helper_minor,per_floor_minor) VALUES($1,'tricycle',100,0,0,0,0,true,false,1000,200)",[temporaryTariff]);
+    await db.query("UPDATE cargo_policy_settings SET liability_limit_minor=500000,liability_terms='Temporary test cargo terms only.' WHERE id=1");
     await db.query("UPDATE vehicle_capabilities SET enabled=true,max_weight_g=300000,max_trip_m=25000,max_length_cm=200,max_volume_l=1500 WHERE vehicle='tricycle'");
     const overweight=await api(customerAccount.token,'POST','/api/v1/quotes',trip({vehicle:'tricycle',weightG:300001,lengthCm:100,volumeL:1000}));
     assert.equal(overweight.status,422);assert.match(overweight.data.error,/heavier vehicle|load is too heavy/i);
     const overlength=await api(customerAccount.token,'POST','/api/v1/quotes',trip({vehicle:'tricycle',weightG:300000,lengthCm:201,volumeL:1000}));
     assert.equal(overlength.status,422);assert.match(overlength.data.error,/too long/i);
+    const pricedCargo=await api(customerAccount.token,'POST','/api/v1/quotes',trip({vehicle:'tricycle',weightG:200000,lengthCm:100,volumeL:1000,helpers:2,pickupFloorsNoLift:1,dropoffFloorsNoLift:2,declaredGoodsValueMinor:250000}));
+    assert.equal(pricedCargo.status,200,JSON.stringify(pricedCargo.data));
+    assert.equal(pricedCargo.data.fareBreakdown.helperMinor,2000);assert.equal(pricedCargo.data.fareBreakdown.pickupFloorMinor,200);assert.equal(pricedCargo.data.fareBreakdown.dropoffFloorMinor,400);
+    assert.equal(pricedCargo.data.amount_minor,2700);assert.match(pricedCargo.data.liabilityStatement,/does not buy insurance/);
+    const quoteEvidence=(await db.query('SELECT request,pricing_evidence FROM quotes WHERE id=$1',[pricedCargo.data.id])).rows[0];
+    assert.equal(quoteEvidence.request.declaredGoodsValueMinor,250000);assert.equal(quoteEvidence.pricing_evidence.liability.limitMinor,500000);
+    const fakePrice=await api(customerAccount.token,'POST','/api/v1/quotes',trip({vehicle:'tricycle',weightG:1000,lengthCm:100,volumeL:1000,helpers:2,perHelperMinor:1}));
+    assert.equal(fakePrice.status,400,'client cannot override a helper price');
     const beyondTrip=await api(customerAccount.token,'POST','/api/v1/quotes',trip({vehicle:'tricycle',destination:{address:'Kumasi Central Market',latitude:6.6975,longitude:-1.6244},weightG:1000,lengthCm:100,volumeL:1000}));
     assert.equal(beyondTrip.status,422);assert.match(beyondTrip.data.error,/trip.*limit|Try a/i);
     const unavailable=await api(customerAccount.token,'POST','/api/v1/quotes',trip({vehicle:'box_truck',weightG:1000,lengthCm:100,volumeL:1000}));
@@ -92,7 +103,10 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     assert.equal(status.status,'suspended');assert.equal(status.online,false);
    } finally {
     await db.query('UPDATE vehicle_capabilities SET enabled=$2,max_weight_g=$3,max_trip_m=$4,max_length_cm=$5,max_volume_l=$6 WHERE vehicle=$1',['tricycle',previous.enabled,previous.max_weight_g,previous.max_trip_m,previous.max_length_cm,previous.max_volume_l]);
-    await db.query("DELETE FROM pricing_policies WHERE vehicle='tricycle' AND active AND id IS DISTINCT FROM $1",[existingTariff?.id??null]);
+    await db.query("UPDATE pricing_policies SET active=false WHERE id=$1",[temporaryTariff]);
+    await db.query('DELETE FROM pricing_policies WHERE id=$1',[temporaryTariff]);
+    if(existingTariff)await db.query("UPDATE pricing_policies SET active=true WHERE id=$1",[existingTariff.id]);
+    await db.query('UPDATE cargo_policy_settings SET liability_limit_minor=$1,liability_terms=$2 WHERE id=1',[cargoTerms.liability_limit_minor,cargoTerms.liability_terms]);
     await db.query("UPDATE vehicle_capabilities SET enabled=$1,min_licence_class=$2 WHERE vehicle='box_truck'",[previousBox.enabled,previousBox.min_licence_class]);
    }
   });
