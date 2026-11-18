@@ -106,7 +106,7 @@ export async function journeyHarness(db) {
     await db.query('UPDATE users SET phone_verified_at=now() WHERE id=$1', [login.user.id]);
     return {id: login.user.id, token: login.token, phone};
   }
-  const car = () => ({plateNumber: 'GR ' + randomInt(1000, 9999) + '-2' + randomInt(10), make: 'Toyota', model: 'Corolla', color: 'Silver'});
+  const car = () => ({plateNumber: 'GR ' + randomInt(1000, 9999) + '-2' + randomInt(10), make: 'Toyota', model: 'Corolla', color: 'Silver', payloadCapacityG: 150000, bodyType: 'closed', roadworthyExpiresOn: '2027-12-31', insuranceExpiresOn: '2027-12-31'});
   async function rider(vehicle, at) {
     const maxWeightG = {motorcycle: 20000, car: 100000, van: 500000}[vehicle] ?? 20000;
     const r = await account('rider', {vehicle, maxWeightG, name: 'Simulated ' + vehicle + ' rider', ...(vehicle === 'car' ? {car: car()} : {})});
