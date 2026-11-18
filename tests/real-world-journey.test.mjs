@@ -83,6 +83,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     await verifyPhone(pending);await approve(pending.id);
     assert.equal((await api(pending.token,'POST','/api/v1/rider/availability',{online:true})).status,403,'unapproved truck records cannot go online');
     await db.query("UPDATE vehicle_capabilities SET enabled=true,min_licence_class=NULL WHERE vehicle='box_truck'");
+    await db.query("UPDATE rider_vehicle_registrations SET verification_status='approved' WHERE rider_id=$1",[pending.id]);
     assert.equal((await api(pending.token,'POST','/api/v1/rider/availability',{online:true})).status,200,'approved truck with current papers can go online when policy is configured');
     await db.query("UPDATE rider_vehicle_registrations SET verification_status='approved',roadworthy_expires_on=CURRENT_DATE-1 WHERE rider_id=$1",[pending.id]);
     await db.query("UPDATE riders SET online=false WHERE id=$1",[pending.id]);
