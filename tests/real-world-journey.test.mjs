@@ -85,8 +85,11 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     assert.equal(quote.data.pricingEvidence.longVehiclePolicyId,policyId);
     assert.ok(quote.data.fareBreakdown.tonneKmMinor>0);
     assert.equal(quote.data.fareBreakdown.timeMinor,0);
-    assert.equal(quote.data.amount_minor,quote.data.commission_minor+quote.data.riderEarningsMinor);
-    const stored=(await db.query('SELECT long_vehicle_policy_id,pricing_evidence FROM quotes WHERE id=$1',[quote.data.id])).rows[0];
+    assert.equal(quote.data.commission_minor,undefined,'customer quotes do not expose platform commission');
+    assert.equal(quote.data.riderEarningsMinor,undefined,'customer quotes do not expose rider earnings');
+    const stored=(await db.query('SELECT long_vehicle_policy_id,pricing_evidence,amount_minor,commission_minor FROM quotes WHERE id=$1',[quote.data.id])).rows[0];
+    assert.equal(Number(stored.amount_minor),quote.data.amount_minor);
+    assert.ok(Number(stored.commission_minor)>=0&&Number(stored.commission_minor)<=Number(stored.amount_minor));
     assert.equal(stored.long_vehicle_policy_id,policyId);
     assert.equal(stored.pricing_evidence.pricingEngine,'long_vehicle_heavy_freight_v1');
     const publicTariffs=await api(c.token,'GET','/api/v1/pricing/vehicles');
