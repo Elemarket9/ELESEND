@@ -60,6 +60,45 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
  }
  const offerFor=async(r,id)=>(await api(r.token,'GET','/api/v1/rider/offers')).data.find(o=>o.id===id);
  try{
+  await t.test('long-vehicle quote uses the dedicated heavy-freight tariff and snapshots its version',async()=>{
+   const c=await customer();
+   const cap=(await db.query("SELECT enabled,max_weight_g,max_trip_m,max_length_cm,max_volume_l,min_licence_class FROM vehicle_capabilities WHERE vehicle='long_vehicle'")).rows[0];
+   const terms=(await db.query('SELECT liability_limit_minor,liability_terms FROM cargo_policy_settings WHERE id=1')).rows[0];
+   const oldLong=(await db.query("SELECT id,is_placeholder FROM long_vehicle_pricing_policies WHERE active AND vehicle='long_vehicle'")).rows[0];
+   const oldGeneric=(await db.query("SELECT id FROM pricing_policies WHERE vehicle='long_vehicle' AND active")).rows[0];
+   let policyId=null;
+   try{
+    await db.query("UPDATE vehicle_capabilities SET enabled=true,max_weight_g=30000000,max_trip_m=800000,max_length_cm=1600,max_volume_l=1000000,min_licence_class='TEST-STAFF-SET' WHERE vehicle='long_vehicle'");
+    await db.query("UPDATE cargo_policy_settings SET liability_limit_minor=500000,liability_terms='Temporary test terms for freight quote coverage.' WHERE id=1");
+    const stillPlaceholder=await api(c.token,'POST','/api/v1/quotes',trip({vehicle:'long_vehicle',weightG:4000000,lengthCm:900,volumeL:20000}));
+    assert.equal(stillPlaceholder.status,503);assert.match(stillPlaceholder.data.error,/heavy-freight rates are not configured/i);
+    await db.query("INSERT INTO permissions(user_id,permission) VALUES($1,'pricing:write') ON CONFLICT DO NOTHING",[c.id]);
+    await assert.rejects(()=>app.configureVehicleTariff({id:c.id,kind:'admin'},{vehicle:'long_vehicle',baseMinor:10000,perKmMinor:150,perMinuteMinor:0,minimumMinor:0}),/heavy-freight pricing controls/);
+    const configured=await app.setLongVehiclePricing({id:c.id,kind:'admin'},{baseMinor:10000,perKmMinor:150,perTonneKmMinor:20,minimumMinor:30000,commissionBps:1000,returnLegBps:5000,perHelperMinor:5000,perFloorMinor:1000,perExtraStopMinor:2500,bookingFeeBps:100,waitPerMinuteMinor:50,freeLoadingMinutes:30});
+    policyId=configured.id;
+    const quote=await api(c.token,'POST','/api/v1/quotes',trip({vehicle:'long_vehicle',weightG:4000000,lengthCm:900,volumeL:20000,helpers:2,pickupFloorsNoLift:1,dropoffFloorsNoLift:2}));
+    assert.equal(quote.status,200,JSON.stringify(quote.data));
+    assert.equal(quote.data.pricingEngine,'long_vehicle_heavy_freight_v1');
+    assert.equal(quote.data.pricingEvidence.longVehiclePolicyId,policyId);
+    assert.ok(quote.data.fareBreakdown.tonneKmMinor>0);
+    assert.equal(quote.data.fareBreakdown.timeMinor,0);
+    assert.equal(quote.data.amount_minor,quote.data.commission_minor+quote.data.riderEarningsMinor);
+    const stored=(await db.query('SELECT long_vehicle_policy_id,pricing_evidence FROM quotes WHERE id=$1',[quote.data.id])).rows[0];
+    assert.equal(stored.long_vehicle_policy_id,policyId);
+    assert.equal(stored.pricing_evidence.pricingEngine,'long_vehicle_heavy_freight_v1');
+    const publicTariffs=await api(c.token,'GET','/api/v1/pricing/vehicles');
+    const shown=publicTariffs.data.find(row=>row.vehicle==='long_vehicle');
+    assert.equal(shown.per_tonne_km_minor,20);
+   }finally{
+    await db.query("UPDATE vehicle_capabilities SET enabled=$1,max_weight_g=$2,max_trip_m=$3,max_length_cm=$4,max_volume_l=$5,min_licence_class=$6 WHERE vehicle='long_vehicle'",[cap.enabled,cap.max_weight_g,cap.max_trip_m,cap.max_length_cm,cap.max_volume_l,cap.min_licence_class]);
+    if(policyId)await db.query("UPDATE long_vehicle_pricing_policies SET active=false WHERE id=$1",[policyId]);
+    if(oldLong)await db.query("UPDATE long_vehicle_pricing_policies SET active=true WHERE id=$1",[oldLong.id]);
+    if(oldGeneric)await db.query('UPDATE pricing_policies SET active=true WHERE id=$1',[oldGeneric.id]);
+    await db.query('UPDATE cargo_policy_settings SET liability_limit_minor=$1,liability_terms=$2 WHERE id=1',[terms.liability_limit_minor,terms.liability_terms]);
+    await db.query("DELETE FROM permissions WHERE user_id=$1 AND permission='pricing:write'",[c.id]);
+   }
+  });
+
   await t.test('cargo class limits and vehicle approval block unsafe quotations and dispatch',async()=>{
    const customerAccount=await customer();
    const previous=(await db.query("SELECT enabled,max_weight_g,max_trip_m,max_length_cm,max_volume_l FROM vehicle_capabilities WHERE vehicle='tricycle'")).rows[0];

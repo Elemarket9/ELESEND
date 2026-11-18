@@ -39,6 +39,11 @@ export async function runAudit(db) {
     await db.query("UPDATE checkout_method_policies SET enabled=true WHERE method IN ('MOMO','CASH')");
     const alice = await account('customer'), bob = await account('customer');
 
+    await safely('cargo', 'long-vehicle pricing separation', async () => {
+      const customRate = await api(alice.token, 'POST', '/api/v1/quotes', trip({vehicle: 'long_vehicle', weightG: 1000000, lengthCm: 500, volumeL: 10000, perTonneKmMinor: 1}));
+      expect('cargo', 'customers cannot inject a heavy-freight tonne-kilometre rate', customRate.status === 400, customRate);
+    });
+
     await safely('cargo', 'vehicle capacity limits', async () => {
       const tamperedRates = await api(alice.token, 'POST', '/api/v1/quotes', trip({helpers: 2, pickupFloorsNoLift: 3, perHelperMinor: 1, perFloorMinor: 1}));
       expect('cargo', 'a customer cannot set helper or floor prices in the quote request', tamperedRates.status === 400, tamperedRates);

@@ -37,8 +37,9 @@ export default function FareSummary({ quote }) {
       {open && (
         <View style={{ marginTop: 6 }}>
           <Line name="Base" amount={ghc(fare.baseMinor ?? fare.startMinor)} />
-          <Line name={`Distance (${km.toFixed(1)} km)`} amount={ghc(fare.distanceMinor ?? 0)} />
-          <Line name={`Time (${fare.pricedMinutes} min)`} amount={ghc(fare.timeMinor ?? 0)} />
+          <Line name={fare.pricingEngine === 'long_vehicle_heavy_freight_v1' ? `Road distance charge (${(Number(fare.distanceMeters || 0) / 1000).toFixed(1)} billed km, return factor included)` : `Distance (${km.toFixed(1)} km)`} amount={ghc(fare.distanceMinor ?? 0)} />
+          {fare.pricingEngine === 'long_vehicle_heavy_freight_v1' && <Line name={`Loaded tonne-km (${(Number(fare.weightG || 0) / 1000000).toFixed(2)} t × road distance)`} amount={ghc(fare.tonneKmMinor ?? 0)} />}
+          {fare.pricingEngine !== 'long_vehicle_heavy_freight_v1' && <Line name={`Time (${fare.pricedMinutes} min)`} amount={ghc(fare.timeMinor ?? 0)} />}
           {fare.helpers > 0 && <Line name={`Helpers (${fare.helpers} × ${ghc(fare.helperUnitMinor)})`} amount={ghc(fare.helperMinor)} />}
           {fare.pickupFloorsNoLift > 0 && <Line name={`Pickup floors without a lift (${fare.pickupFloorsNoLift} × ${ghc(fare.floorUnitMinor)})`} amount={ghc(fare.pickupFloorMinor)} />}
           {fare.dropoffFloorsNoLift > 0 && <Line name={`Drop-off floors without a lift (${fare.dropoffFloorsNoLift} × ${ghc(fare.floorUnitMinor)})`} amount={ghc(fare.dropoffFloorMinor)} />}

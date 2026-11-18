@@ -5,6 +5,7 @@ export {baselineFactorFor,etaBaselineFactors} from './eta/baseline-factors.mjs';
 export {etaService} from './eta/eta-service.mjs';
 export {cityBucket,timeBucket} from './eta/stage-eta.mjs';
 export {calculateQuote} from './pricing.mjs';
+export {calculateLongVehicleQuote} from './long-vehicle-pricing.mjs';
 export {recordRiderRiskSignals} from './risk-signals.mjs';
 export {tollRuleService} from './toll-rules.mjs';
 export {webhookService} from './api-webhooks.mjs';

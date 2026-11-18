@@ -503,6 +503,8 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='POST'&&path==='/api/v1/calculate-fare'){await limit(db,'quote:'+actor.id,30,60);result=forCustomer(actor,{...await app.quote(actor,body),customer_id:actor.id});}
   else if(method==='GET'&&path==='/api/v1/pricing/vehicles')result=await app.vehicleTariffs(actor);
   else if(method==='POST'&&path==='/api/v1/admin/pricing/vehicles')result=await app.configureVehicleTariff(actor,body);
+  else if(method==='GET'&&path==='/api/v1/admin/pricing/long-vehicle')result=await app.getLongVehiclePricing(actor);
+  else if(method==='POST'&&path==='/api/v1/admin/pricing/long-vehicle')result=await app.setLongVehiclePricing(actor,body);
   else if(method==='GET'&&path==='/api/v1/admin/cargo-policy')result=await app.getCargoPolicy(actor);
   else if(method==='POST'&&path==='/api/v1/admin/cargo-policy')result=await app.setCargoPolicy(actor,body);
   else if(method==='GET'&&path==='/api/v1/admin/pricing/tolls')result=await tollRules.list(actor);

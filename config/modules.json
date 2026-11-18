@@ -87,6 +87,7 @@
     "dispatch_policy",
     "eta_predictions",
     "locations",
+    "long_vehicle_pricing_policies",
     "operational_risk_signals",
     "api_webhook_deliveries",
     "api_webhooks",

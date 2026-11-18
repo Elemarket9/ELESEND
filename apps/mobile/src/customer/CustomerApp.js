@@ -1635,6 +1635,7 @@ export default function CustomerApp() {
                     <Text style={{ fontSize: 26, marginBottom: 4 }}>{icon}</Text>
                     <Text style={styles.vehicleOptionName}>{title}</Text>
                     <Text style={styles.vehicleOptionPrice}>{ghc(t.base_minor)} start</Text>
+                    {t.vehicle === 'long_vehicle' && <Text style={styles.vehicleOptionPrice}>+ road km and loaded tonne-km</Text>}
                     {limit ? <Text style={styles.vehicleOptionPrice}>{limit}</Text> : null}
                     {t.customer_example ? <Text style={styles.vehicleOptionPrice}>{t.customer_example}</Text> : null}
                   </TouchableOpacity>;
