@@ -1,5 +1,4 @@
 import { verificationFailures, verificationRules } from './road-verification.mjs';
-import { randomUUID } from 'node:crypto';
 import { check } from '../../../shared/security.mjs';
 import { isLikelyPrivateResidence } from './deduplicator.mjs';
 

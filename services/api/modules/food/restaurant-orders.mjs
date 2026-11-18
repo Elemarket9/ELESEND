@@ -7,7 +7,7 @@ import {requestCheckoutRefund} from '../payments/index.mjs';
 import {z} from 'zod';
 import {marketService} from '../../shared/markets.mjs';
 import {check} from '../../shared/security.mjs';
-import {requireAcceptedTerms} from '../orders/index.mjs';
+import {clearRiderAssignment,requireAcceptedTerms} from '../orders/index.mjs';
 import {haversine} from '../../shared/dispatch-geometry.mjs';
 import {calculateQuote} from '../orders/index.mjs';
 import {evaluateRestaurantBatch} from '../../shared/algorithms/restaurant-batch.mjs';
@@ -800,7 +800,7 @@ export function restaurantOrderService(db, options = {}) {
 
   /** Records each step on the way to RETURNED so the shipment history stays complete. */
   async function moveShipmentToReturned(c, shipment) {
-    await clearRiderAssignmentArtifacts(c, shipment);
+    await clearRiderAssignment(c, {shipmentId: shipment.id, riderId: shipment.rider_id});
     const record = async kind => {
       await c.query(`UPDATE shipments SET state = '${kind}' WHERE id = $1`, [shipment.id]);
       await c.query(`INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, '${kind}', $2)`, [shipment.id, JSON.stringify({shipmentId: shipment.id, kind})]);
@@ -811,20 +811,6 @@ export function restaurantOrderService(db, options = {}) {
     }
     if (shipment.state === 'FAILED') await record('RETURN_REQUESTED');
     if (shipment.state !== 'RETURNED') await record('RETURNED');
-  }
-
-  async function clearRiderAssignmentArtifacts(c, shipment) {
-    if (shipment.rider_id) {
-      const plan = (await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id = $1 FOR UPDATE', [shipment.rider_id])).rows[0];
-      if (plan && Array.isArray(plan.stops)) {
-        const nextStops = plan.stops.filter(x => x.shipmentId !== shipment.id);
-        await c.query('UPDATE rider_dispatch_plans SET stops = $2, revision = revision + 1, updated_at = now() WHERE rider_id = $1', [shipment.rider_id, JSON.stringify(nextStops)]);
-      }
-    }
-    await c.query('UPDATE challenges SET expires_at = now() WHERE shipment_id = $1 AND consumed_at IS NULL', [shipment.id]);
-    await c.query('DELETE FROM locations WHERE shipment_id = $1', [shipment.id]);
-    await c.query('DELETE FROM dispatch_commitments WHERE shipment_id = $1', [shipment.id]);
-    await c.query("UPDATE dispatch_offers SET status = 'invalidated' WHERE shipment_id = $1 AND status IN ('offered', 'accepted')", [shipment.id]);
   }
 
   async function resolveOrder(actor, orderId, input = {}) {
@@ -868,7 +854,7 @@ export function restaurantOrderService(db, options = {}) {
       if (v.action === 'reassign') {
         check(isAdmin || isOwner || isRider, 403, 'Only restaurant owner, assigned rider, or administrator may reassign pre-pickup');
         check(!pickedUp && ['RIDER_ASSIGNED', 'FAILED'].includes(shipment.state) && ['ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP'].includes(order.state), 409, 'Order can only be reassigned when rider assignment failed before pickup');
-        await clearRiderAssignmentArtifacts(c, shipment);
+        await clearRiderAssignment(c, {shipmentId: shipment.id, riderId: shipment.rider_id});
         await c.query("UPDATE shipments SET state = 'AWAITING_ASSIGNMENT', rider_id = NULL, company_id = NULL, next_dispatch_at = now(), dispatch_attempts = 0 WHERE id = $1", [shipment.id]);
         await c.query('UPDATE food_orders SET dispatch_started_at = now(), updated_at = now() WHERE id = $1', [orderId]);
         await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'AWAITING_ASSIGNMENT', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'AWAITING_ASSIGNMENT'})]);
@@ -902,7 +888,7 @@ export function restaurantOrderService(db, options = {}) {
       if (!pickedUp) {
         check(isAdmin || isOwner || (isCustomer && (shipment.state === 'FAILED' || order.state === 'SUBMITTED')), 403, 'Permission denied to cancel and refund this order');
         check(['AWAITING_PAYMENT', 'AWAITING_ASSIGNMENT', 'RIDER_ASSIGNED', 'FAILED'].includes(shipment.state), 409, `Cannot cancel pre-pickup shipment in state ${shipment.state}`);
-        await clearRiderAssignmentArtifacts(c, shipment);
+        await clearRiderAssignment(c, {shipmentId: shipment.id, riderId: shipment.rider_id});
         await requestCheckoutRefund(c, shipment, v.reason);
         await c.query("UPDATE shipments SET state = 'CANCELLED', rider_id = NULL, company_id = NULL WHERE id = $1", [shipment.id]);
         await c.query("INSERT INTO outbox(shipment_id, kind, payload) VALUES($1, 'CANCELLED', $2)", [shipment.id, JSON.stringify({shipmentId: shipment.id, kind: 'CANCELLED'})]);
@@ -996,7 +982,7 @@ export function restaurantOrderService(db, options = {}) {
           const accOffer=(await c.query("SELECT id,accepted_at,pickup_eta_seconds FROM dispatch_offers WHERE shipment_id=$1 AND rider_id=$2 AND status='accepted' ORDER BY accepted_at DESC LIMIT 1",[s.id,s.rider_id])).rows[0];
           const pickedUp=s.state!=='RIDER_ASSIGNED'||f.state==='IN_TRANSIT'||
             Boolean((await c.query("SELECT 1 FROM shipment_handover_events WHERE shipment_id=$1 AND kind='pickup' UNION SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount);
-          const {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,latestGpsMs,nowMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f.ready_at,offer:accOffer,deliveryDeadlineMs:Math.min(dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():Infinity,new Date(f.ready_at||f.accepted_at||f.created_at).getTime()+30*60*1000)});
+          const {reasons,signals,latestGpsMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f.ready_at,offer:accOffer,deliveryDeadlineMs:Math.min(dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():Infinity,new Date(f.ready_at||f.accepted_at||f.created_at).getTime()+30*60*1000)});
           if(!reasons.length)return null;
           const oldRiderId=s.rider_id;
           await recordRiderRiskSignals(c, oldRiderId, s.id, signals, {orderId:f.id,reasons,state:s.state,lastGpsAt:Number.isFinite(latestGpsMs)?new Date(latestGpsMs).toISOString():null});
@@ -1006,7 +992,7 @@ export function restaurantOrderService(db, options = {}) {
             await c.query("INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,'delivery_watchdog_alert',$3) ON CONFLICT(id) DO NOTHING",
               [`food-watchdog-pre:${f.id}:${oldRiderId}`,f.customer_id,JSON.stringify({orderId:f.id,shipmentId:s.id,reasons,action:autoReassignPreCustody?'reassigned_pre_pickup':'reassignment_offered',message:'Your assigned courier became unresponsive before pickup. We are reassigning your food order to the next available courier.'})]);
             if(autoReassignPreCustody){
-              await clearRiderAssignmentArtifacts(c,s);
+              await clearRiderAssignment(c,{shipmentId:s.id,riderId:s.rider_id});
               await c.query("UPDATE shipments SET state='AWAITING_ASSIGNMENT',rider_id=NULL,company_id=NULL,next_dispatch_at=now(),dispatch_attempts=0,watchdog_last_inspected_at=clock_timestamp(),watchdog_next_review_at=NULL WHERE id=$1",[s.id]);
               await c.query('UPDATE food_orders SET dispatch_started_at=now(),watchdog_last_inspected_at=clock_timestamp(),watchdog_next_review_at=NULL,updated_at=now() WHERE id=$1',[f.id]);
               await c.query("INSERT INTO outbox(shipment_id,kind,payload) VALUES($1,'AWAITING_ASSIGNMENT',$2)",[s.id,JSON.stringify({shipmentId:s.id,kind:'AWAITING_ASSIGNMENT',watchdogReassigned:true})]);

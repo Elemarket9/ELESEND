@@ -58,6 +58,19 @@ const withoutInternalFigures=value=>{
  return Object.fromEntries(Object.entries(value).filter(([key])=>!INTERNAL_FIGURES.test(key)).map(([key,item])=>[key,withoutInternalFigures(item)]));
 };
 /** A customer sees what they pay, not what ELESEND, the restaurant and the rider each keep or fund. */
+const PROBLEM={invalid_type:'is missing or the wrong kind of value',invalid_format:'is not in the right format',invalid_value:'is not one of the allowed choices',unrecognized_keys:'has a field the app should not send',invalid_union:'is not valid'};
+const SIZE={too_small:{string:'is too short',array:'has too few items'},too_big:{string:'is too long',array:'has too many items'}};
+const problem=issue=>SIZE[issue.code]?(SIZE[issue.code][issue.origin]??(issue.code==='too_small'?'is too small':'is too large')):PROBLEM[issue.code]??'is not valid';
+// weightG, priceMinor, radiusM: the unit belongs to the API, not the sentence.
+const fieldWords=part=>part.replace(/(?<=[a-z])(G|M|Ms|Km|Minor|Bps)$/,'').replace(/([a-z])([A-Z])/g,'$1 $2').toLowerCase();
+/** Says which field is wrong in words a person can act on, e.g. "Check the pickup address: it is too short".
+ * Only field names and the kind of problem are returned, never the values that were sent. */
+function inputProblems(error){
+ return error.issues.slice(0,5).map(issue=>{
+  const path=issue.path.filter(part=>typeof part==='string');
+  return {field:issue.path.join('.')||null,message:`Check the ${path.length?path.map(fieldWords).join(' '):'request'}: it ${problem(issue)}`};
+ });
+}
 function forCustomer(actor,value){
  if(Array.isArray(value))return value.map(row=>forCustomer(actor,row));
  return value?.customer_id===actor.id?withoutInternalFigures(value):value;
@@ -593,7 +606,6 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
   else if(method==='GET'&&/^\/api\/v1\/rider\/wallet\/topups\/[0-9a-f-]{36}$/.test(path)){check(actor?.kind==='rider',403,'Rider required');check(finance,503);result=await finance.paymentStatus(actor,path.split('/')[6]);}
   else if(method==='GET'&&path==='/api/v1/admin/finance/wallet-overview')result=await adminWalletOverview(db,actor);
   else if((method==='GET'||method==='POST')&&path==='/api/v1/admin/finance/reconciliation'){
-   const u=new URL(req.url,'http://localhost').searchParams;
    // Repair moves money between ledgers, so only an explicit POST may request it.
    const repair=method==='POST'&&body?.repair===true;
    result=await adminWalletReconciliation(db,actor,{repair});
@@ -835,9 +847,10 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    else check(false,404,'Endpoint not found');
   }send(200,result);
  }catch(e){const status=e instanceof ZodError?400:e.status??(e.code==='23505'?409:500);
-  const clientError=status===500?'Internal server error':e.code==='23505'?'Unique resource already exists':e instanceof ZodError?'Invalid input':e.message;
+  const fields=e instanceof ZodError?inputProblems(e):null;
+  const clientError=status===500?'Internal server error':e.code==='23505'?'Unique resource already exists':fields?fields[0].message:e.message;
   // Once a response has started the status cannot change; end it rather than crash the process.
-  if(res.headersSent){if(!res.writableEnded)res.end();}else send(status,{error:clientError});
+  if(res.headersSent){if(!res.writableEnded)res.end();}else send(status,{error:clientError,...(fields?{fields}:{})});
   // IDs are removed from the path and query strings left out, because they can hold personal data or tokens.
   if([401,403,423,429].includes(status))securityEvent('request_refused',{requestId,status,method:req.method,route:String(req.url).split('?')[0].replace(/[0-9a-f-]{36}/gi,':id').slice(0,200)});
   if(status===500)process.stderr.write(JSON.stringify({level:'error',requestId,method:req.method,route:String(req.url).split('?')[0].replace(/[0-9a-f-]{36}/gi,':id').slice(0,200),code:e.code??'internal',message:String(e.message??'').slice(0,300),time:new Date().toISOString()})+'\n');

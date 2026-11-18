@@ -22,7 +22,6 @@ import { moneyOperations } from './modules/payments/index.mjs';
 import {firebasePush} from './modules/orders/index.mjs';
 import {platform} from './modules/orders/index.mjs';
 import { restaurantOrderService } from './modules/food/index.mjs';
-import { reconcileAndEnforceWeeklyRestrictions } from './modules/payments/index.mjs';
 import { createPaymentProvider } from './modules/payments/index.mjs';
 import { hubtelSmsGateway } from './shared/providers/hubtel-sms.mjs';
 import { httpsSmsGateway } from './shared/sms-gateway.mjs';

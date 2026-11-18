@@ -160,8 +160,6 @@ export async function evaluateRestaurantBatch({
  // If bestRoute exceeds 30 minutes for one or more orders, split orders!
  // Incrementally find the largest feasible subset (greedy prefix along best sequence)
  if (bestRoute) {
-  const feasibleOrders = [];
-  const splitOrders = [];
   
   // Re-evaluate prefix subsets
   for (let k = bestRoute.sequence.length - 1; k >= 1; k--) {

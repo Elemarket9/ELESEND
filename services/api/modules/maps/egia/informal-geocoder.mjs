@@ -1,5 +1,4 @@
-import { ghanaSearch, searchPlaces, GHANA_BOUNDS, GHANA_GAZETTEER, interpretDigitalAddress } from '../ghana-geocoder.mjs';
-import {haversine} from '../../../shared/dispatch-geometry.mjs';
+import { ghanaSearch, searchPlaces, GHANA_GAZETTEER, interpretDigitalAddress } from '../ghana-geocoder.mjs';
 
 // Prepositional relative patterns in Ghanaian informal addresses
 const RELATIVE_MARKERS = [

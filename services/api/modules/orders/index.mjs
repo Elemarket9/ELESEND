@@ -1,4 +1,5 @@
 // The orders module's public interface. Code outside this folder may import only this file.
+export {clearRiderAssignment} from './assignment.mjs';
 export {flagOverdueParcels,listCustodyIncidents,resolveCustodyIncident} from './custody-incidents.mjs';
 export {baselineFactorFor,etaBaselineFactors} from './eta/baseline-factors.mjs';
 export {etaService} from './eta/eta-service.mjs';

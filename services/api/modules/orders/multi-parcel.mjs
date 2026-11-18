@@ -35,7 +35,6 @@ export function weightCapacityValid(stops,alreadyOnboardIds,maxWeightG){const on
  }
  return onboard.size===0;
 }
-const key=p=>`${p.latitude.toFixed(6)},${p.longitude.toFixed(6)}`;
 /** A route is only feasible using authoritative provider road legs; no aerial-distance substitution. */
 export async function evaluateStops(routing,start,stops,{vehicle,deadlines={},now=Date.now(),capacityG,onboardIds=[],maxPickupSeconds=1800,shipmentId}={}){
  check(validPoint(start)&&Array.isArray(stops)&&stops.every(validPoint),400,'Route coordinates unavailable');

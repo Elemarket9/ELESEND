@@ -51,12 +51,7 @@
     "payments"
    ],
    "tables": [
-    "account_phone_challenges",
-    "account_recovery_challenges",
-    "admin_mfa_credentials",
-    "api_clients",
     "companies",
-    "permissions",
     "rider_campaign_awards",
     "rider_document_links",
     "rider_documents",
@@ -66,9 +61,6 @@
     "rider_reward_campaigns",
     "rider_vehicle_registrations",
     "riders",
-    "sessions",
-    "user_push_tokens",
-    "users",
     "vehicle_capabilities"
    ]
   },
@@ -95,11 +87,9 @@
     "dispatch_policy",
     "eta_predictions",
     "locations",
-    "notification_jobs",
     "operational_risk_signals",
     "api_webhook_deliveries",
     "api_webhooks",
-    "outbox",
     "parcel_custody_incidents",
     "pricing_policies",
     "pricing_surge_state",
@@ -191,9 +181,19 @@
    "shared/"
   ],
   "tables": [
+   "account_phone_challenges",
+   "account_recovery_challenges",
+   "admin_mfa_credentials",
+   "api_clients",
    "audit_logs",
+   "notification_jobs",
+   "outbox",
+   "permissions",
    "rate_limits",
-   "service_markets"
+   "service_markets",
+   "sessions",
+   "user_push_tokens",
+   "users"
   ]
  },
  "composition": {
