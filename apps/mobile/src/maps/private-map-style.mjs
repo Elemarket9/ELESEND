@@ -76,3 +76,8 @@ export function privateMapStyle(tileUrl,{glyphsUrl=null,night=false}={}){
   ]};
 }
 export function displayRoadRoute(route){return route?.mapContentFamily==='independent'&&route?.providerId==='osrm'&&Array.isArray(route.points)&&route.points.length>=2?route:null;}
+
+/** A plain raster base map, for when the server proxies a hosted tile service. The phone only sees our API address. */
+export function rasterMapStyle(tileUrl, {attribution = ''} = {}) {
+ return {version: 8, name: 'ELESEND Ghana', sources: {base: {type: 'raster', tiles: [tileUrl], tileSize: 256, minzoom: 0, maxzoom: 20, ...(attribution ? {attribution} : {})}}, layers: [{id: 'base', type: 'raster', source: 'base'}]};
+}

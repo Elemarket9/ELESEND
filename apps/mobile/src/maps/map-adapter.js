@@ -1,7 +1,7 @@
 import React, { forwardRef, useId, useImperativeHandle, useMemo, useRef } from 'react';
 import { View, Text, Platform, Linking, StyleSheet } from 'react-native';
 import { MapView as NativeMap, Camera, MarkerView, PointAnnotation, ShapeSource, LineLayer, CircleLayer, SymbolLayer } from '@maplibre/maplibre-react-native';
-import { privateTileUrl, privateMapStyle, OSM_ATTRIBUTION } from './private-map-style.mjs';
+import { privateTileUrl, privateMapStyle, rasterMapStyle, OSM_ATTRIBUTION } from './private-map-style.mjs';
 import { API_BASE_URL, VECTOR_TILE_URL, GLYPHS_URL, isDevelopmentEnvironment } from '../config.js';
 
 let tileUrl = null;
@@ -24,7 +24,7 @@ async function freshMapConfig() {
   const response = await fetch(`${API_BASE_URL}/api/v1/maps/config`);
   if (!response.ok) throw Error('Map address unavailable');
   const config = await response.json();
-  if (config?.tileUrl) (await secureStore())?.setItemAsync(SAVED_MAP_CONFIG, JSON.stringify({ tileUrl: config.tileUrl, glyphsUrl: config.glyphsUrl })).catch(() => {});
+  if (config?.tileUrl) (await secureStore())?.setItemAsync(SAVED_MAP_CONFIG, JSON.stringify({ renderer: config.renderer, tileUrl: config.tileUrl, glyphsUrl: config.glyphsUrl, attribution: config.attribution })).catch(() => {});
   return config;
 }
 async function savedMapConfig() {
@@ -39,7 +39,14 @@ function loadRemoteMapSource() {
       .then(config => {
         if (!config?.tileUrl) return null;
         const url = privateTileUrl(config.tileUrl, { development: isDevelopmentEnvironment() });
-        remoteSource = { tileUrl: url, style: privateMapStyle(url, { glyphsUrl: config.glyphsUrl }), nightStyle: privateMapStyle(url, { glyphsUrl: config.glyphsUrl, night: true }) };
+        // The server may serve a raster base map (a hosted service it proxies) instead of our own vector tiles.
+        if (config.renderer === 'raster') {
+          const attribution = typeof config.attribution === 'string' ? config.attribution.slice(0, 120) : '';
+          const raster = rasterMapStyle(url, { attribution });
+          remoteSource = { tileUrl: url, style: raster, nightStyle: raster, attribution };
+        } else {
+          remoteSource = { tileUrl: url, style: privateMapStyle(url, { glyphsUrl: config.glyphsUrl }), nightStyle: privateMapStyle(url, { glyphsUrl: config.glyphsUrl, night: true }) };
+        }
         return remoteSource;
       })
       .catch(() => null)
@@ -198,7 +205,7 @@ export default forwardRef(function MapView({ night = false, initialRegion, child
         <Camera ref={camera} defaultSettings={initial} />
         {children}
       </NativeMap>
-      <Text style={styles.attribution}>{OSM_ATTRIBUTION}</Text>
+      <Text style={styles.attribution}>{mapSource?.attribution || OSM_ATTRIBUTION}</Text>
       {((!tileUrl && !mapSource) || styleError) && (
         <View pointerEvents={styleError ? 'auto' : 'none'} style={styles.noTileBanner}>
           <Text

@@ -4,6 +4,7 @@ import {trafficRouting,trafficService} from './traffic.mjs';
 import {privateMapStyle} from '../../apps/mobile/src/maps/private-map-style.mjs';
 import {settlementIntentForRider} from './modules/payments/index.mjs';
 import {publicMapConfig} from './map-config.mjs';
+import {googleMapsConfig,googlePlacesSearch,googleTileProxy,rasterMapStyle} from './infrastructure/maps/google-maps.mjs';
 import {baselineFactorFor} from './eta/baseline-factors.mjs';
 import {cityBucket,timeBucket} from './eta/stage-eta.mjs';
 import {saveTrustedContact,getTrustedContact,raiseEmergency,listSafetyAlerts,resolveSafetyAlert,createShareLink,rateDelivery,myRating,pendingRatings} from './safety.mjs';
@@ -67,7 +68,17 @@ const AWAITING_APPROVAL_ROUTES=new Set(['GET /api/v1/me','GET /api/v1/me/phone',
  'GET /api/v1/rider/licence','POST /api/v1/rider/licence','POST /api/v1/rider/licence/identity-check','GET /api/v1/rider/documents','POST /api/v1/rider/documents/upload-link','POST /api/v1/rider/profile',
  'GET /api/v1/rider/invitations','POST /api/v1/rider/invitations/accept','POST /api/v1/rider/company/leave','POST /api/v1/me/terms',
  'GET /api/v1/company/profile','PUT /api/v1/company/services']);
-export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null,readinessToken=null,etaBaselineFactors={}}={}){
+export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps=null,restaurant=null,restaurantOrders=null,paymentsWebhook=null,moneyOperations=null,readinessToken=null,etaBaselineFactors={},maps=null}={}){
+  // Google is used only when ROUTING_PROVIDER_PRIORITY=google; otherwise these stay null and self-hosted maps serve.
+  const googleMaps=maps?null:googleMapsConfig(process.env);
+  const placesSearch=maps?maps.placesSearch??null:googleMaps.placesEnabled?googlePlacesSearch({apiKey:googleMaps.apiKey,limit:googleMaps.limits.places}):null;
+  const tileProxy=maps?maps.tileProxy??null:googleMaps.tilesEnabled?googleTileProxy({apiKey:googleMaps.apiKey,limit:googleMaps.limits.tiles}):null;
+  const routingName=maps?.routingName??(googleMaps?.enabled?'google':'osrm');
+  const mapConfig=()=>{
+   const origin=(process.env.API_PUBLIC_ORIGIN||'').trim().replace(/\/$/,'');
+   if(tileProxy&&/^https?:\/\/[^/\s]+$/i.test(origin))return {renderer:'raster',tileUrl:`${origin}/api/v1/maps/raster/{z}/{x}/{y}.png`,glyphsUrl:null,attribution:'Map data © Google',offlineMaps:false};
+   return {renderer:'private',...publicMapConfig(),offlineMaps:true};
+  };
   const companies=companyService(db),webhooks=webhookService(db);const net=network(db),vehicles=vehicleService(db),markets=marketService(db);
   const restaurants=restaurant||restaurantService(db);
   const restOrders=restaurantOrders||restaurantOrderService(db,{platform:app,dispatcher,routing:app?.routing,sms:app?.sms});
@@ -176,8 +187,15 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    check(!(await db.query("SELECT 1 FROM shipments WHERE rider_id=$1 AND state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP','FAILED','RETURN_REQUESTED') LIMIT 1",[riderId])).rowCount,409,'Finish your current delivery before changing this photo');
   }}));return;}
   // Public, because the map must load before sign-in.
-  if(method==='GET'&&path==='/api/v1/maps/style.json'){const config=publicMapConfig();check(config.tileUrl,503,'Map not configured');send(200,privateMapStyle(config.tileUrl,{glyphsUrl:config.glyphsUrl}));return;}
-  if(method==='GET'&&path==='/api/v1/maps/config'){send(200,{renderer:'private',routing:'osrm',ghanaPostGpsLookup:Boolean(ghanaPostGps),...publicMapConfig()});return;}
+  if(method==='GET'&&path==='/api/v1/maps/style.json'){const config=mapConfig();check(config.tileUrl,503,'Map not configured');send(200,config.renderer==='raster'?rasterMapStyle(config.tileUrl,{attribution:config.attribution}):privateMapStyle(config.tileUrl,{glyphsUrl:config.glyphsUrl}));return;}
+  if(method==='GET'&&path==='/api/v1/maps/config'){send(200,{routing:routingName,ghanaPostGpsLookup:Boolean(ghanaPostGps),...mapConfig()});return;}
+  // Proxied tiles keep the provider key on the server. Public, because the map must load before sign-in.
+  if(method==='GET'&&path.startsWith('/api/v1/maps/raster/')){
+   check(tileProxy,404,'Endpoint not found');
+   const m=/^\/api\/v1\/maps\/raster\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})\.png$/.exec(path);check(m,404,'Tile not found');
+   const tile=await tileProxy.tile(Number(m[1]),Number(m[2]),Number(m[3]),{client:ipKey});
+   res.writeHead(200,{'Content-Type':tile.contentType,'Cache-Control':tile.cacheControl,'Content-Length':tile.bytes.length,'Cross-Origin-Resource-Policy':'cross-origin'});res.end(tile.bytes);return;
+  }
   if(method==='POST'&&path==='/api/v1/identity/webhook'){send(200,await identityWebhook(db,rawBody,req.headers));return;}
   if(method==='POST'&&path==='/api/v1/payments/checkout-webhook'){
    check(checkout,503,'Checkout unavailable');send(200,await checkout.webhook(rawBody,req.headers));return;
@@ -253,7 +271,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
    await limit(db,'maps-search:'+actor.id,60,60);
    const lat=Number(params.get('lat')),lon=Number(params.get('lon'));
    const near=Number.isFinite(lat)&&Number.isFinite(lon)?{latitude:lat,longitude:lon}:null;
-   result=await searchPlaces(db,q,{near,ghanaPostGps:digitalAddressLookup(actor),photonUrl:process.env.PHOTON_URL||null});
+   result=await searchPlaces(db,q,{near,ghanaPostGps:digitalAddressLookup(actor),photonUrl:process.env.PHOTON_URL||null,placesSearch});
   }
   else if(method==='GET'&&path==='/api/v1/maps/reverse'){
    const u=new URL(req.url,'http://localhost').searchParams;
@@ -397,7 +415,7 @@ export function httpServer(db,app,dispatcher,finance,checkout=null,{ghanaPostGps
     const egiaQuery=typeof body?.query==='string'?body.query:'';
     check(egiaQuery.trim().length>=2&&egiaQuery.length<=150,400,'Search text must be 2-150 characters');
     const egiaLimit=Math.min(30,Math.max(1,Number.parseInt(body?.limit,10)||10));
-    result=await searchInformalLocation(egiaQuery,{db,userCoordinates:body?.coordinates,limit:egiaLimit,ghanaPostGps:digitalAddressLookup(actor),photonUrl:process.env.PHOTON_URL||null});
+    result=await searchInformalLocation(egiaQuery,{db,userCoordinates:body?.coordinates,limit:egiaLimit,ghanaPostGps:digitalAddressLookup(actor),photonUrl:process.env.PHOTON_URL||null,placesSearch});
    }
    else if(method==='POST'&&path==='/api/v1/maps/egia/temporary-reference'){
     await limit(db,'temp-ref:'+actor.id,40,60);

@@ -1,0 +1,23 @@
+# Launch overlay: Google Maps Platform instead of self-hosted maps. One small VPS, no map data to build.
+#   docker compose -f compose.yaml -f compose.google-maps.yaml up -d
+# OSRM, Photon and the tile server stay off. Switch back by dropping this overlay; no app release is needed.
+services:
+  osrm:
+    profiles: [self-hosted-maps]
+  osrm-motorcycle:
+    profiles: [self-hosted-maps]
+  maps:
+    profiles: [self-hosted-maps]
+  photon:
+    profiles: [self-hosted-maps]
+  caddy:
+    volumes:
+      - ./Caddyfile.app-vps:/etc/caddy/Caddyfile:ro
+  api:
+    environment:
+      ROUTING_PROVIDER_PRIORITY: google
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:?Set a server-only Google Maps Platform key}
+      ROUTING_OSRM_URL: ''
+      ROUTING_OSRM_CAR_URL: ''
+      ROUTING_OSRM_MOTORCYCLE_URL: ''
+      PHOTON_URL: ''

@@ -12,11 +12,10 @@ import { database } from './db.mjs';
 import {assertRequiredSchema,assertPaymentOperations,warnIfOwnerDatabaseLogin} from './startup-guards.mjs';
 import { loadConfig } from './config.mjs';
 import { dispatchEngine } from './dispatch.mjs';
-import { osrmRouting } from './dispatch-routing.mjs';
 import { etaService } from './eta/eta-service.mjs';
 import { trafficRouting, trafficService } from './traffic.mjs';
 import { installProcessGuards } from './process-guards.mjs';
-import { privateRoutingPriority } from './infrastructure/maps/PrivateRoutingPolicy.mjs';
+import { createRouting } from './infrastructure/maps/routing-provider.mjs';
 import { financeService } from './modules/payments/index.mjs';
 import { checkoutService } from './modules/payments/index.mjs';
 import { moneyOperations } from './modules/payments/index.mjs';
@@ -55,14 +54,7 @@ export async function startWorker(options = {}) {
   await assertRequiredSchema(db);
   if(!options.db)await warnIfOwnerDatabaseLogin(db,{production:process.env.NODE_ENV==='production'});
 
-  privateRoutingPriority();
-  const routing = options.routing || ((config.routing.vehicleRoutes || config.routing.osrmUrl)
-    ? osrmRouting({
-        endpoint: config.routing.osrmUrl,
-        profiles: config.routing.profiles,
-        vehicleRoutes: config.routing.vehicleRoutes
-      })
-    : null);
+  const routing = options.routing || createRouting(config);
 
   const dispatch = options.dispatch || (routing ? dispatchEngine(db, { routing }) : null);
 

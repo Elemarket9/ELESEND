@@ -109,7 +109,7 @@ export function parseInformalDescription(text) {
  * Advanced Ghanaian Location Intelligence Search (Phase 2)
  * Ranks candidates with explainable confidence scoring (0-100)
  */
-export async function searchInformalLocation(query, { db = null, userCoordinates = null, limit = 8, ghanaPostGps = null, photonUrl = null } = {}) {
+export async function searchInformalLocation(query, { db = null, userCoordinates = null, limit = 8, ghanaPostGps = null, photonUrl = null, placesSearch = null } = {}) {
   if (!query || typeof query !== 'string' || !query.trim()) return [];
   if (interpretDigitalAddress(query)) return searchPlaces(null, query, {ghanaPostGps});
 
@@ -122,7 +122,7 @@ export async function searchInformalLocation(query, { db = null, userCoordinates
   // The full query keeps the ranker's place-versus-stop order. Fragment searches used to reshuffle that
   // and let a weak hit hide the better result.
   const gazResults = db
-    ? await searchPlaces(db, query, {limit: Math.max(limit, 8), near, photonUrl})
+    ? await searchPlaces(db, query, {limit: Math.max(limit, 8), near, photonUrl, placesSearch})
     : ghanaSearch(query, {limit: Math.max(limit, 8), near});
   if (gazResults[0]?.type === 'digital_address') return gazResults;
   gazResults.forEach((res, index) => {

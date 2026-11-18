@@ -20,6 +20,14 @@ test('unused competitor and paid routing code is gone',()=>{
  for(const file of ['services/api/google-routing.mjs','services/api/infrastructure/pricing/unbeatable-pricing-engine.mjs'])assert.equal(existsSync(new URL('../'+file,import.meta.url)),false,file);
 });
 
+test('paid Google maps are opt-in only and never reach the phone',()=>{
+ // Default deployments stay self-hosted; Google needs ROUTING_PROVIDER_PRIORITY=google on purpose.
+ for(const file of ['compose.yaml','deploy/runtime/compose.yaml'])assert.match(read(file),/ROUTING_PROVIDER_PRIORITY: \$\{ROUTING_PROVIDER_PRIORITY:-osrm\}/,file);
+ assert.match(read('compose.private-maps.yaml'),/ROUTING_PROVIDER_PRIORITY: osrm/);
+ // The key is server-only: the apps only see our own API address.
+ for(const file of ['apps/mobile/src/maps/map-adapter.js','apps/mobile/src/maps/private-map-style.mjs','apps/mobile/src/config.js','apps/mobile/app.json'])assert.equal(/GOOGLE_MAPS_API_KEY|googleapis\.com\/|tile\.googleapis/.test(read(file)),false,file);
+});
+
 test('address lookup needs an explicitly chosen service',()=>{
  for(const file of ['services/api/config.mjs','services/api/providers/ghanapostgps.mjs','compose.yaml','compose.private-maps.yaml','deploy/runtime/compose.yaml','.env.example'])assert.equal(read(file).includes('sperixlabs'),false,file);
  // A missing lookup address warns and keeps the lookup off; it never stops a deploy.
