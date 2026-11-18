@@ -104,7 +104,6 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    } finally {
     await db.query('UPDATE vehicle_capabilities SET enabled=$2,max_weight_g=$3,max_trip_m=$4,max_length_cm=$5,max_volume_l=$6 WHERE vehicle=$1',['tricycle',previous.enabled,previous.max_weight_g,previous.max_trip_m,previous.max_length_cm,previous.max_volume_l]);
     await db.query("UPDATE pricing_policies SET active=false WHERE id=$1",[temporaryTariff]);
-    await db.query('DELETE FROM pricing_policies WHERE id=$1',[temporaryTariff]);
     if(existingTariff)await db.query("UPDATE pricing_policies SET active=true WHERE id=$1",[existingTariff.id]);
     await db.query('UPDATE cargo_policy_settings SET liability_limit_minor=$1,liability_terms=$2 WHERE id=1',[cargoTerms.liability_limit_minor,cargoTerms.liability_terms]);
     await db.query("UPDATE vehicle_capabilities SET enabled=$1,min_licence_class=$2 WHERE vehicle='box_truck'",[previousBox.enabled,previousBox.min_licence_class]);
