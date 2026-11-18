@@ -9,6 +9,7 @@
   "scripts": {
     "local:prepare": "node --env-file-if-exists=.env scripts/prepare-local-test.mjs",
     "local:simulate": "node --env-file-if-exists=.env scripts/local-delivery-simulator.mjs",
+    "local:journeys": "node --env-file-if-exists=.env scripts/full-journey-simulation.mjs",
     "local:load": "node --env-file-if-exists=.env scripts/prelaunch-load.mjs",
     "local:geography": "node --env-file-if-exists=.env scripts/prelaunch-geography.mjs",
     "local:device": "node --env-file-if-exists=.env scripts/local-device-session.mjs",
