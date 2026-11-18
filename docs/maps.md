@@ -111,6 +111,13 @@ docker compose -f compose.yaml -f compose.google-maps.yaml up -d
 - Motorbikes are priced on car roads unless `GOOGLE_ROUTES_TWO_WHEELER=true`.
 - Google results are never written to the database. Google's terms allow keeping only place IDs.
 
+**Testing with a real key.** Before switching production over:
+
+- From GitHub: add the repository secret `GOOGLE_MAPS_API_KEY` (Settings → Secrets and variables → Actions), then Actions → *Google Maps live test* → Run workflow. The run summary shows a pass/fail line for each API and a table of real prices and ETAs.
+- From a computer: `GOOGLE_MAPS_API_KEY=... npm run maps:google-smoke`, and `SIM_ROUTING=google npm run local:journeys` with a test database.
+
+The smoke test makes about 12 requests and the journeys about 40, well inside Google's free monthly allowance. When a request fails, the output quotes Google's reason, such as "API key not valid" or "Routes API has not been used in project … or it is disabled".
+
 **Moving back to self-hosted maps.** Build the map data (`docs/two-vps-deployment.md`), set the OSRM addresses and `ROUTING_PROVIDER_PRIORITY=osrm`, and drop the overlay. There is no fallback between the two: whichever is selected is the only one used.
 
 ## Where to go next

@@ -1,0 +1,75 @@
+name: Google Maps live test
+# Run by hand from the Actions tab (or the GitHub app): Actions → Google Maps live test → Run workflow.
+# Needs the repository secret GOOGLE_MAPS_API_KEY. Uses about 12 requests for the smoke test and about 40 more
+# for the journeys, well inside Google's free monthly allowance.
+on:
+  workflow_dispatch:
+    inputs:
+      journeys:
+        description: Also run the parcel and food journeys on real Google roads
+        type: boolean
+        default: true
+permissions:
+  contents: read
+jobs:
+  google-maps:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:18-3.6
+        env:
+          POSTGRES_USER: elesend
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: elesend_test_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U elesend -d elesend_test_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+      NODE_ENV: test
+      TEST_DATABASE_URL: postgres://elesend:test-only-password@localhost:5432/elesend_test_ci
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Check the secret is set
+        run: |
+          if [ -z "$GOOGLE_MAPS_API_KEY" ]; then
+            echo "::error::Add the repository secret GOOGLE_MAPS_API_KEY (Settings → Secrets and variables → Actions)."
+            exit 1
+          fi
+      - name: Google Maps smoke test (routes, rider matching, place search, map tiles)
+        run: node scripts/google-maps-smoke.mjs | tee smoke.txt
+      - name: Parcel and food journeys on real Google roads
+        if: ${{ inputs.journeys }}
+        env:
+          SIM_ROUTING: google
+        run: |
+          node scripts/full-journey-simulation.mjs --json journeys.json > /dev/null
+          node -e '
+            const r=require("./journeys.json");
+            const lines=["| Trip | Road | Price | ETA at quote | Live ETA halfway | Rider gets |","|---|---|---|---|---|---|"];
+            for(const p of r.parcels)lines.push(`| ${p.name} | ${p.quotedKm??""} km | ${p.price??p.error} | ${p.quoteEta??""} | ${p.trackingMidway?.eta??""} | ${p.riderOffer?.raw?.entitlement_minor!=null?"GH₵"+(p.riderOffer.raw.entitlement_minor/100).toFixed(2):""} |`);
+            for(const f of r.food)lines.push(`| ${f.name} (food) | | ${f.quote?.totalMinor??f.error} | | | |`);
+            lines.push("",`Checks: ${r.passed} passed, ${r.failed} failed. Roads: ${r.roads}.`);
+            for(const c of r.checks.filter(c=>!c.ok))lines.push(`- FAILED ${c.what}: ${JSON.stringify(c.detail).slice(0,300)}`);
+            require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY,lines.join("\n")+"\n");
+            if(r.failed)process.exitCode=1;'
+      - name: Summary
+        if: always()
+        run: |
+          { echo '## Google Maps smoke test'; echo '```'; cat smoke.txt 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: google-maps-live-test
+          path: |
+            smoke.txt
+            journeys.json
+          retention-days: 14

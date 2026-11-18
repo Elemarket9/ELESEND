@@ -11,6 +11,7 @@ import {dispatchEngine} from '../services/api/modules/orders/dispatch.mjs';
 import {checkoutService,financeService,moneyOperations,paymentWebhook} from '../services/api/modules/payments/index.mjs';
 import {restaurantOrderService,restaurantService} from '../services/api/modules/food/index.mjs';
 import {fixtureRouting} from '../services/api/modules/maps/osrm-routing.mjs';
+import {googleRouting} from '../services/api/modules/maps/google-maps.mjs';
 import {haversine} from '../services/api/shared/dispatch-geometry.mjs';
 import {simulationBoundaries,simulationPhone,withSimulationDatabase} from './local-simulation-support.mjs';
 
@@ -69,7 +70,10 @@ export async function journeyHarness(db) {
   const boundary = simulationBoundaries();
   const texts = [];
   const sms = {async send(m) { texts.push(m); return {accepted: true}; }, async sendNotification(m) { texts.push(m); return {accepted: true}; }};
-  const routing = fixtureRouting(async (a, b, opts) => roadModel(a, b, opts));
+  // SIM_ROUTING=google uses real Google roads (needs GOOGLE_MAPS_API_KEY; about 40 billable requests per run).
+  const routing = process.env.SIM_ROUTING === 'google'
+    ? googleRouting({apiKey: process.env.GOOGLE_MAPS_API_KEY, limits: {routes: 200, matrixElements: 400}})
+    : fixtureRouting(async (a, b, opts) => roadModel(a, b, opts));
   const dispatch = dispatchEngine(db, {routing});
   const app = platform(db, {otpKey, routing, dispatch, sms});
   const checkout = checkoutService(db, {provider: boundary.provider, sms, dispatch, routing});
@@ -198,7 +202,7 @@ export async function journeyHarness(db) {
 export async function runFullJourneys(db) {
   const h = await journeyHarness(db);
   const {api, must, account, rider, pay, deliver, riderMoney, state, offline, dispatch} = h;
-  const report = {SIMULATED_ONLY: true, ranAt: new Date().toISOString(), parcels: [], refused: [], food: [], checks: []};
+  const report = {SIMULATED_ONLY: true, ranAt: new Date().toISOString(), roads: process.env.SIM_ROUTING === 'google' ? 'Google Routes API' : 'simulation model', parcels: [], refused: [], food: [], checks: []};
   const check = (ok, what, detail) => { report.checks.push({ok: Boolean(ok), what, ...(detail === undefined ? {} : {detail})}); return ok; };
   const etaText = eta => eta && typeof eta === 'object' ? `${eta.low ?? eta.min}–${eta.high ?? eta.max} min` : eta;
   try {
@@ -214,7 +218,7 @@ export async function runFullJourneys(db) {
         const r = await rider(p.vehicle, {latitude: from.latitude + 0.004, longitude: from.longitude + 0.003});
         const quote = await must(customer.token, 'POST', '/api/v1/quotes', {pickup: from, destination: to, vehicle: p.vehicle, recipientPhone: simulationPhone(), weightG: p.weightG, description: 'SIMULATION ONLY parcel', paymentMethod: p.pay, ...(p.cashPayer ? {cashPayer: p.cashPayer} : {})});
         const amount = Number(quote.amount_minor ?? quote.amountMinor);
-        Object.assign(row, {price: cedis(amount), priceMinor: amount, breakdown: quote.fareBreakdown, quoteEta: etaText(quote.etaMinutes), quoteEtaRaw: quote.etaMinutes});
+        Object.assign(row, {quotedKm: +(Number(quote.distanceMeters) / 1000).toFixed(1), price: cedis(amount), priceMinor: amount, breakdown: quote.fareBreakdown, quoteEta: etaText(quote.etaMinutes), quoteEtaRaw: quote.etaMinutes});
         const s = await must(customer.token, 'POST', '/api/v1/shipments', {quoteId: quote.id}, {'Idempotency-Key': 'sim-' + randomUUID()});
         row.stateAfterBooking = await state(s.id);
         if (p.pay !== 'CASH') { await pay(customer, s.id); row.stateAfterPayment = await state(s.id); }
