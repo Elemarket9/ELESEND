@@ -113,7 +113,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    assert.equal(past.status,422);assert.match(past.data.error,/future/i);
    const tooFar=await api(c.token,'POST','/api/v1/quotes',trip({pickupWindow:{startAt:new Date(Date.now()+15*86400000).toISOString(),endAt:new Date(Date.now()+15*86400000+3600000).toISOString()}}));
    assert.equal(tooFar.status,422);assert.match(tooFar.data.error,/14 days/i);
-   async function scheduledOrder(minutesAhead,{acceptInAdvance=false}={}){
+   async function scheduledOrder(minutesAhead,{acceptInAdvance=false,rider=scheduledRider}={}){
     const start=new Date(Date.now()+minutesAhead*60000),end=new Date(start.getTime()+3600000);
     const q=await api(c.token,'POST','/api/v1/quotes',trip({paymentMethod:'MOMO',pickupWindow:{startAt:start.toISOString(),endAt:end.toISOString()}}));
     assert.equal(q.status,200,JSON.stringify(q.data));assert.equal(q.data.pickupWindow.startAt,start.toISOString());
@@ -125,12 +125,12 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     await checkout.confirmVerified({status:'success',reference:pay.data.reference,amountMinor:Number(payment.amount_minor),currency:'GHS',eventId:'sched-'+randomUUID(),channel:'mobile_money'});
     if(acceptInAdvance){
      await dispatch.tick();
-     const offer=(await api(scheduledRider.token,'GET','/api/v1/rider/offers')).data.find(row=>row.id===booked.data.id);
+     const offer=(await api(rider.token,'GET','/api/v1/rider/offers')).data.find(row=>row.id===booked.data.id);
      assert.ok(offer,'scheduled jobs are offered to riders before pickup time');
      assert.equal(new Date(offer.scheduledPickupStart).toISOString(),start.toISOString());
      assert.equal(offer.pickupWindow.startAt,start.toISOString());
-     assert.equal((await api(scheduledRider.token,'POST','/api/v1/shipments/'+booked.data.id+'/accept',{offerId:offer.offerId})).status,200);
-    }else await db.query("UPDATE shipments SET state='RIDER_ASSIGNED',rider_id=$2 WHERE id=$1",[booked.data.id,scheduledRider.id]);
+     assert.equal((await api(rider.token,'POST','/api/v1/shipments/'+booked.data.id+'/accept',{offerId:offer.offerId})).status,200);
+    }else await db.query("UPDATE shipments SET state='RIDER_ASSIGNED',rider_id=$2 WHERE id=$1",[booked.data.id,rider.id]);
     return {id:booked.data.id,start,amount:q.data.amount_minor};
    }
    const early=await scheduledOrder(2*24*60);
@@ -140,7 +140,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    assert.ok(Math.abs(new Date(scheduledRow.next_dispatch_at).getTime()-(early.start.getTime()-24*3600000))<3000,'scheduled dispatch opens one day early by default');
    await assert.rejects(()=>db.query("UPDATE shipments SET scheduled_pickup_start=now()+interval '1 hour' WHERE id=$1",[early.id]),/Shipment terms immutable/);
    const termsEarly=await app.cancelTerms({id:c.id,kind:'customer'},early.id);assert.equal(termsEarly.feeMinor,0);assert.ok(termsEarly.freeSecondsLeft>0);
-   await scheduledOrder(10*60,{acceptInAdvance:true});
+   await scheduledOrder(10*60,{acceptInAdvance:true,rider:await readyRider()});
    const late=await scheduledOrder(60);
    const termsLate=await app.cancelTerms({id:c.id,kind:'customer'},late.id);assert.ok(termsLate.feeMinor>0);
    const reminder60=await scheduledOrder(50);await dispatch.tick();
