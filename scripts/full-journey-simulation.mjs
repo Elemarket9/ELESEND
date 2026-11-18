@@ -62,7 +62,8 @@ const FOOD_ALL = [
 const FOOD = process.env.SIM_FOOD ? FOOD_ALL.filter(f => f.name.includes(process.env.SIM_FOOD)) : FOOD_ALL;
 const cedis = minor => minor == null ? null : 'GH₵' + (Number(minor) / 100).toFixed(2);
 
-export async function runFullJourneys(db) {
+/** Boots the real API on loopback with simulation stand-ins, and returns helpers that act as people. */
+export async function journeyHarness(db) {
   process.env.REDIS_URL ||= 'disabled';
   const otpKey = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
   const boundary = simulationBoundaries();
@@ -81,8 +82,6 @@ export async function runFullJourneys(db) {
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const base = 'http://127.0.0.1:' + server.address().port;
-  const report = {SIMULATED_ONLY: true, ranAt: new Date().toISOString(), parcels: [], refused: [], food: [], checks: []};
-  const check = (ok, what, detail) => { report.checks.push({ok: Boolean(ok), what, ...(detail === undefined ? {} : {detail})}); return ok; };
 
   async function api(token, method, path, body, headers = {}) {
     const res = await fetch(base + path, {method, headers: {'Content-Type': 'application/json', ...(token ? {Authorization: 'Bearer ' + token} : {}), ...headers}, body: body === undefined ? undefined : JSON.stringify(body)});
@@ -139,12 +138,14 @@ export async function runFullJourneys(db) {
   const state = async id => (await db.query('SELECT state FROM shipments WHERE id=$1', [id])).rows[0]?.state;
 
   /** Rider side of any delivery: offer, accept, pickup code, ride, delivery code. Returns a timeline. */
-  async function deliver(r, shipmentId, from, to, {cash = null, customer} = {}) {
+  async function deliver(r, shipmentId, from, to, {cash = null, customer, skipDispatch = false} = {}) {
     const timeline = [];
     const mark = async step => timeline.push({step, state: await state(shipmentId)});
+    let offer = null;
+    if (!skipDispatch) {
     await dispatch.tick();
     const offers = (await must(r.token, 'GET', '/api/v1/rider/offers'));
-    const offer = offers.find(o => o.id === shipmentId);
+    offer = offers.find(o => o.id === shipmentId);
     if (!offer) {
       const s = (await db.query('SELECT state,next_dispatch_at>now() AS waiting,next_dispatch_at,no_rider_since,dispatch_attempts,payment_method,paid FROM shipments WHERE id=$1', [shipmentId])).rows[0];
       const tried = (await db.query('SELECT status,rider_id FROM dispatch_offers WHERE shipment_id=$1', [shipmentId])).rows;
@@ -162,6 +163,7 @@ export async function runFullJourneys(db) {
     }
     await mark('offered');
     await must(r.token, 'POST', `/api/v1/shipments/${shipmentId}/accept`, {offerId: offer.offerId});
+    }
     await mark('accepted');
     const trackingAfterAccept = customer ? await api(customer.token, 'GET', `/api/v1/public-track/${shipmentId}`) : null;
     await gps(r, from);
@@ -188,8 +190,17 @@ export async function runFullJourneys(db) {
     const wallet = await api(r.token, 'GET', '/api/v1/rider/wallet/summary');
     return {earnings: earnings.data, wallet: wallet.data};
   }
-  const etaText = eta => eta && typeof eta === 'object' ? `${eta.low ?? eta.min}–${eta.high ?? eta.max} min` : eta;
 
+  const close = async () => { server.closeAllConnections?.(); await new Promise(r => server.close(r)); };
+  return {db, base, api, must, account, rider, gps, pay, deliver, riderMoney, state, offline, codeFor, boundary, texts, dispatch, app, checkout, restaurantOrders, close, PLACES};
+}
+
+export async function runFullJourneys(db) {
+  const h = await journeyHarness(db);
+  const {api, must, account, rider, pay, deliver, riderMoney, state, offline, dispatch} = h;
+  const report = {SIMULATED_ONLY: true, ranAt: new Date().toISOString(), parcels: [], refused: [], food: [], checks: []};
+  const check = (ok, what, detail) => { report.checks.push({ok: Boolean(ok), what, ...(detail === undefined ? {} : {detail})}); return ok; };
+  const etaText = eta => eta && typeof eta === 'object' ? `${eta.low ?? eta.min}–${eta.high ?? eta.max} min` : eta;
   try {
     await db.query("UPDATE checkout_method_policies SET enabled=true WHERE method IN ('MOMO','CASH')");
     const customer = await account('customer');
@@ -282,8 +293,7 @@ export async function runFullJourneys(db) {
       report.food.push(row);
     }
   } finally {
-    server.closeAllConnections?.();
-    await new Promise(r => server.close(r));
+    await h.close();
   }
   report.passed = report.checks.filter(c => c.ok).length;
   report.failed = report.checks.filter(c => !c.ok).length;

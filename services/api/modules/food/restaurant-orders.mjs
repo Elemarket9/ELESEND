@@ -623,16 +623,22 @@ export function restaurantOrderService(db, options = {}) {
   }
 
   // --- Restaurant Operations: Accept & Preparation-Aware Dispatch Sync ---
+  /** Locks a food order for its kitchen (or an admin). Who is asking is checked first, so a stranger learns
+   * nothing about the order's state. */
+  async function kitchenOrder(c, actor, orderId) {
+    const order = await lockFoodOrder(c,orderId);
+    check(order, 404, 'Food order not found');
+    const restaurant = (await c.query('SELECT * FROM restaurants WHERE id = $1', [order.restaurant_id])).rows[0];
+    check(actor && (actor.kind === 'admin' || restaurant?.owner_id === actor.id), 403, 'Permission denied');
+    return {order, restaurant};
+  }
+
   async function acceptOrder(actor, orderId, {estimatedPrepMinutes = null} = {}) {
     uuid.parse(orderId);
     return db.tx(async c => {
-      const order = await lockFoodOrder(c,orderId);
-      check(order, 404, 'Food order not found');
+      const {order} = await kitchenOrder(c, actor, orderId);
       check(order.state === 'SUBMITTED', 409, `Order cannot be accepted in state ${order.state}`);
       await requireFoodPayment(c,order);
-
-      const restaurant = (await c.query('SELECT * FROM restaurants WHERE id = $1', [order.restaurant_id])).rows[0];
-      check(actor && (actor.kind === 'admin' || restaurant.owner_id === actor.id), 403, 'Permission denied');
 
       const prepMin = Number.isInteger(estimatedPrepMinutes) && estimatedPrepMinutes >= 1 && estimatedPrepMinutes <= 180
         ? estimatedPrepMinutes
@@ -680,13 +686,9 @@ export function restaurantOrderService(db, options = {}) {
   async function startPreparing(actor, orderId) {
     uuid.parse(orderId);
     return db.tx(async c => {
-      const order = await lockFoodOrder(c,orderId);
-      check(order, 404, 'Food order not found');
+      const {order} = await kitchenOrder(c, actor, orderId);
       check(order.state === 'ACCEPTED', 409, `Cannot start preparing from state ${order.state}`);
       await requireFoodPayment(c,order);
-
-      const restaurant = (await c.query('SELECT * FROM restaurants WHERE id = $1', [order.restaurant_id])).rows[0];
-      check(actor && (actor.kind === 'admin' || restaurant.owner_id === actor.id), 403, 'Permission denied');
 
       return (await c.query(
         `UPDATE food_orders SET state = 'PREPARING', updated_at = now() WHERE id = $1 RETURNING *`,
@@ -698,13 +700,9 @@ export function restaurantOrderService(db, options = {}) {
   async function markReadyForPickup(actor, orderId) {
     uuid.parse(orderId);
     return db.tx(async c => {
-      const order = await lockFoodOrder(c,orderId);
-      check(order, 404, 'Food order not found');
+      const {order} = await kitchenOrder(c, actor, orderId);
       check(['ACCEPTED', 'PREPARING'].includes(order.state), 409, `Cannot mark ready from state ${order.state}`);
       await requireFoodPayment(c,order);
-
-      const restaurant = (await c.query('SELECT * FROM restaurants WHERE id = $1', [order.restaurant_id])).rows[0];
-      check(actor && (actor.kind === 'admin' || restaurant.owner_id === actor.id), 403, 'Permission denied');
 
       const updated = (await c.query(
         `UPDATE food_orders SET
@@ -744,12 +742,8 @@ export function restaurantOrderService(db, options = {}) {
   async function rejectOrder(actor, orderId, {reason = 'Kitchen busy'} = {}) {
     uuid.parse(orderId);
     return db.tx(async c => {
-      const order = await lockFoodOrder(c,orderId);
-      check(order, 404, 'Food order not found');
+      const {order} = await kitchenOrder(c, actor, orderId);
       check(['SUBMITTED', 'ACCEPTED'].includes(order.state), 409, `Cannot reject order in state ${order.state}`);
-
-      const restaurant = (await c.query('SELECT * FROM restaurants WHERE id = $1', [order.restaurant_id])).rows[0];
-      check(actor && (actor.kind === 'admin' || restaurant.owner_id === actor.id), 403, 'Permission denied');
 
       const updated = (await c.query(
         `UPDATE food_orders SET state = 'REJECTED', updated_at = now() WHERE id = $1 RETURNING *`,
@@ -772,8 +766,8 @@ export function restaurantOrderService(db, options = {}) {
     return db.tx(async c => {
       const order = await lockFoodOrder(c,orderId);
       check(order, 404, 'Food order not found');
-      check(order.state === 'SUBMITTED', 409, 'Orders can only be cancelled before kitchen acceptance');
       check(actor && (actor.kind === 'admin' || actor.id === order.customer_id), 403, 'Permission denied');
+      check(order.state === 'SUBMITTED', 409, 'Orders can only be cancelled before kitchen acceptance');
 
       const updated = (await c.query(
         `UPDATE food_orders SET state = 'CANCELLED', updated_at = now() WHERE id = $1 RETURNING *`,

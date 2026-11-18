@@ -1548,7 +1548,7 @@ export function chatEngine(db, options = {}) {
         } else if (v.messageType === 'location_pin') {
           check(policy.allow_location_pins, 403, 'Location pin sharing is disabled by policy');
           check(v.locationPin && v.locationPin.confirmed === true, 400, 'Location pin must be explicitly confirmed (confirmed: true)');
-          check(insideMarketEnvelope(v.locationPin.latitude, v.locationPin.longitude), 422, 'Location is outside the configured Ghana envelope');
+          check(insideMarketEnvelope(v.locationPin.latitude, v.locationPin.longitude), 422, 'ELESEND delivers within Ghana only. Move the pin to a place in Ghana.');
           locationPinPayload = {
             latitude: v.locationPin.latitude,
             longitude: v.locationPin.longitude,

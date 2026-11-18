@@ -58,3 +58,21 @@ test('staff can change a vehicle\'s weight and trip limits', {skip: !url}, async
     await db.close();
   }
 });
+
+// Other people's orders, money on cancellations and refunds, two requests at once, riders dropping out and bad
+// input (scripts/audit-simulation.mjs). It found a rider who went offline with a parcel could no longer share
+// location, so the customer lost tracking; the 12-hour limit did the same mid-delivery; and kitchen actions told
+// strangers an order's state before checking who was asking.
+test('the audit cases all behave safely', {skip: !url, timeout: 240000}, async () => {
+  const previous = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'test';
+  const {runAudit} = await import('../scripts/audit-simulation.mjs');
+  const {withSimulationDatabase} = await import('../scripts/local-simulation-support.mjs');
+  try {
+    const report = await withSimulationDatabase(runAudit);
+    assert.deepEqual(report.failures, []);
+    assert.ok(report.total >= 60, `only ${report.total} cases ran`);
+  } finally {
+    process.env.NODE_ENV = previous;
+  }
+});

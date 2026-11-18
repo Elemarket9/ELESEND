@@ -105,7 +105,10 @@ export async function enforceDrivingLimits(db){
  const hours=setting(process.env.RIDER_MAX_ONLINE_HOURS,12)||12,rest=setting(process.env.RIDER_REST_HOURS,6)||6;
  await db.query('UPDATE riders SET shift_started_at=NULL WHERE NOT online AND shift_started_at IS NOT NULL AND last_offline_at<now()-make_interval(hours=>$1)',[rest]);
  const rows=(await db.query(`UPDATE riders SET online=false,rest_until=now()+make_interval(hours=>$2),shift_started_at=NULL
-   WHERE online AND shift_started_at<now()-make_interval(hours=>$1) RETURNING id`,[hours,rest])).rows;
+   WHERE online AND shift_started_at<now()-make_interval(hours=>$1)
+    -- A rider over the limit finishes the parcels they hold first; the next run sends them to rest.
+    AND NOT EXISTS(SELECT 1 FROM shipments s WHERE s.rider_id=riders.id AND s.state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'))
+   RETURNING id`,[hours,rest])).rows;
  for(const {id} of rows){
   await db.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[id]);
   await db.query("INSERT INTO audit_logs(action,entity_id) VALUES('rider.rest_enforced',$1)",[id]);
