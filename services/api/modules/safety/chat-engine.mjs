@@ -908,9 +908,18 @@ export function chatEngine(db, options = {}) {
     return { conv, participant, shipment, foodOrder, restaurant, policy };
   }
 
+  const requireMessagingPolicyPermission = async actor => {
+    const allowed = (await db.query(
+      "SELECT 1 FROM permissions WHERE user_id = $1 AND permission IN ('support:moderate', 'dispatch:configure', 'finance:configure')",
+      [actor.id]
+    )).rowCount;
+    check(allowed, 403, 'Permission required for the messaging policy');
+  };
   return {
     async getMessagingPolicy(actor) {
       check(actor?.kind === 'admin', 403, 'Administrator required');
+      // Reading the policy needs the same permissions as changing it, like every other admin route.
+      await requireMessagingPolicyPermission(actor);
       const row = await loadPolicy(db);
       return {
         postDeliveryResolutionMinutes: row.post_delivery_resolution_minutes,
@@ -923,11 +932,7 @@ export function chatEngine(db, options = {}) {
 
     async updateMessagingPolicy(actor, input) {
       check(actor?.kind === 'admin', 403, 'Administrator required');
-      const hasPerm = (await db.query(
-        "SELECT 1 FROM permissions WHERE user_id = $1 AND permission IN ('support:moderate', 'dispatch:configure', 'finance:configure')",
-        [actor.id]
-      )).rowCount;
-      check(hasPerm, 403, 'Permission required to update messaging policy');
+      await requireMessagingPolicyPermission(actor);
 
       const schema = z.object({
         postDeliveryResolutionMinutes: z.number().int().min(0).max(1440).optional(),
