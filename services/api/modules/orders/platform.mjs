@@ -754,7 +754,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    check(!v.volumeL||!capability?.max_volume_l||v.volumeL<=capability.max_volume_l,422,`This load is too large for a ${VEHICLE_LABELS[v.vehicle]??v.vehicle}. Try ${largerName} or split the load.`);}
   for(const location of [v.pickup,v.destination])validateGhanaBoundary(location.latitude,location.longitude);
   const longVehicle=v.vehicle==='long_vehicle';
-  const p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NOT DISTINCT FROM $1',[v.vehicle??null])).rows[0];
+  let p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NOT DISTINCT FROM $1',[v.vehicle??null])).rows[0];
+  // Quotes retain their legacy generic policy foreign key for compatibility. Heavy-freight amounts
+  // never use this row; when a class-specific anchor is absent, reference the active global version.
+  if(longVehicle&&!p)p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NULL ORDER BY created_at DESC LIMIT 1')).rows[0];
   const longPolicy=longVehicle?(await db.query("SELECT * FROM long_vehicle_pricing_policies WHERE active AND vehicle='long_vehicle'")).rows[0]:null;
   check(p,503,'This vehicle price is being prepared. Please choose another vehicle or contact support.');
   if(longVehicle)check(longPolicy&&!longPolicy.is_placeholder,503,'Long-vehicle heavy-freight rates are not configured yet. Please choose another vehicle or contact support.');
