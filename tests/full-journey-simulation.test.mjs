@@ -76,3 +76,21 @@ test('the audit cases all behave safely', {skip: !url, timeout: 240000}, async (
     process.env.NODE_ENV = previous;
   }
 });
+
+// Every route signed out, every admin route as everyone else, junk input everywhere, and targeted attacks on
+// sign-in, sessions, SMS cost, API keys, uploads, webhooks, headers, chat, ratings and money
+// (scripts/security-audit-simulation.mjs). It found the chat policy readable by an admin with no permissions.
+test('the security sweep finds nothing open', {skip: !url, timeout: 600000}, async () => {
+  const previous = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'test';
+  const {runSecurityAudit} = await import('../scripts/security-audit-simulation.mjs');
+  const {withSimulationDatabase} = await import('../scripts/local-simulation-support.mjs');
+  try {
+    const report = await withSimulationDatabase(runSecurityAudit);
+    assert.deepEqual(report.failures, []);
+    assert.ok(report.routes >= 250, `only ${report.routes} routes found; the route reader may have broken`);
+    assert.ok(report.total >= 85, `only ${report.total} checks ran`);
+  } finally {
+    process.env.NODE_ENV = previous;
+  }
+});

@@ -47,13 +47,15 @@ export function simulationBoundaries(){
   },
   async verifyPayment(ref){
    if(providerDown)throw Object.assign(Error('SIMULATED provider outage'),{status:503});
-   const p=payments.get(ref);assert(p,'Unknown simulated payment');
+   const p=payments.get(ref);if(!p)throw Object.assign(Error('Unknown simulated payment'),{status:404});
    return {...p,verified:true,channel:'mobile_money',eventId:'sim_'+ref};
   },
   async parseVerifiedWebhook(raw,headers){
    const expected=createHmac('sha256',secret).update(raw).digest('hex'),actual=headers['x-simulation-signature'];
-   assert(typeof actual==='string'&&actual.length===expected.length&&timingSafeEqual(Buffer.from(actual),Buffer.from(expected)),'Invalid simulated provider signature');
-   return this.verifyPayment(JSON.parse(raw).reference);
+   // Like the real adapters: a bad signature is refused with 403, not a server error.
+   if(!(typeof actual==='string'&&actual.length===expected.length&&timingSafeEqual(Buffer.from(actual),Buffer.from(expected))))throw Object.assign(Error('Invalid simulated provider signature'),{status:403});
+   let reference;try{reference=JSON.parse(raw)?.reference;}catch{throw Object.assign(Error('Invalid simulated provider event'),{status:400});}
+   return this.verifyPayment(reference);
   }
  };
  return {routing,provider,sms,transport:{async send(x){sms.set(x.challengeId,x);return {accepted:true};}},
