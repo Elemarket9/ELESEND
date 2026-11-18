@@ -106,7 +106,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
   });
 
   await t.test('scheduled pickups are bounded, fixed at quote, dispatched early, and reminded',async()=>{
-   const c=await customer();
+   const c=await customer();const scheduledIds=[],scheduledRiderIds=[];
    const missingTruckWindow=await api(c.token,'POST','/api/v1/quotes',trip({vehicle:'box_truck',weightG:2000000,lengthCm:300,volumeL:8000}));
    assert.equal(missingTruckWindow.status,422);assert.match(missingTruckWindow.data.error,/pickup date and time/i);
    const past=await api(c.token,'POST','/api/v1/quotes',trip({pickupWindow:{startAt:new Date(Date.now()-60000).toISOString(),endAt:new Date(Date.now()+60000).toISOString()}}));
@@ -123,10 +123,11 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     const pay=await api(c.token,'POST','/api/v1/shipments/'+booked.data.id+'/checkout',{idempotencyKey:key,email:'owner@example.com'});assert.equal(pay.status,200,JSON.stringify(pay.data));
     const payment=(await db.query('SELECT amount_minor FROM shipment_checkout_intents WHERE reference=$1',[pay.data.reference])).rows[0];
     await checkout.confirmVerified({status:'success',reference:pay.data.reference,amountMinor:Number(payment.amount_minor),currency:'GHS',eventId:'sched-'+randomUUID(),channel:'mobile_money'});
+    scheduledIds.push(booked.data.id);
     return {id:booked.data.id,start,amount:q.data.amount_minor};
    }
    async function acceptScheduled(order){
-    const rider=await readyRider();
+    const rider=await readyRider();scheduledRiderIds.push(rider.id);
     await db.query('UPDATE shipments SET next_dispatch_at=now() WHERE id=$1',[order.id]);
     await dispatch.tick();
     const offer=(await api(rider.token,'GET','/api/v1/rider/offers')).data.find(row=>row.id===order.id);
@@ -151,6 +152,8 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    assert.equal((await db.query("SELECT 1 FROM notification_jobs WHERE id=$1",['scheduled-pickup:'+reminder60.id+':60'])).rowCount,1);
    const reminder15=await scheduledOrder(10);await acceptScheduled(reminder15);await dispatch.tick();
    assert.equal((await db.query("SELECT 1 FROM notification_jobs WHERE id=$1",['scheduled-pickup:'+reminder15.id+':15'])).rowCount,1);
+   await db.query("UPDATE shipments SET state='CANCELLED',rider_id=NULL,company_id=NULL,cancellation_fee_minor=0 WHERE id=ANY($1::uuid[]) AND state='RIDER_ASSIGNED'",[scheduledIds]);
+   await db.query('UPDATE riders SET online=false WHERE id=ANY($1::uuid[])',[scheduledRiderIds]);
   });
 
   await t.test('cargo class limits and vehicle approval block unsafe quotations and dispatch',async()=>{
