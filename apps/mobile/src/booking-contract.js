@@ -74,7 +74,7 @@ export function isConfirmedLocation(loc) {
  * Body for POST /api/v1/quotes. Only keys present in quoteSchema are sent.
  * Throws a user-facing error instead of sending unconfirmed or unresolved locations.
  */
-export function buildParcelQuoteRequest({ pickup, destination, vehicle, weightG, paymentMethod, recipientPhone, description, cashPayer, destinationInstructions }) {
+export function buildParcelQuoteRequest({ pickup, destination, vehicle, weightG, lengthCm, volumeL, paymentMethod, recipientPhone, description, cashPayer, destinationInstructions }) {
   if (!isConfirmedLocation(pickup)) throw new Error('Please confirm your pickup location on the map before requesting a price.');
   if (!isConfirmedLocation(destination)) throw new Error('Please confirm your delivery location on the map before requesting a price.');
   const dest = toAddressPayload(destination);
@@ -88,11 +88,13 @@ export function buildParcelQuoteRequest({ pickup, destination, vehicle, weightG,
   const body = {
     pickup: toAddressPayload(pickup),
     destination: dest,
-    vehicle: ['motorcycle', 'car', 'van'].includes(vehicle) ? vehicle : 'motorcycle',
+    vehicle: ['motorcycle', 'car', 'tricycle', 'pickup', 'van', 'box_truck', 'long_vehicle', 'truck'].includes(vehicle) ? vehicle : 'motorcycle',
     weightG: Number.isInteger(Number(weightG)) && Number(weightG) > 0 ? Number(weightG) : 1500,
     recipientPhone: String(recipientPhone || ''),
     description: typeof description === 'string' && description.trim().length >= 2 ? description.trim().slice(0, 500) : 'Package'
   };
+  if (Number.isInteger(Number(lengthCm)) && Number(lengthCm) > 0) body.lengthCm = Number(lengthCm);
+  if (Number.isInteger(Number(volumeL)) && Number(volumeL) > 0) body.volumeL = Number(volumeL);
   if (['CASH', 'MOMO', 'CARD', 'QR', 'DIGITAL'].includes(paymentMethod)) body.paymentMethod = paymentMethod;
   if (['sender', 'recipient'].includes(cashPayer)) body.cashPayer = cashPayer;
   return body;
@@ -116,6 +118,8 @@ export function isQuoteBoundToInputs(quoted, currentQuoteBody) {
   if (q.vehicle !== c.vehicle) return false;
   if ((q.paymentMethod || 'CASH') !== (c.paymentMethod || 'CASH')) return false;
   if (Number(q.weightG) !== Number(c.weightG)) return false;
+  if (Number(q.lengthCm || 0) !== Number(c.lengthCm || 0)) return false;
+  if (Number(q.volumeL || 0) !== Number(c.volumeL || 0)) return false;
   if (Math.abs(Number(q.pickup?.latitude) - Number(c.pickup?.latitude)) > 1e-6) return false;
   if (Math.abs(Number(q.pickup?.longitude) - Number(c.pickup?.longitude)) > 1e-6) return false;
   if (Math.abs(Number(q.destination?.latitude) - Number(c.destination?.latitude)) > 1e-6) return false;

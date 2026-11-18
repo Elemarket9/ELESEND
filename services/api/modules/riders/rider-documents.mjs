@@ -144,7 +144,11 @@ export async function suspendExpiredDocuments(db){
  const rows=(await db.query(`UPDATE riders r SET status='suspended',online=false FROM rider_documents d
    WHERE d.rider_id=r.id AND r.status='approved' AND d.valid_until<(now() AT TIME ZONE 'UTC')::date RETURNING r.id,d.kind`)).rows;
  for(const {id,kind} of rows)await db.query('INSERT INTO audit_logs(action,entity_id) VALUES($1,$2)',['rider.document_expired_suspended:'+kind,id]);
- return rows.map(r=>r.id);
+ const vehicles=(await db.query(`UPDATE riders r SET status='suspended',online=false FROM rider_vehicle_registrations v
+   WHERE v.rider_id=r.id AND r.status='approved' AND v.verification_status='approved'
+    AND (v.roadworthy_expires_on<CURRENT_DATE OR v.insurance_expires_on<CURRENT_DATE) RETURNING r.id`)).rows;
+ for(const {id} of vehicles)await db.query("INSERT INTO audit_logs(action,entity_id) VALUES('rider.vehicle_paper_expired_suspended',$1)",[id]);
+ return [...new Set([...rows.map(r=>r.id),...vehicles.map(r=>r.id)])];
 }
 export function renderDocumentUploadPage({includeLicencePhoto=true}={}){
  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rider Documents</title>

@@ -2,18 +2,30 @@ import {requirePermission} from '../../shared/permissions.mjs';
 import {z} from 'zod';
 import {check} from '../../shared/security.mjs';
 const uuid=z.string().uuid();
-const vehicleEnum=z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']);
-const carDetails=z.object({plateNumber:z.string().trim().min(4).max(20).regex(/^[A-Za-z0-9 -]+$/),make:z.string().trim().min(2).max(50),model:z.string().trim().min(1).max(60),color:z.string().trim().min(2).max(40)}).strict();
+const vehicleEnum=z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','box_truck','long_vehicle','truck']);
+const isoDate=z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value=>{const d=new Date(value+'T00:00:00Z');return Number.isFinite(d.getTime())&&d.toISOString().slice(0,10)===value;},'Enter a real calendar date');
+const carDetails=z.object({plateNumber:z.string().trim().min(4).max(20).regex(/^[A-Za-z0-9 -]+$/),make:z.string().trim().min(2).max(50),model:z.string().trim().min(1).max(60),color:z.string().trim().min(2).max(40),payloadCapacityG:z.number().int().positive().max(30000000).optional(),bodyType:z.enum(['open','closed','flatbed','refrigerated']).optional(),roadworthyExpiresOn:isoDate.optional(),insuranceExpiresOn:isoDate.optional()}).strict();
+const vehicleDetailsSchema=carDetails.extend({payloadCapacityG:z.number().int().positive().max(30000000),bodyType:z.enum(['open','closed','flatbed','refrigerated']),roadworthyExpiresOn:isoDate,insuranceExpiresOn:isoDate}).strict();
+const requiresVehicleApproval=vehicle=>!['bicycle','motorcycle'].includes(vehicle);
+/** Licence records remain inside the riders module; callers pass their existing transaction when available. */
+export async function riderMeetsVehicleLicence(c,riderId,minLicenceClass){
+ if(!minLicenceClass)return true;
+ return Boolean((await c.query("SELECT 1 FROM rider_licences WHERE rider_id=$1 AND status='approved' AND expires_on>=CURRENT_DATE AND upper(licence_class)=upper($2)",[riderId,minLicenceClass])).rowCount);
+}
 export const carRegistration=carDetails;
-export async function registerVehicleInTx(c,riderId,{vehicle,maxWeightG,car}){
- const type=vehicleEnum.parse(vehicle),capacity=z.number().int().min(1).max(10000000).parse(maxWeightG);
- check(type!=='car'||car,400,'Car plate, make, model and color required');
- const v=type==='car'?carDetails.parse(car):null;
+export async function registerVehicleInTx(c,riderId,{vehicle,maxWeightG,car,vehicleDetails}){
+ const type=vehicleEnum.parse(vehicle),capacity=z.number().int().min(1).max(30000000).parse(maxWeightG);
+ const details=vehicleDetails??car;
+ check(!requiresVehicleApproval(type)||details,400,'Vehicle plate, make, model and colour are required');
+ const v=requiresVehicleApproval(type)?(vehicleDetails?vehicleDetailsSchema.parse(vehicleDetails):carDetails.parse(details)):null;
+ check(!v||v.payloadCapacityG===undefined||v.payloadCapacityG>=capacity,400,'Payload capacity must cover the weight you can carry');
+ check(!v||v.roadworthyExpiresOn===undefined||v.roadworthyExpiresOn>=new Date().toISOString().slice(0,10),400,'Roadworthy certificate has expired');
+ check(!v||v.insuranceExpiresOn===undefined||v.insuranceExpiresOn>=new Date().toISOString().slice(0,10),400,'Vehicle insurance has expired');
  await c.query('UPDATE riders SET vehicle=$2,max_weight_g=$3,online=false,status=\'pending\' WHERE id=$1',[riderId,type,capacity]);
- await c.query(`INSERT INTO rider_vehicle_registrations(rider_id,vehicle,registration_plate,make,model,color,verification_status)
- VALUES($1,$2,$3,$4,$5,$6,'pending') ON CONFLICT(rider_id) DO UPDATE SET
- vehicle=$2,registration_plate=$3,make=$4,model=$5,color=$6,verification_status='pending',submitted_at=now(),reviewed_at=NULL,reviewer_id=NULL`,
- [riderId,type,v?.plateNumber.toUpperCase().replace(/\s+/g,' ').trim()??null,v?.make??null,v?.model??null,v?.color??null]);
+ await c.query(`INSERT INTO rider_vehicle_registrations(rider_id,vehicle,registration_plate,make,model,color,payload_capacity_g,body_type,roadworthy_expires_on,insurance_expires_on,verification_status)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending') ON CONFLICT(rider_id) DO UPDATE SET
+ vehicle=$2,registration_plate=$3,make=$4,model=$5,color=$6,payload_capacity_g=$7,body_type=$8,roadworthy_expires_on=$9,insurance_expires_on=$10,verification_status='pending',submitted_at=now(),reviewed_at=NULL,reviewer_id=NULL`,
+ [riderId,type,v?.plateNumber.toUpperCase().replace(/\s+/g,' ').trim()??null,v?.make??null,v?.model??null,v?.color??null,v?.payloadCapacityG??capacity,v?.bodyType??null,v?.roadworthyExpiresOn??null,v?.insuranceExpiresOn??null]);
 }
 const normalizePlate=plate=>plate.toUpperCase().replace(/\s+/g,' ').trim();
 // Ghana plates mix letters and digits, like GR 1234-26 or M-22-GR 1234. Customers check it at the door.
@@ -28,15 +40,21 @@ export async function saveVehiclePlate(c,riderId,vehicle,plate){
 }
 /** Approving a rider also approves their vehicle, so staff review once. */
 export async function approveVehicleRecord(c,riderId,reviewerId){
- const rider=(await c.query('SELECT vehicle FROM riders WHERE id=$1',[riderId])).rows[0];
+ const rider=(await c.query('SELECT vehicle,max_weight_g FROM riders WHERE id=$1',[riderId])).rows[0];
  const v=(await c.query('SELECT * FROM rider_vehicle_registrations WHERE rider_id=$1 FOR UPDATE',[riderId])).rows[0];
- if(rider?.vehicle==='car')check(v?.registration_plate&&v.make&&v.model&&v.color,409,'Car records incomplete');
+ if(requiresVehicleApproval(rider?.vehicle)){
+  check(v?.registration_plate&&v.make&&v.model&&v.color,409,'Vehicle records incomplete');
+  check(v?.payload_capacity_g>=rider.max_weight_g,409,'Vehicle payload capacity is not verified');
+  check(v?.body_type,409,'Vehicle body type is missing');
+  check(v?.roadworthy_expires_on&&new Date(v.roadworthy_expires_on)>=new Date(new Date().toISOString().slice(0,10)),409,'Vehicle roadworthy certificate is missing or expired');
+  check(v?.insurance_expires_on&&new Date(v.insurance_expires_on)>=new Date(new Date().toISOString().slice(0,10)),409,'Vehicle insurance is missing or expired');
+ }
  if(v)await c.query("UPDATE rider_vehicle_registrations SET verification_status='approved',reviewer_id=$2,reviewed_at=now() WHERE rider_id=$1",[riderId,reviewerId]);
 }
 export function vehicleService(db){return {
- async profile(actor){check(actor.kind==='rider',403,'Rider account required');const v=(await db.query(`SELECT r.vehicle,r.max_weight_g,r.status AS rider_status,r.online,vr.registration_plate,vr.make,vr.model,vr.color,vr.verification_status
+ async profile(actor){check(actor.kind==='rider',403,'Rider account required');const v=(await db.query(`SELECT r.vehicle,r.max_weight_g,r.status AS rider_status,r.online,vr.registration_plate,vr.make,vr.model,vr.color,vr.payload_capacity_g,vr.body_type,vr.roadworthy_expires_on,vr.insurance_expires_on,vr.verification_status
  FROM riders r LEFT JOIN rider_vehicle_registrations vr ON vr.rider_id=r.id WHERE r.id=$1`,[actor.id])).rows[0];check(v,404);return v;},
- async submit(actor,input){check(actor.kind==='rider',403,'Rider account required');const v=z.object({vehicle:vehicleEnum,maxWeightG:z.number().int().positive().max(10000000),car:carDetails.optional()}).strict().parse(input);
+ async submit(actor,input){check(actor.kind==='rider',403,'Rider account required');const v=z.object({vehicle:vehicleEnum,maxWeightG:z.number().int().positive().max(30000000),car:carDetails.optional(),vehicleDetails:vehicleDetailsSchema.optional()}).strict().parse(input);
   return db.tx(async c=>{await c.query('SELECT * FROM riders WHERE id=$1 FOR UPDATE',[actor.id]);
    check(!(await c.query("SELECT 1 FROM shipments WHERE rider_id=$1 AND state IN ('RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP','FAILED','RETURN_REQUESTED')",[actor.id])).rowCount,409,'Finish all active deliveries before changing vehicle');
    await registerVehicleInTx(c,actor.id,v);await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE rider_id=$1 AND status='offered'",[actor.id]);

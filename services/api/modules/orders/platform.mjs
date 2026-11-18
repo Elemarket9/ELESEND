@@ -5,7 +5,7 @@ import {tripEvidence} from './eta/eta-service.mjs';
 import {ACTIVE_PUSH_TOKEN_FILTER,queueNotification} from './notifications.mjs';
 import {envInt} from '../../shared/env-values.mjs';
 import {cashAlreadyReported,confirmedPaymentMinor,unpaidEarningsMinor,withdrawalFeeMinor} from '../payments/index.mjs';
-import {approveVehicleRecord} from '../riders/index.mjs';
+import {approveVehicleRecord,riderMeetsVehicleLicence} from '../riders/index.mjs';
 import {ACCEPTED_SERVICES,assertCompanyDelivery} from '../riders/index.mjs';
 import {ensureCommissionAccount,paymentMethodEnabled,findPaymentEvent,recordPaymentEvent,recordFinancialEntry,earningsEntriesFor,senderCashCollectedInFull,cashCollectionFor,accrueRestaurantSettlement} from '../payments/index.mjs';
 import {approveRiderDocuments,shredRiderDocuments} from '../riders/index.mjs';
@@ -38,7 +38,7 @@ import {marketService} from '../../shared/markets.mjs';
 import {getRedisClient} from '../../shared/cache/redis.mjs';
 import {promotionEngine} from '../food/index.mjs';
 import {disconnectRealtimeUser} from '../safety/index.mjs';
-const VEHICLE_LABELS={bicycle:'bicycle',motorcycle:'motorbike',tricycle:'tricycle',car:'car',pickup:'pickup',van:'van',truck:'truck'};
+const VEHICLE_LABELS={bicycle:'bicycle',motorcycle:'motorbike',tricycle:'cargo tricycle',car:'car',pickup:'pickup truck',van:'van',truck:'truck',box_truck:'box truck',long_vehicle:'long vehicle'};
 const kg=g=>`${Math.round(Number(g)/1000)} kg`,km=m=>`${Math.round(Number(m)/1000)} km`;
 const id=()=>randomUUID();
 const uuid=z.string().uuid();
@@ -58,9 +58,10 @@ export function hideEndedContacts(actor,s){
  const strip=d=>d&&typeof d==='object'?{...d,recipientPhone:undefined,pickupPhone:undefined}:d;
  return {...s,recipient_phone:null,details:strip(s.details),rider_phone:s.rider_phone===undefined?undefined:null};
 }
-const registration=z.object({phone:z.string().max(30),termsVersion:z.string().trim().min(1).max(40),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']).optional(),maxWeightG:z.number().int().min(1).max(10000000).optional(),car:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
+const vehicleTypes=['bicycle','motorcycle','tricycle','car','pickup','van','box_truck','long_vehicle','truck'];
+const registration=z.object({phone:z.string().max(30),termsVersion:z.string().trim().min(1).max(40),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(vehicleTypes).optional(),maxWeightG:z.number().int().min(1).max(30000000).optional(),car:carRegistration.optional(),vehicleDetails:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
 const address=z.object({address:z.string().min(5).max(400),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict();
-const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(['motorcycle','car','van']).optional(),recipientPhone:z.string().max(30),pickupPhone:z.string().max(30).optional(),weightG:z.number().int().min(1).max(10000000),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
+const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(vehicleTypes.filter(x=>x!=='bicycle')).optional(),recipientPhone:z.string().max(30),pickupPhone:z.string().max(30).optional(),weightG:z.number().int().min(1).max(30000000),lengthCm:z.number().int().positive().max(30000).optional(),volumeL:z.number().int().positive().max(1000000).optional(),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
 // Legacy SMS handovers are disabled by default in production. Test/development fixtures remain compatible.
 const allowLegacySmsHandover=()=>process.env.NODE_ENV!=='production'||process.env.HANDOVER_SMS_LEGACY_ENABLED==='true';
 const ACCOUNT_SMS_PER_NUMBER=5,ACCOUNT_SMS_BLOCK_SECONDS=900;
@@ -483,10 +484,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  async register(input){const v=registration.parse(input);const uid=id(),p=phone(v.phone);assertAcceptablePassword(v.password,{phone:p});const pw=await passwordHash(v.password);
   await db.tx(async c=>{await c.query('INSERT INTO users(id,phone,password_hash,kind) VALUES($1,$2,$3,$4)',[uid,p,pw,v.kind]);
    if(v.kind==='rider'){
-    const type=v.vehicle??'motorcycle';check(type!=='car'||v.car,400,'Car registration details required');
+    const type=v.vehicle??'motorcycle';const details=v.vehicleDetails??v.car;check(['bicycle','motorcycle'].includes(type)||details,400,'Vehicle registration details required');
     await c.query('INSERT INTO riders(id,vehicle,max_weight_g,display_name) VALUES($1,$2,$3,$4)',[uid,type,v.maxWeightG??20000,v.name?v.name.trim().slice(0,60):null]);
     await ensureCommissionAccount(c,uid);
-    if(type==='car')await registerVehicleInTx(c,uid,{vehicle:type,maxWeightG:v.maxWeightG??20000,car:v.car});
+    if(!['bicycle','motorcycle'].includes(type))await registerVehicleInTx(c,uid,{vehicle:type,maxWeightG:v.maxWeightG??20000,vehicleDetails:details});
    }
    if(v.kind==='company'){check(v.name,400,'Company name required');await c.query('INSERT INTO companies(id,owner_id,name,services) VALUES($1,$2,$3,$4)',[id(),uid,v.name,[...new Set(v.services??['riders'])]]);}
    await c.query('UPDATE users SET terms_version=$2,terms_accepted_at=now() WHERE id=$1',[uid,v.termsVersion]);
@@ -627,7 +628,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    await audit(c,actor.id,'pricing.vehicle_version_created',pid);return {id:pid,...v};
   });
  },
- async vehicleTariffs(actor){check(['customer','business','company','admin'].includes(actor.kind),403);return (await db.query('SELECT id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,rush_hour_enabled FROM pricing_policies WHERE active AND vehicle IS NOT NULL ORDER BY vehicle')).rows;},
+ async vehicleTariffs(actor){check(['customer','business','company','admin'].includes(actor.kind),403);return (await db.query(`SELECT p.id,p.vehicle,p.base_minor,p.per_km_minor,p.per_minute_minor,p.minimum_minor,p.rush_hour_enabled,
+   vc.max_weight_g,vc.max_trip_m,vc.max_length_cm,vc.max_volume_l,vc.customer_description,vc.customer_example
+   FROM pricing_policies p JOIN vehicle_capabilities vc ON vc.vehicle=p.vehicle
+   WHERE p.active AND p.vehicle IS NOT NULL AND vc.enabled ORDER BY p.vehicle`)).rows;},
  async getPricing(actor){check(actor?.kind==='admin',403);check((await db.query("SELECT 1 FROM permissions WHERE user_id=$1 AND permission=ANY($2::text[])",[actor.id,['pricing:write','finance:read','finance:approve','finance:configure']])).rowCount,403,'Pricing permission required');return (await db.query('SELECT * FROM pricing_policies WHERE active ORDER BY vehicle NULLS FIRST')).rows;},
  async configureCommission(actor,input){
   const v=z.object({vehicle:z.enum(['motorcycle','car','van']).nullable().optional(),commissionBps:z.number().int().min(0).max(10000),commissionMode:z.enum(['percentage','fixed','hybrid']).default('percentage'),commissionFixedMinor:z.number().int().min(0).max(1000000).default(0),commissionCapMinor:z.number().int().min(0).max(1000000).nullable().default(null)}).strict().parse(input);
@@ -684,7 +688,9 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
  },
  async availability(actor,input){const v=z.object({online:z.boolean()}).strict().parse(input);return db.tx(async c=>{const r=await rider(c,actor);
    if(v.online&&process.env.NODE_ENV==='production')await requireVerifiedPhone(c,actor);
-   if(v.online&&r.vehicle==='car')check((await c.query("SELECT 1 FROM rider_vehicle_registrations WHERE rider_id=$1 AND vehicle='car' AND verification_status='approved'",[actor.id])).rowCount,403,'Car must be manually verified before going online');
+   if(v.online&&!['bicycle','motorcycle'].includes(r.vehicle))check((await c.query(`SELECT 1 FROM rider_vehicle_registrations WHERE rider_id=$1 AND vehicle=$2 AND verification_status='approved'
+     AND roadworthy_expires_on>=CURRENT_DATE AND insurance_expires_on>=CURRENT_DATE`,[actor.id,r.vehicle])).rowCount,403,'Your vehicle papers must be current and approved before you go online');
+   if(v.online){const policy=(await c.query('SELECT min_licence_class FROM vehicle_capabilities WHERE vehicle=$1 AND enabled',[r.vehicle])).rows[0];check(policy,403,'This vehicle type is not available for work');check(await riderMeetsVehicleLicence(c,actor.id,policy.min_licence_class),403,'Your driver licence must be reviewed for this vehicle before you go online');}
    if(v.online){
     const rest=(await c.query('SELECT rest_until FROM riders WHERE id=$1 AND rest_until>now()',[actor.id])).rows[0];
     check(!rest,409,'You have reached your driving time limit. You can go online again after your rest');
@@ -706,10 +712,20 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   // Native clients explicitly choose CASH/MOMO/CARD/QR. Legacy DIGITAL cannot
   // initiate public checkout or self-report payment success.
   if(v.paymentMethod!=='DIGITAL'){check(await paymentMethodEnabled(db,v.paymentMethod),503,'Payment method is not active');}
-  const capability=v.vehicle?(await db.query('SELECT enabled,max_weight_g,max_trip_m FROM vehicle_capabilities WHERE vehicle=$1',[v.vehicle])).rows[0]:null;
+  const capability=v.vehicle?(await db.query('SELECT enabled,max_weight_g,max_trip_m,max_length_cm,max_volume_l FROM vehicle_capabilities WHERE vehicle=$1',[v.vehicle])).rows[0]:null;
   if(v.vehicle){check(capability?.enabled!==false,409,'This vehicle type is not available yet');
+   if(['tricycle','pickup','van','box_truck','long_vehicle','truck'].includes(v.vehicle)){
+    check(v.lengthCm&&v.volumeL,400,'Enter the load length and volume so we can match it to the right cargo vehicle.');
+    check(capability?.max_length_cm&&capability?.max_volume_l,503,'This vehicle is not accepting cargo quotes yet. Staff must set its verified load length and volume limits first.');
+   }
    // Quote only what this vehicle can carry; otherwise the order is paid for and no rider can take it.
-   check(!capability?.max_weight_g||v.weightG<=capability.max_weight_g,422,`A ${VEHICLE_LABELS[v.vehicle]??v.vehicle} carries up to ${kg(capability?.max_weight_g)}. Choose a bigger vehicle or split the parcel.`);}
+   const heavier=(await db.query(`SELECT vehicle,enabled FROM vehicle_capabilities WHERE vehicle<>$1 AND max_weight_g>=$2
+    AND (max_length_cm IS NULL OR $3::int IS NULL OR max_length_cm>=$3) AND (max_volume_l IS NULL OR $4::int IS NULL OR max_volume_l>=$4)
+    ORDER BY max_weight_g,max_trip_m LIMIT 1`,[v.vehicle,v.weightG,v.lengthCm??null,v.volumeL??null])).rows[0];
+   const largerName=heavier?(VEHICLE_LABELS[heavier.vehicle]??'a larger vehicle')+(heavier.enabled?'':' (not available yet)'):'a larger vehicle';
+   check(!capability?.max_weight_g||v.weightG<=capability.max_weight_g,422,`This load is too heavy for a ${VEHICLE_LABELS[v.vehicle]??v.vehicle}. Try ${largerName} or split the load.`);
+   check(!v.lengthCm||!capability?.max_length_cm||v.lengthCm<=capability.max_length_cm,422,`This load is too long for a ${VEHICLE_LABELS[v.vehicle]??v.vehicle}. Try ${largerName} or split the load.`);
+   check(!v.volumeL||!capability?.max_volume_l||v.volumeL<=capability.max_volume_l,422,`This load is too large for a ${VEHICLE_LABELS[v.vehicle]??v.vehicle}. Try ${largerName} or split the load.`);}
   for(const location of [v.pickup,v.destination])validateGhanaBoundary(location.latitude,location.longitude);
   const p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NOT DISTINCT FROM $1',[v.vehicle??null])).rows[0];check(p,503,'Pricing not configured for selected vehicle');
   check(routing,503,'Road routing not configured; prices cannot be estimated safely');
@@ -717,7 +733,9 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   check(route.source==='routing-provider'||(process.env.NODE_ENV!=='production'&&route.source==='fixture'),503,'Unsupported road estimate');
   const meters=route.distanceMeters;
   check(Number.isSafeInteger(meters)&&meters>=0,503,'Invalid road distance');
-  check(!capability?.max_trip_m||meters<=capability.max_trip_m,422,`This trip is ${km(meters)} by road. A ${VEHICLE_LABELS[v.vehicle]??v.vehicle} delivers up to ${km(capability?.max_trip_m)}${['bicycle','motorcycle','tricycle'].includes(v.vehicle)?'. Choose a car':''}.`);
+  if(capability?.max_trip_m&&meters>capability.max_trip_m){const larger=(await db.query(`SELECT vehicle,enabled FROM vehicle_capabilities WHERE vehicle<>$1 AND max_trip_m>=$2 AND max_weight_g>=$3
+    AND (max_length_cm IS NULL OR $4::int IS NULL OR max_length_cm>=$4) AND (max_volume_l IS NULL OR $5::int IS NULL OR max_volume_l>=$5)
+    ORDER BY max_trip_m,max_weight_g LIMIT 1`,[v.vehicle,meters,v.weightG,v.lengthCm??null,v.volumeL??null])).rows[0];const largerName=larger?(VEHICLE_LABELS[larger.vehicle]??'larger vehicle')+(larger.enabled?'':' (not available yet)'):'larger vehicle';check(false,422,`This trip is ${km(meters)} by road, beyond this ${VEHICLE_LABELS[v.vehicle]??v.vehicle}'s ${km(capability.max_trip_m)} limit. Try a ${largerName}.`);}
   check(Number.isSafeInteger(route.durationSeconds)&&route.durationSeconds>=0,503,'Invalid road duration');
   const hour=Number(new Intl.DateTimeFormat('en-GB',{timeZone:MARKET_TIME_ZONE,hour:'2-digit',hourCycle:'h23'}).format(new Date()));
   const scheduledMultiplier=p.rush_hour_enabled&&!p.traffic_time_pricing?getSurgeMultiplier(v.pickup.latitude,v.pickup.longitude,hour):1;
@@ -736,7 +754,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const {amountMinor,commissionMinor,riderEarningsMinor,breakdown}=calculateQuote(p,meters,{durationSeconds:pricedSeconds,surgeBps,tollMinor});const qid=id();
   const evidence={policyId:p.id,vehicle:v.vehicle??'legacy_unspecified',routeVehicle:v.vehicle??'car',distanceMeters:meters,durationSeconds:route.durationSeconds,pricedSeconds,tolls,breakdown,waitingTerms,routeProfile:routing.capabilities?.profileVersion??null,source:route.source,surgeBps,scheduledMultiplier,surgeObservation,quotedAt:new Date().toISOString(),commissionBps:p.commission_bps,minimumMinor:p.minimum_minor};
   const r=await db.query("INSERT INTO quotes(id,customer_id,policy_id,request,amount_minor,commission_minor,expires_at,payment_method,pricing_evidence) VALUES($1,$2,$3,$4,$5,$6,now()+interval '15 minutes',$7,$8) RETURNING id,amount_minor,commission_minor,expires_at,payment_method",[qid,actor.id,p.id,JSON.stringify(v),amountMinor,commissionMinor,v.paymentMethod,JSON.stringify(evidence)]);
-  const capacity=dispatch?await dispatch.availability({pickup:v.pickup,weightG:v.weightG,vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize}):{status:'unknown',guaranteed:false};
+  const capacity=dispatch?await dispatch.availability({pickup:v.pickup,weightG:v.weightG,vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize,lengthCm:v.lengthCm,volumeL:v.volumeL}):{status:'unknown',guaranteed:false};
   const fareBreakdown={...breakdown,tolls:tolls.map(({name,amountMinor})=>({name,amountMinor})),tariffId:p.id,startMinor:Number(p.base_minor),perKmMinor:Number(p.per_km_minor),perMinuteMinor:Number(p.per_minute_minor??0),pricedMinutes:Math.ceil(pricedSeconds/60),minimumMinor:Number(p.minimum_minor??0),rushHourMultiplier:surgeMultiplier,waitPerMinuteMinor:waitingEnabled?Number(p.wait_per_minute_minor):0,waitFreeMinutes:waitingTerms?.freeMinutes??0,waitMaxMinor:waitingTerms?.maxMinor??0};
   return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEvidence:evidence,fareBreakdown,etaMinutes:quotedEtaMinutes(route.durationSeconds,trafficFactor,{riderSeconds:capacity.nearestRiderSeconds,source:adjustment.source}),surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
  },

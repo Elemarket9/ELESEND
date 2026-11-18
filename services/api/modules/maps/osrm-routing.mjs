@@ -35,7 +35,7 @@ export function osrmRouting({endpoint,profiles={},vehicleRoutes,timeoutMs=3500,m
  check(endpoint||vehicleRoutes,500,'OSRM graph configuration required');
  const origin=endpoint?base(endpoint):null;
  if(vehicleRoutes){check(typeof vehicleRoutes==='object'&&!Array.isArray(vehicleRoutes)&&Object.keys(vehicleRoutes).length>0,500,'Invalid graph configuration');
-  for(const [vehicle,entry] of Object.entries(vehicleRoutes)){check(['motorcycle','car','van','bicycle','tricycle','pickup','truck'].includes(vehicle)&&entry&&typeof entry.endpoint==='string'&&/^[a-zA-Z0-9_-]{1,32}$/.test(entry.profile??''),500,'Invalid vehicle graph');base(entry.endpoint);}
+  for(const [vehicle,entry] of Object.entries(vehicleRoutes)){check(['motorcycle','car','van','bicycle','tricycle','pickup','truck','box_truck','long_vehicle'].includes(vehicle)&&entry&&typeof entry.endpoint==='string'&&/^[a-zA-Z0-9_-]{1,32}$/.test(entry.profile??''),500,'Invalid vehicle graph');base(entry.endpoint);}
   const car=vehicleRoutes.car;if(car)for(const [vehicle,entry] of Object.entries(vehicleRoutes))if(vehicle!=='car')check(base(entry.endpoint).toString()!==base(car.endpoint).toString(),500,'Non-car vehicles require a separate verified graph endpoint');
  }
  check(Number.isInteger(timeoutMs)&&timeoutMs>=200&&timeoutMs<=15000,500,'Invalid routing timeout');

@@ -65,6 +65,28 @@ export async function runSecurityAudit(db) {
       expect('signed-out', `no private route answers without an account (${routes.length} routes)`, answered.length === 0, answered);
     });
 
+    await safely('cargo', 'truck approval and expiry', async () => {
+      const prior = (await db.query("SELECT enabled,min_licence_class FROM vehicle_capabilities WHERE vehicle='box_truck'")).rows[0];
+      const details = {plateNumber: 'GT 7421-26', make: 'MAN', model: 'TGS', color: 'White', payloadCapacityG: 7000000, bodyType: 'closed', roadworthyExpiresOn: '2027-12-31', insuranceExpiresOn: '2027-12-31'};
+      try {
+        await db.query("UPDATE vehicle_capabilities SET enabled=true,min_licence_class=NULL WHERE vehicle='box_truck'");
+        const truck = await account('rider', {vehicle: 'box_truck', maxWeightG: 7000000, vehicleDetails: details});
+        await db.query("UPDATE riders SET status='approved' WHERE id=$1", [truck.id]);
+        const unreviewed = await api(truck.token, 'POST', '/api/v1/rider/availability', {online: true});
+        expect('cargo', 'a truck with pending vehicle review cannot go online', unreviewed.status === 403, unreviewed);
+        await db.query("UPDATE rider_vehicle_registrations SET verification_status='approved' WHERE rider_id=$1", [truck.id]);
+        const approved = await api(truck.token, 'POST', '/api/v1/rider/availability', {online: true});
+        expect('cargo', 'an approved truck with current papers can go online', approved.status === 200, approved);
+        await db.query("UPDATE rider_vehicle_registrations SET roadworthy_expires_on=CURRENT_DATE-1 WHERE rider_id=$1", [truck.id]);
+        const {suspendExpiredDocuments} = await import('../services/api/modules/riders/index.mjs');
+        await suspendExpiredDocuments(db);
+        const suspended = (await db.query('SELECT status,online FROM riders WHERE id=$1', [truck.id])).rows[0];
+        expect('cargo', 'an expired roadworthy document suspends the truck and takes it offline', suspended?.status === 'suspended' && !suspended.online, suspended);
+      } finally {
+        await db.query("UPDATE vehicle_capabilities SET enabled=$1,min_licence_class=$2 WHERE vehicle='box_truck'", [prior.enabled, prior.min_licence_class]);
+      }
+    });
+
     // ---------- 2. Admin routes as everyone else ----------
     await safely('admin', 'sweep', async () => {
       const customer = await account('customer'), business = await account('business');

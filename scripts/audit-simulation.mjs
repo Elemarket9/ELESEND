@@ -39,6 +39,24 @@ export async function runAudit(db) {
     await db.query("UPDATE checkout_method_policies SET enabled=true WHERE method IN ('MOMO','CASH')");
     const alice = await account('customer'), bob = await account('customer');
 
+    await safely('cargo', 'vehicle capacity limits', async () => {
+      const cap = (await db.query("SELECT enabled,max_weight_g,max_trip_m,max_length_cm,max_volume_l FROM vehicle_capabilities WHERE vehicle='tricycle'")).rows[0];
+      const tariff = (await db.query("SELECT id FROM pricing_policies WHERE vehicle='tricycle' AND active")).rows[0];
+      try {
+        if (!tariff) await db.query("INSERT INTO pricing_policies(id,vehicle,base_minor,per_km_minor,per_minute_minor,minimum_minor,commission_bps,active) VALUES(gen_random_uuid(),'tricycle',100,0,0,0,0,true)");
+        await db.query("UPDATE vehicle_capabilities SET enabled=true,max_weight_g=300000,max_trip_m=25000,max_length_cm=200,max_volume_l=1500 WHERE vehicle='tricycle'");
+        const heavy = await api(alice.token, 'POST', '/api/v1/quotes', trip({vehicle: 'tricycle', weightG: 300001, lengthCm: 100, volumeL: 1000}));
+        expect('cargo', 'tricycle quote refuses an overweight load', heavy.status === 422 && /heavy|heavier/i.test(heavy.data.error ?? ''), heavy);
+        const long = await api(alice.token, 'POST', '/api/v1/quotes', trip({vehicle: 'tricycle', weightG: 1000, lengthCm: 201, volumeL: 1000}));
+        expect('cargo', 'tricycle quote refuses an over-length load', long.status === 422 && /long/i.test(long.data.error ?? ''), long);
+        const far = await api(alice.token, 'POST', '/api/v1/quotes', trip({vehicle: 'tricycle', destination: PLACES.kumasiAdum, weightG: 1000, lengthCm: 100, volumeL: 1000}));
+        expect('cargo', 'tricycle quote refuses a road trip beyond its limit', far.status === 422 && /limit|larger vehicle|truck/i.test(far.data.error ?? ''), far);
+      } finally {
+        await db.query("UPDATE vehicle_capabilities SET enabled=$1,max_weight_g=$2,max_trip_m=$3,max_length_cm=$4,max_volume_l=$5 WHERE vehicle='tricycle'", [cap.enabled, cap.max_weight_g, cap.max_trip_m, cap.max_length_cm, cap.max_volume_l]);
+        if (!tariff) await db.query("DELETE FROM pricing_policies WHERE vehicle='tricycle' AND active");
+      }
+    });
+
     // ---------- 1. Other people's things ----------
     await safely('access', 'setup', async () => {
       await ROUND();

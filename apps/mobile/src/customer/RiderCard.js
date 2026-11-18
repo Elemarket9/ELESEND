@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Image, Text, TouchableOpacity, View } from 'react-native';
 import { call } from '../api';
 
-const VEHICLE_NAMES = { motorcycle: 'Motorbike', bicycle: 'Bicycle', tricycle: 'Tricycle', car: 'Car', pickup: 'Pickup', van: 'Van', truck: 'Truck' };
+const VEHICLE_NAMES = { motorcycle: 'Motorbike', bicycle: 'Bicycle', tricycle: 'Cargo tricycle', car: 'Car', pickup: 'Pickup', van: 'Van', truck: 'Truck', box_truck: 'Box truck', long_vehicle: 'Long vehicle' };
 
 /**
  * Who is coming, as ride apps show it: photo, first name, plate and vehicle, so the customer and recipient can

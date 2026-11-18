@@ -18,8 +18,8 @@ test('parcel and food journeys complete with sensible prices and ETAs', {skip: !
     assert.equal(report.parcels.length, 6);
     assert.equal(report.food.length, 2);
     const refused = Object.fromEntries(report.refused.map(r => [r.name, r]));
-    assert.match(refused['40 kg on a motorbike'].message, /motorbike carries up to 25 kg/);
-    assert.match(refused['Accra to Kumasi on a motorbike'].message, /motorbike delivers up to 80 km\. Choose a car/);
+    assert.match(refused['40 kg on a motorbike'].message, /too heavy for a motorbike.*(?:tricycle|pickup|truck)/i);
+    assert.match(refused['Accra to Kumasi on a motorbike'].message, /beyond this motorbike's 80 km limit.*(?:car|pickup|van|truck)/i);
     assert.ok(report.food.every(f => f.status.at(-1) === 'delivered: DELIVERED'), 'both kitchens deliver, including 5 km away');
   } finally {
     process.env.NODE_ENV = previous;

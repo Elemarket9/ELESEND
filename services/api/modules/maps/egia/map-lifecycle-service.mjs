@@ -34,7 +34,7 @@ async function finishRollback(c, actor, updateVer, versionTag, label) {
 /**
  * Manages the publication lifecycle, approval, rollback and coverage audit for EGIA (Phases 7, 13 & Priority 2).
  */
-const ROAD_VEHICLES = ['motorcycle', 'bicycle', 'tricycle', 'car', 'van', 'pickup', 'truck'];
+const ROAD_VEHICLES = ['motorcycle', 'bicycle', 'tricycle', 'car', 'van', 'pickup', 'truck', 'box_truck', 'long_vehicle'];
 const ALREADY_MAPPED_METERS = 15;
 
 export function createMapLifecycleService(db) {
