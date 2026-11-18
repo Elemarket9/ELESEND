@@ -22,7 +22,7 @@ jobs:
       - name: Build searchable places
         run: |
           sh scripts/build-ghana-places.sh /tmp/map | tee /tmp/places-summary.json
-          size=$(stat -c %s services/api/infrastructure/maps/ghana-osm-places.json)
+          size=$(stat -c %s services/api/modules/maps/ghana-osm-places.json)
           echo "places file: $size bytes"
           # The wider place list for Greater Accra, Kumasi and Central is still a named-feature extract, not the planet file.
           # 120 MB leaves room for that list. A file past this is a filter bug, not expected growth.
@@ -44,4 +44,4 @@ jobs:
         run: node --test tests/geocoder-search-regressions.test.mjs tests/map-quality.test.mjs tests/map-search-stored-places.test.mjs tests/map-place-overlay.test.mjs
       - name: Keep the built places for inspection
         uses: actions/upload-artifact@v4
-        with: {name: ghana-osm-places, path: services/api/infrastructure/maps/ghana-osm-places.json, retention-days: 7}
+        with: {name: ghana-osm-places, path: services/api/modules/maps/ghana-osm-places.json, retention-days: 7}

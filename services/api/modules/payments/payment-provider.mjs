@@ -1,4 +1,4 @@
-import {check} from '../../security.mjs';
+import {check} from '../../shared/security.mjs';
 import {confirmedRepaymentChannelAllowed} from './checkout-policy.mjs';
 import {hubtelCheckout} from './providers/hubtel-payment.mjs';
 import {paystackCheckout} from './paystack-checkout-adapter.mjs';

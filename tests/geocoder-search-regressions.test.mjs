@@ -1,7 +1,7 @@
 // Searches a real customer typed while booking RAPID Courier to Kasoa, which returned the wrong place first.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ghanaSearch,searchPlaces,GHANA_GAZETTEER} from '../services/api/infrastructure/maps/ghana-geocoder.mjs';
+import {ghanaSearch,searchPlaces,GHANA_GAZETTEER} from '../services/api/modules/maps/ghana-geocoder.mjs';
 const first=q=>ghanaSearch(q,{limit:5})[0]||{};
 test('a brand typed as one word still finds the branch in the named town',()=>{
  assert.match(first('GTBank Cape Coast').name,/GT ?Bank/i);
@@ -60,7 +60,7 @@ test('category words search the kind of place, and near me uses the customer loc
  assert.match(first('market').name,/market/i);
 });
 test('a digital address is recognised and not given a guessed coordinate while lookup is off',async()=>{
- const {searchPlaces}=await import('../services/api/infrastructure/maps/ghana-geocoder.mjs');
+ const {searchPlaces}=await import('../services/api/modules/maps/ghana-geocoder.mjs');
  for(const code of ['GA-184-9321','ga1849321','GL-142-1585','GA-1849-3210']){
   const row=ghanaSearch(code)[0];
   assert.equal(row.type,'digital_address');
@@ -70,7 +70,7 @@ test('a digital address is recognised and not given a guessed coordinate while l
   const viaSearch=await searchPlaces(null,code);
   assert.equal(viaSearch[0].latitude,null);
  }
- const {normalizeGhanaDigitalAddress}=await import('../services/api/providers/ghanapostgps.mjs');
+ const {normalizeGhanaDigitalAddress}=await import('../services/api/modules/maps/providers/ghanapostgps.mjs');
  assert.equal(normalizeGhanaDigitalAddress('GA-184-9321'),'GA-184-9321');
  assert.equal(normalizeGhanaDigitalAddress('GA1849321'),'GA-184-9321');
  assert.equal(normalizeGhanaDigitalAddress('GA-1849-3210'),'GA-1849-3210');

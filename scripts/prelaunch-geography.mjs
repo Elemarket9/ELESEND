@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import {database} from '../services/api/db.mjs';
+import {database} from '../services/api/shared/db.mjs';
 import {simulationTarget} from './local-simulation-support.mjs';
-import {searchInformalLocation} from '../services/api/infrastructure/maps/egia/informal-geocoder.mjs';
+import {searchInformalLocation} from '../services/api/modules/maps/egia/informal-geocoder.mjs';
 process.env.NODE_ENV ||= 'test';
 const db=database(simulationTarget().toString());
 try{

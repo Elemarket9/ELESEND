@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {platform} from '../services/api/platform.mjs';
+import {platform} from '../services/api/modules/orders/platform.mjs';
 
 const PHONE='+233241234567',USER='00000000-0000-4000-8000-000000000010';
 // Models the rate_limits statement, including the block that starts on the 6th attempt.

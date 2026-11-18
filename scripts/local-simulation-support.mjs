@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import {randomUUID,randomInt,createHmac,timingSafeEqual} from 'node:crypto';
-import {database} from '../services/api/db.mjs';
+import {database} from '../services/api/shared/db.mjs';
 import {migrate} from './migrate.mjs';
-import {fixtureRouting} from '../services/api/dispatch-routing.mjs';
+import {fixtureRouting} from '../services/api/modules/maps/osrm-routing.mjs';
 
 export function simulationTarget(env=process.env){
  assert(['test','development'].includes(env.NODE_ENV),'Set NODE_ENV=test or development; simulations are forbidden elsewhere');

@@ -2,9 +2,9 @@
  * Never print, log or transmit secret to the ELESEND mobile app/backend API.
  * Requires the administrator password AND database operator access.
  */
-import {database} from '../services/api/db.mjs';
-import {check,phone,passwordMatches} from '../services/api/security.mjs';
-import {encryptAdminSecret} from '../services/api/admin-mfa.mjs';
+import {database} from '../services/api/shared/db.mjs';
+import {check,phone,passwordMatches} from '../services/api/shared/security.mjs';
+import {encryptAdminSecret} from '../services/api/modules/riders/admin-mfa.mjs';
 const p=phone(process.env.ADMIN_PHONE),pw=process.env.ADMIN_PASSWORD;
 check(typeof pw==='string'&&pw.length>=16,400,'ADMIN_PASSWORD must have at least 16 characters');
 const db=database();

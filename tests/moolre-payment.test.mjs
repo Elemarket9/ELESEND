@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {moolreCheckout} from '../services/api/modules/payments/providers/moolre-payment.mjs';
-import {assertPaymentOperations} from '../services/api/startup-guards.mjs';
+import {assertPaymentOperations} from '../services/api/shared/startup-guards.mjs';
 import {validateConfig} from '../services/api/config.mjs';
 
 const SECRET='callback-secret-value',ACCOUNT='100000100002';

@@ -29,7 +29,7 @@ test('paid Google maps are opt-in only and never reach the phone',()=>{
 });
 
 test('address lookup needs an explicitly chosen service',()=>{
- for(const file of ['services/api/config.mjs','services/api/providers/ghanapostgps.mjs','compose.yaml','compose.private-maps.yaml','deploy/runtime/compose.yaml','.env.example'])assert.equal(read(file).includes('sperixlabs'),false,file);
+ for(const file of ['services/api/config.mjs','services/api/modules/maps/providers/ghanapostgps.mjs','compose.yaml','compose.private-maps.yaml','deploy/runtime/compose.yaml','.env.example'])assert.equal(read(file).includes('sperixlabs'),false,file);
  // A missing lookup address warns and keeps the lookup off; it never stops a deploy.
  const missing=validateConfig({GHANAPOSTGPS_LOOKUP_ENABLED:'true'});
  assert.equal(missing.errors.some(e=>e.includes('GHANAPOSTGPS_LOOKUP_URL')),false);
@@ -38,6 +38,6 @@ test('address lookup needs an explicitly chosen service',()=>{
 });
 
 test('currency and time zone come from one place outside payment adapters',()=>{
- for(const file of ['modules/payments/checkout','modules/payments/finance','platform','modules/payments/rider-wallet'])assert.equal(/'GHS'/.test(read('services/api/'+file+'.mjs')),false,file);
- for(const file of ['platform.mjs','eta/stage-eta.mjs'])assert.equal(read('services/api/'+file).includes("'Africa/Accra'"),false,file);
+ for(const file of ['modules/payments/checkout','modules/payments/finance','modules/orders/platform','modules/payments/rider-wallet'])assert.equal(/'GHS'/.test(read('services/api/'+file+'.mjs')),false,file);
+ for(const file of ['modules/orders/platform.mjs','modules/orders/eta/stage-eta.mjs'])assert.equal(read('services/api/'+file).includes("'Africa/Accra'"),false,file);
 });

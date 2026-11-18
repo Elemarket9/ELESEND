@@ -3,7 +3,7 @@
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {dirname, join} from 'node:path';
-import {ghanaSearch} from '../services/api/infrastructure/maps/ghana-geocoder.mjs';
+import {ghanaSearch} from '../services/api/modules/maps/ghana-geocoder.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const MAP_QUALITY = JSON.parse(readFileSync(join(root, 'config/map-quality.json'), 'utf8'));

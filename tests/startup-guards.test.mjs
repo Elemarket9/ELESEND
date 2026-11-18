@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {assertRequiredSchema,assertPaymentOperations,warnIfOwnerDatabaseLogin,REQUIRED_MIGRATION,REQUIRED_MIGRATIONS} from '../services/api/startup-guards.mjs';
+import {assertRequiredSchema,assertPaymentOperations,warnIfOwnerDatabaseLogin,REQUIRED_MIGRATION,REQUIRED_MIGRATIONS} from '../services/api/shared/startup-guards.mjs';
 import {readdirSync} from 'node:fs';
 import {startWorker} from '../services/api/worker.mjs';
 

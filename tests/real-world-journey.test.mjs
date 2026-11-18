@@ -6,14 +6,14 @@ const url=process.env.TEST_DATABASE_URL;
 test('real journeys from brand-new accounts',{skip:!url},async t=>{
  assert.match(new URL(url).pathname,/^\/elesend_test/);
  const previous=process.env.NODE_ENV,previousLegacySms=process.env.HANDOVER_SMS_LEGACY_ENABLED;process.env.NODE_ENV='production';process.env.HANDOVER_SMS_LEGACY_ENABLED='true';process.env.OTP_KEY??='d'.repeat(64);
- const {database}=await import('../services/api/db.mjs');
+ const {database}=await import('../services/api/shared/db.mjs');
  const {migrate}=await import('../scripts/migrate.mjs');
- const {platform}=await import('../services/api/platform.mjs');
+ const {platform}=await import('../services/api/modules/orders/platform.mjs');
  const {httpServer}=await import('../services/api/http.mjs');
- const {dispatchEngine}=await import('../services/api/dispatch.mjs');
+ const {dispatchEngine}=await import('../services/api/modules/orders/dispatch.mjs');
  const {checkoutService,financeService,moneyOperations}=await import('../services/api/modules/payments/index.mjs');
- const {restaurantOrderService}=await import('../services/api/restaurant-orders.mjs');
- const {offlineSignedOutRiders}=await import('../services/api/rider-tools.mjs');
+ const {restaurantOrderService}=await import('../services/api/modules/food/restaurant-orders.mjs');
+ const {offlineSignedOutRiders}=await import('../services/api/modules/riders/rider-tools.mjs');
  const db=database(url);await migrate(db);
  const texts=[];let smsWorks=true;
  const sms={async send(m){if(!smsWorks)return {accepted:false};texts.push(m);return {accepted:true};},async sendNotification(m){texts.push(m);return {accepted:true};}};
@@ -147,7 +147,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    await offline();
   });
   await t.test('a new restaurant waits for approval, then customers can order',async()=>{
-   const {restaurantService}=await import('../services/api/restaurant.mjs');
+   const {restaurantService}=await import('../services/api/modules/food/restaurant.mjs');
    const owner=await signUp('business');await verifyPhone(owner);const c=await customer();
    const made=await api(owner.token,'POST','/api/v1/restaurants',{name:'Journey Kitchen '+randomInt(1e6),phone:'0241234567',address:'Oxford Street, Osu',latitude:P.latitude,longitude:P.longitude});
    assert.equal(made.data.status,'pending');
@@ -518,7 +518,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
   });
   await t.test('security: staff must give a reason to watch a private chat live',async()=>{
    await offline();
-   const {hash}=await import('../services/api/security.mjs');
+   const {hash}=await import('../services/api/shared/security.mjs');
    const c=await customer();const r=await readyRider();const id=await paidOrder(c);await dispatch.tick();
    const o=await offerFor(r,id);await api(r.token,'POST','/api/v1/shipments/'+id+'/accept',{offerId:o.offerId});
    const conv=await api(c.token,'POST','/api/v1/chat/conversations',{conversationType:'CUSTOMER_RIDER',shipmentId:id});assert.equal(conv.status,200,JSON.stringify(conv.data));
@@ -544,9 +544,9 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    assert.equal((await api(k.data.key,'GET','/api/v1/shipments')).status,401,'the old key no longer works');
   });
   await t.test('security: five wrong authenticator codes lock administrator sign-in',async()=>{
-   const {platform:makePlatform}=await import('../services/api/platform.mjs');
-   const {passwordHash}=await import('../services/api/security.mjs');
-   const {generateAdminTotpSecret,encryptAdminSecret,totp}=await import('../services/api/admin-mfa.mjs');
+   const {platform:makePlatform}=await import('../services/api/modules/orders/platform.mjs');
+   const {passwordHash}=await import('../services/api/shared/security.mjs');
+   const {generateAdminTotpSecret,encryptAdminSecret,totp}=await import('../services/api/modules/riders/admin-mfa.mjs');
    const mfaKey='e'.repeat(64),admins=makePlatform(db,{otpKey:process.env.OTP_KEY,adminMfaKey:mfaKey});
    const id=randomUUID(),number=phone(),secret=generateAdminTotpSecret();
    await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at) VALUES($1,$2,$3,'admin',now())",[id,number,await passwordHash('admin lantern river mango')]);
@@ -576,7 +576,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    await offline();
   });
   await t.test('security: customers see only public restaurant details, and approved names are locked',async()=>{
-   const {restaurantService}=await import('../services/api/restaurant.mjs');
+   const {restaurantService}=await import('../services/api/modules/food/restaurant.mjs');
    const owner=await signUp('business');await verifyPhone(owner);const c=await customer();
    const made=await api(owner.token,'POST','/api/v1/restaurants',{name:'Locked Kitchen '+randomInt(1e6),phone:'0241234567',address:'Ring Road, Accra',latitude:P.latitude,longitude:P.longitude});
    assert.equal((await api(c.token,'GET','/api/v1/restaurants/'+made.data.id)).status,404,'pending restaurants are not public');
@@ -622,7 +622,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    assert.equal(left.includes(fresh.data.id),true,'a current price is untouched');
   });
   await t.test('security: menu prices and order totals stay within safe limits',async()=>{
-   const {restaurantService}=await import('../services/api/restaurant.mjs');
+   const {restaurantService}=await import('../services/api/modules/food/restaurant.mjs');
    const owner=await signUp('business');await verifyPhone(owner);const c=await customer();
    const made=await api(owner.token,'POST','/api/v1/restaurants',{name:'Limit Kitchen '+randomInt(1e6),phone:'0241234567',address:'Spintex Road, Accra',latitude:P.latitude,longitude:P.longitude});
    assert.equal((await api(owner.token,'POST','/api/v1/restaurants/'+made.data.id+'/items',{name:'Gold plate',priceMinor:2147483647})).status,400,'an absurd price is refused');
@@ -661,7 +661,7 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    const page=await fetch(base+'/company');const html=await page.text();
    assert.equal(page.status,200);assert.match(html,/ELESEND for Companies/);
    assert.equal((page.headers.get('content-security-policy')||'').includes('unsafe'),false);
-   const {queueNotification}=await import('../services/api/notifications.mjs');
+   const {queueNotification}=await import('../services/api/modules/orders/notifications.mjs');
    const refunding=moneyOperations(db,{notify:queueNotification,provider:{...provider,async createRefund(x){return {providerId:'77'};},async verifyRefund(x){return {verified:true,type:'refund',provider:provider.name,status:'refunded',requestId:x.requestId,providerId:'77',eventId:'refund-ev-'+x.requestId,amountMinor:x.amountMinor,currency:x.currency,reference:x.reference};}}});
    const c=await customer();const id=await paidOrder(c);
    await api(c.token,'POST','/api/v1/shipments/'+id+'/transition',{action:'cancel',reason:'Changed my mind'});

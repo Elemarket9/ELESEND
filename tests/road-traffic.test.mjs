@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { adjustedSeconds, segmentSpeeds, trafficRouting, trafficService } from '../services/api/traffic.mjs';
+import { adjustedSeconds, segmentSpeeds, trafficRouting, trafficService } from '../services/api/modules/maps/traffic.mjs';
 import { riderRoadsOsm } from '../scripts/export-rider-roads.mjs';
 
 const at = s => new Date(1800000000000 + s * 1000).toISOString();
@@ -105,9 +105,9 @@ const url = process.env.TEST_DATABASE_URL;
 test('trips become road speeds without rider ids, on a real database', { skip: !url }, async () => {
   assert.match(new URL(url).pathname, /^\/elesend_test/);
   const { randomUUID, randomInt } = await import('node:crypto');
-  const { database } = await import('../services/api/db.mjs');
+  const { database } = await import('../services/api/shared/db.mjs');
   const { migrate } = await import('../scripts/migrate.mjs');
-  const { dispatchEngine } = await import('../services/api/dispatch.mjs');
+  const { dispatchEngine } = await import('../services/api/modules/orders/dispatch.mjs');
   const db = database(url);
   try {
     await migrate(db);

@@ -2,8 +2,8 @@
 // Runs Ghana benchmark routes through the routing graphs and the tariff, and compares with real observations only.
 // Usage: OSRM_MOTORCYCLE_URL=http://host:5000 OSRM_CAR_URL=http://host:5000 TARIFFS_JSON='{"motorcycle":{...}}' node scripts/pricing-benchmark.mjs
 import {readFileSync} from 'node:fs';
-import {osrmRouting} from '../services/api/dispatch-routing.mjs';
-import {calculateQuote} from '../services/api/pricing.mjs';
+import {osrmRouting} from '../services/api/modules/maps/osrm-routing.mjs';
+import {calculateQuote} from '../services/api/modules/orders/pricing.mjs';
 
 const {routes}=JSON.parse(readFileSync(new URL('../benchmarks/ghana-routes.json',import.meta.url)));
 const {OSRM_MOTORCYCLE_URL:moto,OSRM_CAR_URL:car,TARIFFS_JSON:tariffs}=process.env;

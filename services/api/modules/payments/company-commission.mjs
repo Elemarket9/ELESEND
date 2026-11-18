@@ -1,4 +1,4 @@
-import {envInt} from '../../env-values.mjs';
+import {envInt} from '../../shared/env-values.mjs';
 /**
  * Cash commission on company jobs is owed by the company, which receives those jobs' earnings.
  * The balance is derived from the immutable shipment ledger, with no editable debt column.

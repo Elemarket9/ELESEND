@@ -6,7 +6,7 @@ ELESEND runs its own maps. Customers search for places, riders get turn-by-turn 
 
 | Part | What it does | Where it lives |
 |---|---|---|
-| Place search | Finds what the customer types, such as "GTBank Kasoa" or "Domestic Terminal" | `services/api/infrastructure/maps/ghana-geocoder.mjs`, served at `GET /api/v1/maps/search` |
+| Place search | Finds what the customer types, such as "GTBank Kasoa" or "Domestic Terminal" | `services/api/modules/maps/ghana-geocoder.mjs`, served at `GET /api/v1/maps/search` |
 | Built-in places | About 44,500 settlements, businesses and landmarks shipped with the API | `ghana-gazetteer-data.json` |
 | OpenStreetMap places | Named businesses and landmarks from the latest Ghana OpenStreetMap data, rebuilt every night on each server | `ghana-osm-places.json` in the map data folder, built by `scripts/build-ghana-places.sh` |
 | Hand-added places | Places a person checked, each with where its position came from | `ghana-places-overlay.json` |
@@ -14,7 +14,7 @@ ELESEND runs its own maps. Customers search for places, riders get turn-by-turn 
 | Reverse lookup | Turns a dropped pin into a readable address | `GET /api/v1/maps/reverse` |
 | GhanaPostGPS | Optional lookup of digital addresses such as GL-142-1585 | `POST /api/v1/maps/ghanapostgps`; set `GHANAPOSTGPS_LOOKUP_ENABLED` and `GHANAPOSTGPS_LOOKUP_URL` |
 | Road routing | Road distance, travel time and turn-by-turn directions, with separate car and motorbike roads | OSRM, built by `scripts/prepare-ghana-osrm.sh`; set `ROUTING_OSRM_CAR_URL` and `ROUTING_OSRM_MOTORCYCLE_URL` |
-| Map learning | Turns rider trips and rider reports into candidate roads and landmarks; staff approve them | `services/api/infrastructure/maps/egia/` |
+| Map learning | Turns rider trips and rider reports into candidate roads and landmarks; staff approve them | `services/api/modules/maps/egia/` |
 | Quality checks | Searches and routes that must keep working | `config/map-quality.json`, run by `scripts/map-quality.mjs` |
 
 Every optional piece fails soft. If a data file is missing, search runs on the rest. If the database is slow, search answers from the built-in places. If GhanaPostGPS or routing is not configured, the server still starts and logs a warning.
@@ -90,7 +90,7 @@ Set `ROUTING_PROVIDER_PRIORITY=google` and `GOOGLE_MAPS_API_KEY`. Then:
 
 | Part | With Google | Code |
 |---|---|---|
-| Prices, ETAs and dispatch | Routes API (`computeRoutes`, `computeRouteMatrix`), traffic-unaware by default | `services/api/infrastructure/maps/google-maps.mjs` |
+| Prices, ETAs and dispatch | Routes API (`computeRoutes`, `computeRouteMatrix`), traffic-unaware by default | `services/api/modules/maps/google-maps.mjs` |
 | Rider directions | Routes API steps, in the same shape as OSRM steps | same |
 | Place search | Built-in places first; Google Places Text Search only when they do not answer | `searchPlaces(..., {placesSearch})` |
 | App base map | Map Tiles API roadmap tiles, served through `/api/v1/maps/raster/{z}/{x}/{y}.png` so the key stays on the server | `googleTileProxy` |

@@ -1,15 +1,15 @@
 import {errorText,pool,raceTimeout,submissionChecks} from './async-helpers.mjs';
 import {CONFIRMED_INTENT_FIELDS,claimIntentsToReconcile,markOutcomeUncertain,markRejectedBeforeCharge,reconcileQuietly} from './intent-records.mjs';
-import {MARKET_CURRENCY} from '../../market.mjs';
+import {MARKET_CURRENCY} from '../../shared/market.mjs';
 import {validatePayer} from './payment-provider.mjs';
 import {validatedCheckoutUrl,confirmedRepaymentChannelAllowed} from './checkout-policy.mjs';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {check} from '../../security.mjs';
-import {featureService} from '../../algorithms/features.mjs';
-import {detectFraudSignals} from '../../algorithms/fraud.mjs';
-import {decideCommissionExposure} from '../../algorithms/exposure.mjs';
-import {verifyBalancedJournal} from '../../algorithms/reconciliation.mjs';
+import {check} from '../../shared/security.mjs';
+import {featureService} from '../../shared/algorithms/features.mjs';
+import {detectFraudSignals} from '../../shared/algorithms/fraud.mjs';
+import {decideCommissionExposure} from '../../shared/algorithms/exposure.mjs';
+import {verifyBalancedJournal} from '../../shared/algorithms/reconciliation.mjs';
 import {
  getGhanaWeekKey,
  evaluateRiderWeeklyEligibility,

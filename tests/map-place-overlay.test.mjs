@@ -1,7 +1,7 @@
 // Hand-added places must say where their position came from, and when, so nobody has to guess later.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {PLACE_OVERLAY} from '../services/api/infrastructure/maps/ghana-geocoder.mjs';
+import {PLACE_OVERLAY} from '../services/api/modules/maps/ghana-geocoder.mjs';
 test('every hand-added place is sourced, dated and inside Ghana',()=>{
  assert.ok(PLACE_OVERLAY.length>0);
  for(const p of PLACE_OVERLAY){

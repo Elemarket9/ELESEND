@@ -2,7 +2,7 @@ import os from 'node:os';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as pause} from 'node:timers/promises';
-import {hash} from '../services/api/security.mjs';
+import {hash} from '../services/api/shared/security.mjs';
 import {withSimulationDatabase,simulationPhone} from './local-simulation-support.mjs';
 import {bootSimulation} from './prelaunch-simulation.mjs';
 

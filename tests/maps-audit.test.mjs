@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID,randomInt} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import {calculateBearing,bearingToCardinal,buildUnmappedCommunityRoute} from '../services/api/infrastructure/maps/egia/unmapped-navigation.mjs';
-import {runGeographicLearningCycle} from '../services/api/infrastructure/maps/egia/background-learner.mjs';
-import {offRoadSegments} from '../services/api/infrastructure/maps/egia/gps-quality-filter.mjs';
-import {createMapLifecycleService} from '../services/api/infrastructure/maps/egia/map-lifecycle-service.mjs';
-import {osrmRouting} from '../services/api/dispatch-routing.mjs';
+import {calculateBearing,bearingToCardinal,buildUnmappedCommunityRoute} from '../services/api/modules/maps/egia/unmapped-navigation.mjs';
+import {runGeographicLearningCycle} from '../services/api/modules/maps/egia/background-learner.mjs';
+import {offRoadSegments} from '../services/api/modules/maps/egia/gps-quality-filter.mjs';
+import {createMapLifecycleService} from '../services/api/modules/maps/egia/map-lifecycle-service.mjs';
+import {osrmRouting} from '../services/api/modules/maps/osrm-routing.mjs';
 
-import {verificationRules} from '../services/api/infrastructure/maps/egia/road-verification.mjs';
+import {verificationRules} from '../services/api/modules/maps/egia/road-verification.mjs';
 const verificationRulesOn=()=>verificationRules({EGIA_ENABLED:'true'});
 const ACCRA={latitude:5.6,longitude:-0.2};
 
@@ -110,8 +110,8 @@ test('off-road stretches split at roads and time gaps, lose 100 m at a private e
 });
 
 test('a road learned from GPS joins the network it was reached from',async()=>{
- const {extractCandidateRoadCorridor}=await import('../services/api/infrastructure/maps/egia/gps-quality-filter.mjs');
- const {verificationFailures}=await import('../services/api/infrastructure/maps/egia/road-verification.mjs');
+ const {extractCandidateRoadCorridor}=await import('../services/api/modules/maps/egia/gps-quality-filter.mjs');
+ const {verificationFailures}=await import('../services/api/modules/maps/egia/road-verification.mjs');
  const {riderRoadsOsm}=await import('../scripts/export-rider-roads.mjs');
  // A mapped road runs along latitude 5.6. The rider rides it, then turns onto 600 m of unmapped road to a customer.
  const metres=111320,toRoad=p=>Math.abs(p.latitude-5.6)*metres;
@@ -129,7 +129,7 @@ test('a road learned from GPS joins the network it was reached from',async()=>{
 });
 
 test('a road that leaves the network and rejoins it nearby is still learned, and standing still is not',async()=>{
- const {extractCandidateRoadCorridor}=await import('../services/api/infrastructure/maps/egia/gps-quality-filter.mjs');
+ const {extractCandidateRoadCorridor}=await import('../services/api/modules/maps/egia/gps-quality-filter.mjs');
  const point=(north,east)=>({latitude:5.6+north/111320,longitude:-0.2+east/110800});
  const loop=[point(0,0),point(100,0),point(200,20),point(100,40),point(0,40)];
  assert.equal(extractCandidateRoadCorridor(loop).pointCount,5);
@@ -137,7 +137,7 @@ test('a road that leaves the network and rejoins it nearby is still learned, and
 });
 
 test('a person is kept off the public map, and a business under a person\'s name is not',async()=>{
- const {isLikelyPrivateResidence}=await import('../services/api/infrastructure/maps/egia/deduplicator.mjs');
+ const {isLikelyPrivateResidence}=await import('../services/api/modules/maps/egia/deduplicator.mjs');
  for(const name of ['Mrs. Adjei','Mr Mensah','Auntie Ama','Uncle Ebo','Mr. Mensah house gate','Kofi 0244123456','Ama +233 24 412 3456','my house','Family House'])assert.equal(isLikelyPrivateResidence(name),true,name);
  for(const name of ['Mr. Mensah Store','Auntie Ama Chop Bar','Uncle Ebo Spot','Sister Grace Salon','Royal Guest House','Auntie Efua Guest House','Uncle Sam Chop House','Papaye','Shell Filling Station'])assert.equal(isLikelyPrivateResidence(name),false,name);
 });
@@ -156,7 +156,7 @@ test('several riders reporting one shop produce one suggestion',async()=>{
 });
 
 test('a shop already waiting for review is not suggested again',async()=>{
- const {deduplicateLandmark}=await import('../services/api/infrastructure/maps/egia/deduplicator.mjs');
+ const {deduplicateLandmark}=await import('../services/api/modules/maps/egia/deduplicator.mjs');
  const db={query:async sql=>sql.includes('FROM candidate_landmarks')?{rows:[{id:randomUUID(),name:'Zak Provisions Store',category:'commerce',dist_m:12}]}:{rows:[]}};
  const again=await deduplicateLandmark(db,{name:'Zak Provision Store',category:'commerce',latitude:9.9,longitude:-1.9});
  assert.equal(again.isDuplicate,true);
@@ -176,7 +176,7 @@ test('the motorcycle graph no longer uses the bicycle profile',()=>{
 });
 
 test('van delivery is refused while its capability is off',async()=>{
- const {platform}=await import('../services/api/platform.mjs');
+ const {platform}=await import('../services/api/modules/orders/platform.mjs');
  const db={query:async sql=>{
   if(sql.includes('terms_accepted_at'))return {rows:[{terms_accepted_at:new Date()}],rowCount:1};
   if(sql.includes('vehicle_capabilities'))return {rows:[{enabled:false}]};
@@ -213,7 +213,7 @@ test('the tile server can publish its port',()=>{
 });
 
 test('landmark publish and rollback work against PostgreSQL',{skip:!process.env.TEST_DATABASE_URL},async()=>{
- const {database}=await import('../services/api/db.mjs');
+ const {database}=await import('../services/api/shared/db.mjs');
  const {migrate}=await import('../scripts/migrate.mjs');
  const configured=new URL(process.env.TEST_DATABASE_URL);
  assert.match(configured.pathname,/^\/elesend_test/);
@@ -256,7 +256,7 @@ test('landmark publish and rollback work against PostgreSQL',{skip:!process.env.
 });
 
 test('auto-publish needs every check to pass',async()=>{
- const {verificationFailures,verificationRules}=await import('../services/api/infrastructure/maps/egia/road-verification.mjs');
+ const {verificationFailures,verificationRules}=await import('../services/api/modules/maps/egia/road-verification.mjs');
  const rules=verificationRules({EGIA_ENABLED:'true'});
  const good={status:'CORROBORATED',distinct_riders:3,temporal_span_seconds:90000,confidence:75,mean_accuracy_m:10,length_m:200,is_valid:true,join_meters:8};
  assert.deepEqual(verificationFailures(good,rules),[]);
@@ -270,7 +270,7 @@ test('auto-publish needs every check to pass',async()=>{
 });
 
 test('satellite change needs more built-up surface and less vegetation, in clear cells',async()=>{
- const {cellIndexes,changedCells}=await import('../services/api/infrastructure/maps/egia/imagery-change-scan.mjs');
+ const {cellIndexes,changedCells}=await import('../services/api/modules/maps/egia/imagery-change-scan.mjs');
  const size=15,scene=(nirValue,redValue,swirValue,sclValue=4)=>({nir:Array(size*size).fill(nirValue),red:Array(size*size).fill(redValue),swir:Array(size*size).fill(swirValue),scl:Array(size*size).fill(sclValue)});
  const green=cellIndexes(scene(4000,500,1500),size,size),built=cellIndexes(scene(2000,1500,2500),size,size);
  assert.equal(changedCells(green,built).length,1);
@@ -283,7 +283,7 @@ test('satellite change needs more built-up surface and less vegetation, in clear
 });
 
 test('a failed satellite scan is recorded and retried, and can be turned off',async()=>{
- const {scanMapChangesIfDue}=await import('../services/api/infrastructure/maps/egia/imagery-change-scan.mjs');
+ const {scanMapChangesIfDue}=await import('../services/api/modules/maps/egia/imagery-change-scan.mjs');
  const stored=[];
  const db={query:async(sql,params)=>{if(sql.startsWith('SELECT scanned_at'))return {rows:[]};if(sql.includes('INSERT INTO map_change_scans'))stored.push(params);return {rows:[]};}};
  const area={name:'Test',bbox:[0,0,1,1]};
@@ -296,7 +296,7 @@ test('a failed satellite scan is recorded and retried, and can be turned off',as
 
 test('EGIA on a real database: pieces join, verified roads publish with no rider ids, old suggestions go',{skip:!process.env.TEST_DATABASE_URL},async()=>{
  assert.match(new URL(process.env.TEST_DATABASE_URL).pathname,/^\/elesend_test/);
- const {database}=await import('../services/api/db.mjs');
+ const {database}=await import('../services/api/shared/db.mjs');
  const {migrate}=await import('../scripts/migrate.mjs');
  const db=database(process.env.TEST_DATABASE_URL);
  try{

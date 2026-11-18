@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {hubtelCheckout} from '../services/api/modules/payments/providers/hubtel-payment.mjs';
-import {assertPaymentOperations} from '../services/api/startup-guards.mjs';
+import {assertPaymentOperations} from '../services/api/shared/startup-guards.mjs';
 import {validateVerifiedPayment,confirmedRepaymentChannelAllowed} from '../services/api/modules/payments/checkout-policy.mjs';
 import {paymentWebhook} from '../services/api/modules/payments/payment-provider.mjs';
 

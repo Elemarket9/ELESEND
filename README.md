@@ -98,7 +98,7 @@ Deployment requires explicit `API_PUBLIC_ORIGIN` and `WEB_PUBLIC_ORIGIN`. Config
 │   └── runtime/             # Environment-neutral runtime templates (Caddy, backup & rollback scripts)
 ├── scripts/                 # Operational CLI utilities (migrate, admin, tiles)
 ├── services/
-│   ├── api/                 # Modular monolith backend API
+│   ├── api/                 # Modular monolith backend API (modules/, shared/; see docs/modules.md)
 │   └── maps/                # Vector tile server
 ├── .env.example             # Documented backend configuration template
 ├── compose.yaml             # Docker multi-container orchestration

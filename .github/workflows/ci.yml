@@ -69,4 +69,4 @@ jobs:
       - name: Build the map tile image
         run: docker build -t elesend-maps:ci -f deploy/maps/Dockerfile .
       - name: The API image holds every module the server imports
-        run: docker run --rm elesend-api:ci node --input-type=module -e "await import('/app/services/api/http.mjs');await import('/app/services/api/infrastructure/maps/trace-review.mjs')"
+        run: docker run --rm elesend-api:ci node --input-type=module -e "await import('/app/services/api/http.mjs');await import('/app/services/api/modules/maps/trace-review.mjs')"

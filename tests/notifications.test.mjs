@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHmac} from 'node:crypto';
-import {notificationGateway} from '../services/api/notifications.mjs';
+import {notificationGateway} from '../services/api/modules/orders/notifications.mjs';
 test('notification bridge signs requests and requires actual acceptance evidence',async()=>{
  const token='a'.repeat(32);let request;
  const gateway=notificationGateway({endpoint:'https://notify.example.test/send',allowedHost:'notify.example.test',token,fetchImpl:async(url,options)=>{request=options;return {ok:true,json:async()=>({accepted:true,messageId:'provider-123'})};}});

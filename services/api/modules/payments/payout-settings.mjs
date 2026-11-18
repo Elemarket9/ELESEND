@@ -1,4 +1,4 @@
-import {envInt} from '../../env-values.mjs';
+import {envInt} from '../../shared/env-values.mjs';
 /** The only place withdrawal settings are read, so the wallet and withdrawals always agree. */
 export const payoutSettings=(env=process.env)=>({
  minMinor:envInt(env.WITHDRAWAL_MIN_MINOR,10000),

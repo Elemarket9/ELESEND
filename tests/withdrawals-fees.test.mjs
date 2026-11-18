@@ -17,7 +17,7 @@ test('the customer fee leaves the full price after Paystack takes its percentage
 });
 
 test('motor riders still upload a licence photo when the identity provider checks the Ghana Card',async()=>{
- const {requiredKinds,renderDocumentUploadPage}=await import('../services/api/rider-documents.mjs');
+ const {requiredKinds,renderDocumentUploadPage}=await import('../services/api/modules/riders/rider-documents.mjs');
  const saved={key:process.env.DIDIT_API_KEY,workflow:process.env.DIDIT_WORKFLOW_ID,secret:process.env.DIDIT_WEBHOOK_SECRET};
  for(const [k,v] of [['DIDIT_API_KEY','k'],['DIDIT_WORKFLOW_ID','11111111-1111-4111-8111-111111111111'],['DIDIT_WEBHOOK_SECRET','whsec']])process.env[k]=v;
  try{
@@ -53,7 +53,7 @@ test('Paystack final statuses release money, and an unknown transfer is reported
 });
 
 test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.TEST_DATABASE_URL},async()=>{
- const {database}=await import('../services/api/db.mjs');
+ const {database}=await import('../services/api/shared/db.mjs');
  const {migrate}=await import('../scripts/migrate.mjs');
  const {moneyOperations}=await import('../services/api/modules/payments/money-operations.mjs');
  const {checkoutService}=await import('../services/api/modules/payments/checkout.mjs');
@@ -64,7 +64,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
  const phone=()=>'+23324'+String(randomInt(0,10000000)).padStart(7,'0');
  const policy=async()=>(await db.query('SELECT id FROM pricing_policies LIMIT 1')).rows[0].id;
  const request={vehicle:'motorcycle',pickup:{address:'A',latitude:5.5,longitude:-0.2},destination:{address:'B',latitude:5.6,longitude:-0.2},recipientPhone:'+233241234567',weightG:100,description:'Test'};
- const {passwordHash}=await import('../services/api/security.mjs');
+ const {passwordHash}=await import('../services/api/shared/security.mjs');
  const secret=await passwordHash('Correct-pass-1');
  async function user(kind){const id=randomUUID();await db.query("INSERT INTO users(id,phone,password_hash,kind,phone_verified_at,terms_version,terms_accepted_at) VALUES($1,$2,$3,$4,now(),'2026-11',now())",[id,phone(),secret,kind]);return id;}
  async function newRider(){const id=await user('rider');await db.query("INSERT INTO riders(id,vehicle,max_weight_g,status,online) VALUES($1,'motorcycle',20000,'approved',true)",[id]);await db.query('INSERT INTO commission_accounts(rider_id) VALUES($1)',[id]);return id;}
@@ -312,7 +312,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   books=await balances(cancelled);
   assert.equal(books.customer_refund_liability,1020);assert.equal(books.customer_processing_fee_liability,0);assert.equal(books.customer_delivery_liability,0);
   // A failed parcel is paid by the sender once it is back with them, proved by their SMS code.
-  const {platform}=await import('../services/api/platform.mjs');
+  const {platform}=await import('../services/api/modules/orders/platform.mjs');
   const outbox=[];
   const app=platform(db,{otpKey:'a'.repeat(64),sms:{send:async x=>{outbox.push(x);}}});
   const returnRider=await newRider(),returning={id:returnRider,kind:'rider'};
@@ -338,7 +338,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   const returnedBooks=await balances(failed_parcel);
   assert.equal(returnedBooks.customer_delivery_liability,0);assert.equal(returnedBooks.customer_processing_fee_liability,0);
   // A parcel kept past the limit suspends the rider, blocks withdrawal and freezes the evidence.
-  const {flagOverdueParcels,listCustodyIncidents,resolveCustodyIncident}=await import('../services/api/custody-incidents.mjs');
+  const {flagOverdueParcels,listCustodyIncidents,resolveCustodyIncident}=await import('../services/api/modules/orders/custody-incidents.mjs');
   const runner=await newRider();
   await db.query('INSERT INTO payout_beneficiaries(user_id,provider,recipient_reference) VALUES($1,$2,$3)',[runner,'fixture','RCP_runner']);
   const stolen=await shipment(customer,'AWAITING_ASSIGNMENT',true);
@@ -365,7 +365,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   // The rider data key works with nothing extra set, using the required admin key.
   delete process.env.RIDER_ID_ENCRYPTION_KEY;
   process.env.ADMIN_MFA_ENCRYPTION_KEY=process.env.ADMIN_MFA_ENCRYPTION_KEY||'b'.repeat(64);
-  const {submitRiderLicence,riderLicenceStatus,rejectRiderLicence,suspendExpiredLicences,attachLicences}=await import('../services/api/rider-licence.mjs');
+  const {submitRiderLicence,riderLicenceStatus,rejectRiderLicence,suspendExpiredLicences,attachLicences}=await import('../services/api/modules/riders/rider-licence.mjs');
   const applicant=await newRider(),other_applicant=await newRider();
   await db.query("UPDATE riders SET status='pending' WHERE id=ANY($1::uuid[])",[[applicant,other_applicant]]);
   const reviewer={id:investigator,kind:'admin'},applicantActor={id:applicant,kind:'rider'};
@@ -390,7 +390,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   await assert.rejects(app.approve(reviewer,'riders',applicant,'approved'),/rejected/);
   await submitRiderLicence(db,applicantActor,licenceForm);
   // Profile photo and vehicle certificates are required too, through a short-lived link.
-  const {createDocumentUploadLink,uploadRiderDocument,riderDocumentStatus,viewRiderDocument,rejectRiderDocument,suspendExpiredDocuments}=await import('../services/api/rider-documents.mjs');
+  const {createDocumentUploadLink,uploadRiderDocument,riderDocumentStatus,viewRiderDocument,rejectRiderDocument,suspendExpiredDocuments}=await import('../services/api/modules/riders/rider-documents.mjs');
   const jpeg=Buffer.concat([Buffer.from([0xff,0xd8,0xff,0xe0]),Buffer.alloc(200,7)]).toString('base64');
   const uploadAll=async rider=>{
    const token=(await createDocumentUploadLink(db,{id:rider,kind:'rider'})).path.split('#')[1];
@@ -431,8 +431,8 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   assert.equal((await db.query('SELECT status FROM riders WHERE id=$1',[applicant])).rows[0].status,'suspended');
 
   // Once identity checks are on, approval needs a passed photo and selfie check that matches the details.
-  const {startIdentityCheck,syncIdentityCheck,identityWebhook}=await import('../services/api/rider-licence.mjs');
-  const {diditProvider}=await import('../services/api/identity-verification.mjs');
+  const {startIdentityCheck,syncIdentityCheck,identityWebhook}=await import('../services/api/modules/riders/rider-licence.mjs');
+  const {diditProvider}=await import('../services/api/modules/riders/identity-verification.mjs');
   const {createHmac}=await import('node:crypto');
   const sessionId=randomUUID(),selfie=await newRider();
   await db.query("UPDATE riders SET status='pending' WHERE id=$1",[selfie]);
@@ -468,8 +468,8 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
    assert.equal((await db.query('SELECT status FROM riders WHERE id=$1',[selfie])).rows[0].status,'approved');
   }finally{for(const k of ['DIDIT_API_KEY','DIDIT_WORKFLOW_ID','DIDIT_WEBHOOK_SECRET'])delete process.env[k];}
   // Emergency alerts reach the duty phone and trusted contact, and repeat presses do not spam them.
-  const {raiseEmergency,saveTrustedContact,listSafetyAlerts,resolveSafetyAlert,createShareLink,rateDelivery,myRating,pendingRatings}=await import('../services/api/safety.mjs');
-  const tools=await import('../services/api/rider-tools.mjs');
+  const {raiseEmergency,saveTrustedContact,listSafetyAlerts,resolveSafetyAlert,createShareLink,rateDelivery,myRating,pendingRatings}=await import('../services/api/modules/safety/safety.mjs');
+  const tools=await import('../services/api/modules/riders/rider-tools.mjs');
   const safetyRider=await newRider(),safetyActor={id:safetyRider,kind:'rider'},customerActor={id:customer,kind:'customer'};
   const texts=[];
   const smsFake={sendNotification:async x=>{texts.push(x);return {sent:true};}};
@@ -560,7 +560,7 @@ test('withdrawals and customer fees work against PostgreSQL',{skip:!process.env.
   assert.ok(Array.isArray((await tools.demandAreas(db,{id:invited,kind:'rider'})).areas));
 
   // Riders repeat the selfie check, and are suspended if they ignore it.
-  const {requireIdentityRefresh}=await import('../services/api/rider-licence.mjs');
+  const {requireIdentityRefresh}=await import('../services/api/modules/riders/rider-licence.mjs');
   for(const [k,v] of [['DIDIT_API_KEY','k'],['DIDIT_WORKFLOW_ID','w'],['DIDIT_WEBHOOK_SECRET','whsec']])process.env[k]=v;
   try{
    await db.query("UPDATE rider_licences SET identity_checked_at=now()-interval '100 days' WHERE rider_id=$1",[selfie]);

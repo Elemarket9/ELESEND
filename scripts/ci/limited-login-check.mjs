@@ -1,8 +1,8 @@
 // CI only: the API must work fully under the limited database login, and the startup check must accept that login
 // and refuse the owner.
-import {database} from '../../services/api/db.mjs';
+import {database} from '../../services/api/shared/db.mjs';
 import {simulateOneDelivery} from '../prelaunch-simulation.mjs';
-import {warnIfOwnerDatabaseLogin} from '../../services/api/startup-guards.mjs';
+import {warnIfOwnerDatabaseLogin} from '../../services/api/shared/startup-guards.mjs';
 const app=database(process.env.APP_DATABASE_URL),owner=database(process.env.OWNER_DATABASE_URL);
 try{
  if(await warnIfOwnerDatabaseLogin(app,{production:true,log:()=>{}})!==null)throw Error('limited login was flagged');

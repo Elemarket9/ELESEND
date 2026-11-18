@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID, randomInt } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { database } from '../services/api/db.mjs';
+import { database } from '../services/api/shared/db.mjs';
 import { migrate } from '../scripts/migrate.mjs';
-import { platform as platformService } from '../services/api/platform.mjs';
-import { dispatchEngine } from '../services/api/dispatch.mjs';
-import { restaurantOrderService } from '../services/api/restaurant-orders.mjs';
+import { platform as platformService } from '../services/api/modules/orders/platform.mjs';
+import { dispatchEngine } from '../services/api/modules/orders/dispatch.mjs';
+import { restaurantOrderService } from '../services/api/modules/food/restaurant-orders.mjs';
 import { checkoutService } from '../services/api/modules/payments/checkout.mjs';
 import { moneyOperations } from '../services/api/modules/payments/money-operations.mjs';
 import {
@@ -15,17 +15,17 @@ import {
   attachRealtimeDatabaseBridge,
   emitRealtimeUserEvent,
   createRealtimeEventDeduplicator
-} from '../services/api/chat-engine.mjs';
-import { notificationWorker } from '../services/api/notifications.mjs';
+} from '../services/api/modules/safety/chat-engine.mjs';
+import { notificationWorker } from '../services/api/modules/orders/notifications.mjs';
 import {
   getPublicTracking,
   createPublicTrackingToken
-} from '../services/api/infrastructure/maps/web-tracker.mjs';
-import { restaurantService } from '../services/api/restaurant.mjs';
-import { httpsSmsGateway } from '../services/api/sms-gateway.mjs';
-import { hubtelSmsGateway } from '../services/api/providers/hubtel-sms.mjs';
+} from '../services/api/modules/maps/web-tracker.mjs';
+import { restaurantService } from '../services/api/modules/food/restaurant.mjs';
+import { httpsSmsGateway } from '../services/api/shared/sms-gateway.mjs';
+import { hubtelSmsGateway } from '../services/api/shared/providers/hubtel-sms.mjs';
 import { httpServer } from '../services/api/http.mjs';
-import { createTemporaryDeliveryReference } from '../services/api/infrastructure/maps/egia/temporary-reference.mjs';
+import { createTemporaryDeliveryReference } from '../services/api/modules/maps/egia/temporary-reference.mjs';
 
 const url = process.env.TEST_DATABASE_URL;
 const TEST_OTP_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -284,7 +284,7 @@ test('SMS Adapters, Notification Worker Receipt Integrity & Mobile Push Channel 
   });
 
   await t.test('5. In-progress login with old password cannot survive concurrent password reset (User-Row Lock & Hash Revalidation)', async () => {
-    const { passwordHash } = await import('../services/api/security.mjs');
+    const { passwordHash } = await import('../services/api/shared/security.mjs');
     const oldPwHash = await passwordHash('OldPassword123!');
     const userState = {
       id: '00000000-0000-4000-8000-000000000077',
@@ -398,7 +398,7 @@ test('SMS Adapters, Notification Worker Receipt Integrity & Mobile Push Channel 
   });
 
   await t.test('6. Push token registration binds to session/installation, deactivates on logout, and transfers across Account A -> logout -> Account B', async () => {
-    const { hash: sha256 } = await import('../services/api/security.mjs');
+    const { hash: sha256 } = await import('../services/api/shared/security.mjs');
     const tokenA = 'a'.repeat(64);
     const tokenB = 'b'.repeat(64);
     const userA = { id: '00000000-0000-4000-8000-0000000000a1', kind: 'rider', phone: '+233240000101', sessionTokenHash: sha256(tokenA) };
@@ -561,7 +561,7 @@ test('SMS Adapters, Notification Worker Receipt Integrity & Mobile Push Channel 
 
   await t.test('7. Runtime postgres.conf, compose.yaml, mobile lockfile, verify-backup.sh, and trusted proxy clientIp contracts', async () => {
     const fs = await import('node:fs');
-    const { clientIp } = await import('../services/api/client-ip.mjs');
+    const { clientIp } = await import('../services/api/shared/client-ip.mjs');
 
     // Finding 1: postgres.conf listens on private container interface & compose.yaml verifies connectivity
     const pgConf = fs.readFileSync('deploy/runtime/postgres.conf', 'utf8');
@@ -709,7 +709,7 @@ test('SMS Adapters, Notification Worker Receipt Integrity & Mobile Push Channel 
   });
 
   await t.test('9. Temporary delivery reference locks shipment, binds to quoted coordinates, and HTTP GET lookup extracts segment [6] with ownership check', async () => {
-    const { createTemporaryDeliveryReference } = await import('../services/api/infrastructure/maps/egia/temporary-reference.mjs');
+    const { createTemporaryDeliveryReference } = await import('../services/api/modules/maps/egia/temporary-reference.mjs');
     const { httpServer } = await import('../services/api/http.mjs');
 
     const owner = { id: '00000000-0000-4000-8000-000000000101', kind: 'customer' };
@@ -1269,7 +1269,7 @@ test('SMS Adapters, Notification Worker Receipt Integrity & Mobile Push Channel 
     assert.equal(sentPayloads[0].to, '+233241234567', 'httpsSmsGateway.send must normalize local 024... recipient phone to +23324...');
 
     // C) renderTrackingHtml always renders #eta-box in the DOM so pollStatus() can reveal it when transit begins
-    const { renderTrackingHtml } = await import('../services/api/infrastructure/maps/web-tracker.mjs');
+    const { renderTrackingHtml } = await import('../services/api/modules/maps/web-tracker.mjs');
     const htmlBeforeTransit = renderTrackingHtml({
       shipmentId: randomUUID(),
       state: 'RIDER_ASSIGNED',
@@ -1831,7 +1831,7 @@ test('Operational Reliability, Recovery, Watchdog, Live Tracking, and Dispute-to
           // then register the same device token under rider2, and verify rider1's notifications exclude that device!
           const tokR1 = '1'.repeat(64);
           const tokR2 = '2'.repeat(64);
-          const { hash: sha256 } = await import('../services/api/security.mjs');
+          const { hash: sha256 } = await import('../services/api/shared/security.mjs');
           await db.query("INSERT INTO sessions(token_hash, user_id, expires_at) VALUES($1, $2, now() + interval '4 hours'), ($3, $4, now() + interval '4 hours')", [
             sha256(tokR1),
             rider1.id,

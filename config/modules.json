@@ -1,19 +1,211 @@
 {
- "modules":{
-  "payments":{"paths":["modules/payments/"],"entry":"modules/payments/index.mjs",
-   "tables":["cash_collections","checkout_accounting_journals","checkout_accounting_lines","checkout_confirmed_events","checkout_method_policies","checkout_refund_requests","checkout_unapplied_payments","commission_accounts","commission_allocations","commission_obligations","dispute_refund_requests","disputes","finance_adjustment_requests","finance_journals","finance_lines","financial_entries","payment_events","payment_operation_events","payout_beneficiaries","payout_holds","payout_operations","payout_withdrawals","refund_operations","restaurant_settlements","rider_debt_recoveries","rider_wallet_policy","rider_wallet_policy_history","settlement_intents","settlement_notifications","settlement_provider_events","shipment_checkout_intents","weekly_settlement_settings"]},
-  "riders":{"paths":["rider-licence.mjs","rider-documents.mjs","rider-tools.mjs","identity-verification.mjs","vehicle.mjs","network.mjs","company.mjs","admin-mfa.mjs"],
-   "tables":["account_phone_challenges","account_recovery_challenges","admin_mfa_credentials","api_clients","companies","permissions","rider_campaign_awards","rider_document_links","rider_documents","rider_invitations","rider_licences","rider_referrals","rider_reward_campaigns","rider_vehicle_registrations","riders","sessions","user_push_tokens","users","vehicle_capabilities"]},
-  "orders":{"paths":["toll-rules.mjs","platform.mjs","api-webhooks.mjs","providers/firebase-push.mjs","dispatch.mjs","risk-signals.mjs","dispatch-geometry.mjs","dispatch-routing.mjs","multi-parcel.mjs","pricing.mjs","pricing-surge.mjs","custody-incidents.mjs","eta/","notifications.mjs"],
-   "tables":["challenges","toll_rules","shipment_waiting_charges","delivery_milestones","dispatch_algorithm_features","dispatch_commitments","dispatch_exceptions","dispatch_offers","dispatch_policy","eta_predictions","locations","notification_jobs","operational_risk_signals","api_webhook_deliveries","api_webhooks","outbox","parcel_custody_incidents","pricing_policies","pricing_surge_state","pricing_surge_zones","quotes","rider_dispatch_plans","rider_location_samples","rider_route_corridors","shipment_eta_state","shipments"]},
-  "food":{"paths":["restaurant.mjs","restaurant-orders.mjs","commission-engine.mjs","promotion-engine.mjs"],
-   "tables":["commission_audit_logs","commission_rules","food_order_items","food_orders","mapped_restaurants","menu_categories","menu_item_modifiers","menu_items","menu_modifier_options","promotion_audit_logs","promotion_campaign_restaurants","promotion_campaigns","promotion_redemptions","restaurant_commission_settings","restaurants"]},
-  "maps":{"paths":["traffic.mjs","map-config.mjs","infrastructure/maps/","providers/ghanapostgps.mjs"],
-   "tables":["candidate_landmarks","candidate_roads","map_update_versions","national_businesses","rider_map_reports","spatial_landmarks","temporary_delivery_references","geo_learning_state","map_change_areas","map_change_scans","traffic_cursor","traffic_observations","traffic_typical_speeds"]},
-  "safety":{"paths":["safety.mjs","chat-engine.mjs"],
-   "tables":["chat_abuse_reports","chat_audit_logs","chat_conversations","chat_messages","chat_voice_notes","chat_messaging_policy","chat_participants","chat_realtime_outbox","delivery_ratings","delivery_stop_watch","safety_alerts","trusted_contacts"]}
+ "modules": {
+  "payments": {
+   "paths": [
+    "modules/payments/"
+   ],
+   "entry": "modules/payments/index.mjs",
+   "dependsOn": [],
+   "tables": [
+    "cash_collections",
+    "checkout_accounting_journals",
+    "checkout_accounting_lines",
+    "checkout_confirmed_events",
+    "checkout_method_policies",
+    "checkout_refund_requests",
+    "checkout_unapplied_payments",
+    "commission_accounts",
+    "commission_allocations",
+    "commission_obligations",
+    "dispute_refund_requests",
+    "disputes",
+    "finance_adjustment_requests",
+    "finance_journals",
+    "finance_lines",
+    "financial_entries",
+    "payment_events",
+    "payment_operation_events",
+    "payout_beneficiaries",
+    "payout_holds",
+    "payout_operations",
+    "payout_withdrawals",
+    "refund_operations",
+    "restaurant_settlements",
+    "rider_debt_recoveries",
+    "rider_wallet_policy",
+    "rider_wallet_policy_history",
+    "settlement_intents",
+    "settlement_notifications",
+    "settlement_provider_events",
+    "shipment_checkout_intents",
+    "weekly_settlement_settings"
+   ]
+  },
+  "riders": {
+   "paths": [
+    "modules/riders/"
+   ],
+   "entry": "modules/riders/index.mjs",
+   "dependsOn": [
+    "orders",
+    "payments"
+   ],
+   "tables": [
+    "account_phone_challenges",
+    "account_recovery_challenges",
+    "admin_mfa_credentials",
+    "api_clients",
+    "companies",
+    "permissions",
+    "rider_campaign_awards",
+    "rider_document_links",
+    "rider_documents",
+    "rider_invitations",
+    "rider_licences",
+    "rider_referrals",
+    "rider_reward_campaigns",
+    "rider_vehicle_registrations",
+    "riders",
+    "sessions",
+    "user_push_tokens",
+    "users",
+    "vehicle_capabilities"
+   ]
+  },
+  "orders": {
+   "paths": [
+    "modules/orders/"
+   ],
+   "entry": "modules/orders/index.mjs",
+   "dependsOn": [
+    "food",
+    "payments",
+    "riders",
+    "safety"
+   ],
+   "tables": [
+    "challenges",
+    "toll_rules",
+    "shipment_waiting_charges",
+    "delivery_milestones",
+    "dispatch_algorithm_features",
+    "dispatch_commitments",
+    "dispatch_exceptions",
+    "dispatch_offers",
+    "dispatch_policy",
+    "eta_predictions",
+    "locations",
+    "notification_jobs",
+    "operational_risk_signals",
+    "api_webhook_deliveries",
+    "api_webhooks",
+    "outbox",
+    "parcel_custody_incidents",
+    "pricing_policies",
+    "pricing_surge_state",
+    "pricing_surge_zones",
+    "quotes",
+    "rider_dispatch_plans",
+    "rider_location_samples",
+    "rider_route_corridors",
+    "shipment_eta_state",
+    "shipments"
+   ]
+  },
+  "food": {
+   "paths": [
+    "modules/food/"
+   ],
+   "entry": "modules/food/index.mjs",
+   "dependsOn": [
+    "orders",
+    "payments",
+    "safety"
+   ],
+   "tables": [
+    "commission_audit_logs",
+    "commission_rules",
+    "food_order_items",
+    "food_orders",
+    "mapped_restaurants",
+    "menu_categories",
+    "menu_item_modifiers",
+    "menu_items",
+    "menu_modifier_options",
+    "promotion_audit_logs",
+    "promotion_campaign_restaurants",
+    "promotion_campaigns",
+    "promotion_redemptions",
+    "restaurant_commission_settings",
+    "restaurants"
+   ]
+  },
+  "maps": {
+   "paths": [
+    "modules/maps/"
+   ],
+   "entry": "modules/maps/index.mjs",
+   "dependsOn": [],
+   "tables": [
+    "candidate_landmarks",
+    "candidate_roads",
+    "map_update_versions",
+    "national_businesses",
+    "rider_map_reports",
+    "spatial_landmarks",
+    "temporary_delivery_references",
+    "geo_learning_state",
+    "map_change_areas",
+    "map_change_scans",
+    "traffic_cursor",
+    "traffic_observations",
+    "traffic_typical_speeds"
+   ]
+  },
+  "safety": {
+   "paths": [
+    "modules/safety/"
+   ],
+   "entry": "modules/safety/index.mjs",
+   "dependsOn": [
+    "maps"
+   ],
+   "tables": [
+    "chat_abuse_reports",
+    "chat_audit_logs",
+    "chat_conversations",
+    "chat_messages",
+    "chat_voice_notes",
+    "chat_messaging_policy",
+    "chat_participants",
+    "chat_realtime_outbox",
+    "delivery_ratings",
+    "delivery_stop_watch",
+    "safety_alerts",
+    "trusted_contacts"
+   ]
+  }
  },
- "shared":{"paths":["firebase-account.mjs","env-values.mjs","permissions.mjs","sealed-values.mjs","security.mjs","config.mjs","db.mjs","market.mjs","markets.mjs","rate-limits.mjs","client-ip.mjs","process-guards.mjs","runtime-enforce.mjs","startup-guards.mjs","sms-gateway.mjs","providers/hubtel-sms.mjs","algorithms/","infrastructure/cache/","infrastructure/monitoring/"],
-  "tables":["audit_logs","rate_limits","service_markets"]},
- "composition":{"paths":["http.mjs","server.mjs","worker.mjs","background-jobs.mjs","admin-web/","restaurant-web/","company-web/"]}
+ "shared": {
+  "paths": [
+   "shared/"
+  ],
+  "tables": [
+   "audit_logs",
+   "rate_limits",
+   "service_markets"
+  ]
+ },
+ "composition": {
+  "paths": [
+   "config.mjs",
+   "http.mjs",
+   "server.mjs",
+   "worker.mjs",
+   "background-jobs.mjs",
+   "admin-web/",
+   "restaurant-web/",
+   "company-web/"
+  ]
+ }
 }

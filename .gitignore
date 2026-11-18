@@ -18,4 +18,4 @@ tests/screenshots/
 apps/mobile/android/app/google-services.json
 
 # Built nightly on each server and in the daily map check; never committed.
-services/api/infrastructure/maps/ghana-osm-places.json
+services/api/modules/maps/ghana-osm-places.json
