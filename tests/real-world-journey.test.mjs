@@ -76,6 +76,9 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
     await assert.rejects(()=>app.configureVehicleTariff({id:c.id,kind:'admin'},{vehicle:'long_vehicle',baseMinor:10000,perKmMinor:150,perMinuteMinor:0,minimumMinor:0}),/heavy-freight pricing controls/);
     const configured=await app.setLongVehiclePricing({id:c.id,kind:'admin'},{baseMinor:10000,perKmMinor:150,perTonneKmMinor:20,minimumMinor:30000,commissionBps:1000,returnLegBps:5000,perHelperMinor:5000,perFloorMinor:1000,perExtraStopMinor:2500,bookingFeeBps:100,waitPerMinuteMinor:50,freeLoadingMinutes:30});
     policyId=configured.id;
+    const activeHeavy=(await db.query("SELECT id,is_placeholder FROM long_vehicle_pricing_policies WHERE active AND vehicle='long_vehicle'")).rows[0];
+    assert.equal(activeHeavy?.id,policyId);assert.equal(activeHeavy?.is_placeholder,false);
+    assert.ok(oldGeneric,'migration provides the quote policy reference row');
     const quote=await api(c.token,'POST','/api/v1/quotes',trip({vehicle:'long_vehicle',weightG:4000000,lengthCm:900,volumeL:20000,helpers:2,pickupFloorsNoLift:1,dropoffFloorsNoLift:2}));
     assert.equal(quote.status,200,JSON.stringify(quote.data));
     assert.equal(quote.data.pricingEngine,'long_vehicle_heavy_freight_v1');

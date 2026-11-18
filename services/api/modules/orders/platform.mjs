@@ -756,7 +756,9 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const longVehicle=v.vehicle==='long_vehicle';
   const p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NOT DISTINCT FROM $1',[v.vehicle??null])).rows[0];
   const longPolicy=longVehicle?(await db.query("SELECT * FROM long_vehicle_pricing_policies WHERE active AND vehicle='long_vehicle'")).rows[0]:null;
-  check(p&&(longVehicle?Boolean(longPolicy&&!longPolicy.is_placeholder):!p.is_placeholder),503,longVehicle?'Long-vehicle heavy-freight rates are not configured yet. Please choose another vehicle or contact support.':'This vehicle price is being prepared. Please choose another vehicle or contact support.');
+  check(p,503,'This vehicle price is being prepared. Please choose another vehicle or contact support.');
+  if(longVehicle)check(longPolicy&&!longPolicy.is_placeholder,503,'Long-vehicle heavy-freight rates are not configured yet. Please choose another vehicle or contact support.');
+  else check(!p.is_placeholder,503,'This vehicle price is being prepared. Please choose another vehicle or contact support.');
   let liabilityStatement=null,liabilityEvidence=null;
   if(['tricycle','pickup','van','box_truck','long_vehicle','truck'].includes(v.vehicle)){
    const terms=(await db.query('SELECT liability_limit_minor,liability_terms FROM cargo_policy_settings WHERE id=1')).rows[0];
