@@ -52,7 +52,7 @@ export class FareError extends Error {
 
 export function validateGhanaBoundary(lat, lng) {
  if (!insideMarketEnvelope(lat, lng)) {
-  throw new FareError(422, 'Location is outside the configured Ghana envelope');
+  throw new FareError(422, 'ELESEND delivers within Ghana only. Move the pin to a place in Ghana.');
  }
  return true;
 }

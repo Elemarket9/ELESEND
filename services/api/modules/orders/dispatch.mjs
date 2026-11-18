@@ -116,7 +116,10 @@ export function dispatchEngine(db,{routing}={}){
    const pre=(await c.query('SELECT company_id FROM riders WHERE id=$1',[actor.id])).rows[0];check(pre,403,'Rider required');
    if(pre.company_id)check((await c.query("SELECT 1 FROM companies WHERE id=$1 AND status='approved' FOR UPDATE",[pre.company_id])).rowCount,403,'Company inactive');
    const r=(await c.query('SELECT * FROM riders WHERE id=$1 FOR UPDATE',[actor.id])).rows[0];authorizedRider(r);
-   check(r.online,409,'Rider must be online to share dispatch location');
+   // Online means "send me new offers". A rider still carrying a parcel keeps sharing location after going
+   // offline or being sent to rest, so the customer does not lose tracking and the ETA halfway through.
+   const carrying=!r.online&&(await c.query('SELECT 1 FROM shipments WHERE rider_id=$1 AND state=ANY($2::text[]) LIMIT 1',[actor.id,activeStates])).rowCount>0;
+   check(r.online||carrying,409,'Rider must be online to share dispatch location');
    if(r.position_at){
     const elapsed=(Date.parse(v.observedAt)-new Date(r.position_at).getTime())/1000;
     check(elapsed>0,409,'Out-of-order or replayed GPS observation');
