@@ -1,3 +1,4 @@
+import {clearRiderAssignment} from './assignment.mjs';
 import {assessDeliveryHealth,RIDER_LATE_OR_SILENT_SQL} from '../../shared/algorithms/delivery-health.mjs';
 import {recordRiderRiskSignals} from './risk-signals.mjs';
 import {cashAlreadyReported} from '../payments/index.mjs';
@@ -663,7 +664,7 @@ export function dispatchEngine(db,{routing}={}){
      const r=(await c.query('SELECT * FROM riders WHERE id=$1 FOR UPDATE',[cand.rider_id])).rows[0];
      const s=(await c.query('SELECT * FROM shipments WHERE id=$1 FOR UPDATE',[cand.id])).rows[0];
      if(!s||!s.rider_id||s.rider_id!==cand.rider_id||!['RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP'].includes(s.state))return null;
-     const plan=(await c.query('SELECT stops FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[s.rider_id])).rows[0];
+     await c.query('SELECT 1 FROM rider_dispatch_plans WHERE rider_id=$1 FOR UPDATE',[s.rider_id]);
      const f=cand.food_order_id?(await c.query('SELECT * FROM food_orders WHERE id=$1 FOR UPDATE',[cand.food_order_id])).rows[0]:null;
      const loc=(await c.query('SELECT updated_at FROM locations WHERE shipment_id=$1 AND rider_id=$2',[s.id,s.rider_id])).rows[0];
      const dc=(await c.query('SELECT promised_delivery_before FROM dispatch_commitments WHERE shipment_id=$1 AND rider_id=$2',[s.id,s.rider_id])).rows[0];
@@ -672,7 +673,7 @@ export function dispatchEngine(db,{routing}={}){
       Boolean((await c.query("SELECT 1 FROM shipment_handover_events WHERE shipment_id=$1 AND kind='pickup' UNION SELECT 1 FROM challenges WHERE shipment_id=$1 AND purpose='pickup' AND consumed_at IS NOT NULL",[s.id])).rowCount)||
       await cashAlreadyReported(c,s.id)||
       f?.state==='IN_TRANSIT';
-     const {reasons,signals,isStaleGps,isOverduePickup,isOverdueDelivery,latestGpsMs,nowMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f?.ready_at,offer:accOffer,deliveryDeadlineMs:dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():NaN});
+     const {reasons,signals,latestGpsMs}=assessDeliveryHealth({pickedUp,rider:r,location:loc,staleSec,pickupGraceSec,readyAt:f?.ready_at,offer:accOffer,deliveryDeadlineMs:dc?.promised_delivery_before?new Date(dc.promised_delivery_before).getTime():NaN});
      if(!reasons.length)return null;
      const oldRiderId=s.rider_id;
      await recordRiderRiskSignals(c, oldRiderId, s.id, signals, {reasons,foodOrderId:f?.id??null,state:s.state,lastGpsAt:Number.isFinite(latestGpsMs)?new Date(latestGpsMs).toISOString():null,promisedDeliveryBefore:dc?.promised_delivery_before??null});
@@ -682,13 +683,7 @@ export function dispatchEngine(db,{routing}={}){
       await c.query("INSERT INTO notification_jobs(id,recipient_id,kind,payload) VALUES($1,$2,'delivery_watchdog_alert',$3) ON CONFLICT(id) DO NOTHING",
        [`watchdog-pre:${s.id}:${oldRiderId}`,s.customer_id,JSON.stringify({shipmentId:s.id,orderId:f?.id??null,reasons,action:autoReassignPreCustody?'reassigned_pre_pickup':'reassignment_offered',message:'Your assigned courier became unresponsive before pickup. We are reassigning your delivery to the next available courier.'})]);
       if(autoReassignPreCustody){
-       await c.query('UPDATE challenges SET expires_at=now() WHERE shipment_id=$1 AND consumed_at IS NULL',[s.id]);
-       await c.query("UPDATE dispatch_offers SET status='invalidated' WHERE shipment_id=$1 AND status IN ('offered','accepted')",[s.id]);
-       if(plan&&Array.isArray(plan.stops)){
-        await c.query('UPDATE rider_dispatch_plans SET stops=$2,revision=revision+1,updated_at=now() WHERE rider_id=$1',[oldRiderId,JSON.stringify(plan.stops.filter(x=>x.shipmentId!==s.id))]);
-       }
-       await c.query('DELETE FROM dispatch_commitments WHERE shipment_id=$1',[s.id]);
-       await c.query('DELETE FROM locations WHERE shipment_id=$1',[s.id]);
+       await clearRiderAssignment(c,{shipmentId:s.id,riderId:oldRiderId});
        await c.query("UPDATE shipments SET state='AWAITING_ASSIGNMENT',rider_id=NULL,company_id=NULL,next_dispatch_at=now(),dispatch_attempts=0,watchdog_last_inspected_at=clock_timestamp(),watchdog_next_review_at=NULL WHERE id=$1",[s.id]);
        await chat.revokeRiderConversations(c,{shipmentId:s.id,oldRiderUserId:oldRiderId,reason:'watchdog_reassigned'});
        if(f){

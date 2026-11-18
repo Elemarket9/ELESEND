@@ -185,7 +185,6 @@ export function renderTrackingHtml(data, trackingTokenOverride = null){
  const stateIndex=steps.indexOf(data.state);
  const activeStep=stateIndex===-1?(data.state==='PICKUP_VERIFIED'?1:data.state==='AWAITING_DELIVERY_OTP'?2:0):stateIndex;
 
- const safeShipmentId = escapeHtml(data.shipmentId || '');
  const shortId = escapeHtml((data.shipmentId || '').slice(0, 8));
  const safeStateLabel = escapeHtml((data.state || '').replace(/_/g, ' '));
  const safeStatusLabel = escapeHtml(data.statusLabel || '');
