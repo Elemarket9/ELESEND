@@ -87,6 +87,8 @@ test('declared goods value is never returned in rider delivery details',()=>{
  const view=hideEndedContacts({kind:'rider'},shipment);
  assert.equal(view.details.declaredGoodsValueMinor,undefined);
  assert.equal(view.details.recipientPhone,'+233241234567','normal in-progress contact remains available');
+ const ended=hideEndedContacts({kind:'rider'},{...shipment,state:'COMPLETED',completed_at:'2020-01-01T00:00:00Z'});
+ assert.equal(ended.details.declaredGoodsValueMinor,undefined);assert.equal(ended.details.recipientPhone,undefined);assert.equal(ended.recipient_phone,null);
 });
 
 test('migration seeds bounded cargo classes and leaves heavy classes disabled',()=>{

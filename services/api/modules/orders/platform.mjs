@@ -59,10 +59,13 @@ export async function purgeUnbookedQuotes(db){
 export function hideEndedContacts(actor,s){
  if(!s||actor?.kind==='admin')return s;
  const stripDeclared=d=>d&&typeof d==='object'?{...d,declaredGoodsValueMinor:undefined}:d;
- if(actor?.kind==='rider')return {...s,details:stripDeclared(s.details),quote_request:stripDeclared(s.quote_request)};
+ const strip=d=>d&&typeof d==='object'?{...d,recipientPhone:undefined,pickupPhone:undefined,declaredGoodsValueMinor:undefined}:d;
+ if(actor?.kind==='rider'){
+  if(contactOpen(s))return {...s,details:stripDeclared(s.details),quote_request:stripDeclared(s.quote_request)};
+  return {...s,recipient_phone:null,rider_phone:s.rider_phone===undefined?undefined:null,details:strip(s.details),quote_request:strip(s.quote_request)};
+ }
  if(contactOpen(s))return s;
  if(actor?.id===s.customer_id)return {...s,rider_phone:s.rider_phone===undefined?undefined:null};
- const strip=d=>d&&typeof d==='object'?{...d,recipientPhone:undefined,pickupPhone:undefined,declaredGoodsValueMinor:undefined}:d;
  return {...s,recipient_phone:null,details:strip(s.details),rider_phone:s.rider_phone===undefined?undefined:null};
 }
 const vehicleTypes=['bicycle','motorcycle','tricycle','car','pickup','van','box_truck','long_vehicle','truck'];
