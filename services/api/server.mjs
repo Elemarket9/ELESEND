@@ -5,8 +5,7 @@ import {database} from './db.mjs';
 import {platform} from './platform.mjs';
 import {httpServer} from './http.mjs';
 import {dispatchEngine} from './dispatch.mjs';
-import {osrmRouting} from './dispatch-routing.mjs';
-import {privateRoutingPriority} from './infrastructure/maps/PrivateRoutingPolicy.mjs';
+import {createRouting} from './infrastructure/maps/routing-provider.mjs';
 import {configuredGhanaPostGps} from './providers/ghanapostgps.mjs';
 import {financeService} from './modules/payments/index.mjs';
 import {checkoutService} from './modules/payments/index.mjs';
@@ -33,16 +32,8 @@ await assertRequiredSchema(db);
 await warnIfOwnerDatabaseLogin(db,{production:process.env.NODE_ENV==='production'});
 await reconcileAndEnforceWeeklyRestrictions(db).catch(e=>process.stderr.write(JSON.stringify({level:'warn',component:'weekly_settlement_boot',code:e.code??'internal'})+'\n'));
 
-// Only self-hosted OSRM is registered; paid routing keys cannot become a fallback.
-privateRoutingPriority();
-const routing = (config.routing.vehicleRoutes || config.routing.osrmUrl)
-  ? osrmRouting({
-      endpoint: config.routing.osrmUrl,
-      profiles: config.routing.profiles,
-      vehicleRoutes: config.routing.vehicleRoutes,
-      billingSnapMeters: process.env.ROUTING_BILLING_SNAP_METERS ? Number(process.env.ROUTING_BILLING_SNAP_METERS) : undefined
-    })
-  : null;
+// Self-hosted OSRM unless ROUTING_PROVIDER_PRIORITY=google is chosen; never a silent fallback between them.
+const routing = createRouting(config);
 
 // Routing absence disables quote and dispatch, not authentication/history.
 const dispatch = routing ? dispatchEngine(db, {routing}) : null;

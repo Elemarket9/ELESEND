@@ -16,9 +16,15 @@ const buttonText = { color: '#FFFFFF', fontWeight: '700', fontSize: 13 };
 export default function OfflineMapCard() {
   const [percent, setPercent] = useState(null);
   const [saved, setSaved] = useState(false);
+  // A hosted base map may not be saved for offline use, so the server can switch this card off.
+  const [allowed, setAllowed] = useState(true);
 
   useEffect(() => {
     OfflineManager.getPack(PACK).then(pack => setSaved(Boolean(pack))).catch(() => {});
+    fetch(`${API_BASE_URL}/api/v1/maps/config`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(config => { if (config?.offlineMaps === false) setAllowed(false); })
+      .catch(() => {});
   }, []);
 
   async function download() {
@@ -53,6 +59,8 @@ export default function OfflineMapCard() {
     await OfflineManager.deletePack(PACK).catch(() => {});
     setSaved(false);
   }
+
+  if (!allowed) return null;
 
   return (
     <View style={card}>

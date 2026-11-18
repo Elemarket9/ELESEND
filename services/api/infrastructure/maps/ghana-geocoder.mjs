@@ -1038,7 +1038,7 @@ export async function ghanaReverseGeocodePostGIS(db, lat, lon) {
  * places riders taught the map once they are approved). Those used to be saved but never offered in search.
  * If the database is slow or unavailable the built-in results are returned on their own.
  */
-export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800, near = null, ghanaPostGps = null, photonUrl = null, fetchImpl = fetch} = {}) {
+export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800, near = null, ghanaPostGps = null, photonUrl = null, placesSearch = null, fetchImpl = fetch} = {}) {
   const digital = interpretDigitalAddress(query);
   if (digital) {
     if (typeof ghanaPostGps !== 'function') return digitalAddressUnavailable(digital);
@@ -1070,6 +1070,8 @@ export async function searchPlaces(db, query, {limit = 10, timeoutMs = 800, near
   const answered = local.length > 0 && answersQuery(local[0], query);
   let photon = [];
   if (photonUrl && (street || !answered)) photon = await photonSearch(query, {baseUrl: photonUrl, fetchImpl});
+  // Google place search (launch option) is asked under the same rule, only when Photon is not running.
+  else if (typeof placesSearch === 'function' && (street || !answered)) photon = await placesSearch(query, {near}).catch(() => []);
   // Street results lead as before. Otherwise only a Photon place that holds every typed word goes ahead of a partial
   // built-in match; the rest follow.
   const photonFirst = street ? photon : photon.filter(row => answersQuery(row, query));

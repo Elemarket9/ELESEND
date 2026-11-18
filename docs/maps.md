@@ -1,6 +1,6 @@
 # ELESEND maps: how they work and how to improve them
 
-ELESEND runs its own maps. Customers search for places, riders get turn-by-turn directions, and prices and ETAs come from road routes. No outside map company is needed.
+ELESEND runs its own maps. Customers search for places, riders get turn-by-turn directions, and prices and ETAs come from road routes. No outside map company is needed. For launch you can instead use Google Maps Platform, with no map data to build or map servers to run: see [Launching with Google Maps](#launching-with-google-maps).
 
 ## The parts
 
@@ -83,6 +83,35 @@ ROUTING_OSRM_CAR_URL=http://127.0.0.1:5001 ROUTING_OSRM_MOTORCYCLE_URL=http://12
 ```
 
 Each route must be at least as long as the straight line, no more than 2.5 times longer, and average 8 to 90 km/h. A route can also carry its own expected range. For example, the Airport Domestic Terminal to GTBank Kasoa route must be 30 to 40 km (measured at 34.3 km on 2026-11-08).
+
+## Launching with Google Maps
+
+Set `ROUTING_PROVIDER_PRIORITY=google` and `GOOGLE_MAPS_API_KEY`. Then:
+
+| Part | With Google | Code |
+|---|---|---|
+| Prices, ETAs and dispatch | Routes API (`computeRoutes`, `computeRouteMatrix`), traffic-unaware by default | `services/api/infrastructure/maps/google-maps.mjs` |
+| Rider directions | Routes API steps, in the same shape as OSRM steps | same |
+| Place search | Built-in places first; Google Places Text Search only when they do not answer | `searchPlaces(..., {placesSearch})` |
+| App base map | Map Tiles API roadmap tiles, served through `/api/v1/maps/raster/{z}/{x}/{y}.png` so the key stays on the server | `googleTileProxy` |
+
+On a server, use the overlay so OSRM, Photon and the tile server do not start:
+
+```sh
+docker compose -f compose.yaml -f compose.google-maps.yaml up -d
+```
+
+**Google Cloud setup.** Create one key, restrict it to Routes API, Places API (New) and Map Tiles API, and set daily quotas for each API in Google Cloud Console. Those quotas are the real spending cap. The `GOOGLE_MAPS_DAILY_*` settings are a second, per-process cap; a request over either cap is refused until midnight UTC, and quotes say routing is unavailable.
+
+**What changes for users.**
+
+- The app shows a Google base map with "Map data © Google". It loads the map address from `/api/v1/maps/config`, so no app release is needed to switch either way.
+- Riders cannot save offline maps; the card hides itself, because hosted tiles may not be stored in bulk.
+- Road-speed learning and map learning that need OSRM (`matchTrace`, `nearestRoadMeters`) pause. Everything else works.
+- Motorbikes are priced on car roads unless `GOOGLE_ROUTES_TWO_WHEELER=true`.
+- Google results are never written to the database. Google's terms allow keeping only place IDs.
+
+**Moving back to self-hosted maps.** Build the map data (`docs/two-vps-deployment.md`), set the OSRM addresses and `ROUTING_PROVIDER_PRIORITY=osrm`, and drop the overlay. There is no fallback between the two: whichever is selected is the only one used.
 
 ## Where to go next
 
