@@ -44,6 +44,23 @@ export async function runAudit(db) {
       expect('cargo', 'customers cannot inject a heavy-freight tonne-kilometre rate', customRate.status === 400, customRate);
     });
 
+    await safely('scheduling', 'pickup window bounds and required truck scheduling', async () => {
+      const past = await api(alice.token, 'POST', '/api/v1/quotes', trip({pickupWindow: {startAt: new Date(Date.now() - 60000).toISOString(), endAt: new Date(Date.now() + 3600000).toISOString()}}));
+      expect('scheduling', 'a past pickup window is refused', past.status === 422 && /future/i.test(past.data.error ?? ''), past);
+      const beyond = await api(alice.token, 'POST', '/api/v1/quotes', trip({pickupWindow: {startAt: new Date(Date.now() + 15 * 86400000).toISOString(), endAt: new Date(Date.now() + 15 * 86400000 + 3600000).toISOString()}}));
+      expect('scheduling', 'a pickup more than 14 days ahead is refused', beyond.status === 422 && /14 days/i.test(beyond.data.error ?? ''), beyond);
+      const truck = await api(alice.token, 'POST', '/api/v1/quotes', trip({vehicle: 'box_truck', weightG: 2000000, lengthCm: 300, volumeL: 8000}));
+      expect('scheduling', 'a box truck booking requires a scheduled pickup window', truck.status === 422 && /pickup date and time/i.test(truck.data.error ?? ''), truck);
+    });
+
+    await safely('races', 'parcel booking idempotency', async () => {
+      const quote = await must(alice.token, 'POST', '/api/v1/quotes', trip());
+      const key = 'parcel-' + randomUUID();
+      const twins = await Promise.all([1, 2, 3].map(() => api(alice.token, 'POST', '/api/v1/shipments', {quoteId: quote.id}, {'Idempotency-Key': key})));
+      const ids = new Set(twins.filter(x => x.status === 200 || x.status === 201).map(x => x.data.id));
+      expect('races', 'the same parcel booking sent three times creates one shipment', ids.size === 1, twins.map(x => ({status: x.status, id: x.data?.id})));
+    });
+
     await safely('cargo', 'vehicle capacity limits', async () => {
       const tamperedRates = await api(alice.token, 'POST', '/api/v1/quotes', trip({helpers: 2, pickupFloorsNoLift: 3, perHelperMinor: 1, perFloorMinor: 1}));
       expect('cargo', 'a customer cannot set helper or floor prices in the quote request', tamperedRates.status === 400, tamperedRates);

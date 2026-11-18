@@ -100,6 +100,15 @@ export async function runSecurityAudit(db) {
       expect('cargo', 'the quote rejects floor counts outside the configured bound', tooManyFloors.status === 400, tooManyFloors);
     });
 
+    await safely('scheduling', 'invalid pickup windows', async () => {
+      const customer = await account('customer');
+      const base = {pickup: PLACES.accraMall, destination: PLACES.osuOxford, vehicle: 'motorcycle', recipientPhone: simulationPhone(), weightG: 1000, description: 'Schedule attack', paymentMethod: 'CASH'};
+      const past = await api(customer.token, 'POST', '/api/v1/quotes', {...base, pickupWindow: {startAt: new Date(Date.now() - 60000).toISOString(), endAt: new Date(Date.now() + 3600000).toISOString()}});
+      expect('scheduling', 'past pickup windows are rejected', past.status === 422 && /future/i.test(past.data.error ?? ''), past);
+      const far = await api(customer.token, 'POST', '/api/v1/quotes', {...base, pickupWindow: {startAt: new Date(Date.now() + 15 * 86400000).toISOString(), endAt: new Date(Date.now() + 15 * 86400000 + 3600000).toISOString()}});
+      expect('scheduling', 'pickup windows beyond 14 days are rejected', far.status === 422 && /14 days/i.test(far.data.error ?? ''), far);
+    });
+
     // ---------- 2. Admin routes as everyone else ----------
     await safely('admin', 'sweep', async () => {
       const customer = await account('customer'), business = await account('business');

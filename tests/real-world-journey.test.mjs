@@ -105,6 +105,50 @@ test('real journeys from brand-new accounts',{skip:!url},async t=>{
    }
   });
 
+  await t.test('scheduled pickups are bounded, fixed at quote, dispatched early, and reminded',async()=>{
+   const c=await customer();const scheduledRider=await readyRider();
+   const missingTruckWindow=await api(c.token,'POST','/api/v1/quotes',trip({vehicle:'box_truck',weightG:2000000,lengthCm:300,volumeL:8000}));
+   assert.equal(missingTruckWindow.status,422);assert.match(missingTruckWindow.data.error,/pickup date and time/i);
+   const past=await api(c.token,'POST','/api/v1/quotes',trip({pickupWindow:{startAt:new Date(Date.now()-60000).toISOString(),endAt:new Date(Date.now()+60000).toISOString()}}));
+   assert.equal(past.status,422);assert.match(past.data.error,/future/i);
+   const tooFar=await api(c.token,'POST','/api/v1/quotes',trip({pickupWindow:{startAt:new Date(Date.now()+15*86400000).toISOString(),endAt:new Date(Date.now()+15*86400000+3600000).toISOString()}}));
+   assert.equal(tooFar.status,422);assert.match(tooFar.data.error,/14 days/i);
+   async function scheduledOrder(minutesAhead,{acceptInAdvance=false}={}){
+    const start=new Date(Date.now()+minutesAhead*60000),end=new Date(start.getTime()+3600000);
+    const q=await api(c.token,'POST','/api/v1/quotes',trip({paymentMethod:'MOMO',pickupWindow:{startAt:start.toISOString(),endAt:end.toISOString()}}));
+    assert.equal(q.status,200,JSON.stringify(q.data));assert.equal(q.data.pickupWindow.startAt,start.toISOString());
+    const key='sched-'+randomUUID();
+    const booked=await api(c.token,'POST','/api/v1/shipments',{quoteId:q.data.id},{'Idempotency-Key':key});assert.equal(booked.status,200,JSON.stringify(booked.data));
+    assert.equal(new Date(booked.data.scheduled_pickup_start).toISOString(),start.toISOString());
+    const pay=await api(c.token,'POST','/api/v1/shipments/'+booked.data.id+'/checkout',{idempotencyKey:key,email:'owner@example.com'});assert.equal(pay.status,200,JSON.stringify(pay.data));
+    const payment=(await db.query('SELECT amount_minor FROM shipment_checkout_intents WHERE reference=$1',[pay.data.reference])).rows[0];
+    await checkout.confirmVerified({status:'success',reference:pay.data.reference,amountMinor:Number(payment.amount_minor),currency:'GHS',eventId:'sched-'+randomUUID(),channel:'mobile_money'});
+    if(acceptInAdvance){
+     await dispatch.tick();
+     const offer=(await api(scheduledRider.token,'GET','/api/v1/rider/offers')).data.find(row=>row.id===booked.data.id);
+     assert.ok(offer,'scheduled jobs are offered to riders before pickup time');
+     assert.equal(new Date(offer.scheduledPickupStart).toISOString(),start.toISOString());
+     assert.equal(offer.pickupWindow.startAt,start.toISOString());
+     assert.equal((await api(scheduledRider.token,'POST','/api/v1/shipments/'+booked.data.id+'/accept',{offerId:offer.offerId})).status,200);
+    }else await db.query("UPDATE shipments SET state='RIDER_ASSIGNED',rider_id=$2 WHERE id=$1",[booked.data.id,scheduledRider.id]);
+    return {id:booked.data.id,start,amount:q.data.amount_minor};
+   }
+   const early=await scheduledOrder(2*24*60);
+   const scheduledRow=(await db.query('SELECT next_dispatch_at,scheduled_pickup_start,amount_minor FROM shipments WHERE id=$1',[early.id])).rows[0];
+   assert.equal(new Date(scheduledRow.scheduled_pickup_start).toISOString(),early.start.toISOString());
+   assert.equal(Number(scheduledRow.amount_minor),early.amount,'the booked amount stays fixed at the quote amount');
+   assert.ok(Math.abs(new Date(scheduledRow.next_dispatch_at).getTime()-(early.start.getTime()-24*3600000))<3000,'scheduled dispatch opens one day early by default');
+   await assert.rejects(()=>db.query("UPDATE shipments SET scheduled_pickup_start=now()+interval '1 hour' WHERE id=$1",[early.id]),/Shipment terms immutable/);
+   const termsEarly=await app.cancelTerms({id:c.id,kind:'customer'},early.id);assert.equal(termsEarly.feeMinor,0);assert.ok(termsEarly.freeSecondsLeft>0);
+   await scheduledOrder(10*60,{acceptInAdvance:true});
+   const late=await scheduledOrder(60);
+   const termsLate=await app.cancelTerms({id:c.id,kind:'customer'},late.id);assert.ok(termsLate.feeMinor>0);
+   const reminder60=await scheduledOrder(50);await dispatch.tick();
+   assert.equal((await db.query("SELECT 1 FROM notification_jobs WHERE id=$1",['scheduled-pickup:'+reminder60.id+':60'])).rowCount,1);
+   const reminder15=await scheduledOrder(10);await dispatch.tick();
+   assert.equal((await db.query("SELECT 1 FROM notification_jobs WHERE id=$1",['scheduled-pickup:'+reminder15.id+':15'])).rowCount,1);
+  });
+
   await t.test('cargo class limits and vehicle approval block unsafe quotations and dispatch',async()=>{
    const customerAccount=await customer();
    const previous=(await db.query("SELECT enabled,max_weight_g,max_trip_m,max_length_cm,max_volume_l FROM vehicle_capabilities WHERE vehicle='tricycle'")).rows[0];

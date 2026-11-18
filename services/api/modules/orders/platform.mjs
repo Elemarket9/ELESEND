@@ -25,6 +25,7 @@ import {calculateLongVehicleQuote} from './long-vehicle-pricing.mjs';
 import {getSurgeMultiplier,validateGhanaBoundary} from './pricing-surge.mjs';
 import {measuredSurge} from './pricing-surge.mjs';
 import {haversine} from '../../shared/dispatch-geometry.mjs';
+import {validatePickupSchedule} from './schedule.mjs';
 // A rider may complete a delivery only with a server-received fix this close to the quoted drop-off.
 const DELIVERY_HANDOVER_RADIUS_M=200;
 const DELIVERY_HANDOVER_MAX_AGE_SECONDS=120;
@@ -72,7 +73,7 @@ export function hideEndedContacts(actor,s){
 const vehicleTypes=['bicycle','motorcycle','tricycle','car','pickup','van','box_truck','long_vehicle','truck'];
 const registration=z.object({phone:z.string().max(30),termsVersion:z.string().trim().min(1).max(40),password:z.string().min(12).max(128),kind:z.enum(['customer','business','rider','company']),name:z.string().min(2).max(160).optional(),vehicle:z.enum(vehicleTypes).optional(),maxWeightG:z.number().int().min(1).max(30000000).optional(),car:carRegistration.optional(),vehicleDetails:carRegistration.optional(),services:z.array(z.enum(ACCEPTED_SERVICES)).min(1).max(2).optional()}).strict();
 const address=z.object({address:z.string().min(5).max(400),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}).strict();
-const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(vehicleTypes.filter(x=>x!=='bicycle')).optional(),recipientPhone:z.string().max(30),pickupPhone:z.string().max(30).optional(),weightG:z.number().int().min(1).max(30000000),lengthCm:z.number().int().positive().max(30000).optional(),volumeL:z.number().int().positive().max(1000000).optional(),helpers:z.number().int().min(0).max(4).default(0),pickupFloorsNoLift:z.number().int().min(0).max(100).default(0),dropoffFloorsNoLift:z.number().int().min(0).max(100).default(0),declaredGoodsValueMinor:z.number().int().min(1).max(2147483647).optional(),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
+const quoteSchema=z.object({pickup:address,destination:address,vehicle:z.enum(vehicleTypes.filter(x=>x!=='bicycle')).optional(),recipientPhone:z.string().max(30),pickupPhone:z.string().max(30).optional(),weightG:z.number().int().min(1).max(30000000),lengthCm:z.number().int().positive().max(30000).optional(),volumeL:z.number().int().positive().max(1000000).optional(),helpers:z.number().int().min(0).max(4).default(0),pickupFloorsNoLift:z.number().int().min(0).max(100).default(0),dropoffFloorsNoLift:z.number().int().min(0).max(100).default(0),declaredGoodsValueMinor:z.number().int().min(1).max(2147483647).optional(),pickupWindow:z.object({startAt:z.string().datetime({offset:true}),endAt:z.string().datetime({offset:true})}).strict().optional(),description:z.string().min(2).max(500),parcelCategory:z.enum(['general','documents','fragile','food']).default('general'),parcelSize:z.enum(['small','medium','large']).default('small'),paymentMethod:z.enum(['CASH','MOMO','CARD','QR','DIGITAL']).default('DIGITAL'),cashPayer:z.enum(['sender','recipient']).default('recipient')}).strict();
 // Legacy SMS handovers are disabled by default in production. Test/development fixtures remain compatible.
 const allowLegacySmsHandover=()=>process.env.NODE_ENV!=='production'||process.env.HANDOVER_SMS_LEGACY_ENABLED==='true';
 const ACCOUNT_SMS_PER_NUMBER=5,ACCOUNT_SMS_BLOCK_SECONDS=900;
@@ -145,8 +146,13 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const paidMinor=s.paid?await confirmedPaymentMinor(c,s.id):0;
   let feeMinor=0,freeSecondsLeft=null;
   if(s.state==='RIDER_ASSIGNED'&&s.paid){
-   const accepted=(await c.query("SELECT extract(epoch FROM now()-accepted_at)::int AS seconds FROM dispatch_offers WHERE shipment_id=$1 AND rider_id=$2 AND status='accepted' ORDER BY accepted_at DESC LIMIT 1",[s.id,s.rider_id])).rows[0];
-   freeSecondsLeft=Math.max(0,envInt(process.env.CANCEL_FREE_SECONDS,300,0)-Number(accepted?.seconds??0));
+   if(s.scheduled_pickup_start){
+    // Scheduled cargo remains freely cancellable until two hours before the agreed pickup window.
+    freeSecondsLeft=Math.max(0,Math.floor((new Date(s.scheduled_pickup_start).getTime()-Date.now())/1000)-7200);
+   }else{
+    const accepted=(await c.query("SELECT extract(epoch FROM now()-accepted_at)::int AS seconds FROM dispatch_offers WHERE shipment_id=$1 AND rider_id=$2 AND status='accepted' ORDER BY accepted_at DESC LIMIT 1",[s.id,s.rider_id])).rows[0];
+    freeSecondsLeft=Math.max(0,envInt(process.env.CANCEL_FREE_SECONDS,300,0)-Number(accepted?.seconds??0));
+   }
    if(freeSecondsLeft===0)feeMinor=Math.min(envInt(process.env.CANCEL_FEE_MINOR,500,0),Number(s.amount_minor)-Number(s.commission_minor));
   }
   return {canCancel:['AWAITING_PAYMENT','AWAITING_ASSIGNMENT','RIDER_ASSIGNED'].includes(s.state),feeMinor,refundMinor:Math.max(0,paidMinor-feeMinor),freeSecondsLeft};
@@ -728,7 +734,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
    check(dispatch,503,'Delivery booking paused: dispatch unavailable');
    await requireVerifiedPhone(db,actor);
   }
-  await marketService(db).assertGhanaOperating();const v=quoteSchema.parse(input);v.recipientPhone=phone(v.recipientPhone);
+  await marketService(db).assertGhanaOperating();const v=quoteSchema.parse(input);v.pickupWindow=validatePickupSchedule(v.pickupWindow,v.vehicle);v.recipientPhone=phone(v.recipientPhone);
   // A business can name who hands over parcels, so the code does not go to the account owner.
   if(v.pickupPhone){check(['business','company'].includes(actor.kind),400,'Pickup contact is for business accounts');v.pickupPhone=phone(v.pickupPhone);}
   // Companies pay through hosted checkout, which the older DIGITAL method cannot start.
@@ -802,13 +808,14 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   const r=await db.query("INSERT INTO quotes(id,customer_id,policy_id,long_vehicle_policy_id,request,amount_minor,commission_minor,expires_at,payment_method,pricing_evidence) VALUES($1,$2,$3,$4,$5,$6,$7,now()+interval '15 minutes',$8,$9) RETURNING id,amount_minor,commission_minor,expires_at,payment_method",[qid,actor.id,p.id,longPolicy?.id??null,JSON.stringify(v),amountMinor,commissionMinor,v.paymentMethod,JSON.stringify(evidence)]);
   const capacity=dispatch?await dispatch.availability({pickup:v.pickup,weightG:v.weightG,vehicle:v.vehicle,parcelCategory:v.parcelCategory,parcelSize:v.parcelSize,lengthCm:v.lengthCm,volumeL:v.volumeL}):{status:'unknown',guaranteed:false};
   const fareBreakdown={...breakdown,tolls:tolls.map(({name,amountMinor})=>({name,amountMinor})),tariffId:longVehicle?longPolicy.id:p.id,startMinor:Number(longVehicle?longPolicy.base_minor:p.base_minor),perKmMinor:Number(longVehicle?longPolicy.per_km_minor:p.per_km_minor),perMinuteMinor:longVehicle?0:Number(p.per_minute_minor??0),perTonneKmMinor:longVehicle?Number(longPolicy.per_tonne_km_minor):0,pricedMinutes:longVehicle?0:Math.ceil(pricedSeconds/60),minimumMinor:Number(longVehicle?longPolicy.minimum_minor:p.minimum_minor??0),rushHourMultiplier:longVehicle?1:surgeMultiplier,waitPerMinuteMinor:waitingEnabled?waitRate:0,waitFreeMinutes:waitingTerms.freeMinutes,waitMaxMinor:waitingTerms.maxMinor,waitingEnabled,helpers:v.helpers,pickupFloorsNoLift:v.pickupFloorsNoLift,dropoffFloorsNoLift:v.dropoffFloorsNoLift,pricingEngine:evidence.pricingEngine};
-  return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pricingEngine:evidence.pricingEngine,pricingEvidence:evidence,fareBreakdown,liabilityStatement,etaMinutes:quotedEtaMinutes(route.durationSeconds,trafficFactor,{riderSeconds:capacity.nearestRiderSeconds,source:adjustment.source}),surgeMultiplier:longVehicle?1:surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
+  return {...r.rows[0],currency:MARKET_CURRENCY,vehicle:v.vehicle??null,pickupWindow:v.pickupWindow??null,pricingEngine:evidence.pricingEngine,pricingEvidence:evidence,fareBreakdown,liabilityStatement,etaMinutes:quotedEtaMinutes(route.durationSeconds,trafficFactor,{riderSeconds:capacity.nearestRiderSeconds,source:adjustment.source}),surgeMultiplier:longVehicle?1:surgeMultiplier,riderEarningsMinor,driverEarningGhs:riderEarningsMinor/100,platformCommissionGhs:commissionMinor/100,distanceMeters:meters,distanceMethod:route.source==='fixture'?'synthetic road routing fixture':'provider road routing',travelSeconds:route.durationSeconds,trafficAware:route.trafficAware===true,availability:capacity};
  },
  async book(actor,input,key){await marketService(db).assertGhanaOperating();const v=z.object({quoteId:uuid}).strict().parse(input);check(typeof key==='string'&&/^[\w-]{8,128}$/.test(key),400,'Idempotency-Key required');check(['customer','business','company'].includes(actor.kind),403);await requireAcceptedTerms(db,actor);await assertCompanyDelivery(db,actor);
   if(process.env.NODE_ENV==='production')check(dispatch,503,'Delivery booking paused: dispatch unavailable');
   return db.tx(async c=>{if(process.env.NODE_ENV==='production')await requireVerifiedPhone(c,actor);await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[actor.id+key]);
    const old=(await c.query('SELECT * FROM shipments WHERE customer_id=$1 AND idempotency_key=$2',[actor.id,key])).rows[0];if(old){check(old.quote_id===v.quoteId,409,'Idempotency key reused with different request');return old;}
    const q=(await c.query('SELECT * FROM quotes WHERE id=$1 AND customer_id=$2 AND expires_at>now() FOR UPDATE',[v.quoteId,actor.id])).rows[0];check(q,409,'Quote unavailable or expired');
+   const scheduledLeadMinutes=q.request.pickupWindow?Number((await c.query('SELECT scheduled_dispatch_lead_minutes FROM vehicle_capabilities WHERE vehicle=$1',[q.request.vehicle])).rows[0]?.scheduled_dispatch_lead_minutes??1440):0;
    // Cash jobs cost the sender nothing until the rider arrives, so one account could book many fake pickups and send
    // riders across town for nothing. Open cash bookings are capped per account (businesses get more).
    if(q.payment_method==='CASH'){
@@ -817,7 +824,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
     const open=(await c.query("SELECT count(*)::int AS n FROM shipments WHERE customer_id=$1 AND payment_method='CASH' AND state IN ('AWAITING_ASSIGNMENT','RIDER_ASSIGNED','PICKUP_VERIFIED','IN_TRANSIT','AWAITING_DELIVERY_OTP')",[actor.id])).rows[0].n;
     check(open<cap,429,`You have ${open} cash deliveries in progress. Pay by mobile money or card, or wait for one to finish`);
    }
-   const sid=id();const result=await c.query("INSERT INTO shipments(id,customer_id,quote_id,idempotency_key,state,recipient_phone,amount_minor,commission_minor,payment_method,cash_payer) VALUES($1,$2,$3,$4,$8,$5,$6,$7,$9,$10) RETURNING *",[sid,actor.id,q.id,key,q.request.recipientPhone,q.amount_minor,q.commission_minor,q.payment_method==='CASH'?'AWAITING_ASSIGNMENT':'AWAITING_PAYMENT',q.payment_method,q.payment_method==='CASH'?(q.request.cashPayer??'recipient'):null]);await audit(c,actor.id,'shipment.booked',sid);await event(c,sid,'booked');return result.rows[0];
+   const sid=id();const result=await c.query("INSERT INTO shipments(id,customer_id,quote_id,idempotency_key,state,recipient_phone,amount_minor,commission_minor,payment_method,cash_payer,scheduled_pickup_start,scheduled_pickup_end,next_dispatch_at) VALUES($1,$2,$3,$4,$8,$5,$6,$7,$9,$10,$11,$12,CASE WHEN $11::timestamptz IS NULL THEN now() ELSE GREATEST(now(),$11::timestamptz-($13::int*interval '1 minute')) END) RETURNING *",[sid,actor.id,q.id,key,q.request.recipientPhone,q.amount_minor,q.commission_minor,q.payment_method==='CASH'?'AWAITING_ASSIGNMENT':'AWAITING_PAYMENT',q.payment_method,q.payment_method==='CASH'?(q.request.cashPayer??'recipient'):null,q.request.pickupWindow?.startAt??null,q.request.pickupWindow?.endAt??null,scheduledLeadMinutes]);await audit(c,actor.id,'shipment.booked',sid);await event(c,sid,'booked');return result.rows[0];
   });
  },
  async paymentConfirmed({provider,eventId,shipmentId,amountMinor,currency}){

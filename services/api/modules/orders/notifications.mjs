@@ -35,16 +35,17 @@ export function notificationWorker(db,{transport=null,sms=null}={}){
   try{
    await db.query("UPDATE notification_jobs SET state='failed',lease_until=NULL WHERE attempts>=8 AND state='sending' AND lease_until<now()");
    await db.query(`INSERT INTO notification_jobs(id,recipient_id,kind,payload)
-    SELECT 'offer:'||o.id::text,o.rider_id,'dispatch_offer',jsonb_build_object(
+   SELECT 'offer:'||o.id::text,o.rider_id,'dispatch_offer',jsonb_build_object(
      'offerId',o.id,
      'shipmentId',o.shipment_id,
      'expiresAt',o.expires_at,
+     'pickupWindow',q.request->'pickupWindow',
      'channelId',$1::text,
      'priority','high',
      'wakeScreen',true,
-     'message','ELESEND: a delivery offer is available. Open the app to review it.'
+     'message',CASE WHEN q.request->'pickupWindow' IS NULL THEN 'ELESEND: a delivery offer is available. Open the app to review it.' ELSE 'ELESEND: a scheduled delivery offer is available. Open the app to review the pickup time and details.' END
     )
-    FROM dispatch_offers o WHERE o.status='offered' AND o.expires_at>now() ON CONFLICT(id) DO NOTHING`,[RIDER_OFFER_ALERT_CHANNEL]);
+    FROM dispatch_offers o JOIN shipments s ON s.id=o.shipment_id JOIN quotes q ON q.id=s.quote_id WHERE o.status='offered' AND o.expires_at>now() ON CONFLICT(id) DO NOTHING`,[RIDER_OFFER_ALERT_CHANNEL]);
    await db.query(`INSERT INTO notification_jobs(id,recipient_id,kind,payload)
     SELECT 'settlement:'||n.id::text,n.rider_id,n.notification_type,jsonb_build_object('notificationId',n.id,'message',n.message)
     FROM settlement_notifications n WHERE n.sent_at IS NULL ON CONFLICT(id) DO NOTHING`);

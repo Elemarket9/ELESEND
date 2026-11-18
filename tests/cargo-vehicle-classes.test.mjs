@@ -56,7 +56,7 @@ test('mobile quote contract sends helper, floor and dispute-only declared value 
 
 test('admin portal exposes editable cargo class limits and launch switches',()=>{
  const html=renderAdminPortalHtml();
- for(const token of ['vehiclePolicyRows','maxLengthCm','maxVolumeL','minLicenceClass','/api/v1/admin/vehicle-policy'])assert.ok(html.includes(token),`missing admin vehicle control ${token}`);
+ for(const token of ['vehiclePolicyRows','maxLengthCm','maxVolumeL','minLicenceClass','scheduledDispatchLeadMinutes','/api/v1/admin/vehicle-policy'])assert.ok(html.includes(token),`missing admin vehicle control ${token}`);
 });
 
 test('cargo pricing migration seeds clearly marked zero-price placeholders and no liability cap',()=>{

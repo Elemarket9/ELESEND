@@ -168,7 +168,7 @@ export function renderAdminPortalHtml() {
         <div class="card">
           <div class="card-title">Vehicle classes and launch limits</div>
           <div class="card-subtitle">Disabled classes cannot be quoted or dispatched. Verify the required Ghana licence class and vehicle papers before enabling a class.</div>
-          <div class="table-container"><table><thead><tr><th>Class</th><th>Enabled</th><th>Max load kg</th><th>Trip km</th><th>Length cm</th><th>Volume L</th><th>Minimum licence class</th><th>Example</th><th></th></tr></thead><tbody id="vehiclePolicyRows"><tr><td colspan="9">Loading vehicle classes...</td></tr></tbody></table></div>
+          <div class="table-container"><table><thead><tr><th>Class</th><th>Enabled</th><th>Max load kg</th><th>Trip km</th><th>Length cm</th><th>Volume L</th><th>Minimum licence class</th><th>Dispatch lead (min)</th><th>Example</th><th></th></tr></thead><tbody id="vehiclePolicyRows"><tr><td colspan="10">Loading vehicle classes...</td></tr></tbody></table></div>
         </div>
 
         <div class="card">
@@ -1009,13 +1009,14 @@ export function renderAdminPortalHtml() {
             <td><input id="vp_length_\${key}" type="number" min="1" step="1" value="\${v.max_length_cm || ''}" style="width:75px"></td>
             <td><input id="vp_volume_\${key}" type="number" min="1" step="1" value="\${v.max_volume_l || ''}" style="width:75px"></td>
             <td><input id="vp_licence_\${key}" maxlength="20" value="\${escapeHtml(v.min_licence_class || '')}" style="width:100px"></td>
+            <td><input id="vp_dispatch_lead_\${key}" type="number" min="30" max="10080" step="15" value="\${Number(v.scheduled_dispatch_lead_minutes || 1440)}" style="width:90px" aria-label="Scheduled dispatch lead minutes for \${escapeHtml(key)}"></td>
             <td>\${escapeHtml(v.customer_example || '')}</td>
             <td><button class="action-btn" onclick="saveVehiclePolicy('\${key}')">Save</button></td>
           </tr>\`;
         }).join('');
       } catch (e) {
         const tb = document.getElementById('vehiclePolicyRows');
-        if (tb) tb.innerHTML = \`<tr><td colspan="9">\${escapeHtml(e.message)}</td></tr>\`;
+        if (tb) tb.innerHTML = \`<tr><td colspan="10">\${escapeHtml(e.message)}</td></tr>\`;
       }
     }
 
@@ -1034,7 +1035,8 @@ export function renderAdminPortalHtml() {
           maxWeightG: kg == null ? null : Math.round(kg * 1000), maxTripKm: numberOrNull('vp_trip_' + vehicle),
           maxLengthCm: numberOrNull('vp_length_' + vehicle), maxVolumeL: numberOrNull('vp_volume_' + vehicle), minLicenceClass,
           needsManualVerification: !['bicycle', 'motorcycle'].includes(vehicle),
-          customerDescription: current.customer_description, customerExample: current.customer_example
+          customerDescription: current.customer_description, customerExample: current.customer_example,
+          scheduledDispatchLeadMinutes: numberOrNull('vp_dispatch_lead_' + vehicle)
         })});
         await loadVehiclePolicy();
       } catch (e) { alert('Could not save vehicle policy: ' + e.message); }
