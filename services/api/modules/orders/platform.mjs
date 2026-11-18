@@ -38,6 +38,8 @@ import {marketService} from '../../shared/markets.mjs';
 import {getRedisClient} from '../../shared/cache/redis.mjs';
 import {promotionEngine} from '../food/index.mjs';
 import {disconnectRealtimeUser} from '../safety/index.mjs';
+const VEHICLE_LABELS={bicycle:'bicycle',motorcycle:'motorbike',tricycle:'tricycle',car:'car',pickup:'pickup',van:'van',truck:'truck'};
+const kg=g=>`${Math.round(Number(g)/1000)} kg`,km=m=>`${Math.round(Number(m)/1000)} km`;
 const id=()=>randomUUID();
 const uuid=z.string().uuid();
 // Phone numbers are shared for the delivery, not kept: riders lose the customer's and recipient's numbers, and
@@ -704,7 +706,10 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   // Native clients explicitly choose CASH/MOMO/CARD/QR. Legacy DIGITAL cannot
   // initiate public checkout or self-report payment success.
   if(v.paymentMethod!=='DIGITAL'){check(await paymentMethodEnabled(db,v.paymentMethod),503,'Payment method is not active');}
-  if(v.vehicle){const capability=(await db.query('SELECT enabled FROM vehicle_capabilities WHERE vehicle=$1',[v.vehicle])).rows[0];check(capability?.enabled!==false,409,'This vehicle type is not available yet');}
+  const capability=v.vehicle?(await db.query('SELECT enabled,max_weight_g,max_trip_m FROM vehicle_capabilities WHERE vehicle=$1',[v.vehicle])).rows[0]:null;
+  if(v.vehicle){check(capability?.enabled!==false,409,'This vehicle type is not available yet');
+   // Quote only what this vehicle can carry; otherwise the order is paid for and no rider can take it.
+   check(!capability?.max_weight_g||v.weightG<=capability.max_weight_g,422,`A ${VEHICLE_LABELS[v.vehicle]??v.vehicle} carries up to ${kg(capability?.max_weight_g)}. Choose a bigger vehicle or split the parcel.`);}
   for(const location of [v.pickup,v.destination])validateGhanaBoundary(location.latitude,location.longitude);
   const p=(await db.query('SELECT * FROM pricing_policies WHERE active AND vehicle IS NOT DISTINCT FROM $1',[v.vehicle??null])).rows[0];check(p,503,'Pricing not configured for selected vehicle');
   check(routing,503,'Road routing not configured; prices cannot be estimated safely');
@@ -712,6 +717,7 @@ export function platform(db,{otpKey,sms,dispatch,routing,adminMfaKey=process.env
   check(route.source==='routing-provider'||(process.env.NODE_ENV!=='production'&&route.source==='fixture'),503,'Unsupported road estimate');
   const meters=route.distanceMeters;
   check(Number.isSafeInteger(meters)&&meters>=0,503,'Invalid road distance');
+  check(!capability?.max_trip_m||meters<=capability.max_trip_m,422,`This trip is ${km(meters)} by road. A ${VEHICLE_LABELS[v.vehicle]??v.vehicle} delivers up to ${km(capability?.max_trip_m)}${['bicycle','motorcycle','tricycle'].includes(v.vehicle)?'. Choose a car':''}.`);
   check(Number.isSafeInteger(route.durationSeconds)&&route.durationSeconds>=0,503,'Invalid road duration');
   const hour=Number(new Intl.DateTimeFormat('en-GB',{timeZone:MARKET_TIME_ZONE,hour:'2-digit',hourCycle:'h23'}).format(new Date()));
   const scheduledMultiplier=p.rush_hour_enabled&&!p.traffic_time_pricing?getSurgeMultiplier(v.pickup.latitude,v.pickup.longitude,hour):1;

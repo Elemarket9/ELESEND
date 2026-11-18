@@ -37,6 +37,7 @@ const sampleSchema=z.object({latitude:z.number().finite().min(-90).max(90),longi
 const point=r=>({latitude:Number(r.latitude),longitude:Number(r.longitude)});
 const audit=(c,who,action,sid)=>c.query('INSERT INTO audit_logs(actor_id,action,entity_id) VALUES($1,$2,$3)',[who,action,sid]);
 const change=(c,sid,type)=>c.query('INSERT INTO outbox(shipment_id,kind,payload) VALUES($1,$2,$3)',[sid,type,JSON.stringify({shipmentId:sid,kind:type})]);
+const FOOD_DELIVERY_PROMISE_MS=30*60*1000;
 async function policy(db){return (await db.query('SELECT * FROM dispatch_policy WHERE id=1')).rows[0];}
 function authorizedRider(r){check(r&&r.status==='approved',403,'Approved rider required');}
 const TRACE_ROW_LIMIT=20000;
@@ -102,8 +103,9 @@ export function dispatchEngine(db,{routing}={}){
  }
  async function trackingSettings(actor){check(actor?.kind==='rider',403,'Rider credentials required');const p=await policy(db);return {movingUploadSeconds:p.moving_upload_seconds,idleUploadSeconds:p.idle_upload_seconds,locationFreshSeconds:p.fresh_seconds,privacyRetentionHours:p.sample_retention_hours};}
  async function vehiclePolicy(actor){await getPolicy(actor);return (await db.query('SELECT * FROM vehicle_capabilities ORDER BY vehicle')).rows;}
- async function setVehiclePolicy(actor,input){await getPolicy(actor);const v=z.object({vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']),maxParcelSize:z.enum(['small','medium','large']),allowedCategories:z.array(z.enum(['general','documents','fragile','food'])).min(1).max(4),enabled:z.boolean()}).strict().parse(input);
-  return db.tx(async c=>{await c.query('UPDATE vehicle_capabilities SET max_parcel_size=$2,allowed_categories=$3,enabled=$4 WHERE vehicle=$1',[v.vehicle,v.maxParcelSize,[...new Set(v.allowedCategories)],v.enabled]);await audit(c,actor.id,'dispatch.vehicle_policy_changed',null);return {ok:true};});
+ async function setVehiclePolicy(actor,input){await getPolicy(actor);const v=z.object({vehicle:z.enum(['bicycle','motorcycle','tricycle','car','pickup','van','truck']),maxParcelSize:z.enum(['small','medium','large']),allowedCategories:z.array(z.enum(['general','documents','fragile','food'])).min(1).max(4),enabled:z.boolean(),maxWeightG:z.number().int().min(1).max(10000000).nullable().optional(),maxTripKm:z.number().int().min(1).max(2000).nullable().optional()}).strict().parse(input);
+  // Leaving out a limit keeps the current one; null removes it.
+  return db.tx(async c=>{await c.query('UPDATE vehicle_capabilities SET max_parcel_size=$2,allowed_categories=$3,enabled=$4,max_weight_g=CASE WHEN $5 THEN $6::int ELSE max_weight_g END,max_trip_m=CASE WHEN $7 THEN $8::int ELSE max_trip_m END WHERE vehicle=$1',[v.vehicle,v.maxParcelSize,[...new Set(v.allowedCategories)],v.enabled,v.maxWeightG!==undefined,v.maxWeightG??null,v.maxTripKm!==undefined,v.maxTripKm==null?null:v.maxTripKm*1000]);await audit(c,actor.id,'dispatch.vehicle_policy_changed',null);return {ok:true};});
  }
  async function riderPosition(actor,input){check(actor?.kind==='rider',403,'Rider credentials required');const v=correctPhoneClock(sampleSchema.parse(input)),p=await policy(db);
   const age=(Date.now()-Date.parse(v.observedAt))/1000;
@@ -237,9 +239,13 @@ export function dispatchEngine(db,{routing}={}){
   if(!active.length&&existing.length)return null;
   const onboardIds=active.filter(s=>s.state!=='RIDER_ASSIGNED').map(s=>s.id),newStops=freshStops(sid,request);
   const deadlines=Object.fromEntries(active.map(s=>[s.id,s.promised_delivery_before]));
-  const foodOrder=(await db.query('SELECT ready_at FROM food_orders WHERE shipment_id=$1',[sid])).rows[0];
+  // Hot food must not wait while a rider finishes other jobs: when it joins a rider's route, it still has to arrive
+  // within 30 minutes of being ready. A rider with nothing else on is never refused for this, because the food
+  // cannot get there any faster; subtracting the policy slack here left 10 minutes, so no rider ever qualified
+  // for an order more than about 3 km away.
+  const foodOrder=active.length?(await db.query('SELECT ready_at FROM food_orders WHERE shipment_id=$1',[sid])).rows[0]:null;
   if(foodOrder?.ready_at){
-   deadlines[sid]=new Date(new Date(foodOrder.ready_at).getTime()+30*60*1000-Number(p.delivery_slack_seconds||0)*1000).toISOString();
+   deadlines[sid]=new Date(new Date(foodOrder.ready_at).getTime()+FOOD_DELIVERY_PROMISE_MS).toISOString();
   }
   const opts={vehicle:r.vehicle,capacityG:r.max_weight_g,deadlines,now:Date.now()+p.offer_seconds*1000,onboardIds,maxPickupSeconds:p.max_pickup_eta_seconds,maxDetourSeconds:p.max_detour_seconds};
   const start=point(r);let result;
@@ -496,13 +502,14 @@ export function dispatchEngine(db,{routing}={}){
    await c.query("UPDATE shipments SET rider_id=$2,company_id=$3,state='RIDER_ASSIGNED',no_rider_since=NULL,watchdog_last_inspected_at=NULL,watchdog_next_review_at=NULL WHERE id=$1",[sid,r.id,r.company_id]);
    await c.query(`INSERT INTO rider_dispatch_plans(rider_id,revision,stops) VALUES($1,1,$2)
       ON CONFLICT(rider_id) DO UPDATE SET revision=rider_dispatch_plans.revision+1,stops=$2,updated_at=now()`,[r.id,JSON.stringify(o.proposed_stops)]);
-   // Food must reach physical handover within 30 minutes of the actual/estimated ready time.
-   // Reject a route that cannot satisfy this bound instead of silently promising a later delivery.
+   // Food that joins a rider's other jobs must still reach the door within 30 minutes of being ready, the same
+   // rule the offer was planned with. Alone, the rider goes straight there, so there is nothing to refuse.
    const foodDeadline=(await c.query('SELECT ready_at FROM food_orders WHERE shipment_id=$1',[sid])).rows[0];
-   if(foodDeadline){
+   const sharesRoute=Array.isArray(o.proposed_stops)&&o.proposed_stops.some(stop=>stop?.shipmentId&&stop.shipmentId!==sid);
+   if(foodDeadline&&sharesRoute){
     check(foodDeadline.ready_at,409,'Food ready time unavailable: refresh dispatch offer');
-    const dueAt=new Date(foodDeadline.ready_at).getTime()+30*60*1000;
-    check(Date.now()+Number(o.planned_dropoff_seconds+p.delivery_slack_seconds)*1000<=dueAt,
+    const dueAt=new Date(foodDeadline.ready_at).getTime()+FOOD_DELIVERY_PROMISE_MS;
+    check(Date.now()+Number(o.planned_dropoff_seconds)*1000<=dueAt,
       409,'Food delivery deadline cannot be met: request a new rider offer');
     await c.query(`INSERT INTO dispatch_commitments(shipment_id,rider_id,promised_delivery_before)
       VALUES($1,$2,LEAST(now()+($3::int * interval '1 second'),$4::timestamptz))`,
